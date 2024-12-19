@@ -499,6 +499,10 @@ extern "C" {
 extern void
 dCreate_CompCol_Matrix_dist(SuperMatrix *, int_t, int_t, int_t, double *,
 			    int_t *, int_t *, Stype_t, Dtype_t, Mtype_t);
+void
+dCreate_CompColPemuted_Matrix_dist(SuperMatrix *A, int_t m, int_t n, int_t nnz,
+				   double *nzval, int_t *rowind, int_t *colbeg, int_t *colend,
+				   Stype_t, Dtype_t, Mtype_t);
 extern void
 dCreate_CompRowLoc_Matrix_dist(SuperMatrix *, int_t, int_t, int_t, int_t,
 			       int_t, double *, int_t *, int_t *,

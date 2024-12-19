@@ -513,6 +513,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     SuperMatrix GA;      /* Global A in NC format */
     NCformat *GAstore;
     double   *a_GA;
+    int_t   *colptr, *rowind; /* for GA */
     SuperMatrix GAC;      /* Global A in NCP format (add n end pointers) */
     NCPformat *GACstore;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
@@ -530,7 +531,6 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	      structures are not used.                                  */
     fact_t  Fact;
     double *a;
-    int_t   *colptr, *rowind;
     int_t   *perm_r; /* row permutations from partial pivoting */
     int_t   *perm_c; /* column permutation vector */
     int_t   *etree;  /* elimination tree */
@@ -1082,67 +1082,157 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		  /* @EDIT-SYMATCH Add branch here */
 		  if (options->RowPerm == SymMatch)
 		  {
-			  SuperMatrix GA_c;
-			  coarsen_graph(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
-
-			  int_t *crs_perm_c =               // Sherry: why not intMalloc_dist? 
-				  (int_t *)malloc(sizeof(*crs_perm_c) * GA_c.nrow);
-			  get_perm_c_dist(iam, permc_spec, &GA_c, crs_perm_c);
-
-			  fprintf(stdout, "Projecting back the coarse column permutation ...\n");
-
-			  if ( !(options->indicator_2x2 = (int*) int32Malloc_dist(n)) )
-			      ABORT("Malloc fails for indicator_2x2[].");
+		      SuperMatrix GA_c;
+		      coarsen_graph(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
+		      
+		      int_t *crs_perm_c =       // Sherry: why not intMalloc_dist? 
+			  (int_t *)malloc(sizeof(*crs_perm_c) * GA_c.nrow);
+		      get_perm_c_dist(iam, permc_spec, &GA_c, crs_perm_c);
+		      
+		      /* Compute coarse etree of Pc*A*Pc' */
+		      NCformat  *cGstore = (NCformat *) GA_c.Store;
+		      int n_c = GA_c.nrow; // coarse dimension
+		      int_t nnz_c = cGstore->nnz;
+		      int_t	    *c_colptr = cGstore->colptr;
+		      int_t	    *c_rowind = cGstore->rowind;
+		      double    *c_nzval  = cGstore->nzval;
+		      
+		      /* colptr/rowind/nzval are both input and output */
+		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, crs_perm_c);
+		      
+		      /* Postorder the etree -> crs_perm_c[] is modified */
+		      int_t *c_etree = intMalloc_dist(n_c);
+		      int_t *c_colend = (int_t*) intMalloc_dist(n_c);
+		      
+		      for (i = 0; i < n_c; ++i) c_colend[i] = c_colptr[i+1];
+		      sp_symetree_dist(c_colptr, c_colend, c_rowind, n_c, c_etree);
+		      
+		      /* Post order etree */
+		      int_t *post = (int_t *) TreePostorder_dist(n_c, c_etree);
+		      
+		      int *iwork = int32Malloc_dist(n_c);
+		      
+		      /* Permute GA_c again by post[] */
+		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, post);
+		      
+		      for (i = 0; i < n_c; ++i)
+			  iwork[i] = post[crs_perm_c[i]]; // product of crs_perm_c and post
+		      for (i = 0; i < n_c; ++i) crs_perm_c[i] = iwork[i];
+		      
+		      /* Renumber coarse etree in postorder */
+		      for (i = 0; i < n_c; ++i) iwork[post[i]] = post[c_etree[i]];
+		      for (i = 0; i < n_c; ++i) c_etree[i] = iwork[i];
+		      PrintInt10("postordered coarse etree", n_c, c_etree);
+			  
+		      SUPERLU_FREE(c_colend);
+		      SUPERLU_FREE(post);
+		      SUPERLU_FREE(iwork);
+		      
+		      fprintf(stdout, "Projecting back the coarse column permutation ...\n");
+		      if ( !(options->indicator_2x2 = (int*) int32Malloc_dist(n)) )
+			  ABORT("Malloc fails for indicator_2x2[].");
+		      int *indicator_2x2 = options->indicator_2x2;
 			      
-			  /* cumulative crs_vrts. */
-			  int_t *crs_vrts_cum = (int_t *) intMalloc_dist(crs_info.n_crs+1);
-			  crs_vrts_cum[0] = 0;
-#if 0   // old code
-			  for (i = 0; i < crs_info.n_crs; ++i)
-			      crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
+		      /* cumulative crs_vrts. */
+		      int_t *crs_vrts_cum = (int_t *) intMalloc_dist(crs_info.n_crs+1);
+		      crs_vrts_cum[0] = 0;
+#if 1   // Oguz's code: before apply crs_perm_c[]
+		      for (i = 0; i < crs_info.n_crs; ++i)
+			  crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
 #else   // Sherry mod
-			  for (i = 0; i < crs_info.n_crs; ++i) {
-			      crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
-			      if (crs_info.crs_vrts[i] == 1) { /* 1x1 pivot */
-				 options->indicator_2x2[crs_vrts_cum[i]] = 1;
-			      } else if (crs_info.crs_vrts[i] == 2) { /* 2x2 pivot */
-				 options->indicator_2x2[crs_vrts_cum[i]] = 2;
-				 options->indicator_2x2[crs_vrts_cum[i]+1] = 0;
-			      } else {
-				  ABORT("Invalid value of crs_vrts[i]");
-			      }
+		      for (i = 0; i < crs_info.n_crs; ++i) {
+			  crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
+			  if (crs_info.crs_vrts[i] == 1) { /* 1x1 pivot */
+			      options->indicator_2x2[crs_vrts_cum[i]] = 1;
+			  } else if (crs_info.crs_vrts[i] == 2) { /* 2x2 pivot */
+			      options->indicator_2x2[crs_vrts_cum[i]] = 2;
+			      options->indicator_2x2[crs_vrts_cum[i]+1] = 0;
+			  } else {
+			      ABORT("Invalid value of crs_vrts[i]");
 			  }
-#if ( PRNTlevel>=1 )
-			  //PrintInt32("indicator_2x2", n, options->indicator_2x2);
-			  PrintInt32("indicator_2x2", 300, options->indicator_2x2);
+		      }
 #endif
-#endif
-			  /* reverse perm. */
-			  int_t *rev_crs_perm_c = (int_t *) intMalloc_dist(crs_info.n_crs);
-			  for (i = 0; i < crs_info.n_crs; ++i)
-				  rev_crs_perm_c[crs_perm_c[i]] = i;
-
-			  int_t cur = 0;
-			  for (i = 0; i < crs_info.n_crs; ++i)
+		      /* reverse crs_perm_c. */
+		      int_t *rev_crs_perm_c = (int_t *) intMalloc_dist(crs_info.n_crs);
+		      for (i = 0; i < crs_info.n_crs; ++i)
+			  rev_crs_perm_c[crs_perm_c[i]] = i;
+		      
+		      int cur = 0, rev_i;
+		      
+#if 0  // Oguz's code			      
+		      /* Expand crs_perm_c into perm_c[] */
+		      for (i = 0; i < crs_info.n_crs; ++i) // new label in coarse G
 			  {
-				  int_t rev_i = rev_crs_perm_c[i];
-				  for (j = crs_vrts_cum[rev_i]; j < crs_vrts_cum[rev_i+1]; ++j)
-					  perm_c[j] = cur++;
+			      rev_i = rev_crs_perm_c[i]; // old label in coarse G
+			      for (j = crs_vrts_cum[rev_i]; j < crs_vrts_cum[rev_i+1]; ++j)
+				  perm_c[j] = cur++;
 			  }
+#else  // Sherry mod	      
+		      /* Expand crs_perm_c into perm_c[] */
+		      for (i = 0; i < crs_info.n_crs; ++i) { // new label in coarse G
+			  rev_i = rev_crs_perm_c[i]; // old label in coarse G
+			  for (j = crs_vrts_cum[rev_i]; j < crs_vrts_cum[rev_i+1]; ++j)
+			      perm_c[j] = cur++;
+			  
+			  /* Set up indicator_2x2[] for the vertices permuted by perm_c
+			   */
+			  j = crs_vrts_cum[rev_i];
+			  k = perm_c[j];
+			  if (crs_info.crs_vrts[rev_i] == 1) { /* 1x1 pivot */
+			      indicator_2x2[k] = 1;
+			  } else if (crs_info.crs_vrts[rev_i] == 2) { /* 2x2 pivot */
+			      indicator_2x2[ k ] = 2;
+			      indicator_2x2[ k+1 ] = 0;
+			  } else {
+			      ABORT("Invalid value of crs_vrts[i]");
+			  }
+		      }
+		      
+		      PrintInt32("indicator_2x2", n, options->indicator_2x2);
+		      
+		      /* Expand coarse etree to fine etree      */
+		      int parent, rev_p, fine_p;
+		      for (i = 0; i < crs_info.n_crs; ++i) { // new label in coarse G
+			  rev_i = rev_crs_perm_c[i]; // old label in coarse G
+			  j = crs_vrts_cum[rev_i];
+			  k = perm_c[j];
+			  parent = c_etree[i];
+			  rev_p = rev_crs_perm_c[parent]; // old label
+			  fine_p = crs_vrts_cum[rev_p]; // expanded old label
 
-			  SUPERLU_FREE(crs_vrts_cum);
-			  if (rev_crs_perm_c)
-				  SUPERLU_FREE(rev_crs_perm_c);
+			  /*
+			  if (perm_c[fine_p]==3258) {
+			      printf(">> j %d, k %d, rev_p %d, fine_p %d\n",
+				     j, k, rev_p, fine_p); fflush(stdout);
+				     }*/
+			  
+			  if (crs_info.crs_vrts[rev_i] == 1) { /* 1x1 pivot */
+			      etree[k] = perm_c[fine_p];
+			  } else if (crs_info.crs_vrts[rev_i] == 2) { /* 2x2 pivot */
+			      etree[k] = k+1;
+			      etree[k+1] = perm_c[fine_p];
+			  }
+		      }
+		      // Set root
+		      etree[n-1] = n;
+		      
+		      PrintInt10("etree", n, etree);
+#endif
+		      
+		      SUPERLU_FREE(c_etree);
+		      SUPERLU_FREE(crs_vrts_cum);
+		      if (rev_crs_perm_c)
+			  SUPERLU_FREE(rev_crs_perm_c);
+		      
+		      check_perm_dist("uncoarsen_perm_c", GA.nrow, perm_c);
+		      
+		      fprintf(stdout, "DONE.\n"); fflush(stdout);
 
-			  check_perm_dist("uncoarsen_perm_c", GA.nrow, perm_c);
-
-			  fprintf(stdout, "DONE.\n"); fflush(stdout);
+		  }  /* end if (options->RowPerm == SymMatch) */
+		  else {
+		      get_perm_c_dist(iam, permc_spec, &GA, perm_c);
 		  }
-		  else
-		  {
-			  get_perm_c_dist(iam, permc_spec, &GA, perm_c);
-		  }
-          }
+          } /* end else not pametis */
         }
 
 	stat->utime[COLPERM] = SuperLU_timer_() - t;
@@ -1150,27 +1240,52 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	/* Symbolic factorization. */
 	if ( Fact != SamePattern_SameRowPerm ) {
 	    if ( parSymbFact == NO ) { /* Perform serial symbolic factorization */
-		/* GA = Pr*A, perm_r[] is already applied. */
 	        int_t *GACcolbeg, *GACcolend, *GACrowind;
 
-	        /* Compute the elimination tree of Pc*(A^T+A)*Pc^T or Pc*A^T*A*Pc^T
-	           (a.k.a. column etree), depending on the choice of ColPerm.
-	           Adjust perm_c[] to be consistent with a postorder of etree.
-	           Permute columns of A to form A*Pc'.
-		   After this routine, GAC = GA*Pc^T.  */
-	        sp_colorder(options, &GA, perm_c, etree, &GAC);
+		if (options->RowPerm == SymMatch) {
+		    /* GA = Pr*A*Pr^T, perm_r[] is already applied on both sides. */
+		    /* Form GAC = Pc*GA*Pc^T, prepare for symbolic factor  */
+		    apply_perm_sym(m, nnz, colptr, rowind, a_GA, perm_c);
 
-	        /* Form Pc*A*Pc^T to preserve the diagonal of the matrix GAC. */
-	        GACstore = (NCPformat *) GAC.Store;
-	        GACcolbeg = GACstore->colbeg;
-	        GACcolend = GACstore->colend;
-	        GACrowind = GACstore->rowind;
-	        for (j = 0; j < n; ++j) {
-	            for (i = GACcolbeg[j]; i < GACcolend[j]; ++i) {
-		        irow = GACrowind[i];
-		        GACrowind[i] = perm_c[irow];
-	            }
-	        }
+		    GACcolbeg = (int_t*) intMalloc_dist(n);
+		    if ( !(GACcolbeg) ) ABORT("SUPERLU_MALLOC fails for GACcolbeg");
+		    GACcolend = (int_t*) intMalloc_dist(n);
+		    if ( !(GACcolend) ) ABORT("SUPERLU_MALLOC fails for GACcolend");
+
+		    for (i = 0; i < n; ++i) {
+			GACcolbeg[i] = colptr[i];
+		        GACcolend[i] = colptr[i+1];
+		    }
+		    
+		    dCreate_CompColPemuted_Matrix_dist(&GAC, m, n, nnz, a_GA, rowind,
+						       GACcolbeg, GACcolend,
+						       SLU_NCP, SLU_D, SLU_GE);
+#if 0
+		    /* The fine etree should already be postordered */
+		    sp_symetree_dist(GACcolbeg, GACcolend, rowind,  n, etree);
+#endif		    
+
+		} else {
+		    /* GA = Pr*A, perm_r[] is already applied. */
+		    /* Compute the elimination tree of Pc*(A^T+A)*Pc^T or Pc*A^T*A*Pc^T
+		       (a.k.a. column etree), depending on the choice of ColPerm.
+		       Adjust perm_c[] to be consistent with a postorder of etree.
+		       Permute columns of A to form A*Pc'.
+		       After this routine, GAC = GA*Pc^T.  */
+		    sp_colorder(options, &GA, perm_c, etree, &GAC);
+		    
+		    /* Form Pc*A*Pc^T to preserve the diagonal of the matrix GAC. */
+		    GACstore = (NCPformat *) GAC.Store;
+		    GACcolbeg = GACstore->colbeg;
+		    GACcolend = GACstore->colend;
+		    GACrowind = GACstore->rowind;
+		    for (j = 0; j < n; ++j) {
+			for (i = GACcolbeg[j]; i < GACcolend[j]; ++i) {
+			    irow = GACrowind[i];
+			    GACrowind[i] = perm_c[irow];
+			}
+		    }
+		}
 
 	        /* Perform a symbolic factorization on Pc*Pr*A*Pc^T and set up
                    the nonzero data structures for L & U. */
@@ -1199,6 +1314,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		    if ( !iam ) {
 		    	printf("\tNo of supers " IFMT "\n", Glu_persist->supno[n-1]+1);
 		    	printf("\tSize of G(L) " IFMT "\n", Glu_freeable->xlsub[n]);
+
 		    	printf("\tSize of G(U) " IFMT "\n", Glu_freeable->xusub[n]);
 		    	printf("\tint %lu, short %lu, float %lu, double %lu\n",
 			        sizeof(int_t), sizeof(short),
@@ -1250,7 +1366,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	if ( parSymbFact == NO ) {
 	    /* CASE OF SERIAL SYMBOLIC */
   	    /* Apply column permutation to the original distributed A */
-	    if (options->RowPerm == SymMatch) {  /* Sherry mod */
+	    if (options->RowPerm == SymMatch) {  /* Sherry mod: need appy perm_r[] 
+						    to columns */
 		for (j = 0; j < nnz_loc; ++j) colind[j] = perm_c[perm_r[colind[j]]];
 	    } else {
 		for (j = 0; j < nnz_loc; ++j) colind[j] = perm_c[colind[j]];
@@ -1259,11 +1376,14 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	    /* Distribute Pc*Pr*diag(R)*A*diag(C)*Pc^T into L and U storage.
 	       NOTE: the row permutation Pc*Pr is applied internally in the
   	       distribution routine. */
+	    if (!iam) printf ("before distribute\n"); fflush(stdout);
+	    
 	    t = SuperLU_timer_();
 	    dist_mem_use = pddistribute(options, n, A, ScalePermstruct,
                                       Glu_freeable, LUstruct, grid);
 	    stat->utime[DIST] = SuperLU_timer_() - t;
 
+	    if (!iam) printf ("after distribute\n"); fflush(stdout);
   	    /* Deallocate storage used in symbolic factorization. */
 	    if ( Fact != SamePattern_SameRowPerm ) {
 	        iinfo = symbfact_SubFree(Glu_freeable);
@@ -1287,11 +1407,12 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	    stat->utime[DIST] = SuperLU_timer_() - t;
 	}
 
-	/*if (!iam) printf ("\tDISTRIBUTE time  %8.2f\n", stat->utime[DIST]);*/
+	if (!iam) printf ("\tDISTRIBUTE time  %8.2f\n", stat->utime[DIST]);
 
 	/* Flatten L metadata into one buffer. */
 	if ( Fact != SamePattern_SameRowPerm ) {
 		pdflatten_LDATA(options, n, LUstruct, grid, stat);
+		if (!iam) printf ("\tafter pdflatten_LDATA()\n");
 	}
 
 	/* Perform numerical factorization in parallel. */
@@ -1302,6 +1423,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	// {
 	pdgstrf(options, m, n, anorm, LUstruct, grid, stat, info);
 	stat->utime[FACT] = SuperLU_timer_() - t;
+	if (!iam) printf ("\tFACTOR time  %8.2f\n", stat->utime[FACT]);
 	// }
 	// }
 
@@ -1314,7 +1436,6 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	xsup = Glu_persist->xsup;
 	nzval_a = Astore->nzval;
 
-
 	asum=0;
     for (i = 0; i < Astore->m_loc; ++i) {
         for (j = Astore->rowptr[i]; j < Astore->rowptr[i+1]; ++j) {
@@ -1324,8 +1445,6 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 	nsupers = Glu_persist->supno[n-1] + 1;
 	nsupers_j = CEILING( nsupers, grid->npcol ); /* Number of local block columns */
-
-
 
 	lsum=0.0;
 	for (lk=0;lk<nsupers_j;++lk){
@@ -1341,10 +1460,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		}
 	}
 
-
 	MPI_Allreduce( &asum, &asum_tot,1, MPI_DOUBLE, MPI_SUM, grid->comm );
 	MPI_Allreduce( &lsum, &lsum_tot,1, MPI_DOUBLE, MPI_SUM, grid->comm );
-
 
 	MPI_Allreduce( &Astore->rowptr[Astore->m_loc], &nnz_tot,1, mpi_int_t, MPI_SUM, grid->comm );
 	// MPI_Bcast( &nnzLU, 1, mpi_int_t, 0, grid->comm );

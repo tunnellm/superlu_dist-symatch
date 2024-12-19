@@ -1,3 +1,5 @@
+#define PROFlevel 0
+
 /*! \file
 Copyright (c) 2003, The Regents of the University of California, through
 Lawrence Berkeley National Laboratory (subject to receipt of any required
@@ -536,6 +538,9 @@ pddistribute(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
     t = SuperLU_timer_() - t;
     if ( !iam ) printf("--------\n"
 		       ".. Phase 1 - ReDistribute_A time: %.2f\t\n", t);
+    PrintInt10("xsup", nsupers+1, xsup);
+    PrintInt10("supno", n, supno);
+    fflush(stdout);
 #endif
 
     if ( options->Fact == SamePattern_SameRowPerm ) {
@@ -664,6 +669,7 @@ pddistribute(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 #if ( PROFlevel>=1 )
 	if ( !iam ) printf(".. 2nd distribute time: L %.2f\tU %.2f\tu_blks %d\tnrbu %d\n",
 			   t_l, t_u, u_blks, nrbu);
+		fflush(stdout);
 #endif
 
     } else { /* options->Fact is not SamePattern_SameRowPerm */
@@ -751,6 +757,8 @@ pddistribute(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 
 #if ( PROFlevel>=1 )
 	t = SuperLU_timer_();
+	printf(".. after Alloc\n");
+	fflush(stdout);
 #endif
 	/* ------------------------------------------------------------
 	   COUNT NUMBER OF ROW BLOCKS AND THE LENGTH OF EACH BLOCK IN U.
@@ -796,6 +804,9 @@ pddistribute(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 
 	/* Set up the initial pointers for each block row in U. */
 	nrbu = CEILING( nsupers, grid->nprow );/* Number of local block rows */
+	printf(".. after Count, nrbu %d\n", nrbu);
+	fflush(stdout);
+	
 	for (lb = 0; lb < nrbu; ++lb) {
 	    len = Urb_length[lb];
 	    rb_marker[lb] = 0; /* Reset block marker. */
@@ -834,6 +845,7 @@ pddistribute(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 #if ( PROFlevel>=1 )
 	t = SuperLU_timer_() - t;
 	if ( !iam) printf(".. Phase 2 - setup U strut time: %.2f\t\n", t);
+	fflush(stdout);
 #endif
 
         mem_use -= 2.0*k * iword;
@@ -1040,7 +1052,10 @@ pddistribute(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 #if ( PROFlevel>=1 )
 		t_u += SuperLU_timer_() - t;
 		t = SuperLU_timer_();
+		printf(".. jb %d, nsupers %d, after set up U block\n", jb, nsupers);
+		fflush(stdout);
 #endif
+	
 		/*------------------------------------------------
 		 * SET UP L BLOCKS.
 		 *------------------------------------------------*/
@@ -1246,101 +1261,11 @@ pddistribute(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 #endif
 	    } /* if mycol == pc */
 
+	    //printf(".. jb %d, after set up L blocks\n", jb);
+	    //fflush(stdout);
+	    
 	} /* for jb ... */
 
-#if 0
-	Linv_bc_cnt +=1; // safe guard
-	Uinv_bc_cnt +=1;
-	Lrowind_bc_cnt +=1;
-	Lindval_loc_bc_cnt +=1;
-	Lnzval_bc_cnt +=1;
-	if ( !(Linv_bc_dat =
-		(double*)SUPERLU_MALLOC(Linv_bc_cnt * sizeof(double))) ) {
-		fprintf(stderr, "Malloc fails for Linv_bc_dat[].");
-	}
-	if ( !(Uinv_bc_dat =
-		(double*)SUPERLU_MALLOC(Uinv_bc_cnt * sizeof(double))) ) {
-		fprintf(stderr, "Malloc fails for Uinv_bc_dat[].");
-	}
-
-	if ( !(Lrowind_bc_dat =
-		(int_t*)SUPERLU_MALLOC(Lrowind_bc_cnt * sizeof(int_t))) ) {
-		fprintf(stderr, "Malloc fails for Lrowind_bc_dat[].");
-	}
-	if ( !(Lindval_loc_bc_dat =
-		(int_t*)SUPERLU_MALLOC(Lindval_loc_bc_cnt * sizeof(int_t))) ) {
-		fprintf(stderr, "Malloc fails for Lindval_loc_bc_dat[].");
-	}
-	if ( !(Lnzval_bc_dat =
-		(double*)SUPERLU_MALLOC(Lnzval_bc_cnt * sizeof(double))) ) {
-		fprintf(stderr, "Malloc fails for Lnzval_bc_dat[].");
-	}
-
-	/* use contingous memory for Linv_bc_ptr, Uinv_bc_ptr, Lrowind_bc_ptr, Lnzval_bc_ptr*/
-	k = CEILING( nsupers, grid->npcol );/* Number of local block columns */
-	Linv_bc_cnt=0;
-	Uinv_bc_cnt=0;
-	Lrowind_bc_cnt=0;
-	Lnzval_bc_cnt=0;
-	Lindval_loc_bc_cnt=0;
-	long int tmp_cnt;
-	for (jb = 0; jb < k; ++jb) { /* for each block column ... */
-	    if(Linv_bc_ptr[jb]!=NULL){
-		for (jj = 0; jj < Linv_bc_offset[jb]; ++jj) {
-			Linv_bc_dat[Linv_bc_cnt+jj]=Linv_bc_ptr[jb][jj];
-		}
-		SUPERLU_FREE(Linv_bc_ptr[jb]);
-		Linv_bc_ptr[jb]=&Linv_bc_dat[Linv_bc_cnt];
-		tmp_cnt = Linv_bc_offset[jb];
-		Linv_bc_offset[jb]=Linv_bc_cnt;
-		Linv_bc_cnt+=tmp_cnt;
-	    }
-
-	    if(Uinv_bc_ptr[jb]!=NULL){
-		for (jj = 0; jj < Uinv_bc_offset[jb]; ++jj) {
-			Uinv_bc_dat[Uinv_bc_cnt+jj]=Uinv_bc_ptr[jb][jj];
-		}
-		SUPERLU_FREE(Uinv_bc_ptr[jb]);
-		Uinv_bc_ptr[jb]=&Uinv_bc_dat[Uinv_bc_cnt];
-		tmp_cnt = Uinv_bc_offset[jb];
-		Uinv_bc_offset[jb]=Uinv_bc_cnt;
-		Uinv_bc_cnt+=tmp_cnt;
-	    }
-
-  	    if(Lrowind_bc_ptr[jb]!=NULL){
-		for (jj = 0; jj < Lrowind_bc_offset[jb]; ++jj) {
-			Lrowind_bc_dat[Lrowind_bc_cnt+jj]=Lrowind_bc_ptr[jb][jj];
-		}
-		SUPERLU_FREE(Lrowind_bc_ptr[jb]);
-		Lrowind_bc_ptr[jb]=&Lrowind_bc_dat[Lrowind_bc_cnt];
-		tmp_cnt = Lrowind_bc_offset[jb];
-		Lrowind_bc_offset[jb]=Lrowind_bc_cnt;
-		Lrowind_bc_cnt+=tmp_cnt;
-	    }
-
-	    if(Lnzval_bc_ptr[jb]!=NULL){
-		for (jj = 0; jj < Lnzval_bc_offset[jb]; ++jj) {
-			Lnzval_bc_dat[Lnzval_bc_cnt+jj]=Lnzval_bc_ptr[jb][jj];
-		}
-		SUPERLU_FREE(Lnzval_bc_ptr[jb]);
-		Lnzval_bc_ptr[jb]=&Lnzval_bc_dat[Lnzval_bc_cnt];
-		tmp_cnt = Lnzval_bc_offset[jb];
-		Lnzval_bc_offset[jb]=Lnzval_bc_cnt;
-		Lnzval_bc_cnt+=tmp_cnt;
-	    }
-
-	    if(Lindval_loc_bc_ptr[jb]!=NULL){
-		for (jj = 0; jj < Lindval_loc_bc_offset[jb]; ++jj) {
-			Lindval_loc_bc_dat[Lindval_loc_bc_cnt+jj]=Lindval_loc_bc_ptr[jb][jj];
-		}
-		SUPERLU_FREE(Lindval_loc_bc_ptr[jb]);
-		Lindval_loc_bc_ptr[jb]=&Lindval_loc_bc_dat[Lindval_loc_bc_cnt];
-		tmp_cnt = Lindval_loc_bc_offset[jb];
-		Lindval_loc_bc_offset[jb]=Lindval_loc_bc_cnt;
-		Lindval_loc_bc_cnt+=tmp_cnt;
-	    }
-	} /* for jb ... */
-#endif
 
 	/////////////////////////////////////////////////////////////////
 

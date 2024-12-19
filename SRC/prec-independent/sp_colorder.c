@@ -86,9 +86,10 @@ sp_colorder(superlu_dist_options_t *options,  SuperMatrix *A, int_t *perm_c,
     NCPformat *ACstore;
     int_t       *iwork, *post;
     register  int_t n, i;
-#if ( DEBUGlevel>=1 )
     int iam;
     MPI_Comm_rank( MPI_COMM_WORLD, &iam );
+    
+#if ( DEBUGlevel>=1 )
     CHECK_MALLOC(iam, "Enter sp_colorder()");
 #endif
 
@@ -185,8 +186,8 @@ sp_colorder(superlu_dist_options_t *options,  SuperMatrix *A, int_t *perm_c,
 	for (i = 0; i < n; ++i) iwork[post[i]] = post[etree[i]];
 	for (i = 0; i < n; ++i) etree[i] = iwork[i];
 
-#if ( DEBUGlevel>=3 )
-	if ( !iam ) PrintInt10("postorder etree:", n, etree);
+#if ( DEBUGlevel>=0 )
+	if ( !iam ) PrintInt10("postorder post[]:", 20, post);
 #endif
 	
 	/* Postmultiply A*Pc by post[] */

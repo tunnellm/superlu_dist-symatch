@@ -140,8 +140,8 @@ int_t symbfact
 	ABORT("Malloc fails for desc[]");;
     relax_snode(n, etree, relax, desc, relax_end);
 
-    PrintInt32("etree", n, etree);
-    PrintInt32("relax_end(1:300)", 300, relax_end);
+    //PrintInt32("descendants(1:200)", 200, desc);
+    PrintInt32("relax_end(1:200)", 200, relax_end);
     
     for (j = 0; j < min_mn; ) {
 	if ( relax_end[j] != SLU_EMPTY ) { /* j is the first column of a relaxed snode */
@@ -320,7 +320,7 @@ static void relax_snode
 	while ( desc[j] != 0 && j < n ) ++j;
     }
 
-#if ( DEBUGlevel>=1 )
+#if ( PRNTlevel>=1 )
     printf(".. No of relaxed snodes: " IFMT "\trelax: " IFMT "\n", nsuper, relax);
 #endif
 } /* RELAX_SNODE */

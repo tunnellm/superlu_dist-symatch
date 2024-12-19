@@ -177,6 +177,8 @@ pdgstrf2_trsm
         nsupr = Llu->Lrowind_bc_ptr[j][1];
     else
         nsupr = 0;
+
+#define PI_DEBUG
 #ifdef PI_DEBUG
     printf ("rank %d  Iter %d  k=%d \t dtrsm nsuper %d \n",
             iam, k0, k, nsupr);

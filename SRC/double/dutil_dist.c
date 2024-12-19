@@ -45,6 +45,28 @@ dCreate_CompCol_Matrix_dist(SuperMatrix *A, int_t m, int_t n, int_t nnz,
 }
 
 void
+dCreate_CompColPemuted_Matrix_dist(SuperMatrix *A, int_t m, int_t n, int_t nnz,
+				   double *nzval, int_t *rowind, int_t *colbeg, int_t *colend,
+				   Stype_t stype, Dtype_t dtype, Mtype_t mtype)
+{
+    NCPformat *Astore;
+
+    A->Stype = stype;
+    A->Dtype = dtype;
+    A->Mtype = mtype;
+    A->nrow = m;
+    A->ncol = n;
+    A->Store = (void *) SUPERLU_MALLOC( sizeof(NCPformat) );
+    if ( !(A->Store) ) ABORT("SUPERLU_MALLOC fails for A->Store");
+    Astore = (NCPformat *) A->Store;
+    Astore->nnz = nnz;
+    Astore->nzval = nzval;
+    Astore->rowind = rowind;
+    Astore->colbeg = colbeg;
+    Astore->colend = colend;
+}
+
+void
 dCreate_CompRowLoc_Matrix_dist(SuperMatrix *A, int_t m, int_t n,
 			       int_t nnz_loc, int_t m_loc, int_t fst_row,
 			       double *nzval, int_t *colind, int_t *rowptr,

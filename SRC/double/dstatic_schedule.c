@@ -939,8 +939,8 @@ dstatic_schedule(superlu_dist_options_t * options, int m, int n,
             j = ptr->id;
             head = ptr->next;
 
-            perm_c_supno[i] = j;
-	    printf("CHK: perm_c_supno[%d] %d\n", i, j);
+            perm_c_supno[i] = j;	    
+	    //printf("CHK: perm_c_supno[%d] %d\n", i, j);
 			       
             SUPERLU_FREE (ptr);
             i++;
