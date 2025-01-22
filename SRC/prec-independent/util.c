@@ -675,6 +675,7 @@ void PrintInt10(char *name, int_t len, int_t *x)
         printf(IFMT, x[i]);
     }
     printf("\n");
+    fflush(stdout);
 }
 
 void PrintInt32(char *name, int len, int *x)
@@ -689,6 +690,7 @@ void PrintInt32(char *name, int len, int *x)
         printf("%6d", x[i]);
     }
     printf("\n");
+    fflush(stdout);
 }
 
 int file_PrintInt10(FILE *fp, char *name, int_t len, int_t *x)

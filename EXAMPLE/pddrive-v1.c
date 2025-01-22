@@ -72,9 +72,9 @@ int main(int argc, char *argv[])
 	options.DiagInv           = NO;
      */
     set_default_options_dist(&options);
-    options.ReplaceTinyPivot = YES;
     options.Equil = NO; 
 #if 0
+    options.ReplaceTinyPivot = YES;
     options.ParSymbFact       = YES;
     options.ColPerm           = PARMETIS;
     options.RowPerm = LargeDiag_HWPM;

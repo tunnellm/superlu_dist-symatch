@@ -935,7 +935,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			/* @EDIT-SYMATCH apply symmetric permutation here.  */
 #if ( PRNTlevel>=1 )
 			check_perm_dist("perm_r_symatch", GA.nrow, perm_r);
-			//PrintInt32("perm_r_symatch", m, perm_r);
+			PrintInt32("perm_r_symatch", m, perm_r);
 #endif
                         MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
 		        if ( iinfo == 0 ) {
@@ -1193,13 +1193,18 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      /* Expand coarse etree to fine etree      */
 		      int parent, rev_p, fine_p;
 		      for (i = 0; i < crs_info.n_crs; ++i) { // new label in coarse G
+			  parent = c_etree[i]; // Sherry: what if parent is ROOT (= n_c)?
+			  if (parent == n_c ) {
+			      fine_p = n; // root
+			  } else {
+			      rev_p = rev_crs_perm_c[parent]; // old label
+			      fine_p = crs_vrts_cum[rev_p]; // expanded old label
+			      fine_p = perm_c[fine_p]; // new parent
+			  }
 			  rev_i = rev_crs_perm_c[i]; // old label in coarse G
 			  j = crs_vrts_cum[rev_i];
 			  k = perm_c[j];
-			  parent = c_etree[i];
-			  rev_p = rev_crs_perm_c[parent]; // old label
-			  fine_p = crs_vrts_cum[rev_p]; // expanded old label
-
+			  
 			  /*
 			  if (perm_c[fine_p]==3258) {
 			      printf(">> j %d, k %d, rev_p %d, fine_p %d\n",
@@ -1207,14 +1212,14 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 				     }*/
 			  
 			  if (crs_info.crs_vrts[rev_i] == 1) { /* 1x1 pivot */
-			      etree[k] = perm_c[fine_p];
+			      etree[k] = fine_p; //perm_c[fine_p];
 			  } else if (crs_info.crs_vrts[rev_i] == 2) { /* 2x2 pivot */
 			      etree[k] = k+1;
-			      etree[k+1] = perm_c[fine_p];
+			      etree[k+1] = fine_p; //perm_c[fine_p];
 			  }
 		      }
-		      // Set root
-		      etree[n-1] = n;
+		      // Set root ??? - ROOT MAY HAVE multiple children
+		      //etree[n-1] = n;
 		      
 		      PrintInt10("etree", n, etree);
 #endif
