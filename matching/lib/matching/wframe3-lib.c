@@ -56,7 +56,7 @@
 
 #include "wsort.c"		// Sorts edge lists of a graph by decreasing weight. Uses insertion sort
 #include "mmio.c"               // Matrix market routines for reading files
-#include <numa.h>
+// #include <numa.h>
 
 
 // Routine for comparing the weight of two edges

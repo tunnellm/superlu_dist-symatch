@@ -3,7 +3,8 @@ DFLAGS =
 AR = ar
 RANLIB= ranlib
 INCS = -Iinc $(OPTFLAGS)
-LIBS = -ldl -lnuma $(OPTLIBS)
+# LIBS = -ldl -lnuma $(OPTLIBS)
+LIBS = -ldl $(OPTLIBS)
 
 #CFLAGS = -Wall -Wno-unused-variable -Wno-unused-label -Werror -fno-exceptions				\
 -fstack-protector -Wl,-z,relro -Wl,-z,now -Wformat-security -Wpointer-arith	\
@@ -54,10 +55,10 @@ build:
 
 
 # Library (static)
-lib: build $(OBJECTS)
+lib: build $(LIBOBJS)
 	$(AR) r lib/$(LIBNAME).a $(LIBOBJS)
 	$(RANLIB) lib/$(LIBNAME).a
-	rm -f $(OBJECTS)
+	rm -f $(LIBOBJS)
 
 
 

@@ -56,7 +56,7 @@
 
 #include "wsort.c"		// Sorts edge lists of a graph by decreasing weight. Uses insertion sort
 #include "mmio.c"               // Matrix market routines for reading files
-#include <numa.h>
+// #include <numa.h>
 
 
 // Routine for comparing the weight of two edges
@@ -80,11 +80,12 @@ static int compneig(const void *m1, const void *m2) {
 
 int main(int argc, char *argv[]) {
 
-  if (numa_available() < 0) {
-    printf("No NUMA support available on this system.\n");
-    exit(1);
-  }
-  numa_set_interleave_mask(numa_all_nodes_ptr);
+	/* @OGUZ-EDIT numa disabled */
+  /* if (numa_available() < 0) { */
+  /*   printf("No NUMA support available on this system.\n"); */
+  /*   exit(1); */
+  /* } */
+  /* numa_set_interleave_mask(numa_all_nodes_ptr); */
 
 
 // Primary graph data structure, using compressed neighbor lists.
