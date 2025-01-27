@@ -3,6 +3,8 @@
 // This code assumes that s contains a matching with ws giving the weight
 //
 
+int random_order(int n,int *order);
+
 void roma(int n,int *ver,int *edges,int *s,double *ws,double *weight,int *p1) {
   void roma_driver();
   double cost_matching();
@@ -74,7 +76,7 @@ void roma_driver(int n,int *ver,int *edges,int *s,double *ws,double *weight,int 
     for(i=1;i<=n;i++) {   // Iterate through the vertices in rQ
       int v = rQ[i];
       s1 = s[v];             // Processing edge (v,s1), note s1 could be 0 if v is not matched
-    
+
       if ((debug) && (curRound == probRound))
         if (i==1)
           printf("%d is matched with %d \n",v,s1);
@@ -99,7 +101,7 @@ void roma_driver(int n,int *ver,int *edges,int *s,double *ws,double *weight,int 
           if (mark[s[x]] == v) {  // If x is not matched then s[x] == 0, note v != 0
 
           // Have found 4-cycle v,s1,x,s[x], now check weight
-          
+
             if (weight[j] - ws[x] + cw[s[x]] > bestWeight) {  // Check for new best weight
               bestWeight = weight[j] - ws[x] + cw[s[x]];
               if ((debug) && (curRound == probRound)) {
@@ -134,11 +136,11 @@ void roma_driver(int n,int *ver,int *edges,int *s,double *ws,double *weight,int 
       double up1,uw1,uwp1;
 
     // First find the two best arms from v
-    
+
       if ((debug) && (curRound == probRound))
         if (i==0)
           printf("BestWeight is now %lf \n",bestWeight);
-    
+
       for(j=ver[v];j<ver[v+1];j++) {  // Check every neighbor of v
         x  = edges[j];
         if (x == s[v])  // No need to check existing partner of v
@@ -152,9 +154,9 @@ void roma_driver(int n,int *ver,int *edges,int *s,double *ws,double *weight,int 
         if (gain <= w2)     // Must have gain larger than second best
           continue;
 
-// Keep the two best arms, 
+// Keep the two best arms,
 
-        if (gain > w1) { // If new best 
+        if (gain > w1) { // If new best
           w2 = w1;       // The best arm now becomes second best
           p2 = p1;       // First vertex
           wp2 = wp1;     // Weight of first edge
@@ -179,15 +181,15 @@ void roma_driver(int n,int *ver,int *edges,int *s,double *ws,double *weight,int 
         bestWeight = w1;
         ip  = p1;          // Store v´s best partnr
         wip = wp1;         // Store the weight of (v,ip)
-      
+
         if ((debug) && (curRound == probRound))
           printf("Best arm : (v=%d,%d),Setting bestWeight to %lf= %lf - %lf \n",v,p1,bestWeight,wp1,ws[p1]);
       }
 
     // Note that if v has no other neighbor than s[v] then w1 = 0.0
-    
+
     // Now find the best arm of s[v], only makes sense if v is matched (s1 != 0)
-      if (s1) { 
+      if (s1) {
 
         for(j=ver[s1];j<ver[s1+1];j++) {  // Check every neighbor of s1
           x  = edges[j];
@@ -215,7 +217,7 @@ void roma_driver(int n,int *ver,int *edges,int *s,double *ws,double *weight,int 
 
           // p1, w1, wp1 now denotes the arm we use, which might be the second best one
           // If no arm then p1 == 0 and w1 == 0.0
-        
+
           if (gain + uw1 > bestWeight) {
             bestWeight = gain + uw1;
             if ((debug) && (curRound == probRound)) {
@@ -230,12 +232,12 @@ void roma_driver(int n,int *ver,int *edges,int *s,double *ws,double *weight,int 
         } // loop over neighbors of s1
       } // if v is matched
 
-   // Have possible path ip - v - s1 - s1p 
+   // Have possible path ip - v - s1 - s1p
 
    // Have found positive path if bestPWeight > ws[v]
-    
+
    // Check if the best gain is larger than what we loose ws[v]=w(v,s1), if v is unmatched then ws[v]==0.0
-   
+
       if (bestWeight > ws[v]) {  // True if we found 1 or 2 arms with positive gain larger than ws[v]
         if (ip == s1) {
           printf("Error,vertex %d in queue v = %d is already matched with %d \n",i,v,s[v]);

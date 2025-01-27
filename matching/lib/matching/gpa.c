@@ -1,6 +1,6 @@
 // The GPA algorithm by Maue and Sanders
 
-gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
+void gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
 
   int *parity;
   int *other;
@@ -41,16 +41,16 @@ gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
   for(i=1;i<=n;i++) {
     parity[i] = true;
     other[i] = i;
-    right[i] = 0;     
-    left[i] = 0;     
-    match[i] = 0;     
+    right[i] = 0;
+    left[i] = 0;
+    match[i] = 0;
   }
 
 // Then iterate through the edges
 
   for(i=0;i<m;i++) {
-    v = we[i].x;     
-    w = we[i].y;     
+    v = we[i].x;
+    w = we[i].y;
 
 // If either of v and w is not a path endpoint then skip this edge
     if (((right[v] != 0) && (left[v] != 0)) || ((right[w] != 0) && (left[w] != 0)))
@@ -90,11 +90,11 @@ gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
     }  // End treatment of cycle
 
 // (v,w) does not complete a cycle, v and w must be endpoints, ok to merge lists
-        
+
     two_weight += we[i].w;
 
     parity[other[v]] = parity[v]^parity[w];  // Performing logical XOR on the parity
-    parity[other[w]] = parity[other[v]];     // Storing the new parity with the new endpoints 
+    parity[other[w]] = parity[other[v]];     // Storing the new parity with the new endpoints
 
     int tmp = other[v];
     other[tmp] = other[w];  // Update the remaining endpoints
@@ -124,8 +124,8 @@ gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
 // Now pick out the paths and cycles and do dynamic programming on them
   for(i=1;i<=n;i++) {
     if (other[i] == -1) {// This is a cycle
-     
-// Processing the first vertex 
+
+// Processing the first vertex
 
       path1[0] = i;
       weight1[0] = wr[i];
@@ -147,16 +147,16 @@ gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
           next = right[current];
           weight1[length1] = wr[current];
         }
-        tmp = current; 
+        tmp = current;
         current = next;
 
       } // End while
 
-// Add vertex i at the end of path1 
+// Add vertex i at the end of path1
       length1++;
       path1[length1] = current;   // Placing vertex i at the end of the list
 
-// Now do dynamic programming 
+// Now do dynamic programming
       cycle_dyn_prog(length1,path1,weight1,match);
 
       continue;
@@ -189,7 +189,7 @@ gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
       if (right[next] != current) {
         next = right[next];
         weight1[length1] = wr[tmp];
-      } 
+      }
       else {
         next = left[next];
         weight1[length1] = wl[tmp];

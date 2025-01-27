@@ -1,5 +1,5 @@
 CC = gcc
-DFLAGS = 
+DFLAGS =
 AR = ar
 RANLIB= ranlib
 INCS = -Iinc $(OPTFLAGS)
@@ -9,7 +9,7 @@ LIBS = -ldl $(OPTLIBS)
 #CFLAGS = -Wall -Wno-unused-variable -Wno-unused-label -Werror -fno-exceptions				\
 -fstack-protector -Wl,-z,relro -Wl,-z,now -Wformat-security -Wpointer-arith	\
 -Winit-self -Wl,-O1 -Wl,--no-undefined
-CFLAGS = -w -Wno-unused-variable -fopenmp
+CFLAGS = -Wno-unused-variable -fopenmp
 
 # SOURCES=$(wildcard *.c)
 SOURCES=wframe3-exec.c wframe3-lib.c

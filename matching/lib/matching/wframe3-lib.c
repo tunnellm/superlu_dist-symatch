@@ -6,8 +6,8 @@
 #include "roma.c"               // Roma type post-processing
 #include "rema.c"               // Roma type post-processing
 
-#include "seq1.c" 		// Sequential unweighted greedy matching,  vertex based 
-#include "eseq1.c"		// Sequential unweighted greedy matching,  edge based 
+#include "seq1.c" 		// Sequential unweighted greedy matching,  vertex based
+#include "eseq1.c"		// Sequential unweighted greedy matching,  edge based
 
 #include "wseq1.c" 		// Sequential weighted localy greedy matching, vertex based
 #include "wseq2.c" 		// Sequential weighted localy greedy matching, vertex based, but in random order
@@ -24,16 +24,16 @@
 #include "sweight1.c" 		// Suitor based weighted matching. Using sorted adjacency lists
 #include "sweight7.c" 		// Suitor based weighted matching. Optimized loop.
 #include "sweight3.c" 		// Suitor based weighted matching. Using a while-loop as outer loop
-#include "sweight4.c" 		// Two rounds of suitor based matching, followed by dyn. prog 
+#include "sweight4.c" 		// Two rounds of suitor based matching, followed by dyn. prog
 #include "sweight5.c" 		// Same as above, but now with separate routine for dyn. prog
 #include "sweight6.c" 		// Two rounds of localy greedy matching (wseq), followed by dyn. prog
 #include "sweight8.c" 		// Same as sweight5, but now with separate routine for cyclic dyn. prog
 #include "sweight9.c" 		// Same as sweight6, but now with separate routine for cyclic dyn. prog
 #include "sweight10.c" 		// Two level algorithm with DP, assuming sorted neightbor lists
-#include "sweight11.c" 		// Suitor based algorithm with compression of neighbor lists 
-#include "mcw1.c" 		    // Suitor based algorithm using a stack as outer loop 
-#include "mcw2.c" 		    // Suitor based algorithm using a circular queue as outer loop 
-#include "mcw3.c" 		    // Suitor based algorithm using a queue as outer loop, implemented with two arrays 
+#include "sweight11.c" 		// Suitor based algorithm with compression of neighbor lists
+#include "mcw1.c" 		    // Suitor based algorithm using a stack as outer loop
+#include "mcw2.c" 		    // Suitor based algorithm using a circular queue as outer loop
+#include "mcw3.c" 		    // Suitor based algorithm using a queue as outer loop, implemented with two arrays
 #include "pdp.c" 		// Two level parallel suitor algorithm with DP
 #include "spdp.c" 		// Two level parallel suitor algorithm with DP
 #include "psweight1.c" 		// Parallel suitor based weighted matching. Using sorted adjacency lists
@@ -63,14 +63,14 @@
 // Used for sorting edges by increasing weight in qsort()
 
 static int compedge(const void *m1, const void *m2) {
-    wed *v1 = (wed *) m1; 
-    wed *v2 = (wed *) m2; 
+    wed *v1 = (wed *) m1;
+    wed *v2 = (wed *) m2;
     return (int) (v1->w < v2->w);
 }
 
 static int compneig(const void *m1, const void *m2) {
-    neig *v1 = (neig *) m1; 
-    neig *v2 = (neig *) m2; 
+    neig *v1 = (neig *) m1;
+    neig *v2 = (neig *) m2;
     if  (v1->w < v2->w)
       return true;
     if  (v1->w > v2->w)
@@ -118,13 +118,13 @@ int read_bin_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
   for(i=1;i<=*n;i++) {
     count[i] = 0;
   }
-  
+
   fread(*we,(*m)*(2*sizeof(int)+sizeof(double)),1,fp);
-  
+
 
   num_edges = 0;
-  
-  
+
+
 
   for(i=0;i<*m;i++) {
 
@@ -143,12 +143,12 @@ int read_bin_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
     num_edges++;
     if (num_edges > *m) {
       printf("Have set num_edges to %d while i=%d \n",num_edges,i);
-      return;
+      return(false);
     }
   }
 
 
-  
+
   *m = num_edges;  // Make sure m is the correct number of edges
 
 // Find starting positions in edge list for each vertex
@@ -161,12 +161,12 @@ int read_bin_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
 
 // Place edges in edge lists, once for each endpoint
 
-  
+
   for(i=0;i<*m;i++) {
     x = (*we)[i].x;
     y = (*we)[i].y;
     v = (*we)[i].w;
-      
+
     if ((x == 0) || (y == 0)) {
       printf("edge %d: %d and %d are neighbors, numbering starts from 1! \n",i,x,y);
       return(false);
@@ -185,11 +185,11 @@ int read_bin_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
 
   }
 
-  
+
   fclose(fp);
   free(start);
   free(count);
-  
+
 
   return(true);
 }
@@ -253,13 +253,13 @@ int read_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
   int num_edges = 0;
 
 //  printf("Number of possible edges is %d \n",*m);
-  
+
 // Read inn the edges
   if (mm_is_real(matcode)) {
     // printf("Real matrix, Starting to read %d edges \n",*m);
     srand48(time(NULL));
     for(i=0;i<*m;i++) {
-      fscanf(fp,"%d %d %lf",&x,&y,&v); // Use this line if there is exactly one double weight 
+      fscanf(fp,"%d %d %lf",&x,&y,&v); // Use this line if there is exactly one double weight
     //  fscanf(fp,"%d %d %lf %lf",&x,&y,&v,&w); // Use this line for complex weights
       if (x != y) { // Avoid self-edges
 /*
@@ -270,12 +270,12 @@ int read_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
         (*we)[num_edges].x = x;
         (*we)[num_edges].y = y;
 //        int intv = (int) fabs(v);
-//        (*we)[num_edges].w = (double) intv; 
+//        (*we)[num_edges].w = (double) intv;
         (*we)[num_edges].w = fabs(v);     // Take absolute value of edge
-    
+
         if (fabs(v) < 0.0)  {
           printf("error reading data,got %f \n",fabs(v));
-          return;
+          return(false);
         }
          (*we)[num_edges].w = 1.0 + (double)rand()/100000.0;
       //  (*we)[num_edges].w = (double)rand();
@@ -285,7 +285,7 @@ int read_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
         num_edges++;
         if (num_edges > *m) {
           printf("Have set num_edges to %d while i=%d \n",num_edges,i);
-          return;
+          return(false);
         }
       }
     }
@@ -294,8 +294,8 @@ int read_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
     printf("Integer matrix, Starting to read %d edges \n",*m);
     srand48(time(NULL));
     for(i=0;i<*m;i++) {
-      fscanf(fp,"%d %d %lf",&x,&y,&v); // Use this line if there is exactly one double weight 
-    
+      fscanf(fp,"%d %d %lf",&x,&y,&v); // Use this line if there is exactly one double weight
+
       if (x != y) { // Avoid self-edges
 /*
         (*e)[num_edges].x = x; // Store edges
@@ -308,7 +308,7 @@ int read_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
 
         if (fabs(v) < 0.0)  {
           printf("error reading data,got %f \n",fabs(v));
-          return;
+          return(false);
         }
 
         count[x]++; // Get vertex degrees
@@ -317,7 +317,7 @@ int read_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e,
         num_edges++;
         if (num_edges > *m) {
           printf("Have set num_edges to %d while i=%d \n",num_edges,i);
-          return;
+          return(false);
         }
       }
     }
@@ -463,12 +463,12 @@ int read_general_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e
   int num_edges = 0;
 
 //  printf("Number of possible edges is %d \n",*m);
-  
+
 // Read inn the edges
   if (mm_is_real(matcode)) {
 //    printf("Starting to read %d edges \n",*m);
     for(i=0;i<*m;i++) {
-      fscanf(fp,"%d %d %lf",&x,&y,&v); // Use this line if there is exactly one double weight 
+      fscanf(fp,"%d %d %lf",&x,&y,&v); // Use this line if there is exactly one double weight
       // fscanf(fp,"%d %d %lf %lf",&x,&y,&v,&w); // Use this line for complex weights
       if ((x < y) && (x <= *n) && (y <= *n)) { // Only use edges in square part
         (*e)[num_edges].x = x; // Store edges
@@ -477,12 +477,12 @@ int read_general_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e
         (*we)[num_edges].x = x;
         (*we)[num_edges].y = y;
 //        int intv = (int) fabs(v);
-//        (*we)[num_edges].w = (double) intv; 
+//        (*we)[num_edges].w = (double) intv;
         (*we)[num_edges].w = fabs(v);
 //        (*we)[num_edges].w = drand48();
         if (fabs(v) < 0.0)  {
           printf("error reading data,got %f \n",fabs(v));
-          return;
+          return(false);
         }
       //   (*we)[num_edges].w = 1.0;
       //  (*we)[num_edges].w = (double)rand();
@@ -493,7 +493,7 @@ int read_general_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e
         num_edges++;
         if (num_edges > *m) {
           printf("Have set num_edges to %d while i=%d \n",num_edges,i);
-          return;
+          return(false);
         }
       }
     }
@@ -554,7 +554,7 @@ int read_general_graph(int *n,int *m,char *f_name,int **ver,int **edges,edge **e
   return(true);
 }
 
-// Get input. This is given as a file name to the executable. 
+// Get input. This is given as a file name to the executable.
 // This file should contain the following information (per line):
 // Number of input graphs
 // Number of times each configuration is run, the program reports the best running time out of these
@@ -587,7 +587,7 @@ int get_input(int argc, char *argv[],int *n_graphs,int *n_runs,int *n_conf,int *
 // Get number of graphs to read
   fscanf(rf,"%d",n_graphs);
 
-  *name =  malloc(sizeof(char *)*(*n_graphs));  // Allocate one pointer for each graph 
+  *name =  malloc(sizeof(char *)*(*n_graphs));  // Allocate one pointer for each graph
 
   if (*name == NULL) {
     printf("Unable to allocate space for names of %d graphs\n",max_graphs);
@@ -732,7 +732,7 @@ int prepare_output(FILE **wf,int n_conf,int conf[]) {
 // print the thread configurations to file
   fprintf(*wf,"x = [");
   int i;
-  for(i=0;i<n_conf;i++) 
+  for(i=0;i<n_conf;i++)
     fprintf(*wf,"%d ",conf[i]);
   fprintf(*wf,"];\n");
 
@@ -751,11 +751,11 @@ int verify_Wmatching(int n,int *ver,int *edges,int *p,double *ws) {
       return(false);
     }
     if ((p[i] != 0) && (p[p[i]] != i)) {
-      printf("p[%d] = %d, while p[%d] = %d \n",i,p[i],p[i],p[p[i]]); 
+      printf("p[%d] = %d, while p[%d] = %d \n",i,p[i],p[i],p[p[i]]);
       return(false);
     }
     if ((p[i] != 0) && (ws[p[i]] != ws[i])) {
-      printf("p[%d] = %d, and p[%d] = %d, but ws[%d]=%lf and ws[%d]=%lf \n",i,p[i],p[i],p[p[i]],i,ws[i],p[i],ws[p[i]]); 
+      printf("p[%d] = %d, and p[%d] = %d, but ws[%d]=%lf and ws[%d]=%lf \n",i,p[i],p[i],p[p[i]],i,ws[i],p[i],ws[p[i]]);
       return(false);
     }
   }
@@ -773,7 +773,7 @@ int verify_matching(int n,int *ver,int *edges,int *p) {
       return(false);
     }
     if ((p[i] != 0) && (p[p[i]] != i)) {
-      printf("p[%d] = %d, while p[%d] = %d \n",i,p[i],p[i],p[p[i]]); 
+      printf("p[%d] = %d, while p[%d] = %d \n",i,p[i],p[i],p[p[i]]);
       return(false);
     }
   }
@@ -802,7 +802,7 @@ int random_order(int n,int *order) {
 
 // Allocating memory specifically for this graph
 
-int allocate_graph_memory(neig **swe,double **weight,edge **e,wed **we,int **ver,int **edges,int n,int **next,int **used,int **p,int **p1,int **p2,int **p3) {		
+int allocate_graph_memory(neig **swe,double **weight,edge **e,wed **we,int **ver,int **edges,int n,int **next,int **used,int **p,int **p1,int **p2,int **p3) {
 
 // The compressed edge list with the weight, needed for sorting using qsort()
 
@@ -836,7 +836,7 @@ int allocate_graph_memory(neig **swe,double **weight,edge **e,wed **we,int **ver
 
 /*  This part is removed to ensure space for parallel algorithms.
  *  Must be returned to run unweighted code
- 
+
   *e = (edge *) malloc(sizeof(edge)*(max_m));
   if (*e == NULL) {
     printf("Unable to allocate space for e-array in allocate_graph_memory() \n");
@@ -900,7 +900,7 @@ double cost_and_correct_matching(int n,int *ver,int *edges,double *weight,int *m
 
   double glob_sum = 0.0;
   int i,k;
-  
+
   for(i=1;i<=n;i++) {
     //printf("%d is matched with %d \n",i,match[i]);
     if ((match[i] != 0) && (i < match[i])) { // Only use vertices that are matched and that have lower index then their partner
@@ -909,13 +909,13 @@ double cost_and_correct_matching(int n,int *ver,int *edges,double *weight,int *m
           glob_sum += weight[k];
           ws[i] = weight[k];
           ws[match[i]] = weight[k];
-          if (match[edges[k]] != i) 
+          if (match[edges[k]] != i)
             printf("Error in cost_matching: %d is matched with %d but %d is matched with %d \n",i,match[i],edges[k],match[edges[k]]);
         } // if
       } // for k
     } // if
   } // for i
- 
+
   return(glob_sum);
 }
 
@@ -925,25 +925,25 @@ double cost_matching(int n,int *ver,int *edges,double *weight,int *match) {
 
   double glob_sum = 0.0;
   int i,k;
-  
+
   for(i=1;i<=n;i++) {
     //printf("%d is matched with %d \n",i,match[i]);
     if ((match[i] != 0) && (i < match[i])) { // Only use vertices that are matched and that have lower index then their partner
       for(k=ver[i];k<ver[i+1];k++) {         // Loop through neighbors of vertex i
         if (edges[k] == match[i]) {
           glob_sum += weight[k];
-          if (match[edges[k]] != i) 
+          if (match[edges[k]] != i)
             printf("Error in cost_matching: %d is matched with %d but %d is matched with %d \n",i,match[i],edges[k],match[edges[k]]);
         } // if
       } // for k
     } // if
   } // for i
- 
+
   return(glob_sum);
 }
 void store_p_value(FILE *wf,char *s,double **values,int n,int n_conf) {
   int i,j;
-  fprintf(wf,"%s = [",s); 
+  fprintf(wf,"%s = [",s);
   for(i=0;i<n;i++) {
     for(j=0;j<n_conf;j++)  {
       fprintf(wf,"%lf ",values[i][j]);
@@ -954,7 +954,7 @@ void store_p_value(FILE *wf,char *s,double **values,int n,int n_conf) {
 
 void store_value(FILE *wf,char *s,double *values,int n) {
   int i;
-  fprintf(wf,"%s = [",s); 
+  fprintf(wf,"%s = [",s);
   for(i=0;i<n;i++)  {
     fprintf(wf,"%lf ",values[i]);
   }

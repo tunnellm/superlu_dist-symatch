@@ -2,14 +2,16 @@
 //
 // Optimized main loop
 // Two round matching followed by dynamic programming
-// This time the dynamic programming is done in a separate routine 
+// This time the dynamic programming is done in a separate routine
 // One routine for the paths, and one routine for the cycles
+
+void cycle_dyn_prog(int l1,int *path1,double *weight1,int *match);
 
 void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,double *weight, int *used,int *match) {
 
 
   int i,j;
-  int partner;     // Prospective candidate to match with   
+  int partner;     // Prospective candidate to match with
   int x, done, next_vertex;
   int count,current;
   int *path1;
@@ -24,11 +26,11 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
 
 // Start of matching algorithm
 
-  for(i=0;i<=n;i++) {   
-    s[i] = 0;           // Set that no node is trying to match with i 
+  for(i=0;i<=n;i++) {
+    s[i] = 0;           // Set that no node is trying to match with i
     ws[i] = 0.0;        // Set the current weight of best suitor edge to 0
 
-    s2[i] = 0;           // Set that no node is trying to match with i 
+    s2[i] = 0;           // Set that no node is trying to match with i
     ws2[i] = 0.0;        // Set the current weight of best suitor edge to 0
 
     used[i] = false;     // Set that node i has not been used in the dynamic programming part
@@ -45,7 +47,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
     double heaviest = ws[current];          // Find the heaviest candidate that does not have a better offer
     partner = s[current];                  // No point in trying a partner worse than the best suitor
 
-    for(j=ver[current];j<ver[current+1];j++) { // Loop over neighbors of the current vertex 
+    for(j=ver[current];j<ver[current+1];j++) { // Loop over neighbors of the current vertex
       int y = edges[j];            // y is the neighbor of the current vertex
       if ((weight[j]>heaviest) && (ws[y]<weight[j])) {// Check if w(current,y) is the best so far, and if it is a better option for y
         heaviest = weight[j];      // Store the weight of the heaviest edge found so far
@@ -53,7 +55,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
       } // loop over neighbors
     }
 
-    
+
     if (heaviest > 0) {            // True if there is a new partner
       if (s[partner] != 0) {       // True if partner already had a suitor
         next_vertex = s[partner];  // Pick up the old suitor and continue
@@ -63,7 +65,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
         next_vertex = i;
       }
       s[partner] = current;        // current is now the current suitor of s
-      ws[partner] = heaviest;      // The weight of the edge (current,partner) 
+      ws[partner] = heaviest;      // The weight of the edge (current,partner)
     }
     else {
       i = i + 1;                   // Move to the next vertex
@@ -81,7 +83,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
     double heaviest = ws2[current];          // Find the heaviest candidate that does not have a better offer
     partner = s2[current];                  // No point in trying a partner worse than the best suitor
 
-    for(j=ver[current];j<ver[current+1];j++) { // Loop over neighbors of the current vertex 
+    for(j=ver[current];j<ver[current+1];j++) { // Loop over neighbors of the current vertex
       int y = edges[j];            // y is the neighbor of the current vertex
       // if (y == s[current]) continue;
       if ((weight[j]>heaviest) && (ws2[y]<weight[j]) && (y != s[current])) {// Check if w(current,y) is the best so far, and if it is a better option for y. It must also be different from the vertex selected in stage 1
@@ -90,7 +92,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
       } // loop over neighbors
     }
 
-    
+
     if (heaviest > 0) {            // True if there is a new partner
       if (s2[partner] != 0) {       // True if partner already had a suitor
         next_vertex = s2[partner];  // Pick up the old suitor and continue
@@ -100,7 +102,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
         next_vertex = i;
       }
       s2[partner] = current;        // current is now the current suitor of s
-      ws2[partner] = heaviest;      // The weight of the edge (current,partner) 
+      ws2[partner] = heaviest;      // The weight of the edge (current,partner)
     }
     else {
       i = i + 1;                   // Move to the next vertex
@@ -121,7 +123,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
       weight1[l1] = ws[i];	// Store the weight of the first edge
       used[i] = true;		// Mark the vertex as used
       current = s[i];   	// Move to the next vertex
-      
+
       while (true) {   // Standing at the endpoint of an edge from the level 1 matching
         used[current] = true;   // Set the current vertex as used
         l1++;			// Increase the length of the path
@@ -150,7 +152,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
       weight1[l1] = ws2[i];	// Store the weight of the first edge
       used[i] = true;		// Mark the vertex as used
       current = s2[i];   	// Move to the next vertex
-      
+
       while (true) {   // Standing at the endpoint of an edge from the level 2 matching
         used[current] = true;   // Set the current vertex as used
         l1++;			// Increase the length of the path
@@ -188,7 +190,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
     l1 = 0;
 
 // Ready to start loop
-      
+
     while (!used[current]) {   // Process two edges (vi,v(i+1)) and (v(i+1),v(i+2)), at a time until we reach the start of the cycle
 
 // Put vertex v_i and edge (vi,v(i+1)) in the path
@@ -211,9 +213,9 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
     path1[l1] = path1[0];		// Put the first vertex last to complete the cycle
 
 
-// Now do dynamic programming on the cycle 
+// Now do dynamic programming on the cycle
     cycle_dyn_prog(l1,path1,weight1,match);
- 
+
   } // End of loop over vertices that looks for unprocessed cycles
 
   int k;
@@ -244,7 +246,7 @@ void sweight8(int n,int *ver,int *edges,int *s,double *ws,int *s2, double *ws2,d
 // and l1 edges, the weights of these are stored in match[].
 // The final edge goes from vertex path1[l1-1] to vertex path1[0].
 
-cycle_dyn_prog(int l1,int *path1,double *weight1,int *match) {
+void cycle_dyn_prog(int l1,int *path1,double *weight1,int *match) {
 
   double temp;
   double w1_old = 0.0;
