@@ -9,6 +9,8 @@
 using std::cout;	using std::endl;	using std::string;	using std::cerr;
 using std::vector;	using std::tuple;	using std::unordered_map;
 
+#define DBG_MATCHING
+
 /*! \brief
  *
  * <pre>
@@ -88,12 +90,12 @@ dldperm_dist_symatch
 	double	  C1[],
 	int_t	 *n_crs,
 	int_t	**crs_vrts
-	
+
 )
 {
 	cout << string(80, '=') << endl;
-	
-	
+
+
 	// Create a matrix market object from CSC.
 	// Unfilled members: svals, header.
 	MatMarket_t<int_t, double>	mm;
@@ -128,8 +130,8 @@ dldperm_dist_symatch
 
 	assert(((nnz - ndiags) & 0x1) == 0x0);
 	cout << "#nnzs " << mm.nnzs << " #diags " << ndiags << endl;
-	
-	
+
+
 	// Form the graph model for matching.
 	GModel *gm = new StandardSymDiag(&mm);
 	gm->form_graph(true);
@@ -158,6 +160,25 @@ dldperm_dist_symatch
 	fprintf(stdout, "matching cost %lf\n", wrm->cost());
 
 
+	#ifdef DBG_MATCHING
+	ofstream outfile;
+	outfile.open("debug-output");
+
+	outfile << "=== Constructed graph === \n";
+	for (int64_t v = 0; v < g->nv; ++v)
+	{
+		outfile << v << ": ";
+		for (int_t i = g->xadj[v]; i < g->xadj[v+1]; ++i)
+			outfile << "(" << g->adj[i] << ","
+					<< g->ew[i] << ") ";
+		outfile << "\n";
+	}
+	outfile << "\n\n\n";
+
+	outfile << "=== Matching (1-based indices) ===\n";
+	#endif
+
+
 	// Compute the permutation
 	vector<tuple<int_t, int_t, double>> m_sorted;
 	wrm->sort_matching(m_sorted, false);
@@ -168,7 +189,11 @@ dldperm_dist_symatch
 		int_t v = get<0>(t);
 		int_t u = get<1>(t);
 		assert(v != 0);
-		
+
+		#ifdef DBG_MATCHING
+		outfile << v << " " << u << " " << get<2>(t) << "\n";
+		#endif
+
 		if (u == 0)				// unmatched vertex
 		{
 			if (v <= mm.nr)
@@ -180,23 +205,34 @@ dldperm_dist_symatch
 		}
 
 		++(*n_crs);
-		
+
 		perm[min(v, u)-1] = curidx++;
 		if (u <= mm.nr && v <= mm.nr)
-			perm[max(v, u)-1] = curidx++;			
+			perm[max(v, u)-1] = curidx++;
 	}
 
-	
+
+	#ifdef DBG_MATCHING
+	outfile << "\n\n\n";
+
+	outfile << "=== Permutation (perm_r) ===\n";
+	for (int_t v = 0; v < mm.nr; ++v)
+		outfile << v << " -> " << perm[v] << "\n";
+
+	outfile << "\n\n\n";
+	#endif
+
+
 	// 2nd pass - coarsening information.
 	if (*n_crs > 0)
-		*crs_vrts  = (int_t *)malloc(sizeof(**crs_vrts) * (*n_crs));	
+		*crs_vrts  = (int_t *)malloc(sizeof(**crs_vrts) * (*n_crs));
 
 	int_t	crs_idx = 0;
 	for (auto &t : m_sorted)
 	{
 		int_t v = get<0>(t);
 		int_t u = get<1>(t);
-		
+
 		if (u == 0)				// unmatched vertex
 		{
 			if (v <= mm.nr)
@@ -211,10 +247,22 @@ dldperm_dist_symatch
 		(*crs_vrts)[crs_idx] = 1;
 		if (u <= mm.nr && v <= mm.nr)
 			(*crs_vrts)[crs_idx] = 2;
-		++crs_idx;		
+		++crs_idx;
 	}
-	
-	
+
+
+	#ifdef DBG_MATCHING
+	outfile << "=== Coarsening info ===\n";
+	outfile << "n_crs " << *n_crs << "\n";
+
+	for (int_t i = 0; i < *n_crs; ++i)
+		outfile << i << " " << (*crs_vrts)[i] << "\n";
+
+	outfile << "\n\n\n";
+	outfile.close();
+	#endif
+
+
 	cout << "Number of coarse vertices " << *n_crs << "\n";
 	cout << string(80, '=') << endl;
 
@@ -222,7 +270,7 @@ dldperm_dist_symatch
 	delete wrm;
 
 
-	
+
 	return 0;
 }
 
@@ -241,7 +289,7 @@ coarsen_graph
 {
 	assert(G->Stype == SLU_NC &&
 		   "Coarsening only implemented for storage type SLU_NC.\n");
-	
+
 	cout << "Coarsening the graph..." << endl;
 
 	NCformat	*Gstore	= (NCformat *) G->Store;
@@ -266,7 +314,7 @@ coarsen_graph
 		}
 	}
 
-	
+
 	assert(v == nr);
 
 
@@ -302,7 +350,7 @@ coarsen_graph
 	Gc->ncol			 = n_crs;
 	Gc->Store			 = (NCformat *) SUPERLU_MALLOC(sizeof(NCformat));
 	NCformat	*Gcstore = (NCformat *) Gc->Store;
-	
+
 	Gcstore->nnz	   = crs_nnz;
 	Gcstore->nzval	   = (double *) doubleMalloc_dist(crs_nnz);
 	double	*crs_nzval = (double *) Gcstore->nzval;
@@ -310,7 +358,7 @@ coarsen_graph
 	// Gcstore->rowind = (int_t *) SUPERLU_MALLOC((crs_nnz)*sizeof(int_t));
 	Gcstore->colptr	   = (int_t *) intMalloc_dist(n_crs+1);
 	// Gcstore->colptr = (int_t *) SUPERLU_MALLOC((n_crs+1)*sizeof(int_t));
-	
+
 	Gcstore->colptr[0] = 0;
 	int_t curnz = 0;
 	for (int_t cv = 0; cv < n_crs; ++cv)
@@ -321,10 +369,35 @@ coarsen_graph
 			assert(curnz < crs_nnz);
 			Gcstore->rowind[curnz] = el.first;
 			crs_nzval[curnz]	   = el.second;
-			++curnz;			
+			++curnz;
 		}
 	}
-	
+
+
+	#ifdef DBG_MATCHING
+	ofstream outfile("debug-output", std::ios_base::app);
+	outfile << "coarse graph #rows/cols " << n_crs
+			<< " #nnz " << crs_nnz << endl;
+	outfile << "=== Coarse matrix ===\n";
+	for (int_t c = 0; c < n_crs; ++c)
+	{
+		outfile << c << ": ";
+		for (int_t rptr = Gcstore->colptr[c]; rptr < Gcstore->colptr[c+1];
+			 ++rptr)
+			outfile << "(" << Gcstore->rowind[rptr] << ","
+					<< crs_nzval[rptr] << ") ";
+		outfile << "\n";
+	}
+
+	outfile << "\n\n\n";
+
+	outfile << "=== fine to coarse vertex info ===" << endl;
+	for (int_t c = 0; c < nc; ++c)
+		outfile << c << " " << v_cid[c] << "\n";
+
+	outfile << "\n\n\n";
+	#endif
+
 
 	delete [] v_cid;
 
@@ -349,6 +422,17 @@ apply_perm_sym
 	int_t   *p					// permutation
 )
 {
+	#ifdef DBG_MATCHING
+	static int x = 0;
+	ofstream outfile("debug-output", std::ios_base::app);
+	outfile << "=== Permutation === " << x << "\n";
+	for (int_t c = 0; c < n; ++c)
+		outfile << c << " " << p[c] << "\n";
+
+	outfile << "\n\n\n";
+	#endif
+
+
 	// Permuted matrix data.
 	int_t	*colptr_p = (int_t *) intMalloc_dist(n+1);
 	int_t	*adjncy_p = (int_t *) intMalloc_dist(nnz);
@@ -378,9 +462,165 @@ apply_perm_sym
 	memcpy(adjncy, adjncy_p, sizeof(*adjncy_p) * nnz);
 	memcpy(nzval, nzval_p, sizeof(*nzval_p) * nnz);
 
+
+	#ifdef DBG_MATCHING
+	outfile << "=== Permuted matrix === " << x << "\n";
+	for (int_t c = 0; c < n; ++c)
+	{
+		outfile << c << ": ";
+		for (int_t rptr = colptr[c]; rptr < colptr[c+1]; ++rptr)
+			outfile << "(" << adjncy[rptr] << ","
+					<< nzval[rptr] << ") ";
+		outfile << "\n";
+	}
+
+	outfile << "\n\n\n";
+	++x;
+	#endif
+
+
 	SUPERLU_FREE(colptr_p);
 	SUPERLU_FREE(adjncy_p);
 	SUPERLU_FREE(nzval_p);
 
 	return;
+}
+
+
+
+
+
+int
+is_symmetric
+(
+ 	int		 n,
+	int_t	 nnz,
+	int_t	*colptr,
+	int_t	*adjncy,
+	double	*nzval
+)
+{
+	#ifdef DBG_MATCHING
+	ofstream outfile("debug-output", std::ios_base::app);
+	outfile << "Checking whether the matrix is symmetric (pattern) ...\n";
+	#endif
+
+	int is_symmetric = 1;
+	for (int_t c = 0; c < n; ++c)
+	{
+		for (int_t rptr = colptr[c]; rptr < colptr[c+1]; ++rptr)
+		{
+			int_t r = adjncy[rptr];
+			if (r == c)
+				continue;
+
+			int found = 0;
+			for (int_t rptr2 = colptr[r]; rptr2 < colptr[r+1]; ++rptr2)
+			{
+				if (adjncy[rptr2] == c)
+				{
+					found = 1;
+					break;
+				}
+			}
+
+			is_symmetric = is_symmetric && found;
+
+			if (!found)
+			{
+				#ifdef DBG_MATCHING
+				outfile << "Symmetricity breaks for ("
+						<< r << "," << c << "\n";
+				#endif
+			}
+		}
+	}
+
+	#ifdef DBG_MATCHING
+	outfile << "Result " << is_symmetric << "\n";
+	outfile << "\n\n\n";
+	#endif
+
+
+	return is_symmetric;
+}
+
+
+
+
+
+static
+int
+walk_postorder
+(
+ 	vector<vector<int>> &ch,
+ 	int 				 v
+)
+{
+	if (ch[v].empty())			// leaf
+		return 1;
+
+	int max_ch = -1, res = -1;
+	for (auto u : ch[v])
+	{
+		res = res && walk_postorder(ch, u);
+		max_ch = max(max_ch, u);
+	}
+
+	assert(max_ch != -1 && res != -1);
+
+	if (v == max_ch+1)
+		return res && 1;
+	else
+		cout << "post-order walk breaks at subtree rooted at " << v << endl;
+
+	return 0;
+}
+
+
+
+
+
+int
+is_postorder
+(
+ 	int	 n,
+ 	int *parents
+)
+{
+	int root = -1;
+
+	// Need children information for each node.
+	vector<vector<int>> ch(n);
+	for (int v = 0; v < n; ++v)
+	{
+		if (parents[v] == n)
+			root = v;
+		else
+			ch[parents[v]].push_back(v);
+	}
+
+
+	#ifdef DBG_MATCHING
+	ofstream outfile("debug-output", std::ios_base::app);
+	outfile << "=== tree post-order ===\n";
+	outfile << "root " << root << "\n";
+	for (int v = 0; v < n; ++v)
+	{
+		outfile << v << ": ";
+		for (auto u : ch[v])
+			outfile << u << " ";
+		outfile << "\n";
+	}
+	outfile.close();
+	#endif
+
+	assert(root != -1 &&
+		   "Could not find root in the given tree!\n");
+
+	int res = walk_postorder(ch, root);
+	cout << "is tree post-order " << res << endl;
+
+
+	return res;
 }

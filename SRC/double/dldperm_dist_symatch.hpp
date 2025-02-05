@@ -22,3 +22,9 @@ void
 apply_perm_sym(int n, int_t nnz, int_t *colptr, int_t *adjncy, double *nzval,
 			   int_t *p);
 
+
+int
+is_symmetric(int n, int_t nnz, int_t *colptr, int_t *adjncy, double *nzval);
+
+int
+is_postorder(int n, int *parents);
