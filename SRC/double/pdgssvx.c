@@ -1137,15 +1137,13 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      /* Post order etree */
 		      int_t *post = (int_t *) TreePostorder_dist(n_c, c_etree);
 
-			  is_postorder(n_c, c_etree);
-			  exit(44);
+			  // exit(44);
 
 			  /* @EDIT-SYMATCH 5. D = Pe C PeT */
 		      /* Permute GA_c again by post[] */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, post);
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
 			  // exit(55);
-
 
 			  int *iwork = int32Malloc_dist(n_c);
 		      for (i = 0; i < n_c; ++i)
@@ -1154,10 +1152,12 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 				  crs_perm_c[i] = iwork[i];
 
 			  #ifdef DBG_MATCHING
+			  outfile = fopen("debug-output", "a");
 			  fprintf(outfile, "=== crs_perm_c (after post) ===\n");
 			  for (i = 0; i < n_c; ++i)
 				  fprintf(outfile, "%d %d\n", i, crs_perm_c[i]);
 			  fprintf(outfile, "\n\n\n");
+			  fclose(outfile);
 			  #endif
 
 		      /* Renumber coarse etree in postorder */
@@ -1167,7 +1167,10 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 				  c_etree[i] = iwork[i];
 		      PrintInt10("postordered coarse etree", n_c, c_etree);
 
+			  is_postorder(n_c, c_etree);
+
 			  #ifdef DBG_MATCHING
+			  outfile = fopen("debug-output", "a");
 			  fprintf(outfile, "=== c_etree (D) ===\n");
 			  for (i = 0; i < n_c; ++i)
 				  fprintf(outfile, "%d %d\n", i, c_etree[i]);
@@ -1185,6 +1188,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 					  indicator_2x2_tmp[j++] = 0;
 				  }
 			  }
+			  fclose(outfile);
 			  #endif
 
 			  // exit(66);
@@ -1257,6 +1261,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      PrintInt32("indicator_2x2", n, options->indicator_2x2);
 
 			  #ifdef DBG_MATCHING
+			  outfile = fopen("debug-output", "a");
 			  int indicator_pass = 1;
 			  for (i = 0; i < n; ++i)
 			  {
@@ -1272,10 +1277,32 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			  else
 				  fprintf(outfile, "indicator computation PASS\n");
 			  fprintf(outfile, "\n\n\n");
+
+			  fprintf(outfile, "=== coarse to fine info (D -> E) ===\n");
+			  int *crs_vrts_cum2 = (int*) int32Malloc_dist(crs_info.n_crs+1);
+			  crs_vrts_cum2[0] = 0;
+			  j = 0;
+			  for (i = 0; i < crs_info.n_crs; ++i)
+			  {
+				  rev_i = rev_crs_perm_c[i];
+				  crs_vrts_cum2[i+1] = crs_vrts_cum2[i] + crs_info.crs_vrts[rev_i];
+				  if (crs_info.crs_vrts[rev_i] == 1)
+				  {
+					  fprintf(outfile, "%d %d\n", i, j);
+					  ++j;
+				  }
+				  else if (crs_info.crs_vrts[rev_i] == 2)
+				  {
+					  fprintf(outfile, "%d %d %d\n", i, j, j+1);
+					  j += 2;
+				  }
+			  }
+			  fprintf(outfile, "\n\n\n");
 			  fclose(outfile);
 			  #endif
 
-			  exit(77);
+			  // exit(77);
+
 
 		      /* Expand coarse etree to fine etree      */
 		      int parent, rev_p, fine_p;
@@ -1311,6 +1338,68 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 		      PrintInt10("etree", n, etree);
 #endif
+
+			  is_postorder(n, etree);
+
+			  #ifdef DBG_MATCHING
+			  outfile = fopen("debug-output", "a");
+			  fprintf(outfile, "=== etree (E) ===\n");
+			  for (i = 0; i < n; ++i)
+				  fprintf(outfile, "%d %d\n", i, etree[i]);
+			  fprintf(outfile, "\n\n\n");
+
+			  fprintf(outfile, "=== coarse e-tree to fine e-tree  ===\n");
+			  int tmp[4];
+			  for (i = 0; i < crs_info.n_crs; ++i)
+			  {
+				  j = 0;
+				  fprintf(outfile, "%d ", i);
+				  int is_crs = (crs_vrts_cum2[i+1] - crs_vrts_cum2[i] == 2);
+				  if (is_crs)
+				  {
+					  fprintf(outfile, "(C %d %d): ",
+							  crs_vrts_cum2[i], crs_vrts_cum2[i]+1);
+					  tmp[j++] = crs_vrts_cum2[i];
+					  tmp[j++] = crs_vrts_cum2[i] + 1;
+				  }
+				  else
+				  {
+					  fprintf(outfile, "(N %d): ", crs_vrts_cum2[i]);
+					  tmp[j++] = crs_vrts_cum2[i];
+				  }
+
+				  int parent = c_etree[i];
+				  if (parent == n_c)
+					  fprintf(outfile, "ROOT ");
+				  else
+				  {
+					  is_crs = (crs_vrts_cum2[parent+1] - crs_vrts_cum2[parent] == 2);
+					  fprintf(outfile, "%d ", parent);
+					  if (is_crs)
+					  {
+						  fprintf(outfile, "(C %d %d): ",
+								  crs_vrts_cum2[parent], crs_vrts_cum2[parent]+1);
+						  tmp[j++] = crs_vrts_cum2[parent];
+					  	  tmp[j++] = crs_vrts_cum2[parent] + 1;
+					  }
+					  else
+					  {
+						  fprintf(outfile, "(N %d): ", crs_vrts_cum2[parent]);
+						  tmp[j++] = crs_vrts_cum2[parent];
+					  }
+				  }
+
+				  fprintf(outfile, " | ");
+				  for (k = 0; k < j; ++k)
+					  fprintf(outfile, "%d: %d - ", tmp[k], etree[tmp[k]]);
+
+				  fprintf(outfile, "\n");
+			  }
+
+			  fclose(outfile);
+			  #endif
+
+			  exit(88);
 
 		      SUPERLU_FREE(c_etree);
 		      SUPERLU_FREE(crs_vrts_cum);
