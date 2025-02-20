@@ -148,7 +148,7 @@ int_t symbfact
    	    k = relax_end[j];          /* k is the last column of the relaxed snode */
 
 	    if ( options->SymFact ) {
-		if ( options->indicator_2x2[k] == 2 ) {
+		if ( options->indicator_2x2[k] == 2 ) { /* modify relax_end[j] */
 		    /* k is the first column in the 2x2 block, then merge column k+1
 		       to the current relaxed s-node.
 		       k+1 must be the parent of k, due to 2x2 structure.
@@ -158,10 +158,9 @@ int_t symbfact
 		       In both cases, nothing needs to be done for relax_end[k+2]
 		    */
 #if ( PRNTlevel>=1 )
-		    printf("j %d, k %d, desc[k+2] %d, relax_end[k+2] %d\n",
-			   j, k, desc[k+2], relax_end[k+2]);
-#endif
-		    
+		    printf("relaxed s-node root in 1st column of [2x2]: [%d--%d], parent[k] %d, desc[k+1] %d,"
+			   " parent[k+1] %d, desc[k+2] %d, relax_end[k+2] %d\n",
+			   j, k, etree[k], desc[k+1], desc[k+2], relax_end[k+2]);
 		    
 		    //assert (etree[k]== (k+1));
 		    if (etree[k] != (k+1)) ABORT("(k,k+1) not 2x2 ?");
@@ -174,6 +173,7 @@ int_t symbfact
 		    if (desc[k+2]!=0 ) {
 			if (etree[k+1] != (k+2)) ABORT("k+2 is leaf?");
 		    }
+#endif
 		    
 		    relax_end[j] = k+1;
 		    k = k + 1;
@@ -699,14 +699,13 @@ static int_t column_dfs
 	if ( options->SymFact ) {
 	    if ( options->indicator_2x2[jcolm1] == SLU_EMPTY ) {
 		/* previous column flags jcol to start a new s-node */
-		jsuper = SLU_EMPTY; 
+		jsuper = SLU_EMPTY;
 	    } else if ( options->indicator_2x2[jcol] == 0 ) {
 		/* jcol is the 2nd column in the 2x2 block, then do:
 		   1) set jsuper != SLU_EMPTY 
 		   2) take the union of struct(jcolm1) and struct(jcol)
 		   3) need to update the index set of the 1st column in current s-node
 		*/
-		
 		if ( jsuper == SLU_EMPTY ) { /* jcol has different structure than jcolm1 */
 		    /* jcol needs to be merged in the current s-node, with structure update:
 		       take the union of struct(fsupc) and struct(jcol)
@@ -719,7 +718,7 @@ static int_t column_dfs
 		    ito = nextl;
 		    ifrom = xlsub[fsupc] + nsupr;   /* retain diagonal block */
 #if ( PRNTlevel>=1 )
-		    printf(".. Merge 2nd column with s-node %d-%d\n",fsupc,jcolm1);
+		    printf("column_dfs() Merge 2nd column with s-node [%d--%d]\n",fsupc,jcolm1);
 		    // PrintInt32("lsub[fsupc+nsupr]", xlsub[fsupc+1]-ifrom, &lsub[ifrom]);
 		    //PrintInt32("lsub[jcol]", nextl-jptr, &lsub[jptr]);
 #endif
@@ -750,7 +749,7 @@ static int_t column_dfs
 		    supno[jcol] = nsuper; /* use the same s-node number */
 		    //++nsuper;
 #if ( PRNTlevel>=2 )
-		    PrintInt32("merged list", nextl-xlsub[jcol], &lsub[xlsub[jcol]]);
+		    PrintInt32(".. merged list", nextl-xlsub[jcol], &lsub[xlsub[jcol]]);
 #endif
 		    
 		    /* Should jcol+1 starts a new s-node? -> YES, otherwise may have
@@ -761,13 +760,13 @@ static int_t column_dfs
 		    options->indicator_2x2[jcol] = SLU_EMPTY;
 		    
 		    /* Make sure xlsub[] are updated for each column ?? */
-		    
+		
 		} /* end if jsuper == SLU_EMPTY */
 		
 		jsuper = nsuper;  /* not to start a new s-node */
 		
 	    } /* end: 2nd column in 2x2 pivot */
-	}
+	} /* end: SymFact */
 	    
 	/* If jcol starts a new supernode, reclaim storage space in
 	 * lsub[*] from the previous supernode. Note we only store

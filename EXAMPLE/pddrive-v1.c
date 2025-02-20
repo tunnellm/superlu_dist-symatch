@@ -41,6 +41,7 @@ int main(int argc, char *argv[])
     ir = -1;
     symbfact = -1;
     batch = 0;
+    int tinyp = -1;
 
     /* ------------------------------------------------------------
        INITIALIZE MPI ENVIRONMENT. 
@@ -98,6 +99,7 @@ int main(int argc, char *argv[])
 		  printf("\t-l <int>: lookahead level    (default %4d)\n", options.num_lookaheads);
 		  printf("\t-i <int>: iter. refinement   (default %4d)\n", options.IterRefine);
 		  printf("\t-b <int>: use batch mode?    (default %4d)\n", batch);
+		  printf("\t-t <int>: replace tiny pivot? (default %4d)\n", options.ReplaceTinyPivot);
 		  exit(0);
 		  break;
 	      case 'r': nprow = atoi(*cpp);
@@ -116,6 +118,8 @@ int main(int argc, char *argv[])
                         break;
               case 'b': batch = atoi(*cpp);
                         break;
+              case 't': tinyp = atoi(*cpp);
+                        break;
 	    }
 	} else { /* Last arg is considered a filename */
 	    if ( !(fp = fopen(*cpp, "r")) ) {
@@ -131,6 +135,7 @@ int main(int argc, char *argv[])
     if (lookahead != -1) options.num_lookaheads = lookahead;
     if (ir != -1) options.IterRefine = ir;
     if (symbfact != -1) options.ParSymbFact = symbfact;
+    if (tinyp != -1) options.ReplaceTinyPivot = tinyp;
 
     int superlu_acc_offload = sp_ienv_dist(10, &options); //get_acc_offload();
 

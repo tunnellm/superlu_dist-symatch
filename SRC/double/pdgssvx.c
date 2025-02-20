@@ -1399,7 +1399,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			  fclose(outfile);
 			  #endif
 
-			  exit(88);
+			  //exit(88);
 
 		      SUPERLU_FREE(c_etree);
 		      SUPERLU_FREE(crs_vrts_cum);

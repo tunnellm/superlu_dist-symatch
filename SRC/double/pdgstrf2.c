@@ -180,7 +180,7 @@ pdgstrf2_trsm
 
 #define PI_DEBUG
 #ifdef PI_DEBUG
-    printf ("rank %d  Iter %d  k=%d \t dtrsm nsuper %d \n",
+    printf ("rank %d  Iter %d  k=%d \t dtrsm nsupr %d \n",
             iam, k0, k, nsupr);
 #endif
     ublk_ptr = ujrow = Llu->ujrow;
