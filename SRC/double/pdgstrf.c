@@ -1,5 +1,3 @@
-#define DEBUGlevel 2
-
 /*! \file
 Copyright (c) 2003, The Regents of the University of California, through
 Lawrence Berkeley National Laboratory (subject to receipt of any required

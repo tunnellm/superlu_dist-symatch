@@ -141,7 +141,7 @@ int_t symbfact
     relax_snode(n, etree, relax, desc, relax_end);
 
     //PrintInt32("descendants(1:200)", 200, desc);
-    PrintInt32("relax_end(1:200)", 200, relax_end);
+    //PrintInt32("relax_end(1:200)", 200, relax_end);
     
     for (j = 0; j < min_mn; ) {
 	if ( relax_end[j] != SLU_EMPTY ) { /* j is the first column of a relaxed snode */
@@ -157,10 +157,10 @@ int_t symbfact
 		       2) k+2 starts as a new leaf (due to postordering)
 		       In both cases, nothing needs to be done for relax_end[k+2]
 		    */
-#if ( PRNTlevel>=1 )
-		    printf("relaxed s-node root in 1st column of [2x2]: [%d--%d], parent[k] %d, desc[k+1] %d,"
-			   " parent[k+1] %d, desc[k+2] %d, relax_end[k+2] %d\n",
-			   j, k, etree[k], desc[k+1], desc[k+2], relax_end[k+2]);
+#if ( PRNTlevel>=2 )
+ printf("relaxed s-node root k=%d is 1st column of 2x2: [%d--%d], parent[k] %d, desc[k+1] %d,"
+	" parent[k+1] %d, desc[k+2] %d, relax_end[k+2] %d\n",
+	k, j, k, etree[k], desc[k+1], etree[k+1], desc[k+2], relax_end[k+2]);
 		    
 		    //assert (etree[k]== (k+1));
 		    if (etree[k] != (k+1)) ABORT("(k,k+1) not 2x2 ?");
@@ -249,14 +249,18 @@ int_t symbfact
     }
     SUPERLU_FREE(iwork);
 
-#if ( PRNTlevel>=3 )
-    PrintInt10("lsub", Glu_freeable->xlsub[n], Glu_freeable->lsub);
+#if ( PRNTlevel>=2 )
+    /*PrintInt10("lsub", Glu_freeable->xlsub[n], Glu_freeable->lsub);
     PrintInt10("xlsub", n+1, Glu_freeable->xlsub);
     PrintInt10("xprune", n, xprune);
     PrintInt10("usub", Glu_freeable->xusub[n], Glu_freeable->usub);
     PrintInt10("xusub", n+1, Glu_freeable->xusub);
     PrintInt10("supno", n, Glu_persist->supno);
-    PrintInt10("xsup", (Glu_persist->supno[n])+2, Glu_persist->xsup);
+    PrintInt10("xsup", (Glu_persist->supno[n])+2, Glu_persist->xsup);*/
+    printf(".. Supernodes:\n");
+    for (k = 0; k <= Glu_persist->supno[n-1]; ++k) {
+	printf("s-node %d: %d-%d\n", k, Glu_persist->xsup[k], Glu_persist->xsup[k+1]-1);
+    }
 #endif
 
 #if ( DEBUGlevel>=1 )
@@ -692,13 +696,15 @@ static int_t column_dfs
 #endif
 	/* Make sure the number of columns in a supernode doesn't
 	   exceed threshold. */
-	if ( jcol - fsupc >= (maxsuper-1) ) jsuper = SLU_EMPTY; /* leave 1 slot to accommodate
-								   2nd column of a 2x2 pivot */
+	if ( jcol - fsupc >= (maxsuper-1) ) /* leave 1 slot to accommodate
+					       2nd column of a 2x2 pivot */
+	    jsuper = SLU_EMPTY; 
 	
 	/* Sherry mod: In symmetric LDL' factorization, do not break 2x2 pivot. */
 	if ( options->SymFact ) {
 	    if ( options->indicator_2x2[jcolm1] == SLU_EMPTY ) {
-		/* previous column flags jcol to start a new s-node */
+		/* previous columns [jcol-2,jcolm1] is a 2x2, even though their
+		   column structures are different, now we force jcol to start a new s-node */
 		jsuper = SLU_EMPTY;
 	    } else if ( options->indicator_2x2[jcol] == 0 ) {
 		/* jcol is the 2nd column in the 2x2 block, then do:
@@ -711,16 +717,23 @@ static int_t column_dfs
 		       take the union of struct(fsupc) and struct(jcol)
 		       Make sure it works for current s-node size nsupc = 1,2, >=3
 		    */
-		    /* keep fsupc list, augment it with extras from jcol list */
-		    /* need to use fsupc list to check against jcol list, otherwise
-		       can't use marker[] array to identify the disjoint set */
+
+		    /* If jcolm1 is a singleton s-node, need to swap index 'jcol'
+		       into the diagonal block, right after index 'jcolm1' 
+		       - this is done later in dpivotL()  */
+		    
+		    /* - keep fsupc list, augment it with extras from jcol list
+		       - need to use fsupc list to check against jcol list, otherwise
+		         can't use marker[] array to identify the disjoint set */
 		    int nsupr = jcol - fsupc;
 		    ito = nextl;
 		    ifrom = xlsub[fsupc] + nsupr;   /* retain diagonal block */
-#if ( PRNTlevel>=1 )
-		    printf("column_dfs() Merge 2nd column with s-node [%d--%d]\n",fsupc,jcolm1);
-		    // PrintInt32("lsub[fsupc+nsupr]", xlsub[fsupc+1]-ifrom, &lsub[ifrom]);
-		    //PrintInt32("lsub[jcol]", nextl-jptr, &lsub[jptr]);
+#if ( PRNTlevel>=2 )
+		    printf("column_dfs() Force column %d into s-node %d: [%d--%d]; nsupr %d\n",jcol,nsuper,fsupc,jcolm1,nsupr);
+		    if ( nsuper >= 100 ) {
+			PrintInt32("  lsub[fsupc]", xlsub[fsupc+1]-xlsub[fsupc], &lsub[xlsub[fsupc]]);
+			PrintInt32("  lsub[jcol]", nextl-jptr, &lsub[jptr]);
+		    }
 #endif
 		    for (j = ifrom; j < xlsub[fsupc+1]; ++j) { /* outside diag block */
 			krow = lsub[j];
@@ -731,16 +744,20 @@ static int_t column_dfs
 			}
 		    }
 		    nextl = ito;
+		    
 		    /* Now: [jptr - nextl] contains the augmented list 
 		       move it to the fsupc location 
 		    */
-		    ito = xlsub[fsupc] + nsupr;
+		    ito = xlsub[fsupc] + nsupr; /* retain diagonal block */
+
 		    for (ifrom = jptr; ifrom < nextl; ++ifrom, ++ito)
 			lsub[ito] = lsub[ifrom];
-		    xlsub[jcol] = ito;
+		    //xlsub[jcol] = ito;
+		    for (int jj = fsupc+1; jj <= jcol; ++jj) 
+			xlsub[jj] = ito; /* set new pointers to include extras */
 		    
 		    /* make another copy of the new list for pruning
-		       Does prune list need to contain diag block ????
+		       Does prune list need to contain diag block?? (see comment at line 475 -)
 		    */
 		    for (ifrom = xlsub[fsupc]; ifrom < xlsub[jcol]; ++ifrom, ++ito)
 			lsub[ito] = lsub[ifrom];
@@ -748,14 +765,17 @@ static int_t column_dfs
 		    xprune[jcol] = nextl; /* Initialize xprune[jcol] */
 		    supno[jcol] = nsuper; /* use the same s-node number */
 		    //++nsuper;
+		    
 #if ( PRNTlevel>=2 )
-		    PrintInt32(".. merged list", nextl-xlsub[jcol], &lsub[xlsub[jcol]]);
+		    if ( nsuper >= 100 ) {
+			PrintInt32("  .. merged list", nextl-xlsub[jcol], &lsub[xlsub[jcol]]);
+		    }
 #endif
 		    
 		    /* Should jcol+1 starts a new s-node? -> YES, otherwise may have
 		       too many fill-ins. 
-		       Use the new 'indicator' array to inform the next column to start
-		       a new s-node.
+		       Use the special value of 'indicator' array to inform the next column
+		       to start a new s-node.
 		    */
 		    options->indicator_2x2[jcol] = SLU_EMPTY;
 		    
@@ -841,7 +861,6 @@ static int_t pivotL
     nsupr    = xlsub[fsupc+1] - lptr;
     lsub_ptr = &lsub[lptr]; /* start of row indices of the supernode */
 
-    if (jcol==1138) PrintInt32("lsub[1138]",nsupr-nsupc,&lsub_ptr[nsupc]);
 
     /* Search for diagonal element. */
     /* diagind = iperm_c[jcol];*/
@@ -871,6 +890,8 @@ static int_t pivotL
 	lsub_ptr[nsupc] = itemp;
     }
 
+    //if (nsupc>=1) PrintInt32("end pivotL():lsub[fsupc]",nsupr,&lsub_ptr[0]);
+    
     return 0;
 } /* PIVOTL */
 

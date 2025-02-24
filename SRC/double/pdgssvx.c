@@ -935,7 +935,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 					 &(crs_info.n_crs), &(crs_info.crs_vrts));
 				// exit(11);
 			/* @EDIT-SYMATCH apply symmetric permutation here.  */
-#if ( PRNTlevel>=1 )
+#if ( PRNTlevel>=2 )
 			check_perm_dist("perm_r_symatch", GA.nrow, perm_r);
 			PrintInt32("perm_r_symatch", m, perm_r);
 #endif
@@ -1109,15 +1109,12 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 		      /* Compute coarse etree of Pc*A*Pc' */
 
-
-			  /* @EDIT-SYMATCH 4. C = Pc Bc PcT */
+		      /* @EDIT-SYMATCH 4. C = Pc Bc PcT */
 		      /* colptr/rowind/nzval are both input and output */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, crs_perm_c);
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
 			  // exit(44);
 
-
-		      /* Postorder the etree -> crs_perm_c[] is modified */
 		      int_t *c_etree = intMalloc_dist(n_c);
 		      int_t *c_colend = (int_t*) intMalloc_dist(n_c);
 
@@ -1134,7 +1131,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			  fclose(outfile);
 			  #endif
 
-		      /* Post order etree */
+		      /* Postorder the etree -> crs_perm_c[] is modified */
 		      int_t *post = (int_t *) TreePostorder_dist(n_c, c_etree);
 
 			  // exit(44);
@@ -1142,14 +1139,15 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			  /* @EDIT-SYMATCH 5. D = Pe C PeT */
 		      /* Permute GA_c again by post[] */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, post);
-			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
+		      
+		      is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
 			  // exit(55);
 
-			  int *iwork = int32Malloc_dist(n_c);
+		      int *iwork = int32Malloc_dist(n_c);
 		      for (i = 0; i < n_c; ++i)
-				  iwork[i] = post[crs_perm_c[i]]; // product of crs_perm_c and post
+			  iwork[i] = post[crs_perm_c[i]]; // product of crs_perm_c and post
 		      for (i = 0; i < n_c; ++i)
-				  crs_perm_c[i] = iwork[i];
+			  crs_perm_c[i] = iwork[i];
 
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
@@ -1165,7 +1163,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 				  iwork[post[i]] = post[c_etree[i]];
 		      for (i = 0; i < n_c; ++i)
 				  c_etree[i] = iwork[i];
-		      PrintInt10("postordered coarse etree", n_c, c_etree);
+		      //PrintInt10("postordered coarse etree", n_c, c_etree);
 
 			  is_postorder(n_c, c_etree);
 
@@ -1336,7 +1334,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      // Set root ??? - ROOT MAY HAVE multiple children
 		      //etree[n-1] = n;
 
-		      PrintInt10("etree", n, etree);
+		      //PrintInt10("etree", n, etree);
 #endif
 
 			  is_postorder(n, etree);

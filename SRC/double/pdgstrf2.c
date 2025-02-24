@@ -178,7 +178,6 @@ pdgstrf2_trsm
     else
         nsupr = 0;
 
-#define PI_DEBUG
 #ifdef PI_DEBUG
     printf ("rank %d  Iter %d  k=%d \t dtrsm nsupr %d \n",
             iam, k0, k, nsupr);
@@ -306,7 +305,6 @@ pdgstrf2_trsm
         // n = nsupc;
         double alpha = 1.0;
 #ifdef PI_DEBUG
-        printf ("calling dtrsm\n");
         printf ("dtrsm diagonal param 11:  %d \n", nsupr);
 #endif
 
