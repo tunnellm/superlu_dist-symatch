@@ -143,7 +143,7 @@ int main(int argc, char *argv[])
     // options.RowPerm = SymMatch;
     // options.RowPerm = LargeDiag_MC64;
     if (options.RowPerm == SymMatch) {
-	options.Equil = NO;  /* not implemented yet */
+	options.Equil = YES;  /* not implemented yet */
 	options.SymFact = YES;       /* perform symmetric factorization */
     }
 

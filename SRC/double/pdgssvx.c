@@ -728,21 +728,26 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	    }
 	} else { /* Compute R & C from scratch */
             /* Compute the row and column scalings. */
-	    pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, &iinfo, grid);
+	    if ( options->SymFact == YES) {
+	    	pdgsequ_sym(A, R, C, grid, equed);
+	    }
+	    else {
+	    	pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, &iinfo, grid);
 
-	    if ( iinfo > 0 ) {
-		if ( iinfo <= m ) {
-		    fprintf(stderr, "The %d-th row of A is exactly zero\n", (int)iinfo);
-		} else {
-                    fprintf(stderr, "The %d-th column of A is exactly zero\n", (int)(iinfo-n));
-                }
- 	    } else if ( iinfo < 0 ) return;
+		    if ( iinfo > 0 ) {
+			if ( iinfo <= m ) {
+			    fprintf(stderr, "The %d-th row of A is exactly zero\n", (int)iinfo);
+			} else {
+	                    fprintf(stderr, "The %d-th column of A is exactly zero\n", (int)(iinfo-n));
+	                }
+	 	    } else if ( iinfo < 0 ) return;
 
-	    /* Now iinfo == 0 */
+		    /* Now iinfo == 0 */
 
-            /* Equilibrate matrix A if it is badly-scaled.
-               A <-- diag(R)*A*diag(C)                     */
-	    pdlaqgs(A, R, C, rowcnd, colcnd, amax, equed);
+	            /* Equilibrate matrix A if it is badly-scaled.
+	               A <-- diag(R)*A*diag(C)                     */
+		    pdlaqgs(A, R, C, rowcnd, colcnd, amax, equed);
+	    }
 
 	    if ( strncmp(equed, "R", 1)==0 ) {
 		  ScalePermstruct->DiagScale = ROW;

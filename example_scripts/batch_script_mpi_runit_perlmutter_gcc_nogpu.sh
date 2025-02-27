@@ -35,18 +35,16 @@ fi
 
 # nprows=(1 2 4 8 8)
 # npcols=(1 2 4 8 16)
-nprows=(8)
+nprows=(1)
 npcols=(1)
-npz=(2)
 NTH=1
 NODE_VAL_TOT=1
 
 for ((i = 0; i < ${#npcols[@]}; i++)); do
 NROW=${nprows[i]}
 NCOL=${npcols[i]}
-NPZ=${npz[i]}
 
-CORE_VAL=`expr $NCOL \* $NROW \* $NPZ`
+CORE_VAL=`expr $NCOL \* $NROW`
 NODE_VAL=`expr $CORE_VAL / $CORES_PER_NODE`
 MOD_VAL=`expr $CORE_VAL % $CORES_PER_NODE`
 if [[ $MOD_VAL -ne 0 ]]
@@ -70,28 +68,39 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # export NREL=256
 # for MAT in big.rua
 # for MAT in g20.rua
-for MAT in s1_mat_0_126936.bin
+# for MAT in s1_mat_0_126936.bin
 # for MAT in s1_mat_0_507744.bin
 # for MAT in StocF-1465.bin
 # for MAT in s1_mat_0_126936.bin s1_mat_0_253872.bin s1_mat_0_507744.bin
 # for MAT in matrix_ACTIVSg70k_AC_00.mtx matrix_ACTIVSg10k_AC_00.mtx
 # for MAT in temp_13k.mtx temp_25k.mtx temp_75k.mtx
 # for MAT in atmosmodj.bin StocF-1465.bin  globalmat118_1536.bin
+# for MAT_DIR in /global/cfs/cdirs/m1982/www/oguz/mso-suitesparse-sym-nonspd-1k-10k/*/;
+# do
+# MAT=$(basename "$MAT_DIR")
+# MAT=${MAT%*/}
+# echo "Running example: $MAT"
+# # mkdir -p $MAT
+# # # pddrive
+# # echo "srun -n $NCORE_VAL_TOT -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d"
+# # srun -n $NCORE_VAL_TOT -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d
+
+# # pddrive3d
+# # echo "srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee $CFS/m2957/tianyi/superlu_results/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs"
+# # srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive3d -c $NCOL -r $NROW -d $NPZ $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}x${NPZ}_${NTH}_1rhs_3d_old
+# srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW /global/cfs/cdirs/m1982/www/oguz/mso-suitesparse-sym-nonspd-1k-10k/${MAT}/${MAT}.mtx | tee $CFS/m2957/tianyi/superlu_results/mso-suitesparse-sym-nonspd-1k-10k/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_${MAT}_1rhs
+
+# done
+
+# for MAT in bcsstm10.mtx
+# do
+# srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW /global/cfs/cdirs/m1982/www/oguz/mso-suitesparse-sym-nonspd-1k-10k/bcsstm10/${MAT} | tee $CFS/m2957/tianyi/superlu_results/mso-suitesparse-sym-nonspd-1k-10k/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_${MAT}_1rhs
+# done
+
+for MAT in matrix_ACTIVSg200_AC_01.mm
 do
-mkdir -p $MAT
-# # pddrive
-# echo "srun -n $NCORE_VAL_TOT -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d"
-# srun -n $NCORE_VAL_TOT -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d
-
-# pddrive3d
-echo "srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive3d -c $NCOL -r $NROW -d $NPZ $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}x${NPZ}_${NTH}_1rhs_3d"
-# srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive3d -c $NCOL -r $NROW -d $NPZ $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}x${NPZ}_${NTH}_1rhs_3d_old
-export NEW3DSOLVE=1
-srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive3d -c $NCOL -r $NROW -d $NPZ $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}x${NPZ}_${NTH}_1rhs_3d
-
-
+srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive-v1 -c $NCOL -r $NROW -p 4 -t 1 /global/cfs/cdirs/m2957/symmetric_matrices/PowerGrid/200/${MAT} | tee $CFS/m2957/tianyi/superlu_results/sym-match/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_${MAT}_1rhs
 done
-
 
 done
 
