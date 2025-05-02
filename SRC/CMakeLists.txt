@@ -125,9 +125,8 @@ if(enable_double)
     double/dreadtriple_noheader.c
     double/dbinary_io.c	
     double/dreadMM.c
-    double/pdgsequ.c
+    double/.c
     double/pdlaqgs.c
-    double/pdgsequ_laqgs.c
     double/pdgsequ_sym.c
     double/pdgsequ_new.c
     double/dldperm_dist.c
