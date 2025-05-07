@@ -713,8 +713,12 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
          ABORT("Malloc fails for ujrow[].");
 #else
     /* Instead of half storage, we'll do full storage */
+    Llu->size_ujrow = k*k;
     if (!(Llu->ujrow = doubleCalloc_dist (k * k)))
         ABORT ("Malloc fails for ujrow[].");
+    if (!(Llu->diagpivot = intCalloc_dist (k)))
+        ABORT ("Malloc fails for diagpivot[].");
+
 #endif
     log_memory(k * k * iword, stat);
 
@@ -1015,8 +1019,13 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
         double ttt1 = SuperLU_timer_();
 
 	/* panel factorization */
-        PDGSTRF2 (options, k0, k, thresh, Glu_persist, grid, Llu,
-                  U_diag_blk_send_req, tag_ub, stat, info);
+        if(options->SymFact == YES){    
+            pdgstrf2_sym (options, k0, k, thresh, Glu_persist, grid, Llu,
+                    U_diag_blk_send_req, tag_ub, stat, info);        
+        }else{
+            PDGSTRF2 (options, k0, k, thresh, Glu_persist, grid, Llu,
+                    U_diag_blk_send_req, tag_ub, stat, info);
+        }
 
         pdgstrf2_timer += SuperLU_timer_()-ttt1;
 
@@ -1139,9 +1148,13 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
                        L blocks and test for exact singularity.  */
                     factored[kk] = 0; /* flag column kk as factored */
                     double ttt1 = SuperLU_timer_();
-
-                    PDGSTRF2 (options, kk0, kk, thresh, Glu_persist,
-                              grid, Llu, U_diag_blk_send_req, tag_ub, stat, info);
+                    if(options->SymFact == YES){
+                        pdgstrf2_sym (options, kk0, kk, thresh, Glu_persist,
+                                grid, Llu, U_diag_blk_send_req, tag_ub, stat, info);
+                    }else{
+                        PDGSTRF2 (options, kk0, kk, thresh, Glu_persist,
+                                grid, Llu, U_diag_blk_send_req, tag_ub, stat, info);                        
+                    } 
 
                      pdgstrf2_timer += SuperLU_timer_() - ttt1;
 
@@ -1307,8 +1320,13 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
 /* #pragma omp parallel */ /* Sherry -- parallel done inside pdgstrs2 */
 #endif
 			{
+                        if(options->SymFact == YES){
+                            pdgstrs2_sym_omp (kk0, kk, Glu_persist, grid, Llu,
+                                        Ublock_info, stat);                        
+                        }else{
                             pdgstrs2_omp (kk0, kk, Glu_persist, grid, Llu,
                                         Ublock_info, stat);
+                        }
                         }
 
                         pdgstrs2_timer += SuperLU_timer_()-ttt2;
@@ -1473,8 +1491,13 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
 /* #pragma omp parallel */ /* Sherry -- parallel done inside pdgstrs2 */
 #endif
                 {
-                    pdgstrs2_omp (k0, k, Glu_persist, grid, Llu,
-		                    Ublock_info, stat);
+                    if(options->SymFact == YES){
+                        pdgstrs2_sym_omp (k0, k, Glu_persist, grid, Llu,
+                                Ublock_info, stat);
+                    }else{
+                        pdgstrs2_omp (k0, k, Glu_persist, grid, Llu,
+                                Ublock_info, stat);
+                    }
                 }
                 pdgstrs2_timer += SuperLU_timer_() - ttt2;
 
@@ -1689,9 +1712,15 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
 			   test for exact singularity.  */
                         factored[kk] = 0; /* flag column kk as factored */
                         double ttt1 = SuperLU_timer_();
-                        PDGSTRF2 (options, kk0, kk, thresh,
-                                  Glu_persist, grid, Llu, U_diag_blk_send_req,
-                                  tag_ub, stat, info);
+                        if(options->SymFact == YES){
+                            pdgstrf2_sym (options, kk0, kk, thresh,
+                                    Glu_persist, grid, Llu, U_diag_blk_send_req,
+                                    tag_ub, stat, info);
+                        }else{
+                            PDGSTRF2 (options, kk0, kk, thresh,
+                                    Glu_persist, grid, Llu, U_diag_blk_send_req,
+                                    tag_ub, stat, info);
+                        }
                         pdgstrf2_timer += SuperLU_timer_() - ttt1;
 
                         /* Process column *kcol+1* multicasts numeric
@@ -1889,6 +1918,7 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
 #endif
 
     SUPERLU_FREE (Llu->ujrow);
+    SUPERLU_FREE (Llu->diagpivot);
     // SUPERLU_FREE (tempv2d);/* Sherry */
     SUPERLU_FREE (indirect);
     SUPERLU_FREE (indirect2); /* Sherry added */

@@ -161,6 +161,9 @@ at the top-level directory.
 #define dtrtri_   FC_GLOBAL(dtrtri,DTRTRI)
 #define ctrtri_   FC_GLOBAL(ctrtri,CTRTRI)
 #define ztrtri_   FC_GLOBAL(ztrtri,ZTRTRI)
+#define dsytrf_   FC_GLOBAL(dsytrf,DSYTRF)
+#define dsytri_   FC_GLOBAL(dsytri,DSYTRI)
+
 
 /*
 #define mc64id_dist         mc64id_dist

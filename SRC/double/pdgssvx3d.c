@@ -1294,7 +1294,7 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 
 			if (options->DiagInv == YES && (Fact != FACTORED))
 			{
-				pdCompute_Diag_Inv(n, LUstruct, grid, stat, info);
+				pdCompute_Diag_Inv(options, n, LUstruct, grid, stat, info);
 
 				// The following #ifdef GPU_ACC block frees and reallocates GPU data for trisolve. The data seems to be overwritten by pdgstrf3d.
 				int_t nsupers = getNsupers(n, LUstruct->Glu_persist);
@@ -1396,7 +1396,7 @@ if (get_acc_solve()){
 
 			if (options->DiagInv == YES && (Fact != FACTORED))
 			{
-				pdCompute_Diag_Inv(n, LUstruct, grid, stat, info);
+				pdCompute_Diag_Inv(options, n, LUstruct, grid, stat, info);
 
 				// The following #ifdef GPU_ACC block frees and reallocates GPU data for trisolve. The data seems to be overwritten by pdgstrf3d.
 				int_t nsupers = getNsupers(n, LUstruct->Glu_persist);

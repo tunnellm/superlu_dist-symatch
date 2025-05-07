@@ -364,6 +364,204 @@ pdgstrf2_trsm
 
 
 
+
+
+
+/*****************************************************************************
+ * The following pdgstrf2_sym is used to support symmetric matching-based factorization.
+ *****************************************************************************/
+/*! \brief
+ *
+ * <pre>
+ * Purpose
+ * =======
+ *   Panel factorization -- block column k
+ *
+ *   Factor diagonal and subdiagonal blocks and test for exact singularity.
+ *   Only the column processes that own block column *k* participate
+ *   in the work.
+ *
+ * Arguments
+ * =========
+ * options (input) superlu_dist_options_t* (global)
+ *         The structure defines the input parameters to control
+ *         how the LU decomposition will be performed.
+ *
+ * k0     (input) int (global)
+ *        Counter of the next supernode to be factorized.
+ *
+ * k      (input) int (global)
+ *        The column number of the block column to be factorized.
+ *
+ * thresh (input) double (global)
+ *        The threshold value = s_eps * anorm.
+ *
+ * Glu_persist (input) Glu_persist_t*
+ *        Global data structures (xsup, supno) replicated on all processes.
+ *
+ * grid   (input) gridinfo_t*
+ *        The 2D process mesh.
+ *
+ * Llu    (input/output) dLocalLU_t*
+ *        Local data structures to store distributed L and U matrices.
+ *
+ * U_diag_blk_send_req (input/output) MPI_Request*
+ *        List of send requests to send down the diagonal block of U.
+ *
+ * tag_ub (input) int
+ *        Upper bound of MPI tag values.
+ *
+ * stat   (output) SuperLUStat_t*
+ *        Record the statistics about the factorization.
+ *        See SuperLUStat_t structure defined in util.h.
+ *
+ * info   (output) int*
+ *        = 0: successful exit
+ *        < 0: if info = -i, the i-th argument had an illegal value
+ *        > 0: if info = i, U(i,i) is exactly zero. The factorization has
+ *             been completed, but the factor U is exactly singular,
+ *             and division by zero will occur if it is used to solve a
+ *             system of equations.
+ * </pre>
+ */
+/* This pdgstrf2 is based on TRSM function */
+void
+pdgstrf2_sym
+    (superlu_dist_options_t * options, int_t k0, int_t k, double thresh,
+     Glu_persist_t * Glu_persist, gridinfo_t * grid, dLocalLU_t * Llu,
+     MPI_Request * U_diag_blk_send_req, int tag_ub,
+     SuperLUStat_t * stat, int *info)
+{
+    /* printf("entering pdgstrf2 %d \n", grid->iam); */
+    int cols_left, iam, l, pkk, pr;
+    int incx = 1, incy = 1;
+
+    int nsupr;            /* number of rows in the block (LDA) */
+    int nsupc;            /* number of columns in the block */
+    int luptr;
+    int_t i, myrow, krow, j, jfst, jlst, u_diag_cnt;
+    int_t *xsup = Glu_persist->xsup;
+    double *lusup, *temp;
+    double *ujrow, *ublk_ptr;   /* pointer to the U block */
+    double alpha = -1, zero = 0.0;
+    int_t Pr;
+    MPI_Status status;
+    MPI_Comm comm = (grid->cscp).comm;
+    double t1, t2;
+    int INFO,lwork;
+	char filename[256];
+	FILE *fp, *fopen();    
+
+    /* Initialization. */
+    iam = grid->iam;
+    Pr = grid->nprow;
+    myrow = MYROW (iam, grid);
+    krow = PROW (k, grid);
+    pkk = PNUM (PROW (k, grid), PCOL (k, grid), grid);
+    j = LBj (k, grid);          /* Local block number */
+    jfst = FstBlockC (k);
+    jlst = FstBlockC (k + 1);
+    lusup = Llu->Lnzval_bc_ptr[j];
+    nsupc = SuperSize (k);
+    if (Llu->Lrowind_bc_ptr[j])
+        nsupr = Llu->Lrowind_bc_ptr[j][1];
+    else
+        nsupr = 0;
+#ifdef PI_DEBUG
+    printf ("rank %d  Iter %d  k=%d \t dtrsm nsuper %d \n",
+            iam, k0, k, nsupr);
+#endif
+    ublk_ptr = ujrow = Llu->ujrow;
+
+    luptr = 0;                  /* Point to the diagonal entries. */
+    cols_left = nsupc;          /* supernode size */
+    int ld_ujrow = nsupc;       /* leading dimension of ujrow */
+    u_diag_cnt = 0;
+    incy = ld_ujrow;
+
+    if ( U_diag_blk_send_req &&
+	 U_diag_blk_send_req[myrow] != MPI_REQUEST_NULL ) {
+        /* There are pending sends - wait for all Isend to complete */
+#if ( PROFlevel>=1 )
+	TIC (t1);
+#endif
+        for (pr = 0; pr < Pr; ++pr) {
+            if (pr != myrow) {
+                MPI_Wait (U_diag_blk_send_req + pr, &status);
+            }
+	}
+#if ( PROFlevel>=1 )
+	TOC (t2, t1);
+	stat->utime[COMM] += t2;
+	stat->utime[COMM_DIAG] += t2;
+#endif
+	/* flag no more outstanding send request. */
+	U_diag_blk_send_req[myrow] = MPI_REQUEST_NULL;
+    }
+
+    if (iam == pkk) {            /* diagonal process */
+	/* ++++ Invert the diagonal block ++++++++++ */  
+    
+      
+        //   if(k==2){
+        //     snprintf(filename, sizeof(filename), "D.txt");
+        //         if ( !(fp = fopen(filename, "w")) ) {
+        //         ABORT("File open failed");
+        //         }
+
+        //     for (int j = 0; j < nsupc; ++j) {
+        //         for (int i = 0; i < nsupc; ++i) {
+        //             fprintf(fp, IFMT IFMT " %e\n", j,i,lusup[j * nsupr + i]);
+        //         }
+        //     }
+        //     fclose(fp);
+        //   }
+                    
+          lwork = -1;        
+          dsytrf_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&lwork,info);  
+          if(ujrow[0]>Llu->size_ujrow)
+            ABORT("workspace ujrow not large enough for sytrf.");
+          lwork = (int)(ujrow[0]);
+          dsytrf_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&lwork,info);
+          if(*info>0)
+            *info = *info + jfst;
+          if(info<0)
+            *info = *info - jfst;
+
+          dsytri_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&INFO);
+
+          for (int j = 0; j < nsupc; ++j) {
+            for (int i = j + 1; i < nsupc; ++i) {
+                lusup[i * nsupr + j]=lusup[j * nsupr + i] ;
+            }
+          }
+        //   printf("nsupc %5d nsupr %5d\n",nsupc,nsupr);
+
+        // if(k==2){
+        //         snprintf(filename, sizeof(filename), "Dinv.txt");
+        //     if ( !(fp = fopen(filename, "w")) ) {
+        //             ABORT("File open failed");
+        //         }
+
+        //         for (int j = 0; j < nsupc; ++j) {
+        //             for (int i = 0; i < nsupc; ++i) {
+        //                 fprintf(fp, IFMT IFMT " %e\n", j,i,lusup[j * nsupr + i]);
+        //             }
+        //         }
+        //         fclose(fp);          
+        // }
+
+	    stat->ops[FACT] += (flops_t) nsupc *nsupc*nsupc;
+
+    } /* end if pkk ... */
+
+    /* printf("exiting pdgstrf2 %d \n", grid->iam);  */
+
+}  /* pdgstrf2_sym */
+
+
+
+
 /*****************************************************************************
  * The following functions are for the new pdgstrf2_dtrsm in the 3D code.
  *****************************************************************************/
@@ -986,6 +1184,178 @@ void pdgstrs2_omp
 #endif
 
 } /* pdgstrs2_omp */
+
+
+
+/*****************************************************************************
+ * The following pdgstrf2_sym_omp is used to support symmetric matching-based factorization.
+ *****************************************************************************/
+void pdgstrs2_sym_omp
+(int_t k0, int_t k, Glu_persist_t * Glu_persist, gridinfo_t * grid,
+ dLocalLU_t * Llu, Ublock_info_t *Ublock_info, SuperLUStat_t * stat)
+{
+#ifdef PI_DEBUG
+    printf("====Entering pdgstrs2_sym_omp==== \n");
+#endif
+    int iam, pkk;
+    int incx = 1;
+    int nsupr;                /* number of rows in the block L(:,k) (LDA) */
+    int segsize;
+    int nsupc;                /* number of columns in the block */
+    int_t luptr, iukp, rukp;
+    int_t b, gb, j, klst, knsupc, lk, nb;
+    int_t *xsup = Glu_persist->xsup;
+    int_t *usub;
+    double *lusup, *uval;
+    double alpha = 1.0, beta = 0.0;
+	char filename[256];
+	FILE *fp, *fopen();        
+
+#if 0
+    //#ifdef USE_VTUNE
+    __SSC_MARK(0x111);// start SDE tracing, note uses 2 underscores
+    __itt_resume(); // start VTune, again use 2 underscores
+#endif
+
+    /* Quick return. */
+    lk = LBi (k, grid);         /* Local block number */
+    if (!Llu->Unzval_br_ptr[lk]) return;
+
+    /* Initialization. */
+    iam = grid->iam;
+    pkk = PNUM (PROW (k, grid), PCOL (k, grid), grid);
+    //int k_row_cycle = k / grid->nprow;  /* for which cycle k exist (to assign rowwise thread blocking) */
+    //int gb_col_cycle;  /* cycle through block columns  */
+    klst = FstBlockC (k + 1);
+    knsupc = SuperSize (k);
+    usub = Llu->Ufstnz_br_ptr[lk];  /* index[] of block row U(k,:) */
+    uval = Llu->Unzval_br_ptr[lk];
+    if (iam == pkk) {
+        lk = LBj (k, grid);
+        nsupr = Llu->Lrowind_bc_ptr[lk][1]; /* LDA of lusup[] */
+        lusup = Llu->Lnzval_bc_ptr[lk];
+    } else {
+        nsupr = Llu->Lsub_buf_2[k0 % (1 + stat->num_look_aheads)][1];   /* LDA of lusup[] */
+        lusup = Llu->Lval_buf_2[k0 % (1 + stat->num_look_aheads)];
+    }
+
+    /////////////////////new-test//////////////////////////
+    /* !! Taken from Carl/SuperLU_DIST_5.1.0/EXAMPLE/pdgstrf2_v3.c !! */
+
+    /* Master thread: set up pointers to each block in the row */
+    nb = usub[0];
+    iukp = BR_HEADER;
+    rukp = 0;
+
+
+    int* blocks_index_pointers = SUPERLU_MALLOC (3 * nb * sizeof(int));
+    int* blocks_value_pointers = blocks_index_pointers + nb;
+    int* nsupc_temp = blocks_value_pointers + nb;
+    int count=0;
+    for (b = 0; b < nb; b++) { /* set up pointers to each block */
+        blocks_index_pointers[b] = iukp + UB_DESCRIPTOR;
+        blocks_value_pointers[b] = rukp;
+        gb = usub[iukp];
+        rukp += usub[iukp+1];
+        nsupc = SuperSize( gb );
+        nsupc_temp[b] = nsupc;
+        iukp += (UB_DESCRIPTOR + nsupc);  /* move to the next block */
+    }
+
+    for (b = 0; b < nb; ++b) {
+	    iukp = blocks_index_pointers[b];
+        gb = usub[blocks_index_pointers[b]-UB_DESCRIPTOR];
+        nsupc = SuperSize( gb );
+        int cnt = nsupc_temp[b];
+        nsupc_temp[b]=0;
+        /* Loop through all the segments in the block. */
+        for (j = 0; j < cnt; j++) {
+            segsize = klst - usub[iukp++];
+	    if (segsize) {
+            // printf("b %5d gb %5d segsize %5d j %5d\n",b, gb, segsize,j);
+            nsupc_temp[b]++;
+            count++;
+        }
+        }
+    }
+    // printf("k %5d knsupc %5d count %5d\n",k, knsupc,count);
+
+    /* Loop through all the blocks in the row. */
+    for (b = 0; b < nb; ++b) {
+        rukp = blocks_value_pointers[b];
+        gb = usub[blocks_index_pointers[b]-UB_DESCRIPTOR];
+
+
+
+        // if(k==0){
+        //     iukp = blocks_index_pointers[b];
+        //     nsupc = SuperSize( gb );
+        //     int cnt = 0;
+        //     snprintf(filename, sizeof(filename), "U.txt");
+        //     if ( !(fp = fopen(filename, "w")) ) {
+        //         ABORT("File open failed");
+        //     }        
+        //     for (j = 0; j < nsupc; j++) {
+        //         segsize = klst - usub[iukp++];
+        //         if (segsize) {
+        //             for (int i = 0; i < knsupc; ++i) {
+        //                 fprintf(fp, IFMT IFMT " %e\n", i,j, uval[rukp+knsupc*cnt+i]);
+        //             }
+        //             cnt++;
+        //         }
+        //     }
+        //     fclose(fp);  
+        // }
+
+
+        for (int i = 0; i < knsupc*nsupc_temp[b]; ++i) {
+            Llu->ujrow[i]=0;
+        }
+        superlu_dgemm("N", "N", knsupc, nsupc_temp[b], knsupc, alpha, lusup, nsupr, &uval[rukp], knsupc, beta, Llu->ujrow, knsupc);
+        for (int i = 0; i < knsupc*nsupc_temp[b]; ++i) {
+            uval[rukp+i]=Llu->ujrow[i];
+        }
+
+
+        // if(k==0){
+        //     iukp = blocks_index_pointers[b];
+        //     nsupc = SuperSize( gb );
+        //     int cnt = 0;
+        //     snprintf(filename, sizeof(filename), "U_updated.txt");
+        //     if ( !(fp = fopen(filename, "w")) ) {
+        //         ABORT("File open failed");
+        //     }        
+        //     for (j = 0; j < nsupc; j++) {
+        //         segsize = klst - usub[iukp++];
+        //         if (segsize) {
+        //             for (int i = 0; i < knsupc; ++i) {
+        //                 fprintf(fp, IFMT IFMT " %e\n", i,j, uval[rukp+knsupc*cnt+i]);
+        //             }
+        //             cnt++;
+        //         }
+        //     }
+        //     fclose(fp);  
+        // }
+
+
+		stat->ops[FACT] += knsupc*knsupc*nsupc_temp[b];
+    }  /* end for b ... */
+
+    /* Deallocate memory */
+    SUPERLU_FREE(blocks_index_pointers);
+
+#if 0
+    //#ifdef USE_VTUNE
+    __itt_pause(); // stop VTune
+    __SSC_MARK(0x222); // stop SDE tracing
+#endif
+
+} /* pdgstrf2_sym_omp */
+
+
+
+
+
 
 #else  /*==== new version from Piyush ====*/
 

@@ -839,7 +839,7 @@ pdReDistribute_X_to_B(int_t n, double *B, int_t m_loc, int_t ldb, int_t fst_row,
  * </pre>
  */
 void
-pdCompute_Diag_Inv(int_t n, dLUstruct_t *LUstruct,gridinfo_t *grid,
+pdCompute_Diag_Inv(superlu_dist_options_t * options, int_t n, dLUstruct_t *LUstruct,gridinfo_t *grid,
                    SuperLUStat_t *stat, int *info)
 {
 #ifdef SLU_HAVE_LAPACK
@@ -927,20 +927,29 @@ pdCompute_Diag_Inv(int_t n, dLUstruct_t *LUstruct,gridinfo_t *grid,
 		      }
 	          }
 
-	   	  for (j=0 ; j<knsupc; j++){
-		      Linv[j*knsupc+j] = one;
-		      for (i=j+1 ; i<knsupc; i++){
-		          Linv[j*knsupc+i] = lusup[j*nsupr+i];
-		      }
-		      for (i=0 ; i<j+1; i++){
-			  Uinv[j*knsupc+i] = lusup[j*nsupr+i];
-	              }
- 		  }
+		  if(options->SymFact == YES){
+			for (j=0 ; j<knsupc; j++){
+				Uinv[j*knsupc+j] = one;
+				for (i=0 ; i<knsupc; i++){
+					Linv[j*knsupc+i] = lusup[j*nsupr+i];
+				}
+			}
+		  }else{
+			for (j=0 ; j<knsupc; j++){
+				Linv[j*knsupc+j] = one;
+				for (i=j+1 ; i<knsupc; i++){
+					Linv[j*knsupc+i] = lusup[j*nsupr+i];
+				}
+				for (i=0 ; i<j+1; i++){
+				Uinv[j*knsupc+i] = lusup[j*nsupr+i];
+					}
+			}
 
-		  /* Triangular inversion */
-   		  dtrtri_("L","U",&knsupc,Linv,&knsupc,&INFO);
+			/* Triangular inversion */
+			dtrtri_("L","U",&knsupc,Linv,&knsupc,&INFO);
 
-		  dtrtri_("U","N",&knsupc,Uinv,&knsupc,&INFO);
+			dtrtri_("U","N",&knsupc,Uinv,&knsupc,&INFO);
+		  }
 
 	      } /* end if(lsub) */
 		} /* end if (mycol === kcol) */

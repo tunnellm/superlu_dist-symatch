@@ -1260,8 +1260,9 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 					  ABORT("Invalid value of crs_vrts[i]");
 				  }
 		      }
-
+#if ( DEBUGlevel>=1 )
 		      PrintInt32("indicator_2x2", n, options->indicator_2x2);
+#endif
 
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
@@ -1602,6 +1603,10 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 	/* Perform numerical factorization in parallel. */
 	t = SuperLU_timer_();
+	
+	// nsupers = Glu_persist->supno[n-1] + 1;
+	// dDumpLblocks(iam, nsupers, grid, Glu_persist, LUstruct->Llu);
+
     // #pragma omp parallel
     // {
 	// #pragma omp master
@@ -1880,7 +1885,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 
 	if ( options->DiagInv==YES && (Fact != FACTORED) ) {
-	    pdCompute_Diag_Inv(n, LUstruct, grid, stat, info);
+	    pdCompute_Diag_Inv(options, n, LUstruct, grid, stat, info);
 		int_t nsupers = getNsupers(n, LUstruct->Glu_persist);
 #ifdef GPU_ACC
 		pdconvertU(options, grid, LUstruct, stat, n);

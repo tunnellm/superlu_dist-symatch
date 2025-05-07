@@ -228,9 +228,13 @@ while (j < nub && perm_u[2 * j] <= k0 + num_look_aheads)
         factored[kk] = 0;
 
         double tt1 = SuperLU_timer_();
-
-        PDGSTRF2(options, kk0, kk, thresh, Glu_persist, grid, Llu,
-                  U_diag_blk_send_req, tag_ub, stat, info);
+        if(options->SymFact == YES){
+            pdgstrf2_sym(options, kk0, kk, thresh, Glu_persist, grid, Llu,
+                      U_diag_blk_send_req, tag_ub, stat, info);        
+        }else{
+            PDGSTRF2(options, kk0, kk, thresh, Glu_persist, grid, Llu,
+                      U_diag_blk_send_req, tag_ub, stat, info);
+        }
 
         pdgstrf2_timer += SuperLU_timer_() - tt1;
 

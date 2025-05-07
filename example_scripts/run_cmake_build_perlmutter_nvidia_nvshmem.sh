@@ -48,13 +48,13 @@ cmake .. \
   -DTPL_ENABLE_INTERNAL_BLASLIB=OFF \
   -DTPL_ENABLE_LAPACKLIB=ON \
   -DBUILD_SHARED_LIBS=OFF \
-  -DTPL_ENABLE_CUDALIB=ON \
+  -DTPL_ENABLE_CUDALIB=OFF \
   -DCMAKE_CUDA_FLAGS="-I${NVSHMEM_HOME}/include -I${MPICH_DIR}/include -ccbin=/opt/cray/pe/craype/2.7.30/bin/CC" \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
   -DCMAKE_INSTALL_PREFIX=. \
   -DCMAKE_INSTALL_LIBDIR=./lib \
   -DCMAKE_BUILD_TYPE=Release \
-  -DTPL_ENABLE_MAGMALIB=ON \
+  -DTPL_ENABLE_MAGMALIB=OFF \
   -DTPL_MAGMA_INCLUDE_DIRS="${MAGMA_ROOT}/include" \
   -DTPL_MAGMA_LIBRARIES="${MAGMA_ROOT}/lib/libmagma.so" \
   -DTPL_BLAS_LIBRARIES=/opt/cray/pe/libsci/23.12.5/NVIDIA/23.3/x86_64/lib/libsci_nvidia_mp.so \
@@ -70,14 +70,18 @@ cmake .. \
   -DMPIEXEC_MAX_NUMPROCS=16 \
   -Denable_complex16=ON \
   -DXSDK_INDEX_SIZE=32 \
-  -Denable_single=ON
+  -Denable_single=ON \
+  -DTPL_ENABLE_SYMATCHLIB=ON \
+  -DTPL_SYMATCH_INCLUDE_DIRS="$CFS/m2957/liuyangz/my_research/superlu_dist-symatch/matching/symatch/inc;$CFS/m2957/liuyangz/my_research/superlu_dist-symatch/matching/symatch/util;$CFS/m2957/liuyangz/my_research/superlu_dist-symatch/matching/lib/matching" \
+  -DTPL_SYMATCH_LIBRARIES="$CFS/m2957/liuyangz/my_research/superlu_dist-symatch//matching/lib/matching/lib/libsuitor.a"
      
 make pddrive -j16
-make pddrive3d -j16
-make pzdrive -j16
-make pzdrive3d -j16
-make psdrive -j16
-make psdrive3d -j16
+make pddrive-v1
+# make pddrive3d -j16
+# make pzdrive -j16
+# make pzdrive3d -j16
+# make psdrive -j16
+# make psdrive3d -j16
 #make f_pddrive
 
 ## -DTPL_BLAS_LIBRARIES=/global/cfs/cdirs/m3894/ptlin/tpl/amd_blis/install/amd_blis-20211021-n9-gcc9.3.0/lib/libblis.a \

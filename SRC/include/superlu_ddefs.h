@@ -187,6 +187,8 @@ typedef struct {
     int_t   *Usub_buf_2[MAX_LOOKAHEADS];   /* Buffer for the remote subscripts of U */
     double  *Uval_buf_2[MAX_LOOKAHEADS];   /* Buffer for the remote nonzeros of U   */
     double  *ujrow;           /* used in panel factorization.          */
+    int     *diagpivot;           /* used in panel factorization.          */
+    int64_t  size_ujrow;           /* used in panel factorization.          */
     int_t   bufmax[NBUFFERS]; /* Maximum buffer size across all MPI ranks:
 			       *  0 : maximum size of Lsub_buf[]
 			       *  1 : maximum size of Lval_buf[]
@@ -595,7 +597,7 @@ extern void  pdgssvx(superlu_dist_options_t *, SuperMatrix *,
 		     dScalePermstruct_t *, double *,
 		     int, int, gridinfo_t *, dLUstruct_t *,
 		     dSOLVEstruct_t *, double *, SuperLUStat_t *, int *);
-extern void  pdCompute_Diag_Inv(int_t, dLUstruct_t *,gridinfo_t *, SuperLUStat_t *, int *);
+extern void  pdCompute_Diag_Inv(superlu_dist_options_t *, int_t, dLUstruct_t *,gridinfo_t *, SuperLUStat_t *, int *);
 extern int  dSolveInit(superlu_dist_options_t *, SuperMatrix *, int_t [], int_t [],
 		       int_t, dLUstruct_t *, gridinfo_t *, dSOLVEstruct_t *);
 extern void dSolveFinalize(superlu_dist_options_t *, dSOLVEstruct_t *);
@@ -657,7 +659,15 @@ extern void pdgstrf2_trsm(superlu_dist_options_t * options, int_t k0, int_t k,
 			  double thresh, Glu_persist_t *, gridinfo_t *,
 			  dLocalLU_t *, MPI_Request *, int tag_ub,
 			  SuperLUStat_t *, int *info);
+
+extern void pdgstrf2_sym(superlu_dist_options_t * options, int_t k0, int_t k,
+			  double thresh, Glu_persist_t *, gridinfo_t *,
+			  dLocalLU_t *, MPI_Request *, int tag_ub,
+			  SuperLUStat_t *, int *info);
+
 extern void pdgstrs2_omp(int_t k0, int_t k, Glu_persist_t *, gridinfo_t *,
+			 dLocalLU_t *, Ublock_info_t *, SuperLUStat_t *);
+extern void pdgstrf2_sym_omp(int_t k0, int_t k, Glu_persist_t *, gridinfo_t *,
 			 dLocalLU_t *, Ublock_info_t *, SuperLUStat_t *);
 extern int_t pdReDistribute_B_to_X(double *B, int_t m_loc, int nrhs, int_t ldb,
 				   int_t fst_row, int_t *ilsum, double *x,

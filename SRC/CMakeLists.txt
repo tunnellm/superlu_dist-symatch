@@ -127,7 +127,6 @@ if(enable_double)
     double/dreadMM.c
     double/pdgsequ.c
     double/pdlaqgs.c
-    double/pdgsequ_laqgs.c
     double/pdgsequ_sym.c
     double/pdgsequ_new.c
     double/dldperm_dist.c
