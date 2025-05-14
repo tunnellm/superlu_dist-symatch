@@ -30,7 +30,7 @@ at the top-level directory.
 #include <math.h>
 #include "superlu_ddefs.h"
 
-#define DBG_MATCHING
+// #define DBG_MATCHING
 
 /*! \brief
  *
@@ -547,7 +547,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     char    equed[1], norm[1];
     double   *C, *R, *C1, *R1, amax, anorm, colcnd, rowcnd;
     double   *X, *b_col, *b_work, *x_col;
-    double   t;
+    double   t, t1, t2;
     float    GA_mem_use = 0.0;    /* memory usage by global A */
     float    dist_mem_use = 0.0;  /* memory usage during distribution */
     superlu_dist_mem_usage_t num_mem_usage, symb_mem_usage;
@@ -809,7 +809,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	   GA is overwritten by Pr*[GA].
            ------------------------------------------------------------*/
         if ( options->RowPerm != NO ) {
-	    t = SuperLU_timer_();
+	    t1 = SuperLU_timer_();
 	    if ( Fact != SamePattern_SameRowPerm ) {
 	        if ( options->RowPerm == MY_PERMR ) { /* Use user's perm_r. */
 	            /* Permute the global matrix GA for symbfact() */
@@ -934,10 +934,18 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		    /* Get a new perm_r[] from SymMatch */
 
 	            if ( !iam ) { /* Process 0 finds a row permutation */
+
+				t = SuperLU_timer_();
+
 		        iinfo = dldperm_dist_symatch
 					(job, m, nnz, colptr, rowind, a_GA,
 					 perm_r, R1, C1,
 					 &(crs_info.n_crs), &(crs_info.crs_vrts));
+
+				t = SuperLU_timer_() - t;
+#if ( PRNTlevel>=1 )
+				printf("matching time: %f \n",t);
+#endif				
 				// exit(11);
 			/* @EDIT-SYMATCH apply symmetric permutation here.  */
 #if ( PRNTlevel>=2 )
@@ -958,16 +966,24 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	            if ( iinfo == 0 ) {
 			/* @EDIT-SYMATCH row permutation is applied here, apply Pr^T too. */
                         /* Now permute global GA to prepare for symbfact() */
-#if ( PRNTlevel>=1 )
+#if ( DEBUGlevel>=1 )
 			dCheck_Diag_CSC("Before apply_perm_sym()", &GA);
 #endif
 
+
+			t = SuperLU_timer_();
 			/* @EDIT-SYMATCH 1. B = Pr A PrT */
 			apply_perm_sym(m, nnz, colptr, rowind, a_GA, perm_r);
+#if ( DEBUGlevel>=1 )			
 			is_symmetric(m, nnz, colptr, rowind, a_GA);
+#endif			
 			// exit(22);
-
+				t = SuperLU_timer_() - t;
 #if ( PRNTlevel>=1 )
+				printf("apply perm time: %f \n",t);
+#endif
+
+#if ( DEBUGlevel>=1 )
 			dCheck_Diag_CSC("After apply_perm_sym()", &GA);
 #endif
 
@@ -987,8 +1003,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 #endif
                 } /* end if options->RowPerm ... */
 
-	        t = SuperLU_timer_() - t;
-	        stat->utime[ROWPERM] = t;
+	        t1 = SuperLU_timer_() - t1;
+	        stat->utime[ROWPERM] = t1;
 #if ( PRNTlevel>=1 )
                 if ( !iam ) {
 		    printf(".. RowPerm %d\t time: %.2f\n", options->RowPerm, t);
@@ -1022,6 +1038,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
        ------------------------------------------------------------*/
     if ( !factored ) {
 	t = SuperLU_timer_();
+	t2 = SuperLU_timer_();
 	/*
 	 * Get column permutation vector perm_c[], according to permc_spec:
 	 *   permc_spec = NATURAL:  natural ordering
@@ -1094,16 +1111,22 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		  {
 			  /* @EDIT-SYMATCH 2. Bc = coarsen(B) */
 		      SuperMatrix GA_c;
-		      coarsen_graph(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
 
+			  t = SuperLU_timer_();
+		      coarsen_graph(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
+			t = SuperLU_timer_()-t;
+#if ( PRNTlevel>=1 )			
+			printf("coarsen_graph time: %f \n",t);	
+#endif
 			  NCformat  *cGstore  = (NCformat *) GA_c.Store;
 		      int		 n_c	  = GA_c.nrow;	// coarse dimension
 		      int_t		 nnz_c	  = cGstore->nnz;
 		      int_t	    *c_colptr = cGstore->colptr;
 		      int_t	    *c_rowind = cGstore->rowind;
 		      double    *c_nzval  = cGstore->nzval;
-
+#if ( DEBUGlevel>=1 )
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
+#endif
 			  // exit(33);
 
 			  /* @EDIT-SYMATCH 3. Pc = fill(Bc) */
@@ -1117,7 +1140,9 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      /* @EDIT-SYMATCH 4. C = Pc Bc PcT */
 		      /* colptr/rowind/nzval are both input and output */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, crs_perm_c);
+#if ( DEBUGlevel>=1 )			  
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
+#endif
 			  // exit(44);
 
 		      int_t *c_etree = intMalloc_dist(n_c);
@@ -1125,8 +1150,13 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 		      for (i = 0; i < n_c; ++i)
 				  c_colend[i] = c_colptr[i+1];
-		      sp_symetree_dist(c_colptr, c_colend, c_rowind, n_c, c_etree);
-
+		      
+			  t=SuperLU_timer_();
+			  sp_symetree_dist(c_colptr, c_colend, c_rowind, n_c, c_etree);
+			  t = SuperLU_timer_()-t;
+#if ( PRNTlevel>=1 )
+			  printf("sp_symetree time: %f \n",t);	
+#endif
 			  #ifdef DBG_MATCHING
 			  FILE *outfile = fopen("debug-output", "a");
 			  fprintf(outfile, "=== c_etree (C) ===\n");
@@ -1144,8 +1174,9 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			  /* @EDIT-SYMATCH 5. D = Pe C PeT */
 		      /* Permute GA_c again by post[] */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, post);
-		      
+#if ( DEBUGlevel>=1 )
 		      is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
+#endif
 			  // exit(55);
 
 		      int *iwork = int32Malloc_dist(n_c);
@@ -1169,9 +1200,9 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      for (i = 0; i < n_c; ++i)
 				  c_etree[i] = iwork[i];
 		      //PrintInt10("postordered coarse etree", n_c, c_etree);
-
+#if ( DEBUGlevel>=1 )
 			  is_postorder(n_c, c_etree);
-
+#endif
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
 			  fprintf(outfile, "=== c_etree (D) ===\n");
@@ -1343,7 +1374,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      //PrintInt10("etree", n, etree);
 #endif
 
-			  is_postorder(n, etree);
+			//   is_postorder(n, etree);
 
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
@@ -1421,7 +1452,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
           } /* end else not pametis */
         }
 
-	stat->utime[COLPERM] = SuperLU_timer_() - t;
+	stat->utime[COLPERM] = SuperLU_timer_() - t2;
 
 	/* Symbolic factorization. */
 	if ( Fact != SamePattern_SameRowPerm ) {
