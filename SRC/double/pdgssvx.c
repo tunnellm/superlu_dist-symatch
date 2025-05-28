@@ -1130,7 +1130,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      SuperMatrix GA_c;
 
 			  t = SuperLU_timer_();
-		      coarsen_graph(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
+		      coarsen_graph_v2(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
 			t = SuperLU_timer_()-t;
 #if ( PRNTlevel>=1 )
 			printf("coarsen_graph time: %f \n",t);

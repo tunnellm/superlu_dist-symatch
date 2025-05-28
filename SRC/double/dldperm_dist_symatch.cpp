@@ -410,6 +410,177 @@ coarsen_graph
 
 
 
+int
+coarsen_graph_v2
+(
+    SuperMatrix *G,
+	SuperMatrix *Gc,			// output coarsened graph
+	int_t		 n_crs,
+	int_t		*crs_vrts
+)
+{
+	assert(G->Stype == SLU_NC &&
+		   "Coarsening only implemented for storage type SLU_NC.\n");
+
+	cout << "Coarsening the graph..." << endl;
+
+	NCformat	*Gstore	= (NCformat *) G->Store;
+	int_t		*colptr = Gstore->colptr;
+	int_t		*rowind = Gstore->rowind;
+	double		*nzval	= (double *)Gstore->nzval;
+	int_t		 nr		= G->nrow;
+	int_t		 nc		= G->ncol;
+
+	assert(nr == nc && "Matrix should be square.\n");
+
+	
+	// coarse graph
+	Gc->Stype			 = G->Stype;
+	Gc->Dtype			 = G->Dtype;
+	Gc->Mtype			 = G->Mtype;
+	Gc->nrow			 = n_crs;
+	Gc->ncol			 = n_crs;
+	Gc->Store			 = (NCformat *) SUPERLU_MALLOC(sizeof(NCformat));
+	NCformat	*Gcstore = (NCformat *) Gc->Store;
+	Gcstore->colptr		 = (int_t *) intMalloc_dist(n_crs+2);
+
+
+	// aux
+	int_t *work1 = new int_t[n_crs];
+	int_t *work2 = new int_t[n_crs];
+
+	
+	// fine to coarse vertex
+	int_t	*v_cid = new int_t[nr];
+	int_t	 v	   = 0;
+	for (int_t cv = 0; cv < n_crs; ++cv)
+	{
+		assert(crs_vrts[cv] == 1 || crs_vrts[cv] == 2);
+		for (int_t i = 0; i < crs_vrts[cv]; ++i)
+		{
+			assert(v < nr);
+			v_cid[v++] = cv;
+		}
+
+		work1[cv] = 0;
+	}
+
+	assert(v == nr);
+
+
+	// determine xptr for the coarse graph
+	Gcstore->colptr[0] = Gcstore->colptr[1] = 0;
+	v				   = 0;		// current fine vertex
+	for (int_t cv = 0; cv < n_crs; ++cv)
+	{
+		int_t n_crs_ngbrs = 0;
+		for (int_t i = 0; i < crs_vrts[cv]; ++i)
+		{
+			for (int_t rptr = colptr[v]; rptr < colptr[v+1]; ++rptr)
+			{
+				int_t	r	  = rowind[rptr];
+				int_t	r_crs = v_cid[r];
+				assert(r_crs >= 0 && r_crs < n_crs);
+				if (work1[r_crs] == 0)
+				{
+					work1[r_crs] = 1;
+					work2[n_crs_ngbrs++] = r_crs;
+				}
+			}
+
+			++v;
+		}
+
+		Gcstore->colptr[cv+2]  = Gcstore->colptr[cv+1] + n_crs_ngbrs;
+		// crs_nnz				  += n_crs_ngbrs;
+		for (int_t i = 0; i < n_crs_ngbrs; ++i)
+		{
+			work1[work2[i]] = 0;
+		}
+	}
+
+
+	// coarse graph
+	int_t	 crs_nnz   = Gcstore->colptr[n_crs+1];
+	Gcstore->nnz	   = crs_nnz;
+	Gcstore->nzval	   = (double *) doubleMalloc_dist(crs_nnz);
+	double	*crs_nzval = (double *) Gcstore->nzval;
+	Gcstore->rowind	   = (int_t *) intMalloc_dist(crs_nnz);
+
+
+	cout << "#nnzs in the coarse graph " << crs_nnz << endl;
+
+
+	// fill ptr and val
+	v				   = 0;		// current fine vertex
+	for (int_t cv = 0; cv < n_crs; ++cv)
+	{
+		int_t n_crs_ngbrs = 0;
+		for (int_t i = 0; i < crs_vrts[cv]; ++i)
+		{
+			for (int_t rptr = colptr[v]; rptr < colptr[v+1]; ++rptr)
+			{
+				int_t	r	  = rowind[rptr];
+				int_t	r_crs = v_cid[r];
+				assert(r_crs >= 0 && r_crs < n_crs);
+				if (work1[r_crs] == 0)
+				{
+					work1[r_crs]						   = 1;
+					work2[n_crs_ngbrs++]				   = r_crs;
+					Gcstore->rowind[Gcstore->colptr[cv+1]] = r_crs;
+					crs_nzval[Gcstore->colptr[cv+1]]	   = nzval[rptr];
+					++(Gcstore->colptr[cv+1]);
+				}
+			}
+
+			++v;
+		}
+
+		for (int_t i = 0; i < n_crs_ngbrs; ++i)
+		{
+			work1[work2[i]] = 0;
+		}
+	}
+
+
+	#ifdef DBG_MATCHING
+	ofstream outfile("debug-output", std::ios_base::app);
+	outfile << "coarse graph #rows/cols " << n_crs
+			<< " #nnz " << crs_nnz << endl;
+	outfile << "=== Coarse matrix ===\n";
+	for (int_t c = 0; c < n_crs; ++c)
+	{
+		outfile << c << ": ";
+		for (int_t rptr = Gcstore->colptr[c]; rptr < Gcstore->colptr[c+1];
+			 ++rptr)
+			outfile << "(" << Gcstore->rowind[rptr] << ","
+					<< crs_nzval[rptr] << ") ";
+		outfile << "\n";
+	}
+
+	outfile << "\n\n\n";
+
+	outfile << "=== fine to coarse vertex info ===" << endl;
+	for (int_t c = 0; c < nc; ++c)
+		outfile << c << " " << v_cid[c] << "\n";
+
+	outfile << "\n\n\n";
+	#endif
+
+
+	delete [] v_cid;
+	delete [] work1;
+	delete [] work2;
+
+
+
+	return 0;	
+}
+
+
+
+
+
 // @ASK Must the row indices be sorted? - OK NO
 void
 apply_perm_sym
