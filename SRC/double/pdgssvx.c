@@ -945,7 +945,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 				t = SuperLU_timer_() - t;
 #if ( PRNTlevel>=1 )
 				printf("matching time: %f \n",t);
-#endif				
+#endif
 				// exit(11);
 			/* @EDIT-SYMATCH apply symmetric permutation here.  */
 #if ( PRNTlevel>=2 )
@@ -955,11 +955,28 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
                         MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
 		        if ( iinfo == 0 ) {
 		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
+
+					MPI_Bcast(&(crs_info.n_crs), 1, mpi_int_t, 0, grid->comm);
+					if (crs_info.n_crs > 0)
+					{
+						MPI_Bcast(crs_info.crs_vrts, crs_info.n_crs, mpi_int_t,
+								  0, grid->comm);
+					}
 		        }
 	            } else {
 		        MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
 			if ( iinfo == 0 ) {
 		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
+
+					MPI_Bcast(&(crs_info.n_crs), 1, mpi_int_t, 0, grid->comm);
+					if (crs_info.n_crs > 0)
+					{
+						crs_info.crs_vrts = (int_t *)
+							malloc(sizeof(*(crs_info.crs_vrts)) *
+								   (crs_info.n_crs));
+						MPI_Bcast(crs_info.crs_vrts, crs_info.n_crs, mpi_int_t,
+								  0, grid->comm);
+					}
 		        }
 	            }
 
@@ -974,9 +991,9 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			t = SuperLU_timer_();
 			/* @EDIT-SYMATCH 1. B = Pr A PrT */
 			apply_perm_sym(m, nnz, colptr, rowind, a_GA, perm_r);
-#if ( DEBUGlevel>=1 )			
+#if ( DEBUGlevel>=1 )
 			is_symmetric(m, nnz, colptr, rowind, a_GA);
-#endif			
+#endif
 			// exit(22);
 				t = SuperLU_timer_() - t;
 #if ( PRNTlevel>=1 )
@@ -1115,8 +1132,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			  t = SuperLU_timer_();
 		      coarsen_graph(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
 			t = SuperLU_timer_()-t;
-#if ( PRNTlevel>=1 )			
-			printf("coarsen_graph time: %f \n",t);	
+#if ( PRNTlevel>=1 )
+			printf("coarsen_graph time: %f \n",t);
 #endif
 			  NCformat  *cGstore  = (NCformat *) GA_c.Store;
 		      int		 n_c	  = GA_c.nrow;	// coarse dimension
@@ -1140,7 +1157,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      /* @EDIT-SYMATCH 4. C = Pc Bc PcT */
 		      /* colptr/rowind/nzval are both input and output */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, crs_perm_c);
-#if ( DEBUGlevel>=1 )			  
+#if ( DEBUGlevel>=1 )
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
 #endif
 			  // exit(44);
@@ -1150,12 +1167,12 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 		      for (i = 0; i < n_c; ++i)
 				  c_colend[i] = c_colptr[i+1];
-		      
+
 			  t=SuperLU_timer_();
 			  sp_symetree_dist(c_colptr, c_colend, c_rowind, n_c, c_etree);
 			  t = SuperLU_timer_()-t;
 #if ( PRNTlevel>=1 )
-			  printf("sp_symetree time: %f \n",t);	
+			  printf("sp_symetree time: %f \n",t);
 #endif
 			  #ifdef DBG_MATCHING
 			  FILE *outfile = fopen("debug-output", "a");
@@ -1634,7 +1651,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 	/* Perform numerical factorization in parallel. */
 	t = SuperLU_timer_();
-	
+
 	// nsupers = Glu_persist->supno[n-1] + 1;
 	// dDumpLblocks(iam, nsupers, grid, Glu_persist, LUstruct->Llu);
 
