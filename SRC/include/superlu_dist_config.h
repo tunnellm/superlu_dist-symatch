@@ -16,7 +16,7 @@
 /* #undef HAVE_COLAMD */
 
 /* Enable LAPACK */
-#define SLU_HAVE_LAPACK TRUE
+/* #undef SLU_HAVE_LAPACK */
 
 /* Enable CombBLAS */
 /* #undef HAVE_COMBBLAS */

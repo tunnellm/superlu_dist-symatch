@@ -616,6 +616,7 @@ extern int  dldperm_dist_symatch(int, int, int_t, int_t [], int_t [],
 								 double [], int_t *, double [], double [],
 								 int_t *, int_t **);
 extern int coarsen_graph(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
+extern int coarsen_graph_v2(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
 extern void apply_perm_sym(int n, int_t nnz, int_t *colptr, int_t *adjncy,
 						   double *nzval, int_t *p);
 extern int is_symmetric(int n, int_t nnz, int_t *colptr, int_t *adjncy,
