@@ -367,6 +367,76 @@ pdgstrf2_trsm
 
 
 
+void
+pdgstrf2_sym_check_tinypivot(int n, int lda, double *lusup, double thresh){
+    int info;
+    int lwork;
+    double* atmp = doubleCalloc_dist (n * n);
+    double* uu = doubleCalloc_dist (n * n);
+    double* vv = doubleCalloc_dist (n * n);
+    double* singular = doubleCalloc_dist (n);
+    double* work;
+    double TEMP;
+    double alpha = 1.0, beta = 0.0;
+
+    for(int i=0;i<n;i++){
+        for(int j=0;j<n;j++){
+            atmp[i+j*n] = lusup[i+j*lda];
+        }
+    }
+    lwork = -1;   
+    dgesvd_('S', 'S', &n, &n, atmp, &n, singular, uu, &n, vv, &n, &TEMP, &lwork, &info);
+    lwork = (int)(TEMP*2.001 + 1);
+    work = doubleCalloc_dist(lwork);
+    dgesvd_('S', 'S', &n, &n, atmp, &n, singular, uu, &n, vv, &n, work, &lwork, &info);
+    if(info !=0)
+        ABORT ("dgesvd_ fails");
+
+    for(int i=0;i<n;i++){
+        if(singular[i]<thresh)
+            singular[i]=thresh;
+    }
+    
+    for(int i=0;i<n;i++){
+        for(int j=0;j<n;j++){
+            uu[i+j*n] = uu[i+j*n]*singular[j];
+        }
+    }
+
+#if defined (USE_VENDOR_BLAS)
+	dgemm_("N", "N", &n, &n, &n, &alpha,
+	       uu, &n,
+	       vv, &n, &beta, atmp, &n, 1, 1);
+#else 
+	dgemm_("N", "N", &n, &n, &n, &alpha,
+	       uu, &n,
+	       vv, &n, &beta, atmp, &n);
+#endif
+
+    double err=0;
+    for(int i=0;i<n;i++){
+        for(int j=0;j<n;j++){
+            err += (atmp[i+j*n]-lusup[i+j*lda])*(atmp[i+j*n]-lusup[i+j*lda]); 
+        }
+    }
+    printf("error for diagonal block %f\n",err);
+
+
+    for(int i=0;i<n;i++){
+        for(int j=0;j<n;j++){
+            lusup[i+j*lda] = atmp[i+j*n];
+        }
+    }
+
+    SUPERLU_FREE(atmp);
+    SUPERLU_FREE(uu);
+    SUPERLU_FREE(vv);
+    SUPERLU_FREE(singular);
+    SUPERLU_FREE(work);
+
+}
+
+
 /*****************************************************************************
  * The following pdgstrf2_sym is used to support symmetric matching-based factorization.
  *****************************************************************************/
@@ -516,7 +586,11 @@ pdgstrf2_sym
         //     }
         //     fclose(fp);
         //   }
-                    
+
+
+          pdgstrf2_sym_check_tinypivot(nsupc, nsupr, lusup, thresh);
+
+
           lwork = -1;        
           dsytrf_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&lwork,info);  
           if(ujrow[0]>Llu->size_ujrow)

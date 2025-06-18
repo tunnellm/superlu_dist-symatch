@@ -153,9 +153,9 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # for MAT in temp_13k.mtx
 # for MAT in matrix_ACTIVSg10k_AC_00.mtx
 # for MAT in turon_m.mtx
-# for MAT in bcsstm36.mtx
-# for MAT in boyd1.rb
-for MAT in 1138_bus.mtx
+# for MAT in bcsstm36.rb
+for MAT in boyd1.rb
+# for MAT in 1138_bus.mtx
 # for MAT in mesh3e1.mtx
 # for MAT in ex5.mtx
 do

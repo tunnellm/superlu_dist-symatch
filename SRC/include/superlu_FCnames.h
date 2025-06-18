@@ -163,7 +163,7 @@ at the top-level directory.
 #define ztrtri_   FC_GLOBAL(ztrtri,ZTRTRI)
 #define dsytrf_   FC_GLOBAL(dsytrf,DSYTRF)
 #define dsytri_   FC_GLOBAL(dsytri,DSYTRI)
-
+#define dgesvd_   FC_GLOBAL(dgesvd,DGESVD)
 
 /*
 #define mc64id_dist         mc64id_dist
