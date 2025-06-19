@@ -164,6 +164,9 @@ at the top-level directory.
 #define dsytrf_   FC_GLOBAL(dsytrf,DSYTRF)
 #define dsytri_   FC_GLOBAL(dsytri,DSYTRI)
 #define dgesvd_   FC_GLOBAL(dgesvd,DGESVD)
+#define dgesdd_   FC_GLOBAL(dgesdd,DGESDD)
+#define dsyevd_   FC_GLOBAL(dsyevd,DSYEVD)
+#define dsyr_     FC_GLOBAL(dsyr,DSYR)
 
 /*
 #define mc64id_dist         mc64id_dist

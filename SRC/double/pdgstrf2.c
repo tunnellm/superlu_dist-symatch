@@ -363,78 +363,318 @@ pdgstrf2_trsm
 }  /* PDGSTRF2_trsm */
 
 
+// void
+// pdgstrf2_sym_check_tinypivot(int n, int lda, double *lusup, double thresh,SuperLUStat_t * stat,dLocalLU_t *  Llu){
+//     int info;
+//     int lwork;
+//     double* atmp = doubleCalloc_dist (n * n);
+//     double* uu = doubleCalloc_dist (n * n);
+//     double* vv = doubleCalloc_dist (n * n);
+//     double* singular = doubleCalloc_dist (n);
+//     int* iwork = intCalloc_dist (n*8);
+//     double* work;
+//     double TEMP;
+//     double alpha = 1.0, beta = 0.0;
+//     // printf("n %5d\n",n);
+//     if(n==1){
+//         if (fabs (lusup[0]) < thresh){ 
+//             if (lusup[0] < 0)
+//                 lusup[0] = -thresh;
+//             else
+//                 lusup[0] = thresh;
+//             ++(stat->TinyPivots);
+//         }
+//     }else{
+//         for(int i=0;i<n;i++){
+//             for(int j=0;j<n;j++){
+//                 atmp[i+j*n] = lusup[i+j*lda];
+//             }
+//         }
+//         lwork = -1;   
+//         // dgesdd_('S', &n, &n, atmp, &n, singular, uu, &n, vv, &n, &TEMP, &lwork, iwork, &info);
+
+//         dgesvd_("S", "S", &n, &n, atmp, &n, singular, uu, &n, vv, &n, &TEMP, &lwork, &info);
+
+//         lwork = (int)(TEMP*2.001 + 1);
+//         work = doubleCalloc_dist(lwork);
+//         dgesvd_("S", "S", &n, &n, atmp, &n, singular, uu, &n, vv, &n, work, &lwork, &info);
+//         if(info !=0)
+//             ABORT ("dgesvd_ fails");
+
+//         for(int i=0;i<n;i++){
+//             if(singular[i]<thresh/10){
+//                 singular[i]=thresh/10;
+//                 ++(stat->TinyPivots);
+//             }
+//         }
+        
+//         for(int i=0;i<n;i++){
+//             for(int j=0;j<n;j++){
+//                 uu[i+j*n] = uu[i+j*n]*singular[j];
+//             }
+//         }
+
+//     #if defined (USE_VENDOR_BLAS)
+//     	dgemm_("N", "N", &n, &n, &n, &alpha,
+//     	       uu, &n,
+//     	       vv, &n, &beta, atmp, &n, 1, 1);
+//     #else 
+//     	dgemm_("N", "N", &n, &n, &n, &alpha,
+//     	       uu, &n,
+//     	       vv, &n, &beta, atmp, &n);
+//     #endif
+
+//         // double err=0;
+//         // for(int i=0;i<n;i++){
+//         //     for(int j=0;j<n;j++){
+//         //         err += (atmp[i+j*n]-lusup[i+j*lda])*(atmp[i+j*n]-lusup[i+j*lda]); 
+//         //     }
+//         // }
+//         // printf("error for diagonal block %20f\n",err);
+
+
+//         for(int i=0;i<n;i++){
+//             for(int j=0;j<n;j++){
+//                 lusup[i+j*lda] = atmp[i+j*n];
+//             }
+//         }
+
+//         SUPERLU_FREE(atmp);
+//         SUPERLU_FREE(uu);
+//         SUPERLU_FREE(vv);
+//         SUPERLU_FREE(singular);
+//         SUPERLU_FREE(work);
+//         SUPERLU_FREE(iwork);
+//     }
+  
+// }
+
+
+
+
+// void
+// pdgstrf2_sym_check_tinypivot(int n, int lda, double *lusup, double thresh, SuperLUStat_t * stat, dLocalLU_t *  Llu){
+//     int info;
+//     int lwork=-1,liwork=-1;
+//     // double* atmp = doubleCalloc_dist (n * n);
+//     double* w = doubleCalloc_dist (n);
+//     int* iwork;
+//     double* work;
+//     double  wkopt;
+//     int     iwkopt;
+//     double alpha = 1.0, beta = 0.0;
+//     // printf("n %5d\n",n);
+//     if(n==1){
+//         if (fabs (lusup[0]) < thresh){ 
+//             if (lusup[0] < 0)
+//                 lusup[0] = -thresh;
+//             else
+//                 lusup[0] = thresh;
+//             ++(stat->TinyPivots);
+//         }
+//     }else{
+
+//         dsyevd_("V", "L", &n,NULL,&n,NULL,&wkopt,&lwork,&iwkopt,&liwork,&info);
+//         lwork  = (int)(wkopt+1);
+//         liwork = iwkopt;
+
+//         work = doubleCalloc_dist(lwork);
+//         iwork = intCalloc_dist(liwork);
+//         dsyevd_("V", "L", &n,lusup,&lda,w,work,&lwork,iwork,&liwork,&info);
+
+//         if(info !=0){
+//             printf("%5d info\n", info);
+//             ABORT ("dsyevd_ fails");
+//         }
+
+//         for(int i=0;i<n;i++){
+//             if(fabs(w[i])<thresh/10){
+//                 if (w[i] < 0)
+//                     w[i] = -thresh/10; 
+//                 else
+//                     w[i] = thresh/10;
+//                 ++(stat->TinyPivots);
+//             }
+//         }
+        
+//         double* ctmp = doubleCalloc_dist (n * n);
+//         int  one   = 1;
+//         for (int j = 0; j < n; ++j) {
+//             double alpha = w[j];               /* the clipped eigen-value */
+//         #if defined (USE_VENDOR_BLAS)
+//             dsyr_("L", &n, &alpha,
+//                 &lusup[j*lda], &one,             /* x (stride = 1)        */
+//                 ctmp, &n,                     /* C (lda = n)           */
+//                 1);                           /* len(uplo)             */
+//         #else
+//             dsyr_("L", &n, &alpha,
+//                 &lusup[j*lda], &one,
+//                 ctmp, &n);
+//         #endif
+//         }
+
+//         for(int i=0;i<n;i++){
+//             for(int j=0;j<n;j++){
+//                 lusup[i+j*lda] = ctmp[i+j*n];
+//             }
+//         }
+
+//         SUPERLU_FREE(w);
+//         SUPERLU_FREE(work);
+//         SUPERLU_FREE(iwork);
+//         SUPERLU_FREE(ctmp);
+//     }
+  
+// }
+
+
+// void
+// pdgstrf2_sym_check_tinypivot(int n, int lda, double *lusup, double thresh, SuperLUStat_t * stat, dLocalLU_t *  Llu){
+//     int info;
+//     int lwork=-1,liwork=-1;
+//     // double* atmp = doubleCalloc_dist (n * n);
+//     double* w = doubleCalloc_dist (n);
+//     int* iwork;
+//     double* work;
+//     double  wkopt;
+//     int     iwkopt;
+//     double alpha = 1.0, beta = 0.0;
+//     // printf("n %5d\n",n);
+//     if(n==1){
+//         if (fabs (lusup[0]) < thresh){ 
+//             if (lusup[0] < 0)
+//                 lusup[0] = -thresh;
+//             else
+//                 lusup[0] = thresh;
+//             ++(stat->TinyPivots);
+//         }
+//     }else{
+
+//         dsyevd_("V", "L", &n,NULL,&n,NULL,&wkopt,&lwork,&iwkopt,&liwork,&info);
+//         lwork  = (int)(wkopt+1);
+//         liwork = iwkopt;
+
+//         work = doubleCalloc_dist(lwork);
+//         iwork = intCalloc_dist(liwork);
+//         dsyevd_("V", "L", &n,lusup,&lda,w,work,&lwork,iwork,&liwork,&info);
+
+//         if(info !=0){
+//             printf("%5d info\n", info);
+//             ABORT ("dsyevd_ fails");
+//         }
+
+//         for(int i=0;i<n;i++){
+//             if(fabs(w[i])<thresh/10){
+//                 if (w[i] < 0)
+//                     w[i] = -thresh/10; 
+//                 else
+//                     w[i] = thresh/10;
+//                 ++(stat->TinyPivots);
+//             }
+//         }
+        
+//         double* ctmp = doubleCalloc_dist (n * n);
+//         int  one   = 1;
+//         for (int j = 0; j < n; ++j) {
+//             double alpha = w[j];               /* the clipped eigen-value */
+//         #if defined (USE_VENDOR_BLAS)
+//             dsyr_("L", &n, &alpha,
+//                 &lusup[j*lda], &one,             /* x (stride = 1)        */
+//                 ctmp, &n,                     /* C (lda = n)           */
+//                 1);                           /* len(uplo)             */
+//         #else
+//             dsyr_("L", &n, &alpha,
+//                 &lusup[j*lda], &one,
+//                 ctmp, &n);
+//         #endif
+//         }
+
+//         for(int i=0;i<n;i++){
+//             for(int j=0;j<n;j++){
+//                 lusup[i+j*lda] = ctmp[i+j*n];
+//             }
+//         }
+
+//         SUPERLU_FREE(w);
+//         SUPERLU_FREE(work);
+//         SUPERLU_FREE(iwork);
+//         SUPERLU_FREE(ctmp);
+//     }
+// }
+
 
 
 
 
 void
-pdgstrf2_sym_check_tinypivot(int n, int lda, double *lusup, double thresh){
+pdgstrf2_sym_check_tinypivot(int n, int lda, double *lusup, double thresh, SuperLUStat_t * stat, dLocalLU_t *  Llu){
     int info;
-    int lwork;
-    double* atmp = doubleCalloc_dist (n * n);
-    double* uu = doubleCalloc_dist (n * n);
-    double* vv = doubleCalloc_dist (n * n);
-    double* singular = doubleCalloc_dist (n);
-    double* work;
-    double TEMP;
+    double* w = Llu->w;
+    int* iwork=Llu->iwork;
+    double* work=Llu->work;
+    double  wkopt;
+    int     iwkopt;
     double alpha = 1.0, beta = 0.0;
-
-    for(int i=0;i<n;i++){
-        for(int j=0;j<n;j++){
-            atmp[i+j*n] = lusup[i+j*lda];
+    // printf("n %5d\n",n);
+    if(n==1){
+        if (fabs (lusup[0]) < thresh){ 
+            if (lusup[0] < 0)
+                lusup[0] = -thresh;
+            else
+                lusup[0] = thresh;
+            ++(stat->TinyPivots);
         }
-    }
-    lwork = -1;   
-    dgesvd_('S', 'S', &n, &n, atmp, &n, singular, uu, &n, vv, &n, &TEMP, &lwork, &info);
-    lwork = (int)(TEMP*2.001 + 1);
-    work = doubleCalloc_dist(lwork);
-    dgesvd_('S', 'S', &n, &n, atmp, &n, singular, uu, &n, vv, &n, work, &lwork, &info);
-    if(info !=0)
-        ABORT ("dgesvd_ fails");
+    }else{
 
-    for(int i=0;i<n;i++){
-        if(singular[i]<thresh)
-            singular[i]=thresh;
-    }
-    
-    for(int i=0;i<n;i++){
-        for(int j=0;j<n;j++){
-            uu[i+j*n] = uu[i+j*n]*singular[j];
+        dsyevd_("V", "L", &n,lusup,&lda,w,work,&(Llu->lwork),iwork,&(Llu->liwork),&info);
+
+        if(info !=0){
+            printf("%5d info\n", info);
+            ABORT ("dsyevd_ fails");
         }
-    }
 
-#if defined (USE_VENDOR_BLAS)
-	dgemm_("N", "N", &n, &n, &n, &alpha,
-	       uu, &n,
-	       vv, &n, &beta, atmp, &n, 1, 1);
-#else 
-	dgemm_("N", "N", &n, &n, &n, &alpha,
-	       uu, &n,
-	       vv, &n, &beta, atmp, &n);
-#endif
-
-    double err=0;
-    for(int i=0;i<n;i++){
-        for(int j=0;j<n;j++){
-            err += (atmp[i+j*n]-lusup[i+j*lda])*(atmp[i+j*n]-lusup[i+j*lda]); 
+        for(int i=0;i<n;i++){
+            if(fabs(w[i])<thresh/10){
+                if (w[i] < 0)
+                    w[i] = -thresh/10; 
+                else
+                    w[i] = thresh/10;
+                ++(stat->TinyPivots);
+            }
         }
-    }
-    printf("error for diagonal block %f\n",err);
-
-
-    for(int i=0;i<n;i++){
-        for(int j=0;j<n;j++){
-            lusup[i+j*lda] = atmp[i+j*n];
+        
+        double* ctmp = Llu->ujrow;
+        for(int i=0;i<n;i++){
+            for(int j=0;j<n;j++){
+                ctmp[i+j*n]=0.0;
+            }
         }
+
+        int  one   = 1;
+        for (int j = 0; j < n; ++j) {
+            double alpha = w[j];               /* the clipped eigen-value */
+        #if defined (USE_VENDOR_BLAS)
+            dsyr_("L", &n, &alpha,
+                &lusup[j*lda], &one,             /* x (stride = 1)        */
+                ctmp, &n,                     /* C (lda = n)           */
+                1);                           /* len(uplo)             */
+        #else
+            dsyr_("L", &n, &alpha,
+                &lusup[j*lda], &one,
+                ctmp, &n);
+        #endif
+        }
+
+        for(int i=0;i<n;i++){
+            for(int j=0;j<n;j++){
+                lusup[i+j*lda] = ctmp[i+j*n];
+            }
+        }
+
     }
-
-    SUPERLU_FREE(atmp);
-    SUPERLU_FREE(uu);
-    SUPERLU_FREE(vv);
-    SUPERLU_FREE(singular);
-    SUPERLU_FREE(work);
-
+  
 }
+
 
 
 /*****************************************************************************
@@ -587,8 +827,8 @@ pdgstrf2_sym
         //     fclose(fp);
         //   }
 
-
-          pdgstrf2_sym_check_tinypivot(nsupc, nsupr, lusup, thresh);
+          if(options->ReplaceTinyPivot == YES)
+            pdgstrf2_sym_check_tinypivot(nsupc, nsupr, lusup, thresh,stat,Llu);
 
 
           lwork = -1;        

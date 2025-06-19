@@ -189,6 +189,11 @@ typedef struct {
     double  *ujrow;           /* used in panel factorization.          */
     int     *diagpivot;           /* used in panel factorization.          */
     int64_t  size_ujrow;           /* used in panel factorization.          */
+    int     *iwork;           /* used in panel factorization.          */
+    int     lwork;           /* used in panel factorization.          */
+    int     liwork;           /* used in panel factorization.          */
+    double     *work;           /* used in panel factorization.          */
+    double     *w;           /* used in panel factorization.          */
     int_t   bufmax[NBUFFERS]; /* Maximum buffer size across all MPI ranks:
 			       *  0 : maximum size of Lsub_buf[]
 			       *  1 : maximum size of Lval_buf[]
