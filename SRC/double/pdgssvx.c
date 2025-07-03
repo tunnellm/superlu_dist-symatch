@@ -1862,6 +1862,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		       buffer_peak_rank, buffer_peak);
 		printf("**************************************************\n\n");
 		printf("** number of Tiny Pivots: %8d\n\n", stat->TinyPivots);
+		printf("** number of 2x2 Pivots by sytrf: %8d\n\n", stat->sytrf_2x2);
 		fflush(stdout);
             }
 	} /* end printing stats */

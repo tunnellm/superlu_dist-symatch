@@ -169,6 +169,17 @@ if(enable_double)
     double/dequil_batch.c # batch in CSC format
     double/dpivot_batch.c
   )
+
+if (XSDK_ENABLE_Fortran)
+  list(APPEND sources
+    double/dsytf2_mod.f
+    double/dlasyf_mod.f
+    double/dsytrf_mod.f
+  )
+  set_source_files_properties(double/dlasyf_mod.f PROPERTIES Fortran_FORMAT FIXED)
+  set_source_files_properties(double/dsytf2_mod.f PROPERTIES Fortran_FORMAT FIXED)
+  set_source_files_properties(double/dsytrf_mod.f PROPERTIES Fortran_FORMAT FIXED)
+endif()
   
 if (TPL_ENABLE_CUDALIB)
   list(APPEND sources

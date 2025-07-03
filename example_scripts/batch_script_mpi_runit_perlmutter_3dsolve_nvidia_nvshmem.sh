@@ -29,8 +29,8 @@ export LD_LIBRARY_PATH=${CRAY_LD_LIBRARY_PATH}:$LD_LIBRARY_PATH
 
 
 export SUPERLU_LBS=GD  
-export SUPERLU_ACC_OFFLOAD=1 # this can be 0 to do CPU tests on GPU nodes
-export GPU3DVERSION=1
+export SUPERLU_ACC_OFFLOAD=0 # this can be 0 to do CPU tests on GPU nodes
+export GPU3DVERSION=0
 export ANC25D=0
 export NEW3DSOLVE=1    
 export NEW3DSOLVETREECOMM=1
@@ -151,10 +151,10 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # for MAT in matrix_ACTIVSg70k_AC_00.mtx matrix_ACTIVSg10k_AC_00.mtx
 # for MAT in temp_13k.mtx temp_25k.mtx temp_75k.mtx
 # for MAT in temp_13k.mtx
-# for MAT in matrix_ACTIVSg10k_AC_00.mtx
+for MAT in matrix_ACTIVSg10k_AC_00.mtx
 # for MAT in turon_m.mtx
 # for MAT in bcsstm36.rb
-for MAT in boyd1.rb
+# for MAT in boyd1.rb
 # for MAT in 1138_bus.mtx
 # for MAT in mesh3e1.mtx
 # for MAT in ex5.mtx
@@ -165,11 +165,12 @@ do
 export SUPERLU_ACC_SOLVE=0
 
 rowperm=4  ### 1: LargeDiag_MC64  4: SymMatch
-tinyreplace=0
+tinyreplace=1 ## whether to use tiny pivot replacement
+it=0 # wether to use iterative refinement
 
 # # srun -n $NCORE_VAL_TOT2D -N $NODE_VAL2D -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW -b $batch $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d_gpu_${SUPERLU_ACC_OFFLOAD}
 # export SUPERLU_ACC_OFFLOAD=0
-srun -n $NCORE_VAL_TOT2D -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive-v1 -c $NCOL -r $NROW -b $batch -t $tinyreplace -p $rowperm $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d_gpu_${SUPERLU_ACC_OFFLOAD}_rowperm${rowperm}_tinyreplace${tinyreplace}
+srun -n $NCORE_VAL_TOT2D -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive-v1 -c $NCOL -r $NROW -b $batch -t $tinyreplace -i $it -p $rowperm $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d_gpu_${SUPERLU_ACC_OFFLOAD}_rowperm${rowperm}_tinyreplace${tinyreplace}_it${it}
 
 # unset SUPERLU_ACC_SOLVE
 # echo "srun -n $NCORE_VAL_TOT  -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive3d -c $NCOL -r $NROW -d $NPZ -b $batch -i 0 -s $NRHS $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}x${NPZ}_${OMP_NUM_THREADS}_3d_newest_gpusolve_${SUPERLU_ACC_SOLVE}_nrhs_${NRHS}"

@@ -105,6 +105,7 @@ typedef struct {
     int     TinyPivots;   /* number of tiny pivots */
     int     RefineSteps;  /* number of iterative refinement steps */
     int     num_look_aheads; /* number of look ahead */
+    int     sytrf_2x2;    /* number of 2x2 pivots reported by sytrf */
     /*-- new --*/
     float   current_buffer; /* bytes allocated for buffer in numerical factorization */
     float   peak_buffer;    /* monitor the peak buffer size (bytes) */
