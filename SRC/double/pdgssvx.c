@@ -547,7 +547,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     char    equed[1], norm[1];
     double   *C, *R, *C1, *R1, amax, anorm, colcnd, rowcnd;
     double   *X, *b_col, *b_work, *x_col;
-    double   t, t1, t2;
+    double   t, t1, t2, t3;
     float    GA_mem_use = 0.0;    /* memory usage by global A */
     float    dist_mem_use = 0.0;  /* memory usage during distribution */
     superlu_dist_mem_usage_t num_mem_usage, symb_mem_usage;
@@ -921,7 +921,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			for (i = 0; i < m; ++i) perm_r[i] = i;
 		    }
 
-#if ( PRNTlevel>=2 )
+				#if ( PRNTlevel>=2 )
 	            if ( job == 2 || job == 3 ) {
 		        if ( !iam ) printf("\tsmallest diagonal %e\n", dmin);
 	            } else if ( job == 4 ) {
@@ -929,7 +929,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	            } else if ( job == 5 ) {
 		        if ( !iam ) printf("\t product of diagonal %e\n", dprod);
 	            }
-#endif
+				#endif
                 } else if ( options->RowPerm == SymMatch ) {
 		    /* Get a new perm_r[] from SymMatch */
 
@@ -944,7 +944,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 				t = SuperLU_timer_() - t;
 #if ( PRNTlevel>=1 )
-				printf("matching time: %f \n",t);
+				printf("dldperm_dist_symatch (Pr): %f \n",t);
 #endif
 				// exit(11);
 			/* @EDIT-SYMATCH apply symmetric permutation here.  */
@@ -997,7 +997,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			// exit(22);
 				t = SuperLU_timer_() - t;
 #if ( PRNTlevel>=1 )
-				printf("apply perm time: %f \n",t);
+				printf("apply_perm_sym (B = PrAPr^T): %f \n",t);
 #endif
 
 #if ( DEBUGlevel>=1 )
@@ -1048,6 +1048,32 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	if ( !iam ) { printf(".. anorm %e\n", anorm); 	fflush(stdout); }
 #endif
     }
+
+	/* @OGUZ-EDIT Matching cost */
+	if (options->RowPerm == LargeDiag_MC64)
+	{
+		double dsum = 0.0;
+		double dprod = 0.0;
+		for (i = 0; i < m; ++i)
+		{
+			for (j = colptr[i]; j < colptr[i+1]; ++j)
+			{
+				int_t	r = rowind[j];
+				double	v = a_GA[j];
+
+				if (i == r)
+				{
+					dsum  += fabs(v);
+					dprod *= fabs(v);
+					break;
+				}
+			}
+		}
+
+		printf("dsum %e\n", dsum);
+		printf("dprod %e\n", dprod);
+	}
+	// exit(99);
 
     /* ------------------------------------------------------------
        Perform the LU factorization: symbolic factorization,
@@ -1121,6 +1147,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		  return;
      	      }
 	  } else {
+		  t3 = SuperLU_timer_();
+		  
 		  /* generate uncoarsened versions of GA and perm_c but also
 			 maintain the contracted versions */
 		  /* @EDIT-SYMATCH Add branch here */
@@ -1130,11 +1158,15 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		      SuperMatrix GA_c;
 
 			  t = SuperLU_timer_();
+			  
 		      coarsen_graph_v2(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
-			t = SuperLU_timer_()-t;
-#if ( PRNTlevel>=1 )
-			printf("coarsen_graph time: %f \n",t);
-#endif
+			  
+			  t = SuperLU_timer_()-t;
+
+			#if ( PRNTlevel>=1 )
+			printf("coarsen_graph_v2 (Bc): %f \n",t);
+			#endif
+			
 			  NCformat  *cGstore  = (NCformat *) GA_c.Store;
 		      int		 n_c	  = GA_c.nrow;	// coarse dimension
 		      int_t		 nnz_c	  = cGstore->nnz;
@@ -1146,17 +1178,35 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 #endif
 			  // exit(33);
 
+			  t = SuperLU_timer_();
+			  
 			  /* @EDIT-SYMATCH 3. Pc = fill(Bc) */
 		      int_t *crs_perm_c =       // Sherry: why not intMalloc_dist?
 			  (int_t *)malloc(sizeof(*crs_perm_c) * GA_c.nrow);
 		      get_perm_c_dist(iam, permc_spec, &GA_c, crs_perm_c);
 
+			  t = SuperLU_timer_()-t;
+
+			  #if ( PRNTlevel>=1 )
+			  printf("get_perm_c_dist (Pc = fill(Bc)): %f \n",t);
+			  #endif
+
 
 		      /* Compute coarse etree of Pc*A*Pc' */
+
+			  t = SuperLU_timer_();
 
 		      /* @EDIT-SYMATCH 4. C = Pc Bc PcT */
 		      /* colptr/rowind/nzval are both input and output */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, crs_perm_c);
+
+			  t = SuperLU_timer_()-t;
+
+			  #if ( PRNTlevel>=1 )
+			  printf("apply_perm_sym (C = PcBcPc^T): %f \n",t);
+			  #endif
+
+			  
 #if ( DEBUGlevel>=1 )
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
 #endif
@@ -1171,9 +1221,11 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			  t=SuperLU_timer_();
 			  sp_symetree_dist(c_colptr, c_colend, c_rowind, n_c, c_etree);
 			  t = SuperLU_timer_()-t;
-#if ( PRNTlevel>=1 )
-			  printf("sp_symetree time: %f \n",t);
-#endif
+
+              #if ( PRNTlevel>=1 )
+			  printf("sp_symetree_dist: %f \n",t);
+              #endif
+			  
 			  #ifdef DBG_MATCHING
 			  FILE *outfile = fopen("debug-output", "a");
 			  fprintf(outfile, "=== c_etree (C) ===\n");
@@ -1188,19 +1240,27 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 			  // exit(44);
 
+			  t=SuperLU_timer_();
+			  
 			  /* @EDIT-SYMATCH 5. D = Pe C PeT */
 		      /* Permute GA_c again by post[] */
 		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, post);
 #if ( DEBUGlevel>=1 )
 		      is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
 #endif
+			  t = SuperLU_timer_()-t;
+
+			  #if ( PRNTlevel>=1 )
+			  printf("apply_perm_sym (D = PeCPe^T): %f \n",t);
+			  #endif
+			  
 			  // exit(55);
 
 		      int *iwork = int32Malloc_dist(n_c);
 		      for (i = 0; i < n_c; ++i)
-			  iwork[i] = post[crs_perm_c[i]]; // product of crs_perm_c and post
+				  iwork[i] = post[crs_perm_c[i]]; // product of crs_perm_c and post
 		      for (i = 0; i < n_c; ++i)
-			  crs_perm_c[i] = iwork[i];
+				  crs_perm_c[i] = iwork[i];
 
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
@@ -1466,6 +1526,12 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		  else {
 		      get_perm_c_dist(iam, permc_spec, &GA, perm_c);
 		  }
+
+		  t3 = SuperLU_timer_() - t3;
+		  #if ( PRNTlevel>=1 )
+		  printf("!factored: %f \n", t3);
+		  #endif
+		  
           } /* end else not pametis */
         }
 

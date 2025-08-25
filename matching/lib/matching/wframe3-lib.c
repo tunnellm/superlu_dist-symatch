@@ -941,6 +941,27 @@ double cost_matching(int n,int *ver,int *edges,double *weight,int *match) {
 
   return(glob_sum);
 }
+/* @OGUZ-EDIT product of the matching */
+double cost_matching_prod(int n,int *ver,int *edges,double *weight,int *match) {
+
+  double glob_prod = 0.0;
+  int i,k;
+
+  for(i=1;i<=n;i++) {
+    //printf("%d is matched with %d \n",i,match[i]);
+    if ((match[i] != 0) && (i < match[i])) { // Only use vertices that are matched and that have lower index then their partner
+      for(k=ver[i];k<ver[i+1];k++) {         // Loop through neighbors of vertex i
+        if (edges[k] == match[i]) {
+          glob_prod *= weight[k];
+          if (match[edges[k]] != i)
+            printf("Error in cost_matching: %d is matched with %d but %d is matched with %d \n",i,match[i],edges[k],match[edges[k]]);
+        } // if
+      } // for k
+    } // if
+  } // for i
+
+  return(glob_prod);
+}
 void store_p_value(FILE *wf,char *s,double **values,int n,int n_conf) {
   int i,j;
   fprintf(wf,"%s = [",s);

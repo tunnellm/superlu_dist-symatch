@@ -52,6 +52,9 @@ void sweight(int n, int *ver, int *edges, int *s, double *ws, double *weight,
 // other util
 double cost_matching(int n, int *ver, int *edges, double *weight, int *match);
 
+double cost_matching_prod(int n, int *ver, int *edges, double *weight,
+						  int *match);
+
 #ifdef __cplusplus
 }
 #endif
@@ -102,6 +105,15 @@ public:
 	cost ()
 	{
 		return cost_matching(n, ver, edges, weight, p);
+	}
+
+
+
+
+	double
+	cost_prod ()
+	{
+		return cost_matching_prod(n, ver, edges, weight, p);
 	}
 
 

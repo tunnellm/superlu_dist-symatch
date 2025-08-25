@@ -158,6 +158,7 @@ dldperm_dist_symatch
 	wrm->match();
 
 	fprintf(stdout, "matching cost %lf\n", wrm->cost());
+	fprintf(stdout, "matching cost (prod) %lf\n", wrm->cost_prod());
 
 
 	#ifdef DBG_MATCHING
@@ -262,9 +263,12 @@ dldperm_dist_symatch
 	outfile.close();
 	#endif
 
-
+	
+	cout << "#2x2 " << n-(*n_crs) << " #1x1 " << 2*(*n_crs)-n << "\n";
 	cout << "Number of coarse vertices " << *n_crs << "\n";
 	cout << string(80, '=') << endl;
+
+	
 
 	delete gm;
 	delete wrm;

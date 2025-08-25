@@ -16,7 +16,7 @@
 /* #undef HAVE_COLAMD */
 
 /* Enable LAPACK */
-/* #undef SLU_HAVE_LAPACK */
+#define SLU_HAVE_LAPACK TRUE
 
 /* Enable CombBLAS */
 /* #undef HAVE_COMBBLAS */
@@ -25,7 +25,7 @@
 /* #undef HAVE_MAGMA */
 
 /* enable 64bit index mode */
-/* #undef XSDK_INDEX_SIZE */
+#define XSDK_INDEX_SIZE 32
 
 #if defined(XSDK_INDEX_SIZE) && (XSDK_INDEX_SIZE == 64)
 #define _LONGINT 1

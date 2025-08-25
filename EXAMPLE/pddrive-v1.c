@@ -140,10 +140,12 @@ int main(int argc, char *argv[])
     int superlu_acc_offload = sp_ienv_dist(10, &options); //get_acc_offload();
 
     /* @EDIT-SYMATCH */
+	options.Equil = YES;
     // options.RowPerm = SymMatch;
     // options.RowPerm = LargeDiag_MC64;
-    if (options.RowPerm == SymMatch) {
-	options.Equil = YES;  /* not implemented yet */
+	/* options.Equil = NO; */
+	/* options.ColPerm = NATURAL; */
+    if (options.RowPerm == SymMatch) {	
 	options.SymFact = YES;       /* perform symmetric factorization */
     }
 
