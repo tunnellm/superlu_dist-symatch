@@ -197,15 +197,15 @@ int main(int argc, char *argv[]) {
   WSuitorSortSequential         = false;   /* *Weighted suitor with sorted neighbor lists */
   WSuitorSortWhileSequential    = false;   /* Weighted suitor with sorted neighbor lists + outer while loop */
 
-  W2RSuitorDPSequential         = false;   /* Weighted 2 round suitor w/ one routine for DP */
+  W2RSuitorDPSequential         = true;   /* Weighted 2 round suitor w/ one routine for DP */
   W2RSuitorDPCycSequential      = false;    /* *Weighted 2 round suitor w/separate routines for path DP and cycle DP */
   W2RGreedyDPSequential         = false;   /* *Weighted 2 round greedy w/DP */
-  SortEdgesSequential           = false;    /* *Sort all the edges into one list */
-  WPGASequential                = false;   /* *Path growing followed by DP */
-  WGPASequential                = false;   /* *Weighted GPA algorithm */
+  SortEdgesSequential           = true;    /* *Sort all the edges into one list */
+  WPGASequential                = true;   /* *Path growing followed by DP */
+  WGPASequential                = true;   /* *Weighted GPA algorithm */
   W2RPGADPSequential            = false;   /* *Weighted 2 round PGA followed by DP */
   W2RSuitorDPSortEdgeSequential = false;   /* *Weighted 2 round Suitor + DP, assuming sorted edge lists */
-  WGreedySequential             = false;   /* *Weighted greedy on sorted edge list */
+  WGreedySequential             = true;   /* *Weighted greedy on sorted edge list */
   WBmatching                    = false;    /* 2-matching followed by DP */
   WBcmatching                   = false;    /* 2-matching followed by DP  using compressed neighbor lists*/
   W2MatchingParallel            = false;

@@ -1050,29 +1050,29 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     }
 
 	/* @OGUZ-EDIT Matching cost */
-	if (options->RowPerm == LargeDiag_MC64)
-	{
-		double dsum = 0.0;
-		double dprod = 0.0;
-		for (i = 0; i < m; ++i)
-		{
-			for (j = colptr[i]; j < colptr[i+1]; ++j)
-			{
-				int_t	r = rowind[j];
-				double	v = a_GA[j];
+	/* if (options->RowPerm == LargeDiag_MC64) */
+	/* { */
+	/* 	double dsum = 0.0; */
+	/* 	double dprod = 0.0; */
+	/* 	for (i = 0; i < m; ++i) */
+	/* 	{ */
+	/* 		for (j = colptr[i]; j < colptr[i+1]; ++j) */
+	/* 		{ */
+	/* 			int_t	r = rowind[j]; */
+	/* 			double	v = a_GA[j]; */
 
-				if (i == r)
-				{
-					dsum  += fabs(v);
-					dprod *= fabs(v);
-					break;
-				}
-			}
-		}
+	/* 			if (i == r) */
+	/* 			{ */
+	/* 				dsum  += fabs(v); */
+	/* 				dprod *= fabs(v); */
+	/* 				break; */
+	/* 			} */
+	/* 		} */
+	/* 	} */
 
-		printf("dsum %e\n", dsum);
-		printf("dprod %e\n", dprod);
-	}
+	/* 	printf("dsum %e\n", dsum); */
+	/* 	printf("dprod %e\n", dprod); */
+	/* } */
 	// exit(99);
 
     /* ------------------------------------------------------------
