@@ -233,5 +233,5 @@ void gpa(int n,int m,wed *we,int *ver,int *edges,double *weight,int *match) {
   free(weight1);
   free(weight2);
 
-  printf("GPA: Weight of 2-matching is %f \n",two_weight);
+  // printf("GPA: Weight of 2-matching is %f \n",two_weight);
 }

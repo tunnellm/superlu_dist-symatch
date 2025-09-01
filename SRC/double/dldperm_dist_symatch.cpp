@@ -152,6 +152,7 @@ dldperm_dist_symatch
 	}
 
 
+	// WrMatch *wrm = new WgtGPASeq(g);
 	WrMatch *wrm = new WgtSuitorSeqFor(g);
 	wrm->match();
 

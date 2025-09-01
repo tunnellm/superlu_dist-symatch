@@ -54,17 +54,27 @@ main
 
 	// g->printx(true);
 
+	WrMatch *wrm_gpa = new WgtGPASeq(g);
+	wrm_gpa->match();
+	printf("matching cost (GPA) sum %lf prod %lf\n",
+		   wrm_gpa->cost(), wrm_gpa->cost_prod());
+	// vector<tuple<VIDX_T, VIDX_T, EW_T>> m_gpa_sorted;
+	// wrm_gpa->sort_matching(m_gpa_sorted, false);
+	// cout << "sorted matching" << endl;
+	// for (auto &t : m_gpa_sorted)
+	// 	cout << get<0>(t) << " " << get<1>(t) << " " << get<2>(t) << endl;
+
+	// return 0;
+
+	cout << string(80, '-') << endl;
 
 	WrMatch *wrm = new WgtSuitorSeqFor(g);
 	wrm->match();
-	printf("matching cost %lf\n", wrm->cost());
-	vector<tuple<VIDX_T, VIDX_T, EW_T>> m_sorted;
-
-
-	
+	printf("matching cost (Suitor) sum %lf prod %lf\n",
+		   wrm->cost(), wrm->cost_prod());
+	// vector<tuple<VIDX_T, VIDX_T, EW_T>> m_sorted;	
 	// wrm->sort_matching(m_sorted, true);	
-	wrm->sort_matching(m_sorted, false);
-
+	// wrm->sort_matching(m_sorted, false);
 	// cout << "sorted matching" << endl;
 	// for (auto &t : m_sorted)
 	// 	cout << get<0>(t) << " " << get<1>(t) << " " << get<2>(t) << endl;
@@ -75,8 +85,8 @@ main
 	// the indices of a pair of matched vertices are ordered by their indices
 	// perm[v] = x -> new idx of v is x
 	// vector<VIDX_T> perm(g->nv);	// 0-based
-	vector<VIDX_T> perm(mm.nr);	// 0-based
-	gm->permute(m_sorted, perm);
+	// vector<VIDX_T> perm(mm.nr);	// 0-based
+	// gm->permute(m_sorted, perm);
 
 	
 	// cout << "perm" << endl;
@@ -98,12 +108,13 @@ main
 	// 	 << " perc (%) " << (static_cast<double>(card) / g->nv * 100.0)
 	// 	 << endl;
 
-	uint64_t card = gm->cardinality(m_sorted);
-	cout << "matching cardinality " << card
-		 << " perc (%) " << (static_cast<double>(card) / mm.nr * 100.0)
-		 << endl;
+	// uint64_t card = gm->cardinality(m_sorted);
+	// cout << "matching cardinality " << card
+	// 	 << " perc (%) " << (static_cast<double>(card) / mm.nr * 100.0)
+	// 	 << endl;
 	
 
+	delete wrm_gpa;
 	delete wrm;
 	delete gm;
 	

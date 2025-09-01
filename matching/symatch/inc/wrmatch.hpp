@@ -49,6 +49,10 @@ extern "C" {
 void sweight(int n, int *ver, int *edges, int *s, double *ws, double *weight,
 			 int *init);
 
+// file: gpa.c
+void gpa(int n, int m, wed *we, int *ver, int *edges, double *weight,
+		 int *match);
+
 // other util
 double cost_matching(int n, int *ver, int *edges, double *weight, int *match);
 
@@ -293,4 +297,76 @@ public:
 
 
 
+
+
+class
+WgtGPASeq : public WrMatch
+{
+
+public:
+
+	WgtGPASeq (Graph<WM_VIDX_T, WM_EW_T> *g) :
+		WrMatch(g)
+	{
+		nedges = g->xadj[g->nv] / 2;
+		we = (wed *) malloc(sizeof(*we) * nedges);
+
+		auto f_comp = [] (const wed &arg1, const wed &arg2) -> bool
+		{
+			return arg1.w > arg2.w;
+		};
+
+
+		// setup sorted edges needed by GPA
+		uint64_t tmp = 0;
+		for (WM_VIDX_T v = 1; v <= n; ++v)
+		{
+			for (WM_VIDX_T eptr = ver[v]; eptr < ver[v+1]; ++eptr)
+			{
+				WM_VIDX_T u = edges[eptr];
+				if (v < u)
+				{
+					we[tmp].x = u;
+					we[tmp].y = v;
+					we[tmp].w = weight[eptr];
+					++tmp;
+				}
+			}
+		}
+
+		sort(we, we + nedges, f_comp);
+
+		// for (int i = 0; i < nedges; ++i)
+		// 	cout << "edge " << i << " -> "
+		// 		 << we[i].x << " " << we[i].y << " " << we[i].w << "\n";
+	}
+
+
+
+
+	void
+	match ()
+	{
+		gpa(n, nedges, we, ver, edges, weight, p);
+	}
+
+
+
+
+	virtual
+	~WgtGPASeq ()
+	{
+		free(we);
+	}
+
+
+
+
+
+public:
+
+	// needs sorted edge weights
+	wed			*we;			// struct in suitor library, tuple: (u,v,weight)
+	uint64_t	 nedges;
+};
 #endif

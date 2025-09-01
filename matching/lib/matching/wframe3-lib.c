@@ -944,7 +944,7 @@ double cost_matching(int n,int *ver,int *edges,double *weight,int *match) {
 /* @OGUZ-EDIT product of the matching */
 double cost_matching_prod(int n,int *ver,int *edges,double *weight,int *match) {
 
-  double glob_prod = 0.0;
+  double glob_prod = 1.0;
   int i,k;
 
   for(i=1;i<=n;i++) {
