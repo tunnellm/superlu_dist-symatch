@@ -155,6 +155,7 @@ int dinitDiagFactBufs(int ldt, ddiagFactBufs_t* dFBuf)
     return 0;
 }
 
+#if 0 // The following is no more used
 int_t ddenseTreeFactor(
     int_t nnodes,          // number of nodes in the tree
     int_t *perm_c_supno,    // list of nodes in the order of factorization
@@ -288,6 +289,8 @@ int_t ddenseTreeFactor(
 
     return 0;
 } /* ddenseTreeFactor */
+#endif
+
 
 /*
  * 2D factorization at individual subtree. -- CPU only
@@ -367,6 +370,7 @@ int_t dsparseTreeFactor_ASYNC(
         /* k-th diagonal factorization */
         /*Now factor and broadcast diagonal block*/
 
+    // printf("k0 %10d k %10d\n", k0, k);
 	dDiagFactIBCast(k, k, dFBufs[offset]->BlockUFactor, dFBufs[offset]->BlockLFactor,
 			factStat->IrecvPlcd_D,
 			comReqss[offset]->U_diag_blk_recv_req,
@@ -414,7 +418,7 @@ int_t dsparseTreeFactor_ASYNC(
             {
 		dLPanelUpdate(k, factStat->IrecvPlcd_D, factStat->factored_L,
 			      comReqss[offset]->U_diag_blk_recv_req,
-			      dFBufs[offset]->BlockUFactor, grid, LUstruct, SCT);
+			      dFBufs[offset]->BlockUFactor, grid, LUstruct, SCT, options);
                 factored_L[k] = 1;
             }
             /*U update*/
@@ -422,7 +426,7 @@ int_t dsparseTreeFactor_ASYNC(
             {
 		dUPanelUpdate(k, factStat->factored_U, comReqss[offset]->L_diag_blk_recv_req,
 			      dFBufs[offset]->BlockLFactor, scuBufs->bigV, ldt,
-			      packLUInfo->Ublock_info, grid, LUstruct, stat, SCT);
+			      packLUInfo->Ublock_info, grid, LUstruct, stat, SCT, options);
                 factored_U[k] = 1;
             }
         }
@@ -642,7 +646,7 @@ int_t dsparseTreeFactor_ASYNC(
                         {
 
 			    dLPanelTrSolve( kx, factStat->factored_L,
-					    dFBufs[offset]->BlockUFactor, grid, LUstruct);
+					    dFBufs[offset]->BlockUFactor, grid, LUstruct,options);
 
                             factored_L[kx] = 1;
 
@@ -679,7 +683,7 @@ int_t dsparseTreeFactor_ASYNC(
 			    dUPanelTrSolve( kx, dFBufs[offset]->BlockLFactor,
                                             scuBufs->bigV,
 					    ldt, packLUInfo->Ublock_info,
-					    grid, LUstruct, stat, SCT);
+					    grid, LUstruct, stat, SCT, options);
 
                             factored_U[kx] = 1;
                             /*check if an L_Ibcast is possible*/

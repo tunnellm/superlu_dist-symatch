@@ -12,7 +12,7 @@
 
 int
 dldperm_dist_symatch(int job, int n, int_t nnz, int_t colptr[], int_t adjncy[],
-					 double nzval[], int_t *perm, double u[], double v[],
+					 double nzval[], int_t *perm,
 					 int_t *n_crs, int_t **crs_vrts, int_t **fine_vids);
 
 int

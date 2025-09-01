@@ -86,8 +86,6 @@ dldperm_dist_symatch
 	int_t	  adjncy[],
 	double	  nzval[],
 	int_t	 *perm,
-	double	  R1[],
-	double	  C1[],
 	int_t	 *n_crs,
 	int_t	**crs_vrts
 

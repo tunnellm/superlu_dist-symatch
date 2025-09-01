@@ -230,7 +230,7 @@ pdgsrfs(superlu_dist_options_t *options, int_t n,
 	    }
 	    MPI_Allreduce( &s, &berr[j], 1, MPI_DOUBLE, MPI_MAX, grid->comm );
 
-#if ( PRNTlevel>= 1 )
+#if ( PRNTlevel>= 0 )
 	    if ( !iam )
 		printf("(%2d) .. Step " IFMT ": berr[j] = %e\n", iam, count, berr[j]);
 #endif
@@ -479,6 +479,7 @@ if (!grid3d->zscp.Iam){
 		printf("(%2d) .. Step " IFMT ": berr[j] = %e\n", iam, count, berr[j]);
 #endif
 	    if ( berr[j] > eps && berr[j] * 2 <= lstres && count < ITMAX ) {
+	    // if ( berr[j] > eps && count < ITMAX ) {
 		/* Compute new dx. */
         if (get_new3dsolve()){
             pdgstrs3d_newsolve (options, n, LUstruct,ScalePermstruct, trf3Dpartition, grid3d, dx,

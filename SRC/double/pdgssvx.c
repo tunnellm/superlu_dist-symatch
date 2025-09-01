@@ -572,14 +572,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     float  flinfo;
 
 
-    /* @EDIT-SYMATCH Coarsening information from matching. */
-    struct crs_info_t
-    {
-	int_t	 n_crs;
-	int_t	*crs_vrts; /* crs_vrts[u] = 1 indicates vertex u is a singleton 1x1 pivot
-			      crs_vrts[u] = 2 indicates vertex u in the coarse G is a heavy 2x2 pivot */
-    };
-    struct crs_info_t crs_info;
+	crs_info_t crs_info;
     crs_info.crs_vrts  = NULL;    // Sherry: not free'd ?
 
 
@@ -939,7 +932,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 		        iinfo = dldperm_dist_symatch
 					(job, m, nnz, colptr, rowind, a_GA,
-					 perm_r, R1, C1,
+					 perm_r, 
 					 &(crs_info.n_crs), &(crs_info.crs_vrts));
 
 				t = SuperLU_timer_() - t;
@@ -1929,6 +1922,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		printf("**************************************************\n\n");
 		printf("** number of Tiny Pivots: %8d\n\n", stat->TinyPivots);
 		printf("** number of 2x2 Pivots by sytrf: %8d\n\n", stat->sytrf_2x2);
+		printf("info %10d\n",*info);
 		fflush(stdout);
             }
 	} /* end printing stats */

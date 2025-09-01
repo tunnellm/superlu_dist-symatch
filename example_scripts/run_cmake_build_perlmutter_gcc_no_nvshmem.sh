@@ -75,9 +75,9 @@ cmake .. \
   -DTPL_SYMATCH_LIBRARIES="/global/cfs/cdirs/m2957/lib/suitor/lib_GNU/libsuitor.a"
 
 make pddrive -j16
-make pddrive-v1 -j16
+make pddrive-sym -j16
 # make pddrive
-# make pddrive-v1
+# make pddrive-sym
 #make pddrive3d -j16
 #make pzdrive3d -j16
 #make f_pddrive

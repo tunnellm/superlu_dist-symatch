@@ -76,7 +76,7 @@ cmake .. \
   -DTPL_SYMATCH_LIBRARIES="$CFS/m2957/liuyangz/my_research/superlu_dist-symatch//matching/lib/matching/lib/libsuitor.a"
      
 make pddrive -j16
-make pddrive-v1
+make pddrive-sym
 # make pddrive3d -j16
 # make pzdrive -j16
 # make pzdrive3d -j16

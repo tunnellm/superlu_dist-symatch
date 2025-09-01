@@ -695,8 +695,9 @@ pdgstrf2_sym
 	/* ++++ Invert the diagonal block ++++++++++ */  
     
       
-        //   if(k==2){
-        //     snprintf(filename, sizeof(filename), "D.txt");
+        //     printf("k %10d nsupc %10d \n",k,nsupc);
+        // //   if(k==2){
+        //     snprintf(filename, sizeof(filename), "D2d.txt");
         //         if ( !(fp = fopen(filename, "w")) ) {
         //         ABORT("File open failed");
         //         }
@@ -707,7 +708,7 @@ pdgstrf2_sym
         //         }
         //     }
         //     fclose(fp);
-        //   }
+        // //   }
 
 
 #if 0
@@ -742,11 +743,16 @@ pdgstrf2_sym
         }
 #endif
 
-          if(*info>0)
+          if(*info>0){
             *info = *info + jfst;
-          if(info<0)
+            // printf("info %10d\n",*info);
+            // exit(1);
+          }
+          if(info<0){
             *info = *info - jfst;
-
+            // printf("info %10d\n",*info);
+            // exit(1);
+          }
 
           dsytri_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&INFO);
 
@@ -953,66 +959,136 @@ void Local_Dgstrf2(superlu_dist_options_t *options, int_t k, double thresh,
     int incx = 1;
     int incy = ld_ujrow;
 
-    for (int_t j = 0; j < jlst - jfst; ++j)   /* for each column in panel */
-    {
-        /* Diagonal pivot */
-        int_t i = luptr;
-        /* Allow to replace zero pivot.  */
-        //if (options->ReplaceTinyPivot == YES && lusup[i] != 0.0)
-        if (options->ReplaceTinyPivot == YES)
-        {
-            if (fabs (lusup[i]) < thresh) {  /* Diagonal */
+    double thresh1=thresh/10;
+    double t1, t2;
+    int INFO,lwork;
+	char filename[256];
+	FILE *fp, *fopen();    
 
-#if ( PRNTlevel>=2 )
-                    printf ("(%d) .. col %d, tiny pivot %e  ",
-                            iam, jfst + j, lusup[i]);
-#endif
-                /* Keep the new diagonal entry with the same sign. */
-                if (lusup[i] < 0) lusup[i] = -thresh;
-                else lusup[i] = thresh;
-#if ( PRNTlevel>=2 )
-                    printf ("replaced by %e\n", lusup[i]);
-#endif
-                ++(stat->TinyPivots);
+
+        // //   if(k==2){
+        //     printf("k %10d nsupc %10d \n",k,nsupc);
+        //     snprintf(filename, sizeof(filename), "D3d.txt");
+        //         if ( !(fp = fopen(filename, "w")) ) {
+        //         ABORT("File open failed");
+        //         }
+
+        //     for (int j = 0; j < nsupc; ++j) {
+        //         for (int i = 0; i < nsupc; ++i) {
+        //             fprintf(fp, IFMT IFMT " %e\n", j,i,lusup[j * nsupr + i]);
+        //         }
+        //     }
+        //     fclose(fp);
+        // //   }
+
+
+
+    if(options->SymFact == YES){    
+        ujrow = Llu->ujrow;
+	    /* ++++ Invert the diagonal block ++++++++++ */  
+        if(options->ReplaceTinyPivot == YES){
+        lwork = -1;    
+        int ntiny=0;    
+        int n2x2=0;    
+        dsytrf_mod_("L",&nsupc,lusup,&nsupr,&thresh1, Llu->diagpivot,ujrow,&lwork,info, &(ntiny), &(n2x2));  
+        if(ujrow[0]>Llu->size_ujrow)
+            ABORT("workspace ujrow not large enough for sytrf.");
+        lwork = (int)(ujrow[0]);
+        dsytrf_mod_("L",&nsupc,lusup,&nsupr,&thresh1, Llu->diagpivot,ujrow,&lwork,info, &(ntiny), &(n2x2));
+        stat->TinyPivots+=ntiny;
+        stat->sytrf_2x2+=n2x2;
+        }else{
+        lwork = -1;        
+        dsytrf_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&lwork,info);  
+        if(ujrow[0]>Llu->size_ujrow)
+            ABORT("workspace ujrow not large enough for sytrf.");
+        lwork = (int)(ujrow[0]);
+        dsytrf_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&lwork,info);
+        }
+
+          if(*info>0){
+            *info = *info + jfst;
+            // printf("info %10d\n",*info);
+            // exit(1);
+          }
+          if(info<0){
+            *info = *info - jfst;
+            // printf("info %10d\n",*info);
+            // exit(1);
+          }
+
+        dsytri_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&INFO);
+
+        for (int j = 0; j < nsupc; ++j) {
+        for (int i = j + 1; i < nsupc; ++i) {
+            lusup[i * nsupr + j]=lusup[j * nsupr + i] ;
+        }
+        }
+        //   printf("nsupc %5d nsupr %5d\n",nsupc,nsupr);
+
+        stat->ops[FACT] += (flops_t) nsupc *nsupc*nsupc;
+
+    }else{
+        for (int_t j = 0; j < jlst - jfst; ++j)   /* for each column in panel */
+        {
+            /* Diagonal pivot */
+            int_t i = luptr;
+            /* Allow to replace zero pivot.  */
+            //if (options->ReplaceTinyPivot == YES && lusup[i] != 0.0)
+            if (options->ReplaceTinyPivot == YES)
+            {
+                if (fabs (lusup[i]) < thresh) {  /* Diagonal */
+
+    #if ( PRNTlevel>=2 )
+                        printf ("(%d) .. col %d, tiny pivot %e  ",
+                                iam, jfst + j, lusup[i]);
+    #endif
+                    /* Keep the new diagonal entry with the same sign. */
+                    if (lusup[i] < 0) lusup[i] = -thresh;
+                    else lusup[i] = thresh;
+    #if ( PRNTlevel>=2 )
+                        printf ("replaced by %e\n", lusup[i]);
+    #endif
+                    ++(stat->TinyPivots);
+                }
             }
-        }
 
-        for (int_t l = 0; l < cols_left; ++l, i += nsupr, ++u_diag_cnt)
-        {
-            int_t st = j * ld_ujrow + j;
-            ublk_ptr[st + l * ld_ujrow] = lusup[i]; /* copy one row of U */
-        }
+            for (int_t l = 0; l < cols_left; ++l, i += nsupr, ++u_diag_cnt)
+            {
+                int_t st = j * ld_ujrow + j;
+                ublk_ptr[st + l * ld_ujrow] = lusup[i]; /* copy one row of U */
+            }
 
-        if (ujrow[0] == zero)   /* Test for singularity. */
-        {
-            *info = j + jfst + 1;
-        }
-        else                /* Scale the j-th column. */
-        {
-            double temp;
-            temp = 1.0 / ujrow[0];
-            for (int_t i = luptr + 1; i < luptr - j + nsupc; ++i)
-                lusup[i] *= temp;
-            stat->ops[FACT] += nsupc - j - 1;
-        }
+            if (ujrow[0] == zero)   /* Test for singularity. */
+            {
+                *info = j + jfst + 1;
+            }
+            else                /* Scale the j-th column. */
+            {
+                double temp;
+                temp = 1.0 / ujrow[0];
+                for (int_t i = luptr + 1; i < luptr - j + nsupc; ++i)
+                    lusup[i] *= temp;
+                stat->ops[FACT] += nsupc - j - 1;
+            }
 
-        /* Rank-1 update of the trailing submatrix. */
-        if (--cols_left)
-        {
-            /*following must be int*/
-            int l = nsupc - j - 1;
+            /* Rank-1 update of the trailing submatrix. */
+            if (--cols_left)
+            {
+                /*following must be int*/
+                int l = nsupc - j - 1;
 
-	    /* Rank-1 update */
-            superlu_dger(l, cols_left, alpha, &lusup[luptr + 1], incx,
-                         &ujrow[ld_ujrow], incy, &lusup[luptr + nsupr + 1], nsupr);
-            stat->ops[FACT] += 2 * l * cols_left;
-        }
+            /* Rank-1 update */
+                superlu_dger(l, cols_left, alpha, &lusup[luptr + 1], incx,
+                            &ujrow[ld_ujrow], incy, &lusup[luptr + nsupr + 1], nsupr);
+                stat->ops[FACT] += 2 * l * cols_left;
+            }
 
-        ujrow = ujrow + ld_ujrow + 1; /* move to next row of U */
-        luptr += nsupr + 1;           /* move to next column */
+            ujrow = ujrow + ld_ujrow + 1; /* move to next row of U */
+            luptr += nsupr + 1;           /* move to next column */
 
-    }                       /* for column j ...  first loop */
-
+        }                       /* for column j ...  first loop */
+    }
 
     //int_t thread_id = omp_get_thread_num();
     // SCT->Local_Dgstrf2_Thread_tl[thread_id * CACHE_LINE_SIZE] += (double) ( SuperLU_timer_() - t1);
@@ -1081,6 +1157,7 @@ void Local_Dgstrf2(superlu_dist_options_t *options, int_t k, double thresh,
  *
  * </pre>
  */
+#if 0   // The following is no more used
 void pdgstrf2_xtrsm
 (superlu_dist_options_t *options, int_t nsupers,
  int_t k0, int_t k, double thresh, Glu_persist_t *Glu_persist,
@@ -1165,6 +1242,7 @@ void pdgstrf2_xtrsm
     } /* end if pkk ... */
 
 } /* pdgstrf2_xtrsm */
+#endif
 
 /*****************************************************************************
  * The following functions are for the new pdgstrs2_omp in the 3D code.

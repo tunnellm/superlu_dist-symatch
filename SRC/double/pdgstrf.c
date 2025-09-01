@@ -718,12 +718,15 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
         ABORT ("Malloc fails for ujrow[].");
     if (!(Llu->diagpivot = intCalloc_dist (k)))
         ABORT ("Malloc fails for diagpivot[].");
+
+// The following is needed to call pdgstrf2_sym_check_tinypivot
+#if 0
     if (!(Llu->w = doubleCalloc_dist (k)))
         ABORT ("Malloc fails for w[].");
 
     int lwork=-1,liwork=-1;
-    double  wkopt;
-    int     iwkopt,info1;    
+    double  wkopt=0;
+    int     iwkopt=1,info1;    
     dsyevd_("V", "L", &k,NULL,&k,NULL,&wkopt,&lwork,&iwkopt,&liwork,&info1);
     lwork  = (int)(wkopt+1);
     liwork = iwkopt;
@@ -733,6 +736,9 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
         ABORT ("Malloc fails for work[].");
     if (!(Llu->iwork = intCalloc_dist (liwork)))
         ABORT ("Malloc fails for iwork[].");
+#endif
+
+
 
 #endif
     log_memory(k * k * iword, stat);

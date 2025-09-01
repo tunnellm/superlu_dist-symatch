@@ -2555,22 +2555,62 @@ void permCol_SymbolicFact3d(superlu_dist_options_t *options, int n, SuperMatrix 
     int_t iinfo;
     int iam = grid3d->iam;
 
-    sp_colorder(options, GA, perm_c, etree, &GAC);
+    NCformat *GAstore;
+    double   *a_GA;
+    int_t   *colptr, *rowind; /* for GA */
+    int_t m       = GA->nrow;
+    int_t nnz;
 
-    /* Form Pc*A*Pc' to preserve the diagonal of the matrix GAC. */
-    GACstore = (NCPformat *)GAC.Store;
-    GACcolbeg = GACstore->colbeg;
-    GACcolend = GACstore->colend;
-    GACrowind = GACstore->rowind;
-    for (int_t j = 0; j < n; ++j)
-    {
-        for (int_t i = GACcolbeg[j]; i < GACcolend[j]; ++i)
+    if (options->RowPerm == SymMatch) {
+
+        GAstore = (NCformat *) GA->Store;
+        colptr = GAstore->colptr;
+        rowind = GAstore->rowind;
+        nnz = GAstore->nnz;
+        a_GA = (double *) GAstore->nzval;
+
+
+        /* GA = Pr*A*Pr^T, perm_r[] is already applied on both sides. */
+        /* Form GAC = Pc*GA*Pc^T, prepare for symbolic factor  */
+        apply_perm_sym(m, nnz, colptr, rowind, a_GA, perm_c);
+
+        GACcolbeg = (int_t*) intMalloc_dist(n);
+        if ( !(GACcolbeg) ) ABORT("SUPERLU_MALLOC fails for GACcolbeg");
+        GACcolend = (int_t*) intMalloc_dist(n);
+        if ( !(GACcolend) ) ABORT("SUPERLU_MALLOC fails for GACcolend");
+
+        for (int_t i = 0; i < n; ++i) {
+        GACcolbeg[i] = colptr[i];
+            GACcolend[i] = colptr[i+1];
+        }
+
+        dCreate_CompColPemuted_Matrix_dist(&GAC, m, n, nnz, a_GA, rowind,
+                            GACcolbeg, GACcolend,
+                            SLU_NCP, SLU_D, SLU_GE);
+#if 0
+        /* The fine etree should already be postordered */
+        sp_symetree_dist(GACcolbeg, GACcolend, rowind,  n, etree);
+#endif
+
+    } else {
+        /* GA = Pr*A, perm_r[] is already applied. */
+        sp_colorder(options, GA, perm_c, etree, &GAC);
+
+        /* Form Pc*A*Pc' to preserve the diagonal of the matrix GAC. */
+        GACstore = (NCPformat *)GAC.Store;
+        GACcolbeg = GACstore->colbeg;
+        GACcolend = GACstore->colend;
+        GACrowind = GACstore->rowind;
+        for (int_t j = 0; j < n; ++j)
         {
-            irow = GACrowind[i];
-            GACrowind[i] = perm_c[irow];
+            for (int_t i = GACcolbeg[j]; i < GACcolend[j]; ++i)
+            {
+                irow = GACrowind[i];
+                GACrowind[i] = perm_c[irow];
+            }
         }
     }
-
+    
 #if (PRNTlevel >= 1)
     if (!iam)
         printf(".. symbfact(): relax %4d, maxsuper %4d, fill %4d\n",

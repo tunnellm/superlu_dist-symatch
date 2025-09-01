@@ -29,9 +29,9 @@ void validateInput_pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     int Fact = options->Fact;
     if (Fact < 0 || Fact > FACTORED)
         *info = -1;
-    else if (options->RowPerm < 0 || options->RowPerm > MY_PERMR)
+    else if (options->RowPerm < 0 || options->RowPerm > SymMatch)
         *info = -1;
-    else if (options->ColPerm < 0 || options->ColPerm > MY_PERMC)
+    else if (options->ColPerm < 0 || options->ColPerm > SymMatch)
         *info = -1;
     else if (options->IterRefine < 0 || options->IterRefine > SLU_EXTRA)
         *info = -1;
@@ -118,7 +118,7 @@ void dscalePrecomputed(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct) {
 }
 
 void dscaleFromScratch(
-    SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
+    yes_no_t SymFact, SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
     gridinfo_t *grid, int *rowequ, int *colequ, int *iinfo)
 {
     NRformat_loc *Astore = (NRformat_loc *)A->Store;
@@ -134,17 +134,21 @@ void dscaleFromScratch(
     char equed[1];
     int iam = grid->iam;
 
-    pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, iinfo, grid);
+    if (SymFact == YES) {
+        pdgsequ_sym(A, R, C, grid, equed);
+    }else{
+        pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, iinfo, grid);
 
-    if (*iinfo > 0) {
-#if (PRNTlevel >= 1)
-        fprintf(stderr, "The " IFMT "-th %s of A is exactly zero\n", *iinfo <= m_loc ? *iinfo : *iinfo - m_loc, *iinfo <= m_loc ? "row" : "column");
-#endif
-    } else if (*iinfo < 0) {
-        return;
+        if (*iinfo > 0) {
+    #if (PRNTlevel >= 1)
+            fprintf(stderr, "The " IFMT "-th %s of A is exactly zero\n", *iinfo <= m_loc ? *iinfo : *iinfo - m_loc, *iinfo <= m_loc ? "row" : "column");
+    #endif
+        } else if (*iinfo < 0) {
+            return;
+        }
+
+        pdlaqgs(A, R, C, rowcnd, colcnd, amax, equed);
     }
-
-    pdlaqgs(A, R, C, rowcnd, colcnd, amax, equed);
 
     if      (strncmp(equed, "R", 1) == 0) { ScalePermstruct->DiagScale = ROW; *rowequ = 1; *colequ = 0; }
     else if (strncmp(equed, "C", 1) == 0) { ScalePermstruct->DiagScale = COL; *rowequ = 0; *colequ = 1; }
@@ -159,7 +163,7 @@ void dscaleFromScratch(
 #endif
 }
 
-void dscaleMatrixDiagonally(fact_t Fact, dScalePermstruct_t *ScalePermstruct,
+void dscaleMatrixDiagonally(yes_no_t SymFact, fact_t Fact, dScalePermstruct_t *ScalePermstruct,
                            SuperMatrix *A, SuperLUStat_t *stat, gridinfo_t *grid,
                             int *rowequ, int *colequ, int *iinfo)
 {
@@ -174,7 +178,7 @@ void dscaleMatrixDiagonally(fact_t Fact, dScalePermstruct_t *ScalePermstruct,
     if (Fact == SamePattern_SameRowPerm) {
         dscalePrecomputed(A, ScalePermstruct);
     } else {
-        dscaleFromScratch(A, ScalePermstruct, grid, rowequ, colequ, iinfo);
+        dscaleFromScratch(SymFact, A, ScalePermstruct, grid, rowequ, colequ, iinfo);
     }
 
     stat->utime[EQUIL] = SuperLU_timer_() - t_start;
@@ -476,6 +480,7 @@ void dperform_row_permutation(
     int Equil,
     int *rowequ,
     int *colequ,
+    crs_info_t *crs_info,
     int *iinfo)
 {
     #if ( DEBUGlevel>=1 )
@@ -514,6 +519,110 @@ void dperform_row_permutation(
                 m, n, grid,
                 A, GA, stat, job,
                 Equil, rowequ, colequ, iinfo);
+
+#if ( PRNTlevel>=1 )
+            	/* @OGUZ-EDIT Matching cost */
+                double dsum = 0.0;
+                double dprod = 0.0;
+                for (i = 0; i < m; ++i)
+                {
+                    for (j = colptr[i]; j < colptr[i+1]; ++j)
+                    {
+                        int_t	r = rowind[j];
+                        double	v = a_GA[j];
+
+                        if (i == r)
+                        {
+                            dsum  += fabs(v);
+                            dprod *= fabs(v);
+                            break;
+                        }
+                    }
+                }
+
+                printf("dsum %e\n", dsum);
+                printf("dprod %e\n", dprod);
+#endif
+
+            } else if ( options->RowPerm == SymMatch ) {
+		    /* Get a new perm_r[] from SymMatch */
+
+	            if ( !iam ) { /* Process 0 finds a row permutation */
+
+				t = SuperLU_timer_();
+
+		        *iinfo = dldperm_dist_symatch
+					(job, m, nnz, colptr, rowind, a_GA,
+					 perm_r, 
+					 &(crs_info->n_crs), &(crs_info->crs_vrts));
+
+				t = SuperLU_timer_() - t;
+#if ( PRNTlevel>=1 )
+				printf("dldperm_dist_symatch (Pr): %f \n",t);
+#endif
+				// exit(11);
+			/* @EDIT-SYMATCH apply symmetric permutation here.  */
+#if ( PRNTlevel>=2 )
+			check_perm_dist("perm_r_symatch", GA.nrow, perm_r);
+			PrintInt32("perm_r_symatch", m, perm_r);
+#endif
+                        MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
+		        if ( iinfo == 0 ) {
+		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
+
+					MPI_Bcast(&(crs_info->n_crs), 1, mpi_int_t, 0, grid->comm);
+					if (crs_info->n_crs > 0)
+					{
+						MPI_Bcast(crs_info->crs_vrts, crs_info->n_crs, mpi_int_t,
+								  0, grid->comm);
+					}
+		        }
+	            } else {
+		        MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
+			if ( iinfo == 0 ) {
+		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
+
+					MPI_Bcast(&(crs_info->n_crs), 1, mpi_int_t, 0, grid->comm);
+					if (crs_info->n_crs > 0)
+					{
+						crs_info->crs_vrts = (int_t *)
+							malloc(sizeof(*(crs_info->crs_vrts)) *
+								   (crs_info->n_crs));
+						MPI_Bcast(crs_info->crs_vrts, crs_info->n_crs, mpi_int_t,
+								  0, grid->comm);
+					}
+		        }
+	            }
+
+	            if ( iinfo == 0 ) {
+			/* @EDIT-SYMATCH row permutation is applied here, apply Pr^T too. */
+                        /* Now permute global GA to prepare for symbfact() */
+#if ( DEBUGlevel>=1 )
+			dCheck_Diag_CSC("Before apply_perm_sym()", &GA);
+#endif
+
+
+			t = SuperLU_timer_();
+			/* @EDIT-SYMATCH 1. B = Pr A PrT */
+			apply_perm_sym(m, nnz, colptr, rowind, a_GA, perm_r);
+#if ( DEBUGlevel>=1 )
+			is_symmetric(m, nnz, colptr, rowind, a_GA);
+#endif
+			// exit(22);
+				t = SuperLU_timer_() - t;
+#if ( PRNTlevel>=1 )
+				printf("apply_perm_sym (B = PrAPr^T): %f \n",t);
+#endif
+
+#if ( DEBUGlevel>=1 )
+			dCheck_Diag_CSC("After apply_perm_sym()", &GA);
+#endif
+
+			/* Distributed A also will be permuted before pddistribute */
+
+                    } else { /* if iinfo != 0 */
+			for (int_t i = 0; i < m; ++i) perm_r[i] = i;
+		    }
             }
             else // LargeDiag_HWPM
             {

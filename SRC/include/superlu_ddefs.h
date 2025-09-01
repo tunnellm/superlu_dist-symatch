@@ -618,7 +618,7 @@ extern int  dldperm_dist(int, int, int_t, int_t [], int_t [],
 		    double [], int_t *, double [], double []);
 /* @EDIT-SYMATCH Begin */
 extern int  dldperm_dist_symatch(int, int, int_t, int_t [], int_t [],
-								 double [], int_t *, double [], double [],
+								 double [], int_t *,
 								 int_t *, int_t **);
 extern int coarsen_graph(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
 extern int coarsen_graph_v2(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
@@ -673,6 +673,7 @@ extern void pdgstrf2_sym(superlu_dist_options_t * options, int_t k0, int_t k,
 
 extern void pdgstrs2_omp(int_t k0, int_t k, Glu_persist_t *, gridinfo_t *,
 			 dLocalLU_t *, Ublock_info_t *, SuperLUStat_t *);
+extern void pdgstrs2_sym_omp(int_t k0, int_t k, Glu_persist_t * Glu_persist, gridinfo_t * grid,dLocalLU_t * Llu, Ublock_info_t *Ublock_info, SuperLUStat_t * stat);             
 extern void pdgstrf2_sym_omp(int_t k0, int_t k, Glu_persist_t *, gridinfo_t *,
 			 dLocalLU_t *, Ublock_info_t *, SuperLUStat_t *);
 extern int_t pdReDistribute_B_to_X(double *B, int_t m_loc, int nrhs, int_t ldb,
@@ -1018,12 +1019,12 @@ extern int  dread_binary(FILE *, int_t *, int_t *, int_t *,
 extern void validateInput_pdgssvx3d(superlu_dist_options_t *, SuperMatrix *A,
        int ldb, int nrhs, gridinfo3d_t *, int *info);
 extern void dallocScalePermstruct_RC(dScalePermstruct_t *, int_t m, int_t n);
-extern void dscaleMatrixDiagonally(fact_t Fact, dScalePermstruct_t *, SuperMatrix *,
+extern void dscaleMatrixDiagonally(yes_no_t SymFact, fact_t Fact, dScalePermstruct_t *, SuperMatrix *,
        	    		SuperLUStat_t *, gridinfo_t *, int *rowequ, int *colequ, int *iinfo);
 extern void dperform_row_permutation(superlu_dist_options_t *, fact_t Fact,
            dScalePermstruct_t *, dLUstruct_t *LUstruct, int_t m, int_t n,
 	       gridinfo_t *, SuperMatrix *A, SuperMatrix *GA, SuperLUStat_t *,
-	       int job, int Equil, int *rowequ, int *colequ, int *iinfo);
+	       int job, int Equil, int *rowequ, int *colequ, crs_info_t *crs_info, int *iinfo);
 extern double dcomputeA_Norm(int notran, SuperMatrix *, gridinfo_t *);
 extern int dtrs_compute_communication_structure(superlu_dist_options_t *options,
        int_t n, dLUstruct_t *, dScalePermstruct_t * ScalePermstruct,
@@ -1125,6 +1126,15 @@ extern int superlu_dtrsv(char *uplo, char *trans, char *diag,
 
 #ifdef SLU_HAVE_LAPACK
 extern void dtrtri_(char*, char*, int*, double*, int*, int*);
+extern void dsytrf_(char*, int*, double*, int*, int*, double*, int*, int*);
+extern void dsytrf_mod_(char*, int*, double*, int*, double*, int*, double*, int*, int*, int*, int*);
+extern void dsyevd_(char*, char*, int*, double*, int*, double*, double*, int*, int*, int*, int*);
+#ifdef USE_VENDOR_BLAS
+extern void dsyr_(char*, int*, double*, double*, int*, double*, int*, int);
+#else
+extern void dsyr_(char*, int*, double*, double*, int*, double*, int*);
+#endif
+extern void dsytri_(char*, int*, double*, int*, int*, double*, int*);
 #endif
 
 /*==== For 3D code ====*/
@@ -1440,14 +1450,14 @@ extern int_t dDiagFactIBCast(int_t k,  int_t k0,
 			     SCT_t *, int tag_ub);
 extern int_t dUPanelTrSolve( int_t k, double* BlockLFactor, double* bigV,
 			     int_t ldt, Ublock_info_t*, gridinfo_t *,
-			     dLUstruct_t *, SuperLUStat_t *, SCT_t *);
+			     dLUstruct_t *, SuperLUStat_t *, SCT_t *, superlu_dist_options_t *);
 extern int_t dLPanelUpdate(int_t k,  int* IrecvPlcd_D, int* factored_L,
 			   MPI_Request *, double* BlockUFactor, gridinfo_t *,
-			   dLUstruct_t *, SCT_t *);
+			   dLUstruct_t *, SCT_t *, superlu_dist_options_t *);
 extern int_t dUPanelUpdate(int_t k, int* factored_U, MPI_Request *,
 			   double* BlockLFactor, double* bigV,
 			   int_t ldt, Ublock_info_t*, gridinfo_t *,
-			   dLUstruct_t *, SuperLUStat_t *, SCT_t *);
+			   dLUstruct_t *, SuperLUStat_t *, SCT_t *, superlu_dist_options_t *);
 extern int_t dIBcastRecvLPanel(int_t k, int_t k0, int* msgcnt,
 			       MPI_Request *, MPI_Request *,
 			       int_t* Lsub_buf, double* Lval_buf,
@@ -1461,7 +1471,7 @@ extern int_t dWaitL(int_t k, int* msgcnt, int* msgcntU, MPI_Request *,
 extern int_t dWaitU(int_t k, int* msgcnt, MPI_Request *, MPI_Request *,
 		   gridinfo_t *, dLUstruct_t *, SCT_t *);
 extern int_t dLPanelTrSolve(int_t k, int* factored_L, double* BlockUFactor,
-			    gridinfo_t *, dLUstruct_t *);
+			    gridinfo_t *, dLUstruct_t *, superlu_dist_options_t *);
 
     /* from trfAux.h */
 extern int getNsupers(int, Glu_persist_t *);

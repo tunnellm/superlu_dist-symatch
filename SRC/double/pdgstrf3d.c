@@ -187,6 +187,15 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
     }
 #endif
 
+
+    int k = sp_ienv_dist (3, options);       /* max supernode size */
+    /* Instead of half storage, we'll do full storage */
+    Llu->size_ujrow = k*k;
+    if (!(Llu->ujrow = doubleCalloc_dist (k * k)))
+        ABORT ("Malloc fails for ujrow[].");
+    if (!(Llu->diagpivot = intCalloc_dist (k)))
+        ABORT ("Malloc fails for diagpivot[].");
+
     // dtrf3Dpartition_t*  trf3Dpartition = initTrf3Dpartition(nsupers, options, LUstruct, grid3d);
     gEtreeInfo_t gEtreeInfo = trf3Dpartition->gEtreeInfo;
     int_t* iperm_c_supno = trf3Dpartition->iperm_c_supno;
@@ -250,6 +259,7 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
 #else
     // ddiagFactBufs_t** dFBufs = dinitDiagFactBufsArr(mxLeafNode, ldt, grid);
 #endif
+
     commRequests_t** comReqss = initCommRequestsArr(SUPERLU_MAX(mxLeafNode, numLA), ldt, grid);
 
     /* Setting up GPU related data structures */
@@ -430,6 +440,11 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
     dLluBufFreeArr(numLA, LUvsbs);
     dfreeDiagFactBufsArr(mxLeafNode, dFBufs);
     Free_HyP(HyP);
+
+
+    SUPERLU_FREE (Llu->ujrow);
+    SUPERLU_FREE (Llu->diagpivot);
+
 
 #if ( DEBUGlevel>=1 )
     CHECK_MALLOC (grid3d->iam, "Exit pdgstrf3d()");

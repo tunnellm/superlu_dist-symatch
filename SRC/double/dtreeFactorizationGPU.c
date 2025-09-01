@@ -249,7 +249,7 @@ int dsparseTreeFactor_ASYNC_GPU(
 #else
                 dLPanelUpdate(k, factStat->IrecvPlcd_D, factStat->factored_L,
                               comReqss[offset]->U_diag_blk_recv_req,
-                              dFBufs[offset]->BlockUFactor, grid, LUstruct, SCT);
+                              dFBufs[offset]->BlockUFactor, grid, LUstruct, SCT, options);
 #endif
 
                 factored_L[k] = 1;
@@ -263,7 +263,7 @@ int dsparseTreeFactor_ASYNC_GPU(
 #else
                 dUPanelUpdate(k, factStat->factored_U, comReqss[offset]->L_diag_blk_recv_req,
                               dFBufs[offset]->BlockLFactor, scuBufs->bigV, ldt,
-                              packLUInfo->Ublock_info, grid, LUstruct, stat, SCT);
+                              packLUInfo->Ublock_info, grid, LUstruct, stat, SCT, options);
 #endif
                 factored_U[k] = 1;
             }
@@ -672,7 +672,7 @@ int dsparseTreeFactor_ASYNC_GPU(
                                             grid, LUstruct, SCT);
 #else
                             dLPanelTrSolve(kx, factStat->factored_L,
-                                           dFBufs[offset]->BlockUFactor, grid, LUstruct);
+                                           dFBufs[offset]->BlockUFactor, grid, LUstruct,options);
 #endif
 
                             factored_L[kx] = 1;
@@ -716,7 +716,7 @@ int dsparseTreeFactor_ASYNC_GPU(
                             dUPanelTrSolve(kx, dFBufs[offset]->BlockLFactor,
                                            scuBufs->bigV,
                                            ldt, packLUInfo->Ublock_info,
-                                           grid, LUstruct, stat, SCT);
+                                           grid, LUstruct, stat, SCT, options);
 #endif
                             factored_U[kx] = 1;
                             /*check if an L_Ibcast is possible*/
