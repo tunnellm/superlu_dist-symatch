@@ -136,9 +136,11 @@ dstatic_schedule(superlu_dist_options_t * options, int m, int n,
 
             for (j = 0, lb = 0; lb < nsupers; lb++) {
                 for (k = 0; k < SuperSize (lb); k++) {
+                    if(etree[j + k]!=n){
                     jb = Glu_persist->supno[etree[j + k]];
                     if (jb != lb)
                         etree_supno[lb] = SUPERLU_MIN (etree_supno[lb], jb);
+                    }
                 }
                 j += SuperSize (lb);
             }
@@ -696,7 +698,7 @@ dstatic_schedule(superlu_dist_options_t * options, int m, int n,
             i = ib;
         }
 	
-	printf (" \t=== [4] ===\n"); fflush(stdout);
+	// printf (" \t=== [4] ===\n"); fflush(stdout);
 
 #ifdef USE_ALLGATHER
         /* insert local nodes in DAG */
@@ -894,7 +896,7 @@ dstatic_schedule(superlu_dist_options_t * options, int m, int n,
 
 #endif  /* end USE_ALL_GATHER */
 
-	printf (" \t=== [5] ===\n"); fflush(stdout);
+	// printf (" \t=== [5] ===\n"); fflush(stdout);
 	
         /* initialize the num of child for each node */
         num_child = SUPERLU_MALLOC (nsupers * sizeof (int_t));
@@ -905,7 +907,7 @@ dstatic_schedule(superlu_dist_options_t * options, int m, int n,
             }
         }
 
-	PrintInt32("num_child", nsupers, num_child);
+	// PrintInt32("num_child", nsupers, num_child);
 	
         /* push initial leaves to the fifo queue */
         nnodes = 0;
@@ -931,7 +933,7 @@ dstatic_schedule(superlu_dist_options_t * options, int m, int n,
         i = 0;
 
 
-	printf("leaf nodes %d\n", nnodes);
+	// printf("leaf nodes %d\n", nnodes);
 
         while (nnodes > 0) {
             //printf( "=== pop %d (%d) ===\n",head->id,i );
@@ -988,12 +990,12 @@ dstatic_schedule(superlu_dist_options_t * options, int m, int n,
      * end of static scheduling *
      * ======================== */
 
-    printf (" \t=== [6] nsupers %d ===\n", nsupers); fflush(stdout);
+    // printf (" \t=== [6] nsupers %d ===\n", nsupers); fflush(stdout);
 
-    PrintInt32("perm_c_supno", nsupers, perm_c_supno);
+    // PrintInt32("perm_c_supno", nsupers, perm_c_supno);
     for (lb = 0; lb < nsupers; lb++) iperm_c_supno[perm_c_supno[lb]] = lb;
 
-    	printf (" \t=== [7] ===\n"); fflush(stdout);
+    	// printf (" \t=== [7] ===\n"); fflush(stdout);
 	
 #if ( DEBUGlevel >= 1 )
     print_memorylog(stat, "after static schedule");

@@ -244,6 +244,7 @@ void set_default_options_dist(superlu_dist_options_t *options)
     options->Use_TensorCore    = NO;
     options->SymFact = NO;
     options->indicator_2x2 = NULL;
+    options->SolveOnly = NO;
 }
 
 /*! \brief Print the options setting.

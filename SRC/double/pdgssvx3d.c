@@ -1249,6 +1249,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
     MPI_Bcast(&rowequ, 1, MPI_INT, 0, grid3d->zscp.comm);
     MPI_Bcast(&colequ, 1, MPI_INT, 0, grid3d->zscp.comm);
+    MPI_Bcast(&etree, 1, mpi_int_t, 0, grid3d->zscp.comm);
 
     /* Now all processes in 3D grid participate */
     

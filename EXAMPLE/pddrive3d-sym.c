@@ -229,6 +229,9 @@ int main (int argc, char *argv[])
     options.Equil = NO; 
     options.Algo3d = YES;
     options.IterRefine = NOREFINE;
+    // options.lookahead_etree   = YES; // this one is buggy for pddrive3d, but works for pddrive
+    options.SymPattern   = YES;
+
     // options.ParSymbFact       = YES;
     // options.ColPerm           = PARMETIS;
 #if 0

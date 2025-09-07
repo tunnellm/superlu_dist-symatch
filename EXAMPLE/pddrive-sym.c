@@ -74,6 +74,9 @@ int main(int argc, char *argv[])
      */
     set_default_options_dist(&options);
     options.Equil = NO; 
+    options.lookahead_etree   = YES;
+    options.SymPattern   = YES;
+
 #if 0
     options.ReplaceTinyPivot = YES;
     options.ParSymbFact       = YES;

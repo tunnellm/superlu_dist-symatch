@@ -2845,6 +2845,7 @@ int_t* create_iperm_c_supno(int_t nsupers, superlu_dist_options_t *options,
                                           Glu_persist,
                                           Lrowind_bc_ptr,
                                           Ufstnz_br_ptr, grid);
+    
     int_t *iperm_c_supno = getFactIperm(perm_c_supno, nsupers);
     SUPERLU_FREE(perm_c_supno);
     return iperm_c_supno;

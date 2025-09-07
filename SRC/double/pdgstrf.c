@@ -609,14 +609,14 @@ pdgstrf(superlu_dist_options_t * options, int m, int n, double anorm,
 
     printf("[%d] .. before static schedule .. nsupers %d\n", iam, nsupers); fflush(stdout);
 
-#if 0
+#if 1
     dstatic_schedule(options, m, n, LUstruct, grid, stat,
 		    perm_c_supno, iperm_c_supno, info);
     
-    PrintInt10("schedule:perm_c_supno", nsupers, perm_c_supno);
+    // PrintInt10("schedule:perm_c_supno", nsupers, perm_c_supno);
 #endif    
 
-#if ( DEBUGlevel >= 0 )
+#if ( DEBUGlevel >= 2 )
 
     /* Turn off static schedule */
     printf("[%d] .. Turn off static schedule for debugging ..\n", iam);

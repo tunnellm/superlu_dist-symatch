@@ -51,7 +51,7 @@ void validateInput_pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     }
     if (*info)
     {
-        int i = -(*info);
+        // int i = -(*info);
         pxerr_dist("pdgssvx3d", grid, -(*info));
         return;
     }
@@ -123,10 +123,10 @@ void dscaleFromScratch(
 {
     NRformat_loc *Astore = (NRformat_loc *)A->Store;
     int_t m_loc = Astore->m_loc;
-    int_t fst_row = Astore->fst_row;
-    double *a = (double *)Astore->nzval;
-    int_t *rowptr = Astore->rowptr;
-    int_t *colind = Astore->colind;
+    // int_t fst_row = Astore->fst_row;
+    // double *a = (double *)Astore->nzval;
+    // int_t *rowptr = Astore->rowptr;
+    // int_t *colind = Astore->colind;
     double *R = ScalePermstruct->R;
     double *C = ScalePermstruct->C;
     double rowcnd, colcnd, amax;
@@ -167,7 +167,7 @@ void dscaleMatrixDiagonally(yes_no_t SymFact, fact_t Fact, dScalePermstruct_t *S
                            SuperMatrix *A, SuperLUStat_t *stat, gridinfo_t *grid,
                             int *rowequ, int *colequ, int *iinfo)
 {
-    int iam = grid->iam;
+    // int iam = grid->iam;
 
 #if (DEBUGlevel >= 1)
     CHECK_MALLOC(iam, "Enter equil");
@@ -378,15 +378,15 @@ void dperform_LargeDiag_MC64(
     double *C1 = NULL;
 
     int_t *perm_r = ScalePermstruct->perm_r;
-    int_t *perm_c = ScalePermstruct->perm_c;
-    int_t *etree = LUstruct->etree;
+    // int_t *perm_c = ScalePermstruct->perm_c;
+    // int_t *etree = LUstruct->etree;
     double *R = ScalePermstruct->R;
     double *C = ScalePermstruct->C;
     int iam = grid->iam;
 
 
     NRformat_loc *Astore = (NRformat_loc *)A->Store;
-    int_t nnz_loc = (Astore)->nnz_loc;
+    // int_t nnz_loc = (Astore)->nnz_loc;
     int_t m_loc = (Astore)->m_loc;
     int_t fst_row = (Astore)->fst_row;
     double *a = (double *)(Astore)->nzval;
@@ -524,9 +524,9 @@ void dperform_row_permutation(
             	/* @OGUZ-EDIT Matching cost */
                 double dsum = 0.0;
                 double dprod = 0.0;
-                for (i = 0; i < m; ++i)
+                for (int i = 0; i < m; ++i)
                 {
-                    for (j = colptr[i]; j < colptr[i+1]; ++j)
+                    for (int j = colptr[i]; j < colptr[i+1]; ++j)
                     {
                         int_t	r = rowind[j];
                         double	v = a_GA[j];
@@ -566,8 +566,8 @@ void dperform_row_permutation(
 			check_perm_dist("perm_r_symatch", GA.nrow, perm_r);
 			PrintInt32("perm_r_symatch", m, perm_r);
 #endif
-                        MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
-		        if ( iinfo == 0 ) {
+                        MPI_Bcast( iinfo, 1, MPI_INT, 0, grid->comm );
+		        if ( *iinfo == 0 ) {
 		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
 
 					MPI_Bcast(&(crs_info->n_crs), 1, mpi_int_t, 0, grid->comm);
@@ -578,8 +578,8 @@ void dperform_row_permutation(
 					}
 		        }
 	            } else {
-		        MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
-			if ( iinfo == 0 ) {
+		        MPI_Bcast( iinfo, 1, MPI_INT, 0, grid->comm );
+			if ( *iinfo == 0 ) {
 		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
 
 					MPI_Bcast(&(crs_info->n_crs), 1, mpi_int_t, 0, grid->comm);
@@ -594,7 +594,7 @@ void dperform_row_permutation(
 		        }
 	            }
 
-	            if ( iinfo == 0 ) {
+	            if ( *iinfo == 0 ) {
 			/* @EDIT-SYMATCH row permutation is applied here, apply Pr^T too. */
                         /* Now permute global GA to prepare for symbfact() */
 #if ( DEBUGlevel>=1 )
@@ -620,7 +620,7 @@ void dperform_row_permutation(
 
 			/* Distributed A also will be permuted before pddistribute */
 
-                    } else { /* if iinfo != 0 */
+                    } else { /* if *iinfo != 0 */
 			for (int_t i = 0; i < m; ++i) perm_r[i] = i;
 		    }
             }
