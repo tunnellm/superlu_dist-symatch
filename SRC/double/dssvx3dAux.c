@@ -135,7 +135,7 @@ void dscaleFromScratch(
     int iam = grid->iam;
 
     if (SymFact == YES) {
-        pdgsequ_sym(A, R, C, grid, equed);
+        pdgsequ_sym(A, R, C, grid, iinfo, equed);
     }else{
         pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, iinfo, grid);
 
@@ -167,7 +167,7 @@ void dscaleMatrixDiagonally(yes_no_t SymFact, fact_t Fact, dScalePermstruct_t *S
                            SuperMatrix *A, SuperLUStat_t *stat, gridinfo_t *grid,
                             int *rowequ, int *colequ, int *iinfo)
 {
-    // int iam = grid->iam;
+    int iam = grid->iam;
 
 #if (DEBUGlevel >= 1)
     CHECK_MALLOC(iam, "Enter equil");
@@ -498,11 +498,11 @@ void dperform_row_permutation(
     /* ------------------------------------------------------------
 			   Find the row permutation for A.
     ------------------------------------------------------------ */
-    double t;
+    double   t, t1, t2, t3;
 
     if (options->RowPerm != NO)
     {
-        t = SuperLU_timer_();
+        t1 = SuperLU_timer_();
 
         if (Fact != SamePattern_SameRowPerm)
         {
@@ -597,9 +597,9 @@ void dperform_row_permutation(
 	            if ( *iinfo == 0 ) {
 			/* @EDIT-SYMATCH row permutation is applied here, apply Pr^T too. */
                         /* Now permute global GA to prepare for symbfact() */
-#if ( DEBUGlevel>=1 )
-			dCheck_Diag_CSC("Before apply_perm_sym()", &GA);
-#endif
+// #if ( DEBUGlevel>=1 )
+// 			dCheck_Diag_CSC("Before apply_perm_sym()", &GA);
+// #endif
 
 
 			t = SuperLU_timer_();
@@ -614,9 +614,9 @@ void dperform_row_permutation(
 				printf("apply_perm_sym (B = PrAPr^T): %f \n",t);
 #endif
 
-#if ( DEBUGlevel>=1 )
-			dCheck_Diag_CSC("After apply_perm_sym()", &GA);
-#endif
+// #if ( DEBUGlevel>=1 )
+// 			dCheck_Diag_CSC("After apply_perm_sym()", &GA);
+// #endif
 
 			/* Distributed A also will be permuted before pddistribute */
 
@@ -637,8 +637,8 @@ void dperform_row_permutation(
 #endif
             }
 
-            t = SuperLU_timer_() - t;
-            stat->utime[ROWPERM] = t;
+            t1 = SuperLU_timer_() - t1;
+            stat->utime[ROWPERM] = t1;
 #if (PRNTlevel >= 1)
             if (!iam)
             {

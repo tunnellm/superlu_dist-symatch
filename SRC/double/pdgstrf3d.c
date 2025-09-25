@@ -353,6 +353,7 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
             if (sforest) /* 2D factorization at individual subtree */
             {
                 double tilvl = SuperLU_timer_();
+
 #ifdef GPU_ACC
                 dsparseTreeFactor_ASYNC_GPU(
                     sforest,
@@ -360,7 +361,7 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
                     msgss, LUvsbs, dFBufs,  &factStat, &fNlists,
                     &gEtreeInfo, options,  iperm_c_supno, ldt,
                     sluGPU,  d2Hred,  HyP, LUstruct, grid3d, stat,
-                    thresh,  SCT, tag_ub, info);
+                    thresh,  SCT, tag_ub, info);                 
 #else
                 dsparseTreeFactor_ASYNC(sforest, comReqss,  &scuBufs, &packLUInfo,
 					msgss, LUvsbs, dFBufs, &factStat, &fNlists,

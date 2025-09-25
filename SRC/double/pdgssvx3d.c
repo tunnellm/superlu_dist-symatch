@@ -754,6 +754,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	   ------------------------------------------------------------ */
 	if (!factored) {
 	    t = SuperLU_timer_();
+		t2 = SuperLU_timer_();
 	    /*
 	     * Get column permutation vector perm_c[], according to permc_spec:
 	     *   permc_spec = NATURAL:  natural ordering
@@ -1205,7 +1206,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 	    }
 
-	    stat->utime[COLPERM] = SuperLU_timer_() - t;
+	    stat->utime[COLPERM] = SuperLU_timer_() - t2;
 
 	    /* Compute the elimination tree of Pc*(A'+A)*Pc' or Pc*A'*A*Pc'
 	       (a.k.a. column etree), depending on the choice of ColPerm.
@@ -1218,13 +1219,11 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		    if (!(Glu_freeable = (Glu_freeable_t *)
 			  SUPERLU_MALLOC(sizeof(Glu_freeable_t))))
 				ABORT("Malloc fails for Glu_freeable.");
-
 		    /* compute symbolic LU or ILU */
 		    permCol_SymbolicFact3d(options, n, &GA, perm_c, etree,
 					   Glu_persist, Glu_freeable, stat,
 					   &symb_mem_usage,
 					   grid3d);
-
 		} /* end serial symbolic factorization */
 		else { /* parallel symbolic factorization */
 		    //TODO: need a 3D version of symbfact_dist
@@ -1250,7 +1249,6 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     MPI_Bcast(&rowequ, 1, MPI_INT, 0, grid3d->zscp.comm);
     MPI_Bcast(&colequ, 1, MPI_INT, 0, grid3d->zscp.comm);
     MPI_Bcast(&etree, 1, mpi_int_t, 0, grid3d->zscp.comm);
-
     /* Now all processes in 3D grid participate */
     
     /* Broadcast Permuted A and symbolic factorization data from 2d to 3d grid */
@@ -1309,7 +1307,6 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			dnewTrfPartitionInit(nsupers, LUstruct, grid3d);
 		}
 	}
-
 	// perform the  3D distribution
 	if (!factored)
 	{ /* Skip this if already factored. */
@@ -1356,7 +1353,6 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		if ( Fact != SamePattern_SameRowPerm ) {
 			pdflatten_LDATA(options, n, LUstruct, grid, stat);
 		}
-
 
 		if(Fact != SamePattern_SameRowPerm){
 			// checkDist3DLUStruct(LUstruct, grid3d);
@@ -1496,7 +1492,6 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 		else /* gpu3dVersion==0, this is the old C code, with less GPU offload */
 #endif /* matching ifdef GPU_ACC */
 		{
-
 			pdgstrf3d(options, m, n, anorm, trf3Dpartition, SCT, LUstruct,
 					  grid3d, stat, info);
 

@@ -268,6 +268,7 @@ void print_options_dist(superlu_dist_options_t *options)
     printf("**    num_lookaheads            : %4d\n", options->num_lookaheads);
     printf("**    batchCount                : %4d\n", options->batchCount);
     printf("**    SymPattern                : %4d\n", options->SymPattern);
+    printf("**    SymFact                   : %4d\n", options->SymFact);
     printf("**    lookahead_etree           : %4d\n", options->lookahead_etree);
     printf("**    Use_TensorCore            : %4d\n", options->Use_TensorCore);
     printf("**    Use 3D algorithm          : %4d\n", options->Algo3d);

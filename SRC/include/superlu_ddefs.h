@@ -564,7 +564,7 @@ extern void    pdgsequ (SuperMatrix *, double *, double *, double *,
 			double *, double *, int *, gridinfo_t *);
 extern void    pdgsequ_new (SuperMatrix *, double *, double *, double *, double*,
                     double *, double *, double *, int *, gridinfo_t *);
-extern void    pdgsequ_sym (SuperMatrix *, double *, double *, gridinfo_t *, char *);
+extern void    pdgsequ_sym (SuperMatrix *, double *, double *, gridinfo_t *, int *iinfo, char *);
 extern double  pdlangs (char *, SuperMatrix *, gridinfo_t *);
 extern void    pdlaqgs (SuperMatrix *, double *, double *, double,
 			double, double, char *);

@@ -607,7 +607,7 @@ int dsparseTreeFactor_ASYNC_GPU(
 #else
             Wait_LUDiagSend(k, comReqss[abs_offset]->U_diag_blk_send_req,
                             comReqss[abs_offset]->L_diag_blk_send_req,
-                            grid, SCT);
+                            grid, SCT,options);
 #endif
 
             /*Schedule next I bcasts within look-ahead window */
@@ -662,8 +662,11 @@ int dsparseTreeFactor_ASYNC_GPU(
                     if (IrecvPlcd_D[kx] && !factored_L[kx])
                     {
                         /*check if received*/
-                        int_t recvUDiag = checkRecvUDiag(kx, comReqss[offset],
+                        int_t recvUDiag=1;
+                        if(options->SymFact == NO){
+                            recvUDiag = checkRecvUDiag(kx, comReqss[offset],
                                                          grid, SCT);
+                        }
                         if (recvUDiag)
                         {
 #if 0

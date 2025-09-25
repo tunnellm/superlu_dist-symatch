@@ -236,8 +236,10 @@ int_t dLPanelUpdate( int_t k,  int* IrecvPlcd_D, int* factored_L,
                     dLUstruct_t *LUstruct, SCT_t *SCT, superlu_dist_options_t *options)
 {
 
+    if(options->SymFact == NO){  
     dUDiagBlockRecvWait( k,  IrecvPlcd_D, factored_L,
                          U_diag_blk_recv_req, grid, LUstruct, SCT);
+    }
 
     dLPanelTrSolve( k, factored_L, BlockUFactor, grid, LUstruct,options);
 
@@ -274,6 +276,8 @@ int_t dUPanelTrSolve( int_t k,
     int segsize;
     double alpha = 1.0, beta = 0.0;
 
+    /*factor the U panel*/
+
     /* Quick return. */
     lk = LBi (k, grid);         /* Local block number */
     if (!Llu->Unzval_br_ptr[lk]) return 0;
@@ -294,7 +298,7 @@ int_t dUPanelTrSolve( int_t k,
 
 
     if(options->SymFact == YES){  
-
+        if (myrow == krow){
         int_t klst = FstBlockC (k + 1);
         int knsupc = SuperSize (k);
 
@@ -355,8 +359,9 @@ int_t dUPanelTrSolve( int_t k,
 
         /* Deallocate memory */
         SUPERLU_FREE(blocks_index_pointers);
+        }
     }else{
-
+        if (myrow == krow){
         lk = LBi (k, grid);         /* Local block number */
         if (Llu->Unzval_br_ptr[lk])
         {
@@ -391,8 +396,9 @@ int_t dUPanelTrSolve( int_t k,
             }
         }
     }
-
+    }
     return 0;
+  
 } /* dUPanelTrSolve */
 
 int_t dUPanelUpdate( int_t k,  int* factored_U,

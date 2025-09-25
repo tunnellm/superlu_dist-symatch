@@ -606,7 +606,7 @@ int zsparseTreeFactor_ASYNC_GPU(
 #else
             Wait_LUDiagSend(k, comReqss[abs_offset]->U_diag_blk_send_req,
                             comReqss[abs_offset]->L_diag_blk_send_req,
-                            grid, SCT);
+                            grid, SCT,options);
 #endif
 
             /*Schedule next I bcasts within look-ahead window */

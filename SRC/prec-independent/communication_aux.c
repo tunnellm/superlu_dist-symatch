@@ -194,7 +194,7 @@ int_t Test_LDiagBlock_Recv( MPI_Request *request, SCT_t* SCT)
  */
 int Wait_LUDiagSend(int_t k, MPI_Request *U_diag_blk_send_req,
                       MPI_Request *L_diag_blk_send_req,
-                      gridinfo_t *grid, SCT_t *SCT)
+                      gridinfo_t *grid, SCT_t *SCT,superlu_dist_options_t *options)
 {
     // Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
     // LocalLU_t *Llu = LUstruct->Llu;
@@ -206,7 +206,9 @@ int Wait_LUDiagSend(int_t k, MPI_Request *U_diag_blk_send_req,
 
     if (iam == pkk)
     {
-        Wait_UDiagBlockSend(U_diag_blk_send_req, grid, SCT);
+        if(options->SymFact == NO){  
+            Wait_UDiagBlockSend(U_diag_blk_send_req, grid, SCT);
+        }
         Wait_LDiagBlockSend(L_diag_blk_send_req, grid, SCT);
     }
 

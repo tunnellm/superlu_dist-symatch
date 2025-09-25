@@ -1466,7 +1466,7 @@ extern void getSCUweight_allgrid(int_t nsupers, treeList_t* treeList, int_t* xsu
 
 extern int Wait_LUDiagSend(int_t k, MPI_Request *U_diag_blk_send_req,
 			   MPI_Request *L_diag_blk_send_req,
-			   gridinfo_t *grid, SCT_t *SCT);
+			   gridinfo_t *grid, SCT_t *SCT, superlu_dist_options_t *);
 extern void applyRowPerm(int_t* colptr, int_t* rowind, int_t* perm_r, int_t n);
 
 

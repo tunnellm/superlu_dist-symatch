@@ -283,7 +283,7 @@ int_t ddenseTreeFactor(
         SCT->NetSchurUpTimer += SuperLU_timer_() - tsch;
 
 	Wait_LUDiagSend(k, comReqs->U_diag_blk_send_req, comReqs->L_diag_blk_send_req,
-			grid, SCT);
+			grid, SCT,options);
 
     } /*for main loop (int_t k0 = 0; k0 < gNodeCount[tree]; ++k0)*/
 
@@ -596,7 +596,7 @@ int_t dsparseTreeFactor_ASYNC(
 
 	    Wait_LUDiagSend(k, comReqss[abs_offset]->U_diag_blk_send_req,
 			    comReqss[abs_offset]->L_diag_blk_send_req,
-			    grid, SCT);
+			    grid, SCT,options);
 
             /*Schedule next I bcasts*/
             for (int_t next_k0 = k0 + 1; next_k0 < SUPERLU_MIN( k0 + 1 + numLA, nnodes); ++next_k0)
@@ -640,8 +640,12 @@ int_t dsparseTreeFactor_ASYNC(
                     if (IrecvPlcd_D[kx] && !factored_L[kx])
                     {
                         /*check if received*/
-                        int_t recvUDiag = checkRecvUDiag(kx, comReqss[offset],
+                        int_t recvUDiag=1;
+                        if(options->SymFact == NO){
+                            recvUDiag = checkRecvUDiag(kx, comReqss[offset],
                                                          grid, SCT);
+                        }
+
                         if (recvUDiag)
                         {
 

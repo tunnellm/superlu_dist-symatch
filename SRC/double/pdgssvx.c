@@ -722,7 +722,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	} else { /* Compute R & C from scratch */
             /* Compute the row and column scalings. */
 	    if ( options->SymFact == YES) {
-	    	pdgsequ_sym(A, R, C, grid, equed);
+	    	pdgsequ_sym(A, R, C, grid, &iinfo, equed);
 	    }
 	    else {
 	    	pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, &iinfo, grid);

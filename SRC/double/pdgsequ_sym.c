@@ -83,18 +83,17 @@ at the top-level directory.
 */
 
 void
-pdgsequ_sym(SuperMatrix *A, double *r, double *c, gridinfo_t *grid, char *equed)
+pdgsequ_sym(SuperMatrix *A, double *r, double *c, gridinfo_t *grid, int *iinfo, char *equed)
 {
 
 #define PRECISION   (0.0001)
-
+    int iam = grid->iam;
     /* Quick return if possible */
     if (A->nrow <= 0 || A->ncol <= 0) {
         *(unsigned char *)equed = 'N';
         return;
     }
 
-    int iinfo;
     int_t i, j;
     double rowcnd, colcnd, amax, rowcri, colcri;
     double *iter_c, *iter_r;
@@ -115,22 +114,23 @@ pdgsequ_sym(SuperMatrix *A, double *r, double *c, gridinfo_t *grid, char *equed)
     *(unsigned char *)equed = 'N';
     while (converged == 0) {
         /* Compute the row and column scalings. */
-        pdgsequ_new(A, iter_r, iter_c, &rowcnd, &colcnd, &rowcri, &colcri, &amax, &iinfo, grid);
-
-        if ( iinfo > 0 ) {
-            if ( iinfo <= A->nrow ) {
-                fprintf(stderr, "The %d-th row of A in %d-th iteration of MC77 is exactly zero\n", (int) iinfo, equi_iter);
+        pdgsequ_new(A, iter_r, iter_c, &rowcnd, &colcnd, &rowcri, &colcri, &amax, iinfo, grid);
+        if ( *iinfo > 0 ) {
+            if ( *iinfo <= A->nrow ) {
+                fprintf(stderr, "The %d-th row of A in %d-th iteration of MC77 is exactly zero\n", (int) *iinfo, equi_iter);
             } else {
-                fprintf(stderr, "The %d-th column of A in %d-th iteration of MC77 is exactly zero\n", (int) (iinfo-(A->ncol)), equi_iter);
+                fprintf(stderr, "The %d-th column of A in %d-th iteration of MC77 is exactly zero\n", (int) (*iinfo-(A->ncol)), equi_iter);
             }
-        } else if ( iinfo < 0 ) return;
+        } else if ( *iinfo < 0 ) return;
 
         /* Equilibrate matrix A if it is badly-scaled.
            A <-- diag(R)*A*diag(C)                     */
         pdlaqgs(A, iter_r, iter_c, rowcnd, colcnd, amax, iter_equed);
 
-        printf("In iteration %d, rowcnd is %f, colcnd is %f.\n", equi_iter, rowcnd, colcnd);
-        fflush(stdout);
+        if(!iam){
+            printf("In iteration %d, rowcnd is %f, colcnd is %f.\n", equi_iter, rowcnd, colcnd);
+            fflush(stdout);
+        }
 
         if ( strncmp(iter_equed, "R", 1)==0 ) {
             for (i = 0; i < A->nrow; ++i) { r[i] *= iter_r[i]; }
@@ -163,9 +163,10 @@ pdgsequ_sym(SuperMatrix *A, double *r, double *c, gridinfo_t *grid, char *equed)
             converged = 1;
         }
     }
-
-    printf("MC77 takes %d iterations to converge.\n", equi_iter);
-    fflush(stdout);
+    if(!iam){
+        printf("MC77 takes %d iterations to converge.\n", equi_iter);
+        fflush(stdout);
+    }
 
     SUPERLU_FREE(iter_r);
     SUPERLU_FREE(iter_c);
