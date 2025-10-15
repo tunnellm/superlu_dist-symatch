@@ -28,7 +28,7 @@ typedef struct { int x;
 /* #define max_n  68000000 */
 /* #define max_m 761000000 */
 #define max_n  6800000
-#define max_m 76100000
+#define max_m 99000000
 
 #define max_experiment 200   // Maximum different algorithms that can be tested
 #define max_conf 20          // Maximum different thread configurations that can be tested

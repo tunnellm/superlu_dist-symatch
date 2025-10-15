@@ -104,7 +104,7 @@ dldperm_dist_symatch
 	mm.nnzs		  = nnz;
 	mm.vals_exist = true;
 
-	uint64_t ndiags = 0;
+	uint64_t ndiags = 0, ndiags0 = 0;
 	mm.nelems = 0;
 	for (int_t c = 0; c < n; ++c)
 	{
@@ -114,9 +114,13 @@ dldperm_dist_symatch
 			double	v = nzval[rptr];
 
 			if (r == c)
+			{
 				++ndiags;
+				if (v == 0.0)
+					++ndiags0;
+			}
 
-			if (r <= c)			// U
+			if (r <= c && v != 0.0)			// U
 			{
 				mm.rids.push_back(r);
 				mm.cids.push_back(c);
@@ -127,7 +131,8 @@ dldperm_dist_symatch
 	}
 
 	assert(((nnz - ndiags) & 0x1) == 0x0);
-	cout << "#nnzs " << mm.nnzs << " #diags " << ndiags << endl;
+	cout << "#nnzs " << mm.nnzs << " #diags " << ndiags
+		 << " #diags0 " << ndiags0 << endl;
 
 
 	// Form the graph model for matching.
@@ -158,6 +163,20 @@ dldperm_dist_symatch
 
 	fprintf(stdout, "matching cost %lf\n", wrm->cost());
 	fprintf(stdout, "matching cost (prod) %lf\n", wrm->cost_prod());
+
+	// ofstream out_graph;
+	// out_graph.open("graph");
+	// out_graph << g->nv << " " << g->xadj[g->nv]/2 << "\n";
+	// for (int64_t v = 0; v < g->nv; ++v)
+	// {
+	// 	for (int_t i = g->xadj[v]; i < g->xadj[v+1]; ++i)
+	// 	{
+	// 		if (v < g->adj[i])
+	// 			out_graph << v << " " << g->adj[i] << " " << g->ew[i] << "\n";
+	// 	}
+	// }
+	// out_graph.close();
+	// exit(37);
 
 
 	#ifdef DBG_MATCHING

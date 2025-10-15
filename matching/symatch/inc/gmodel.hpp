@@ -36,6 +36,7 @@ using std::vector;	using std::tuple;	using std::min;	using std::max;
 using std::get;	using std::cout;	using std::endl;	using std::cerr;
 using std::sort;	using std::fabs;	using std::unordered_set;
 using std::pair;	using std::make_pair;	using std::unordered_map;
+using std::log;
 
 
 
@@ -622,8 +623,11 @@ public:
 		// edges for diag connections
 		for (VIDX_T i = 0; i < mm->nr; ++i)
 		{
-			++(g->xadj[i+2]);
-			++(g->xadj[mm->nr+i+2]);
+			if (diags.find(i) != diags.end())
+			{
+				++(g->xadj[i+2]);
+				++(g->xadj[mm->nr+i+2]);
+			}
 		}
 
 
@@ -652,12 +656,12 @@ public:
 
 			g->adj[g->xadj[r+1]] = c;
 			if (g->wgtd_edges)
-				g->ew[g->xadj[r+1]] = val;
+				g->ew[g->xadj[r+1]] = 2*val;
 			++(g->xadj[r+1]);
 
 			g->adj[g->xadj[c+1]] = r;
 			if (g->wgtd_edges)
-				g->ew[g->xadj[c+1]] = val;
+				g->ew[g->xadj[c+1]] = 2*val;
 			++(g->xadj[c+1]);
 		}
 
@@ -665,32 +669,19 @@ public:
 		// edges for diag connections
 		for (VIDX_T i = 0; i < mm->nr; ++i)
 		{
+			auto tmp = diags.find(i);
+			if (tmp == diags.end())
+				continue;
+			
 			g->adj[g->xadj[i+1]] = i + mm->nr;
-			if (g->wgtd_edges)
-			{
-				g->ew[g->xadj[i+1]] = 0; // set 0
-				if (use_diag_wgts)
-				{
-					auto tmp = diags.find(i);
-					if (tmp != diags.end())
-						g->ew[g->xadj[i+1]] = tmp->second;
-				}
-					
-				
-			}
-			++(g->xadj[i+1]);
-
 			g->adj[g->xadj[mm->nr+i+1]] = i;
-			if (g->wgtd_edges)
+			if (g->wgtd_edges && use_diag_wgts)
 			{
-				g->ew[g->xadj[mm->nr+i+1]] = 0; // set 0
-				if (use_diag_wgts)
-				{
-					auto tmp = diags.find(i);
-					if (tmp != diags.end())
-						g->ew[g->xadj[mm->nr+i+1]] = tmp->second;
-				}				
+				g->ew[g->xadj[i+1]]		   = tmp->second;
+				g->ew[g->xadj[mm->nr+i+1]] = tmp->second;
 			}
+			
+			++(g->xadj[i+1]);
 			++(g->xadj[mm->nr+i+1]);
 		}
 
