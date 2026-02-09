@@ -190,8 +190,8 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
 
     int k = sp_ienv_dist (3, options);       /* max supernode size */
     /* Instead of half storage, we'll do full storage */
-    Llu->size_ujrow = k*k;
-    if (!(Llu->ujrow = doubleCalloc_dist (k * k)))
+    Llu->size_ujrow = n*k;
+    if (!(Llu->ujrow = doubleCalloc_dist (n * k)))
         ABORT ("Malloc fails for ujrow[].");
     if (!(Llu->diagpivot = intCalloc_dist (k)))
         ABORT ("Malloc fails for diagpivot[].");

@@ -30,8 +30,6 @@ at the top-level directory.
 #include <math.h>
 #include "superlu_ddefs.h"
 
-// #define DBG_MATCHING
-
 /*! \brief
  *
  * <pre>
@@ -515,7 +513,6 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     SuperMatrix GA;      /* Global A in NC format */
     NCformat *GAstore;
     double   *a_GA;
-    int_t   *colptr, *rowind; /* for GA */
     SuperMatrix GAC;      /* Global A in NCP format (add n end pointers) */
     NCPformat *GACstore;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
@@ -533,6 +530,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	      structures are not used.                                  */
     fact_t  Fact;
     double *a;
+    int_t   *colptr, *rowind;
     int_t   *perm_r; /* row permutations from partial pivoting */
     int_t   *perm_c; /* column permutation vector */
     int_t   *etree;  /* elimination tree */
@@ -547,7 +545,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     char    equed[1], norm[1];
     double   *C, *R, *C1, *R1, amax, anorm, colcnd, rowcnd;
     double   *X, *b_col, *b_work, *x_col;
-    double   t, t1, t2, t3;
+    double   t;
     float    GA_mem_use = 0.0;    /* memory usage by global A */
     float    dist_mem_use = 0.0;  /* memory usage during distribution */
     superlu_dist_mem_usage_t num_mem_usage, symb_mem_usage;
@@ -559,7 +557,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     int_t lk,k,knsupc,nsupr;
     int_t  *lsub,*xsup;
     double *lusup;
-#if ( PRNTlevel >= 1 )
+#if ( PRNTlevel>= 2 )
     double   dmin, dsum, dprod;
 #endif
 
@@ -570,11 +568,6 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     int   col, key; /* parameters for creating a new communicator */
     Pslu_freeable_t Pslu_freeable;
     float  flinfo;
-
-
-	crs_info_t crs_info;
-    crs_info.crs_vrts  = NULL;    // Sherry: not free'd ?
-
 
     /* Initialization. */
     m       = A->nrow;
@@ -597,7 +590,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
     Fact = options->Fact;
     if ( Fact < DOFACT || Fact > FACTORED )
 	*info = -1;
-   	else if ( options->RowPerm < NOROWPERM || options->RowPerm > SymMatch )
+    else if ( options->RowPerm < NOROWPERM || options->RowPerm > MY_PERMR )
 	*info = -1;
     else if ( options->ColPerm < NATURAL || options->ColPerm > MY_PERMC )
 	*info = -1;
@@ -721,26 +714,21 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	    }
 	} else { /* Compute R & C from scratch */
             /* Compute the row and column scalings. */
-	    if ( options->SymFact == YES) {
-	    	pdgsequ_sym(A, R, C, grid, &iinfo, equed);
-	    }
-	    else {
-	    	pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, &iinfo, grid);
+	    pdgsequ(A, R, C, &rowcnd, &colcnd, &amax, &iinfo, grid);
 
-		    if ( iinfo > 0 ) {
-			if ( iinfo <= m ) {
-			    fprintf(stderr, "The %d-th row of A is exactly zero\n", (int)iinfo);
-			} else {
-	                    fprintf(stderr, "The %d-th column of A is exactly zero\n", (int)(iinfo-n));
-	                }
-	 	    } else if ( iinfo < 0 ) return;
+	    if ( iinfo > 0 ) {
+		if ( iinfo <= m ) {
+		    fprintf(stderr, "The %d-th row of A is exactly zero\n", (int)iinfo);
+		} else {
+                    fprintf(stderr, "The %d-th column of A is exactly zero\n", (int)(iinfo-n));
+                }
+ 	    } else if ( iinfo < 0 ) return;
 
-		    /* Now iinfo == 0 */
+	    /* Now iinfo == 0 */
 
-	            /* Equilibrate matrix A if it is badly-scaled.
-	               A <-- diag(R)*A*diag(C)                     */
-		    pdlaqgs(A, R, C, rowcnd, colcnd, amax, equed);
-	    }
+            /* Equilibrate matrix A if it is badly-scaled.
+               A <-- diag(R)*A*diag(C)                     */
+	    pdlaqgs(A, R, C, rowcnd, colcnd, amax, equed);
 
 	    if ( strncmp(equed, "R", 1)==0 ) {
 		  ScalePermstruct->DiagScale = ROW;
@@ -779,9 +767,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
              (parSymbFact == NO || options->RowPerm != NO) ) {
              /* Performs serial symbolic factorzation and/or MC64 */
 
-		    /* need_value = (options->RowPerm == LargeDiag_MC64); */
-			need_value = (options->RowPerm == LargeDiag_MC64 ||
-						  options->RowPerm == SymMatch);
+            need_value = (options->RowPerm == LargeDiag_MC64);
 
             pdCompRow_loc_to_CompCol_global(need_value, A, grid, &GA);
 
@@ -802,7 +788,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	   GA is overwritten by Pr*[GA].
            ------------------------------------------------------------*/
         if ( options->RowPerm != NO ) {
-	    t1 = SuperLU_timer_();
+	    t = SuperLU_timer_();
 	    if ( Fact != SamePattern_SameRowPerm ) {
 	        if ( options->RowPerm == MY_PERMR ) { /* Use user's perm_r. */
 	            /* Permute the global matrix GA for symbfact() */
@@ -914,7 +900,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 			for (i = 0; i < m; ++i) perm_r[i] = i;
 		    }
 
-				#if ( PRNTlevel>=2 )
+#if ( PRNTlevel>=2 )
 	            if ( job == 2 || job == 3 ) {
 		        if ( !iam ) printf("\tsmallest diagonal %e\n", dmin);
 	            } else if ( job == 4 ) {
@@ -922,88 +908,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	            } else if ( job == 5 ) {
 		        if ( !iam ) printf("\t product of diagonal %e\n", dprod);
 	            }
-				#endif
-                } else if ( options->RowPerm == SymMatch ) {
-		    /* Get a new perm_r[] from SymMatch */
-
-	            if ( !iam ) { /* Process 0 finds a row permutation */
-
-				t = SuperLU_timer_();
-
-		        iinfo = dldperm_dist_symatch
-					(job, m, nnz, colptr, rowind, a_GA,
-					 perm_r, 
-					 &(crs_info.n_crs), &(crs_info.crs_vrts));
-
-				t = SuperLU_timer_() - t;
-#if ( PRNTlevel>=1 )
-				printf("dldperm_dist_symatch (Pr): %f \n",t);
 #endif
-				// exit(11);
-			/* @EDIT-SYMATCH apply symmetric permutation here.  */
-#if ( PRNTlevel>=2 )
-			check_perm_dist("perm_r_symatch", GA.nrow, perm_r);
-			PrintInt32("perm_r_symatch", m, perm_r);
-#endif
-                        MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
-		        if ( iinfo == 0 ) {
-		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
-
-					MPI_Bcast(&(crs_info.n_crs), 1, mpi_int_t, 0, grid->comm);
-					if (crs_info.n_crs > 0)
-					{
-						MPI_Bcast(crs_info.crs_vrts, crs_info.n_crs, mpi_int_t,
-								  0, grid->comm);
-					}
-		        }
-	            } else {
-		        MPI_Bcast( &iinfo, 1, MPI_INT, 0, grid->comm );
-			if ( iinfo == 0 ) {
-		            MPI_Bcast( perm_r, m, mpi_int_t, 0, grid->comm );
-
-					MPI_Bcast(&(crs_info.n_crs), 1, mpi_int_t, 0, grid->comm);
-					if (crs_info.n_crs > 0)
-					{
-						crs_info.crs_vrts = (int_t *)
-							malloc(sizeof(*(crs_info.crs_vrts)) *
-								   (crs_info.n_crs));
-						MPI_Bcast(crs_info.crs_vrts, crs_info.n_crs, mpi_int_t,
-								  0, grid->comm);
-					}
-		        }
-	            }
-
-	            if ( iinfo == 0 ) {
-			/* @EDIT-SYMATCH row permutation is applied here, apply Pr^T too. */
-                        /* Now permute global GA to prepare for symbfact() */
-#if ( DEBUGlevel>=1 )
-			dCheck_Diag_CSC("Before apply_perm_sym()", &GA);
-#endif
-
-
-			t = SuperLU_timer_();
-			/* @EDIT-SYMATCH 1. B = Pr A PrT */
-			apply_perm_sym(m, nnz, colptr, rowind, a_GA, perm_r);
-#if ( DEBUGlevel>=1 )
-			is_symmetric(m, nnz, colptr, rowind, a_GA);
-#endif
-			// exit(22);
-				t = SuperLU_timer_() - t;
-#if ( PRNTlevel>=1 )
-				printf("apply_perm_sym (B = PrAPr^T): %f \n",t);
-#endif
-
-#if ( DEBUGlevel>=1 )
-			dCheck_Diag_CSC("After apply_perm_sym()", &GA);
-#endif
-
-			/* Distributed A also will be permuted before pddistribute */
-
-                    } else { /* if iinfo != 0 */
-			for (i = 0; i < m; ++i) perm_r[i] = i;
-		    }
-                }
-			else { /* use LargeDiag_HWPM */
+                } else { /* use LargeDiag_HWPM */
 #ifdef HAVE_COMBBLAS
 		    d_c2cpp_GetHWPM(A, grid, ScalePermstruct);
 #else
@@ -1013,8 +919,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 #endif
                 } /* end if options->RowPerm ... */
 
-	        t1 = SuperLU_timer_() - t1;
-	        stat->utime[ROWPERM] = t1;
+	        t = SuperLU_timer_() - t;
+	        stat->utime[ROWPERM] = t;
 #if ( PRNTlevel>=1 )
                 if ( !iam ) {
 		    printf(".. RowPerm %d\t time: %.2f\n", options->RowPerm, t);
@@ -1042,39 +948,12 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 #endif
     }
 
-	/* @OGUZ-EDIT Matching cost */
-	/* if (options->RowPerm == LargeDiag_MC64) */
-	/* { */
-	/* 	double dsum = 0.0; */
-	/* 	double dprod = 0.0; */
-	/* 	for (i = 0; i < m; ++i) */
-	/* 	{ */
-	/* 		for (j = colptr[i]; j < colptr[i+1]; ++j) */
-	/* 		{ */
-	/* 			int_t	r = rowind[j]; */
-	/* 			double	v = a_GA[j]; */
-
-	/* 			if (i == r) */
-	/* 			{ */
-	/* 				dsum  += fabs(v); */
-	/* 				dprod *= fabs(v); */
-	/* 				break; */
-	/* 			} */
-	/* 		} */
-	/* 	} */
-
-	/* 	printf("dsum %e\n", dsum); */
-	/* 	printf("dprod %e\n", dprod); */
-	/* } */
-	// exit(99);
-
     /* ------------------------------------------------------------
        Perform the LU factorization: symbolic factorization,
        redistribution, and numerical factorization.
        ------------------------------------------------------------*/
     if ( !factored ) {
 	t = SuperLU_timer_();
-	t2 = SuperLU_timer_();
 	/*
 	 * Get column permutation vector perm_c[], according to permc_spec:
 	 *   permc_spec = NATURAL:  natural ordering
@@ -1140,445 +1019,36 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		  return;
      	      }
 	  } else {
-		  t3 = SuperLU_timer_();
-		  
-		  /* generate uncoarsened versions of GA and perm_c but also
-			 maintain the contracted versions */
-		  /* @EDIT-SYMATCH Add branch here */
-		  if (options->RowPerm == SymMatch)
-		  {
-			  /* @EDIT-SYMATCH 2. Bc = coarsen(B) */
-		      SuperMatrix GA_c;
-
-			  t = SuperLU_timer_();
-			  
-		      coarsen_graph_v2(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
-			  
-			  t = SuperLU_timer_()-t;
-
-			#if ( PRNTlevel>=1 )
-			printf("coarsen_graph_v2 (Bc): %f \n",t);
-			#endif
-			
-			  NCformat  *cGstore  = (NCformat *) GA_c.Store;
-		      int		 n_c	  = GA_c.nrow;	// coarse dimension
-		      int_t		 nnz_c	  = cGstore->nnz;
-		      int_t	    *c_colptr = cGstore->colptr;
-		      int_t	    *c_rowind = cGstore->rowind;
-		      double    *c_nzval  = cGstore->nzval;
-#if ( DEBUGlevel>=1 )
-			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
-#endif
-			  // exit(33);
-
-			  t = SuperLU_timer_();
-			  
-			  /* @EDIT-SYMATCH 3. Pc = fill(Bc) */
-		      int_t *crs_perm_c =       // Sherry: why not intMalloc_dist?
-			  (int_t *)malloc(sizeof(*crs_perm_c) * GA_c.nrow);
-		      get_perm_c_dist(iam, permc_spec, &GA_c, crs_perm_c);
-
-			  t = SuperLU_timer_()-t;
-
-			  #if ( PRNTlevel>=1 )
-			  printf("get_perm_c_dist (Pc = fill(Bc)): %f \n",t);
-			  #endif
-
-
-		      /* Compute coarse etree of Pc*A*Pc' */
-
-			  t = SuperLU_timer_();
-
-		      /* @EDIT-SYMATCH 4. C = Pc Bc PcT */
-		      /* colptr/rowind/nzval are both input and output */
-		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, crs_perm_c);
-
-			  t = SuperLU_timer_()-t;
-
-			  #if ( PRNTlevel>=1 )
-			  printf("apply_perm_sym (C = PcBcPc^T): %f \n",t);
-			  #endif
-
-			  
-#if ( DEBUGlevel>=1 )
-			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
-#endif
-			  // exit(44);
-
-		      int_t *c_etree = intMalloc_dist(n_c);
-		      int_t *c_colend = (int_t*) intMalloc_dist(n_c);
-
-		      for (i = 0; i < n_c; ++i)
-				  c_colend[i] = c_colptr[i+1];
-
-			  t=SuperLU_timer_();
-			  sp_symetree_dist(c_colptr, c_colend, c_rowind, n_c, c_etree);
-			  t = SuperLU_timer_()-t;
-
-              #if ( PRNTlevel>=1 )
-			  printf("sp_symetree_dist: %f \n",t);
-              #endif
-			  
-			  #ifdef DBG_MATCHING
-			  FILE *outfile = fopen("debug-output", "a");
-			  fprintf(outfile, "=== c_etree (C) ===\n");
-			  for (i = 0; i < n_c; ++i)
-				  fprintf(outfile, "%d %d\n", i, c_etree[i]);
-			  fprintf(outfile, "\n\n\n");
-			  fclose(outfile);
-			  #endif
-
-		      /* Postorder the etree -> crs_perm_c[] is modified */
-		      int_t *post = (int_t *) TreePostorder_dist(n_c, c_etree);
-
-			  // exit(44);
-
-			  t=SuperLU_timer_();
-			  
-			  /* @EDIT-SYMATCH 5. D = Pe C PeT */
-		      /* Permute GA_c again by post[] */
-		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, post);
-#if ( DEBUGlevel>=1 )
-		      is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
-#endif
-			  t = SuperLU_timer_()-t;
-
-			  #if ( PRNTlevel>=1 )
-			  printf("apply_perm_sym (D = PeCPe^T): %f \n",t);
-			  #endif
-			  
-			  // exit(55);
-
-		      int *iwork = int32Malloc_dist(n_c);
-		      for (i = 0; i < n_c; ++i)
-				  iwork[i] = post[crs_perm_c[i]]; // product of crs_perm_c and post
-		      for (i = 0; i < n_c; ++i)
-				  crs_perm_c[i] = iwork[i];
-
-			  #ifdef DBG_MATCHING
-			  outfile = fopen("debug-output", "a");
-			  fprintf(outfile, "=== crs_perm_c (after post) ===\n");
-			  for (i = 0; i < n_c; ++i)
-				  fprintf(outfile, "%d %d\n", i, crs_perm_c[i]);
-			  fprintf(outfile, "\n\n\n");
-			  fclose(outfile);
-			  #endif
-
-		      /* Renumber coarse etree in postorder */
-		      for (i = 0; i < n_c; ++i)
-				  iwork[post[i]] = post[c_etree[i]];
-		      for (i = 0; i < n_c; ++i)
-				  c_etree[i] = iwork[i];
-		      //PrintInt10("postordered coarse etree", n_c, c_etree);
-#if ( DEBUGlevel>=1 )
-			  is_postorder(n_c, c_etree);
-#endif
-			  #ifdef DBG_MATCHING
-			  outfile = fopen("debug-output", "a");
-			  fprintf(outfile, "=== c_etree (D) ===\n");
-			  for (i = 0; i < n_c; ++i)
-				  fprintf(outfile, "%d %d\n", i, c_etree[i]);
-			  fprintf(outfile, "\n\n\n");
-
-			  /* indicator on B */
-			  int *indicator_2x2_tmp = (int*) int32Malloc_dist(n);
-			  for (i = 0, j = 0; i < crs_info.n_crs; ++i)
-			  {
-				  if (crs_info.crs_vrts[i] == 1)
-					  indicator_2x2_tmp[j++] = 1;
-				  else if (crs_info.crs_vrts[i] == 2)
-				  {
-					  indicator_2x2_tmp[j++] = 2;
-					  indicator_2x2_tmp[j++] = 0;
-				  }
-			  }
-			  fclose(outfile);
-			  #endif
-
-			  // exit(66);
-
-		      SUPERLU_FREE(c_colend);
-		      SUPERLU_FREE(post);
-		      SUPERLU_FREE(iwork);
-
-		      fprintf(stdout, "Projecting back the coarse column permutation ...\n");
-		      if ( !(options->indicator_2x2 = (int*) int32Malloc_dist(n)) )
-			  ABORT("Malloc fails for indicator_2x2[].");
-		      int *indicator_2x2 = options->indicator_2x2;
-
-		      /* cumulative crs_vrts. */
-		      int_t *crs_vrts_cum = (int_t *) intMalloc_dist(crs_info.n_crs+1);
-		      crs_vrts_cum[0] = 0;
-#if 1   // Oguz's code: before apply crs_perm_c[]
-		      for (i = 0; i < crs_info.n_crs; ++i)
-				  crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
-#else   // Sherry mod
-		      for (i = 0; i < crs_info.n_crs; ++i) {
-			  crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
-			  if (crs_info.crs_vrts[i] == 1) { /* 1x1 pivot */
-			      options->indicator_2x2[crs_vrts_cum[i]] = 1;
-			  } else if (crs_info.crs_vrts[i] == 2) { /* 2x2 pivot */
-			      options->indicator_2x2[crs_vrts_cum[i]] = 2;
-			      options->indicator_2x2[crs_vrts_cum[i]+1] = 0;
-			  } else {
-			      ABORT("Invalid value of crs_vrts[i]");
-			  }
-		      }
-#endif
-		      /* reverse crs_perm_c. */
-		      int_t *rev_crs_perm_c = (int_t *) intMalloc_dist(crs_info.n_crs);
-		      for (i = 0; i < crs_info.n_crs; ++i)
-				  rev_crs_perm_c[crs_perm_c[i]] = i;
-
-		      int cur = 0, rev_i;
-
-#if 0  // Oguz's code
-		      /* Expand crs_perm_c into perm_c[] */
-		      for (i = 0; i < crs_info.n_crs; ++i) // new label in coarse G
-			  {
-			      rev_i = rev_crs_perm_c[i]; // old label in coarse G
-			      for (j = crs_vrts_cum[rev_i]; j < crs_vrts_cum[rev_i+1]; ++j)
-				  perm_c[j] = cur++;
-			  }
-#else  // Sherry mod
-		      /* Expand crs_perm_c into perm_c[] */
-		      for (i = 0; i < crs_info.n_crs; ++i)	// new label in coarse G
-			  {
-				  rev_i = rev_crs_perm_c[i]; // old label in coarse G
-				  for (j = crs_vrts_cum[rev_i]; j < crs_vrts_cum[rev_i+1]; ++j)
-					  perm_c[j] = cur++;
-
-				  /* Set up indicator_2x2[] for the vertices permuted by
-					 perm_c */
-				  j = crs_vrts_cum[rev_i];
-				  k = perm_c[j];
-				  if (crs_info.crs_vrts[rev_i] == 1) { /* 1x1 pivot */
-					  indicator_2x2[k] = 1;
-				  } else if (crs_info.crs_vrts[rev_i] == 2) { /* 2x2 pivot */
-					  indicator_2x2[ k ] = 2;
-					  indicator_2x2[ k+1 ] = 0;
-				  } else {
-					  ABORT("Invalid value of crs_vrts[i]");
-				  }
-		      }
-#if ( DEBUGlevel>=1 )
-		      PrintInt32("indicator_2x2", n, options->indicator_2x2);
-#endif
-
-			  #ifdef DBG_MATCHING
-			  outfile = fopen("debug-output", "a");
-			  int indicator_pass = 1;
-			  for (i = 0; i < n; ++i)
-			  {
-				  if (indicator_2x2_tmp[i] != indicator_2x2[perm_c[i]])
-				  {
-					  fprintf(outfile, "indicator mismatch at idx %d %d\n",
-							  i, perm_c[i]);
-					  indicator_pass = 0;
-				  }
-			  }
-			  if (!indicator_pass)
-				  fprintf(outfile, "indicator computation FAIL\n");
-			  else
-				  fprintf(outfile, "indicator computation PASS\n");
-			  fprintf(outfile, "\n\n\n");
-
-			  fprintf(outfile, "=== coarse to fine info (D -> E) ===\n");
-			  int *crs_vrts_cum2 = (int*) int32Malloc_dist(crs_info.n_crs+1);
-			  crs_vrts_cum2[0] = 0;
-			  j = 0;
-			  for (i = 0; i < crs_info.n_crs; ++i)
-			  {
-				  rev_i = rev_crs_perm_c[i];
-				  crs_vrts_cum2[i+1] = crs_vrts_cum2[i] + crs_info.crs_vrts[rev_i];
-				  if (crs_info.crs_vrts[rev_i] == 1)
-				  {
-					  fprintf(outfile, "%d %d\n", i, j);
-					  ++j;
-				  }
-				  else if (crs_info.crs_vrts[rev_i] == 2)
-				  {
-					  fprintf(outfile, "%d %d %d\n", i, j, j+1);
-					  j += 2;
-				  }
-			  }
-			  fprintf(outfile, "\n\n\n");
-			  fclose(outfile);
-			  #endif
-
-			  // exit(77);
-
-
-		      /* Expand coarse etree to fine etree      */
-		      int parent, rev_p, fine_p;
-		      for (i = 0; i < crs_info.n_crs; ++i)  // new label in coarse G
-			  {
-				  parent = c_etree[i]; // Sherry: what if parent is ROOT (= n_c)?
-				  if (parent == n_c ) {
-					  fine_p = n; // root
-				  } else {
-					  rev_p = rev_crs_perm_c[parent]; // old label
-					  fine_p = crs_vrts_cum[rev_p]; // expanded old label
-					  fine_p = perm_c[fine_p]; // new parent
-				  }
-				  rev_i = rev_crs_perm_c[i]; // old label in coarse G
-				  j = crs_vrts_cum[rev_i];
-				  k = perm_c[j];
-
-				  /*
-				  if (perm_c[fine_p]==3258) {
-					  printf(">> j %d, k %d, rev_p %d, fine_p %d\n",
-						 j, k, rev_p, fine_p); fflush(stdout);
-						 }*/
-
-				  if (crs_info.crs_vrts[rev_i] == 1) { /* 1x1 pivot */
-					  etree[k] = fine_p; //perm_c[fine_p];
-				  } else if (crs_info.crs_vrts[rev_i] == 2) { /* 2x2 pivot */
-					  etree[k] = k+1;
-					  etree[k+1] = fine_p; //perm_c[fine_p];
-				  }
-		      }
-		      // Set root ??? - ROOT MAY HAVE multiple children
-		      //etree[n-1] = n;
-
-		      //PrintInt10("etree", n, etree);
-#endif
-
-			//   is_postorder(n, etree);
-
-			  #ifdef DBG_MATCHING
-			  outfile = fopen("debug-output", "a");
-			  fprintf(outfile, "=== etree (E) ===\n");
-			  for (i = 0; i < n; ++i)
-				  fprintf(outfile, "%d %d\n", i, etree[i]);
-			  fprintf(outfile, "\n\n\n");
-
-			  fprintf(outfile, "=== coarse e-tree to fine e-tree  ===\n");
-			  int tmp[4];
-			  for (i = 0; i < crs_info.n_crs; ++i)
-			  {
-				  j = 0;
-				  fprintf(outfile, "%d ", i);
-				  int is_crs = (crs_vrts_cum2[i+1] - crs_vrts_cum2[i] == 2);
-				  if (is_crs)
-				  {
-					  fprintf(outfile, "(C %d %d): ",
-							  crs_vrts_cum2[i], crs_vrts_cum2[i]+1);
-					  tmp[j++] = crs_vrts_cum2[i];
-					  tmp[j++] = crs_vrts_cum2[i] + 1;
-				  }
-				  else
-				  {
-					  fprintf(outfile, "(N %d): ", crs_vrts_cum2[i]);
-					  tmp[j++] = crs_vrts_cum2[i];
-				  }
-
-				  int parent = c_etree[i];
-				  if (parent == n_c)
-					  fprintf(outfile, "ROOT ");
-				  else
-				  {
-					  is_crs = (crs_vrts_cum2[parent+1] - crs_vrts_cum2[parent] == 2);
-					  fprintf(outfile, "%d ", parent);
-					  if (is_crs)
-					  {
-						  fprintf(outfile, "(C %d %d): ",
-								  crs_vrts_cum2[parent], crs_vrts_cum2[parent]+1);
-						  tmp[j++] = crs_vrts_cum2[parent];
-					  	  tmp[j++] = crs_vrts_cum2[parent] + 1;
-					  }
-					  else
-					  {
-						  fprintf(outfile, "(N %d): ", crs_vrts_cum2[parent]);
-						  tmp[j++] = crs_vrts_cum2[parent];
-					  }
-				  }
-
-				  fprintf(outfile, " | ");
-				  for (k = 0; k < j; ++k)
-					  fprintf(outfile, "%d: %d - ", tmp[k], etree[tmp[k]]);
-
-				  fprintf(outfile, "\n");
-			  }
-
-			  fclose(outfile);
-			  #endif
-
-			  //exit(88);
-
-		      SUPERLU_FREE(c_etree);
-		      SUPERLU_FREE(crs_vrts_cum);
-		      if (rev_crs_perm_c)
-			  SUPERLU_FREE(rev_crs_perm_c);
-
-		      check_perm_dist("uncoarsen_perm_c", GA.nrow, perm_c);
-
-		      fprintf(stdout, "DONE.\n"); fflush(stdout);
-
-		  }  /* end if (options->RowPerm == SymMatch) */
-		  else {
-		      get_perm_c_dist(iam, permc_spec, &GA, perm_c);
-		  }
-
-		  t3 = SuperLU_timer_() - t3;
-		  #if ( PRNTlevel>=1 )
-		  printf("!factored: %f \n", t3);
-		  #endif
-		  
-          } /* end else not pametis */
+	      get_perm_c_dist(iam, permc_spec, &GA, perm_c);
+          }
         }
 
-	stat->utime[COLPERM] = SuperLU_timer_() - t2;
+	stat->utime[COLPERM] = SuperLU_timer_() - t;
 
 	/* Symbolic factorization. */
 	if ( Fact != SamePattern_SameRowPerm ) {
 	    if ( parSymbFact == NO ) { /* Perform serial symbolic factorization */
+		/* GA = Pr*A, perm_r[] is already applied. */
 	        int_t *GACcolbeg, *GACcolend, *GACrowind;
 
-		if (options->RowPerm == SymMatch) {
-		    /* GA = Pr*A*Pr^T, perm_r[] is already applied on both sides. */
-		    /* Form GAC = Pc*GA*Pc^T, prepare for symbolic factor  */
-		    apply_perm_sym(m, nnz, colptr, rowind, a_GA, perm_c);
+	        /* Compute the elimination tree of Pc*(A^T+A)*Pc^T or Pc*A^T*A*Pc^T
+	           (a.k.a. column etree), depending on the choice of ColPerm.
+	           Adjust perm_c[] to be consistent with a postorder of etree.
+	           Permute columns of A to form A*Pc'.
+		   After this routine, GAC = GA*Pc^T.  */
+	        sp_colorder(options, &GA, perm_c, etree, &GAC);
 
-		    GACcolbeg = (int_t*) intMalloc_dist(n);
-		    if ( !(GACcolbeg) ) ABORT("SUPERLU_MALLOC fails for GACcolbeg");
-		    GACcolend = (int_t*) intMalloc_dist(n);
-		    if ( !(GACcolend) ) ABORT("SUPERLU_MALLOC fails for GACcolend");
-
-		    for (i = 0; i < n; ++i) {
-			GACcolbeg[i] = colptr[i];
-		        GACcolend[i] = colptr[i+1];
-		    }
-
-		    dCreate_CompColPemuted_Matrix_dist(&GAC, m, n, nnz, a_GA, rowind,
-						       GACcolbeg, GACcolend,
-						       SLU_NCP, SLU_D, SLU_GE);
-#if 0
-		    /* The fine etree should already be postordered */
-		    sp_symetree_dist(GACcolbeg, GACcolend, rowind,  n, etree);
-#endif
-
-		} else {
-		    /* GA = Pr*A, perm_r[] is already applied. */
-		    /* Compute the elimination tree of Pc*(A^T+A)*Pc^T or Pc*A^T*A*Pc^T
-		       (a.k.a. column etree), depending on the choice of ColPerm.
-		       Adjust perm_c[] to be consistent with a postorder of etree.
-		       Permute columns of A to form A*Pc'.
-		       After this routine, GAC = GA*Pc^T.  */
-		    sp_colorder(options, &GA, perm_c, etree, &GAC);
-
-		    /* Form Pc*A*Pc^T to preserve the diagonal of the matrix GAC. */
-		    GACstore = (NCPformat *) GAC.Store;
-		    GACcolbeg = GACstore->colbeg;
-		    GACcolend = GACstore->colend;
-		    GACrowind = GACstore->rowind;
-		    for (j = 0; j < n; ++j) {
-			for (i = GACcolbeg[j]; i < GACcolend[j]; ++i) {
-			    irow = GACrowind[i];
-			    GACrowind[i] = perm_c[irow];
-			}
-		    }
-		}
+	        /* Form Pc*A*Pc^T to preserve the diagonal of the matrix GAC. */
+	        GACstore = (NCPformat *) GAC.Store;
+	        GACcolbeg = GACstore->colbeg;
+	        GACcolend = GACstore->colend;
+	        GACrowind = GACstore->rowind;
+	        for (j = 0; j < n; ++j) {
+	            for (i = GACcolbeg[j]; i < GACcolend[j]; ++i) {
+		        irow = GACrowind[i];
+		        GACrowind[i] = perm_c[irow];
+	            }
+	        }
 
 	        /* Perform a symbolic factorization on Pc*Pr*A*Pc^T and set up
                    the nonzero data structures for L & U. */
@@ -1607,7 +1077,6 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		    if ( !iam ) {
 		    	printf("\tNo of supers " IFMT "\n", Glu_persist->supno[n-1]+1);
 		    	printf("\tSize of G(L) " IFMT "\n", Glu_freeable->xlsub[n]);
-
 		    	printf("\tSize of G(U) " IFMT "\n", Glu_freeable->xusub[n]);
 		    	printf("\tint %lu, short %lu, float %lu, double %lu\n",
 			        sizeof(int_t), sizeof(short),
@@ -1659,24 +1128,16 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	if ( parSymbFact == NO ) {
 	    /* CASE OF SERIAL SYMBOLIC */
   	    /* Apply column permutation to the original distributed A */
-	    if (options->RowPerm == SymMatch) {  /* Sherry mod: need appy perm_r[]
-						    to columns */
-		for (j = 0; j < nnz_loc; ++j) colind[j] = perm_c[perm_r[colind[j]]];
-	    } else {
-		for (j = 0; j < nnz_loc; ++j) colind[j] = perm_c[colind[j]];
-	    }
+	    for (j = 0; j < nnz_loc; ++j) colind[j] = perm_c[colind[j]];
 
 	    /* Distribute Pc*Pr*diag(R)*A*diag(C)*Pc^T into L and U storage.
 	       NOTE: the row permutation Pc*Pr is applied internally in the
   	       distribution routine. */
-	    if (!iam) printf ("before distribute\n"); fflush(stdout);
-
 	    t = SuperLU_timer_();
 	    dist_mem_use = pddistribute(options, n, A, ScalePermstruct,
                                       Glu_freeable, LUstruct, grid);
 	    stat->utime[DIST] = SuperLU_timer_() - t;
 
-	    if (!iam) printf ("after distribute\n"); fflush(stdout);
   	    /* Deallocate storage used in symbolic factorization. */
 	    if ( Fact != SamePattern_SameRowPerm ) {
 	        iinfo = symbfact_SubFree(Glu_freeable);
@@ -1700,27 +1161,21 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	    stat->utime[DIST] = SuperLU_timer_() - t;
 	}
 
-	if (!iam) printf ("\tDISTRIBUTE time  %8.2f\n", stat->utime[DIST]);
+	/*if (!iam) printf ("\tDISTRIBUTE time  %8.2f\n", stat->utime[DIST]);*/
 
 	/* Flatten L metadata into one buffer. */
 	if ( Fact != SamePattern_SameRowPerm ) {
 		pdflatten_LDATA(options, n, LUstruct, grid, stat);
-		if (!iam) printf ("\tafter pdflatten_LDATA()\n");
 	}
 
 	/* Perform numerical factorization in parallel. */
 	t = SuperLU_timer_();
-
-	// nsupers = Glu_persist->supno[n-1] + 1;
-	// dDumpLblocks(iam, nsupers, grid, Glu_persist, LUstruct->Llu);
-
     // #pragma omp parallel
     // {
 	// #pragma omp master
 	// {
 	pdgstrf(options, m, n, anorm, LUstruct, grid, stat, info);
 	stat->utime[FACT] = SuperLU_timer_() - t;
-	if (!iam) printf ("\tFACTOR time  %8.2f\n", stat->utime[FACT]);
 	// }
 	// }
 
@@ -1733,6 +1188,7 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 	xsup = Glu_persist->xsup;
 	nzval_a = Astore->nzval;
 
+
 	asum=0;
     for (i = 0; i < Astore->m_loc; ++i) {
         for (j = Astore->rowptr[i]; j < Astore->rowptr[i+1]; ++j) {
@@ -1742,6 +1198,8 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 
 	nsupers = Glu_persist->supno[n-1] + 1;
 	nsupers_j = CEILING( nsupers, grid->npcol ); /* Number of local block columns */
+
+
 
 	lsum=0.0;
 	for (lk=0;lk<nsupers_j;++lk){
@@ -1757,8 +1215,10 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		}
 	}
 
+
 	MPI_Allreduce( &asum, &asum_tot,1, MPI_DOUBLE, MPI_SUM, grid->comm );
 	MPI_Allreduce( &lsum, &lsum_tot,1, MPI_DOUBLE, MPI_SUM, grid->comm );
+
 
 	MPI_Allreduce( &Astore->rowptr[Astore->m_loc], &nnz_tot,1, mpi_int_t, MPI_SUM, grid->comm );
 	// MPI_Bcast( &nnzLU, 1, mpi_int_t, 0, grid->comm );
@@ -1921,8 +1381,6 @@ pdgssvx(superlu_dist_options_t *options, SuperMatrix *A,
 		       buffer_peak_rank, buffer_peak);
 		printf("**************************************************\n\n");
 		printf("** number of Tiny Pivots: %8d\n\n", stat->TinyPivots);
-		printf("** number of 2x2 Pivots by sytrf: %8d\n\n", stat->sytrf_2x2);
-		printf("info %10d\n",*info);
 		fflush(stdout);
             }
 	} /* end printing stats */
@@ -2196,7 +1654,6 @@ if (get_acc_solve()){
 	pdPermute_Dense_Matrix(fst_row, m_loc, SOLVEstruct->row_to_proc,
 			       SOLVEstruct->inv_perm_c,
 			       X, ldx, B, ldb, nrhs, grid);
-
 #if ( DEBUGlevel>=2 )
 	printf("\n (%d) .. After pdPermute_Dense_Matrix(): b =\n", iam);
 	for (i = 0; i < m_loc; ++i)
@@ -2255,9 +1712,6 @@ if (get_acc_solve()){
 	}
     }
 
-    if (options->RowPerm == SymMatch) {
-	SUPERLU_FREE(options->indicator_2x2);
-    }
 #if 0
     if ( !factored && Fact != SamePattern_SameRowPerm && !parSymbFact)
  	Destroy_CompCol_Permuted_dist(&GAC);

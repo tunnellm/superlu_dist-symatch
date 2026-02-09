@@ -1024,6 +1024,12 @@ void Local_Dgstrf2(superlu_dist_options_t *options, int_t k, double thresh,
             lusup[i * nsupr + j]=lusup[j * nsupr + i] ;
         }
         }
+
+        for (int j = 0; j < nsupc; ++j) {
+        memcpy( &ublk_ptr[j * nsupc], &lusup[j * nsupr], nsupc * sizeof(double) );
+        }
+
+
         //   printf("nsupc %5d nsupr %5d\n",nsupc,nsupr);
 
         stat->ops[FACT] += (flops_t) nsupc *nsupc*nsupc;

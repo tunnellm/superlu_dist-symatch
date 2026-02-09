@@ -147,7 +147,7 @@ int_t symbfact
 	if ( relax_end[j] != SLU_EMPTY ) { /* j is the first column of a relaxed snode */
    	    k = relax_end[j];          /* k is the last column of the relaxed snode */
 
-	    if ( options->SymFact ) {
+	    if ( options->SymFact==YES && options->Algo3d==YES ) {
 		if ( options->indicator_2x2[k] == 2 ) { /* modify relax_end[j] */
 		    /* k is the first column in the 2x2 block, then merge column k+1
 		       to the current relaxed s-node.
@@ -701,7 +701,7 @@ static int_t column_dfs
 	    jsuper = SLU_EMPTY; 
 	
 	/* Sherry mod: In symmetric LDL' factorization, do not break 2x2 pivot. */
-	if ( options->SymFact ) {
+	if ( options->SymFact==YES && options->Algo3d==YES ) {
 	    if ( options->indicator_2x2[jcolm1] == SLU_EMPTY ) {
 		/* previous columns [jcol-2,jcolm1] is a 2x2, even though their
 		   column structures are different, now we force jcol to start a new s-node */

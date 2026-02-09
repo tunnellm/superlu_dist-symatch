@@ -20,5 +20,4 @@ rowperm=4  ### 1: LargeDiag_MC64  4: SymMatch
 tinyreplace=1 ## whether to use tiny pivot replacement
 it=1 # wether to use iterative refinement
 
-$SUPERLUROOT/openmpi-5.0.6/bin/mpirun -n 1 ./EXAMPLE/pddrive-sym -r 1 -c 1 -t $tinyreplace -i $it -p $rowperm ../../$mat
 $SUPERLUROOT/openmpi-5.0.6/bin/mpirun -n 1 ./EXAMPLE/pddrive3d-sym -r 1 -c 1 -d 1 -t $tinyreplace -i $it -p $rowperm ../../$mat

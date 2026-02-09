@@ -663,10 +663,8 @@ int dsparseTreeFactor_ASYNC_GPU(
                     {
                         /*check if received*/
                         int_t recvUDiag=1;
-                        if(options->SymFact == NO){
-                            recvUDiag = checkRecvUDiag(kx, comReqss[offset],
-                                                         grid, SCT);
-                        }
+                        recvUDiag = checkRecvUDiag(kx, comReqss[offset],
+                                                        grid, SCT);
                         if (recvUDiag)
                         {
 #if 0
@@ -708,8 +706,11 @@ int dsparseTreeFactor_ASYNC_GPU(
                     if (IrecvPlcd_D[kx] && !factored_U[kx])
                     {
                         /*check if received*/
-                        int_t recvLDiag = checkRecvLDiag(kx, comReqss[offset],
+                        int_t recvLDiag=1;
+                        if(options->SymFact == NO){
+                            recvLDiag = checkRecvLDiag(kx, comReqss[offset],
                                                          grid, SCT);
+                        }
                         if (recvLDiag)
                         {
 #if 0

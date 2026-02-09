@@ -97,10 +97,6 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW /global/cfs/cdirs/m1982/www/oguz/mso-suitesparse-sym-nonspd-1k-10k/bcsstm10/${MAT} | tee $CFS/m2957/tianyi/superlu_results/mso-suitesparse-sym-nonspd-1k-10k/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_${MAT}_1rhs
 # done
 
-for MAT in matrix_ACTIVSg200_AC_01.mm
-do
-srun -n $CORE_VAL -N $NODE_VAL -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive-sym -c $NCOL -r $NROW -p 4 -t 1 /global/cfs/cdirs/m2957/symmetric_matrices/PowerGrid/200/${MAT} | tee $CFS/m2957/tianyi/superlu_results/sym-match/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_${MAT}_1rhs
-done
 
 done
 

@@ -927,11 +927,11 @@ pdCompute_Diag_Inv(superlu_dist_options_t * options, int_t n, dLUstruct_t *LUstr
 		      }
 	          }
 
-		  if(options->SymFact == YES){
+		  if ( options->SymFact==YES && options->Algo3d==YES ){
 			for (j=0 ; j<knsupc; j++){
-				Uinv[j*knsupc+j] = one;
+				Linv[j*knsupc+j] = one;
 				for (i=0 ; i<knsupc; i++){
-					Linv[j*knsupc+i] = lusup[j*nsupr+i];
+					Uinv[j*knsupc+i] = lusup[j*nsupr+i];
 				}
 			}
 		  }else{

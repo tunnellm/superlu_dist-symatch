@@ -1403,6 +1403,534 @@ int dtrs_compute_communication_structure(superlu_dist_options_t *options, int_t 
 
 
 
+
+
+// int dtrs_compute_communication_structure_sym(superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
+//                            dScalePermstruct_t * ScalePermstruct,
+//                            int* supernodeMask, gridinfo_t *grid, SuperLUStat_t * stat)
+// {
+//     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+//     int kr,kc,nlb,nub;
+//     int nsupers = Glu_persist->supno[n - 1] + 1;
+//     int_t *rowcounts, *colcounts, **rowlists, **collists, *tmpglo;
+//     int_t  *lsub, *lloc;
+//     int_t idx_i, lptr1_tmp, ib, jb, jj;
+//     int   *displs, *recvcounts, count, nbg;
+
+//     kr = CEILING( nsupers, grid->nprow);/* Number of local block rows */
+//     kc = CEILING( nsupers, grid->npcol);/* Number of local block columns */
+//     int_t iam=grid->iam;
+//     int nprocs = grid->nprow * grid->npcol;
+//     int_t myrow = MYROW( iam, grid );
+//     int_t mycol = MYCOL( iam, grid );
+//     int_t *ActiveFlag;
+//     int *ranks;
+//     superlu_scope_t *rscp = &grid->rscp;
+//     superlu_scope_t *cscp = &grid->cscp;
+//     int rank_cnt,rank_cnt_ref,Root;
+//     int_t Iactive,gb,pr,pc,nb, idx_n;
+
+// 	C_Tree  *LBtree_ptr;       /* size ceil(NSUPERS/Pc)                */
+// 	C_Tree  *LRtree_ptr;		  /* size ceil(NSUPERS/Pr)                */
+// 	C_Tree  *UBtree_ptr;       /* size ceil(NSUPERS/Pc)                */
+// 	C_Tree  *URtree_ptr;		  /* size ceil(NSUPERS/Pr)                */
+// 	int msgsize;
+
+//     dLocalLU_t *Llu = LUstruct->Llu;
+//     int_t* xsup = Glu_persist->xsup;
+//     int_t  *Urbs = Llu->Urbs; /* Number of row blocks in each block column of U. */
+//     Ucb_indptr_t **Ucb_indptr = Llu->Ucb_indptr;/* Vertical linked list pointing to Uindex[] */
+//     int_t *usub;
+//     double *lnzval;
+
+
+//     int_t len, len1, len2, len3, nrbl;
+
+
+// 	double **Lnzval_bc_ptr=Llu->Lnzval_bc_ptr;  /* size ceil(NSUPERS/Pc) */
+// 	double *Lnzval_bc_dat;  /* size sum of sizes of Lnzval_bc_ptr[lk])                 */
+//     long int *Lnzval_bc_offset;  /* size ceil(NSUPERS/Pc)                 */
+
+// 	int_t  **Lrowind_bc_ptr=Llu->Lrowind_bc_ptr; /* size ceil(NSUPERS/Pc) */
+// 	int_t *Lrowind_bc_dat;  /* size sum of sizes of Lrowind_bc_ptr[lk])                 */
+//     long int *Lrowind_bc_offset;  /* size ceil(NSUPERS/Pc)                 */
+
+// 	int_t  **Lindval_loc_bc_ptr=Llu->Lindval_loc_bc_ptr; /* size ceil(NSUPERS/Pc)                 */
+// 	int_t *Lindval_loc_bc_dat;  /* size sum of sizes of Lindval_loc_bc_ptr[lk])                 */
+//     long int *Lindval_loc_bc_offset;  /* size ceil(NSUPERS/Pc)                 */
+
+//     double **Linv_bc_ptr=Llu->Linv_bc_ptr;  /* size ceil(NSUPERS/Pc) */
+// 	double *Linv_bc_dat;  /* size sum of sizes of Linv_bc_ptr[lk])                 */
+//     long int *Linv_bc_offset;  /* size ceil(NSUPERS/Pc)                 */
+//     double **Uinv_bc_ptr=Llu->Uinv_bc_ptr;  /* size ceil(NSUPERS/Pc) */
+// 	double *Uinv_bc_dat;  /* size sum of sizes of Uinv_bc_ptr[lk])                 */
+//     long int *Uinv_bc_offset;  /* size ceil(NSUPERS/Pc) */
+
+
+// 	double **Unzval_br_ptr=Llu->Unzval_br_ptr;  /* size ceil(NSUPERS/Pr) */
+// 	double *Unzval_br_dat;  /* size sum of sizes of Unzval_br_ptr[lk])                 */
+// 	long int *Unzval_br_offset;  /* size ceil(NSUPERS/Pr)    */
+// 	int_t  **Ufstnz_br_ptr=Llu->Ufstnz_br_ptr;  /* size ceil(NSUPERS/Pr) */
+//     int_t   *Ufstnz_br_dat;  /* size sum of sizes of Ufstnz_br_ptr[lk])                 */
+//     long int *Ufstnz_br_offset;  /* size ceil(NSUPERS/Pr)    */
+
+//     Ucb_indptr_t *Ucb_inddat;
+//     long int *Ucb_indoffset;
+//     int_t  **Ucb_valptr = Llu->Ucb_valptr;
+//     int_t  *Ucb_valdat;
+//     long int *Ucb_valoffset;
+//     int *h_recv_cnt;
+//     int *h_recv_cnt_u;
+
+//     /* Reconstruct the global L structure and compute the communication metadata */
+
+//     if ( !(tmpglo = intCalloc_dist(nsupers)) )
+// 		ABORT("Calloc fails for tmpglo[].");
+//     if (!(recvcounts = (int *) SUPERLU_MALLOC (SUPERLU_MAX (grid->npcol, grid->nprow) * sizeof(int))))
+//         ABORT ("SUPERLU_MALLOC fails for recvcounts.");
+//     if (!(displs = (int *) SUPERLU_MALLOC (SUPERLU_MAX (grid->npcol, grid->nprow) * sizeof(int))))
+//         ABORT ("SUPERLU_MALLOC fails for displs.");
+
+
+//     /* gather information about the global L structure */
+
+// 	if ( !(rowcounts = intCalloc_dist(kc)) )
+// 		ABORT("Calloc fails for rowcounts[].");
+// 	if ( !(colcounts = intCalloc_dist(kr)) )
+// 		ABORT("Calloc fails for colcounts[].");
+
+// 	if ( !(rowlists = (int_t**)SUPERLU_MALLOC(kc * sizeof(int_t*))) )
+// 		fprintf(stderr, "Malloc fails for rowlists[].");
+// 	if ( !(collists = (int_t**)SUPERLU_MALLOC(kr * sizeof(int_t*))) )
+// 		fprintf(stderr, "Malloc fails for collists[].");
+
+// 	for (int_t lk = 0; lk < kc; ++lk) { /* for each local block column ... */
+// 		jb = mycol+lk*grid->npcol;  /* not sure */
+// 		if(jb<nsupers){
+//             if(supernodeMask[jb]>0){
+//                 lsub = Llu->Lrowind_bc_ptr[lk];
+//                 lloc = Llu->Lindval_loc_bc_ptr[lk];
+//                 if(lsub){
+//                     nlb = lsub[0];
+//                     idx_i = nlb;
+//                     for (int_t lb = 0; lb < nlb; ++lb){
+//                         lptr1_tmp = lloc[lb+idx_i];
+//                         ib = lsub[lptr1_tmp]; /* Global block number, row-wise. */
+//                         if(supernodeMask[ib]>0){
+//                             rowcounts[lk]++;
+//                             int_t lib = LBi( ib, grid ); /* Local block number, row-wise. */
+//                             colcounts[lib]++;
+//                         }
+//                     }
+//                 }
+//             }
+// 		}
+// 	}
+
+//     for (int_t j=0; j<kc; j++){
+//         if(rowcounts[j]>0){
+//             if ( !(rowlists[j] = intCalloc_dist(rowcounts[j])) )
+//                 ABORT("Calloc fails for rowlists[j].");
+//         }else{
+//             rowlists[j] = NULL;
+//         }
+//         rowcounts[j]=0;
+//     }
+//     for (int_t i=0; i<kr; i++){
+//         if(colcounts[i]>0){
+//             if ( !(collists[i] = intCalloc_dist(colcounts[i])) )
+//                 ABORT("Calloc fails for collists[i].");
+//         }else{
+//             collists[i] = NULL;
+//         }
+//         colcounts[i]=0;
+//     }
+
+// 	for (int_t lk = 0; lk < kc; ++lk) { /* for each local block column ... */
+// 		jb = mycol+lk*grid->npcol;  /* not sure */
+// 		if(jb<nsupers){
+//             if(supernodeMask[jb]>0){
+//                 lsub = Llu->Lrowind_bc_ptr[lk];
+//                 lloc = Llu->Lindval_loc_bc_ptr[lk];
+//                 if(lsub){
+//                     nlb = lsub[0];
+//                     idx_i = nlb;
+//                     for (int_t lb = 0; lb < nlb; ++lb){
+//                         lptr1_tmp = lloc[lb+idx_i];
+//                         ib = lsub[lptr1_tmp]; /* Global block number, row-wise. */
+//                         if(supernodeMask[ib]>0){
+//                             rowlists[lk][rowcounts[lk]++]=ib;
+//                             int_t lib = LBi( ib, grid ); /* Local block number, row-wise. */
+//                             collists[lib][colcounts[lib]++]=jb;
+//                         }
+//                     }
+//                 }
+//             }
+// 		}
+// 	}
+
+//     /* broadcast tree for L and reduction tree for L^T*/
+
+// 	if ( !(ActiveFlag = intCalloc_dist(grid->nprow*2)) )
+// 		ABORT("Calloc fails for ActiveFlag[].");
+// 	if ( !(ranks = (int*)SUPERLU_MALLOC(grid->nprow * sizeof(int))) )
+// 		ABORT("Malloc fails for ranks[].");
+// 	if ( !(LBtree_ptr = (C_Tree*)SUPERLU_MALLOC(kc * sizeof(C_Tree))) )
+// 		ABORT("Malloc fails for LBtree_ptr[].");
+// 	for (int_t lk = 0; lk <kc ; ++lk) {
+// 		C_BcTree_Nullify(&LBtree_ptr[lk]);
+// 	}
+
+// 	if ( !(URtree_ptr = (C_Tree*)SUPERLU_MALLOC(kc * sizeof(C_Tree))) )
+// 		ABORT("Malloc fails for URtree_ptr[].");
+// 	for (int_t lk = 0; lk <kc ; ++lk) {
+// 		C_RdTree_Nullify(&URtree_ptr[lk]);
+// 	}
+
+
+// 	for (int_t lk = 0; lk < kc; ++lk) { /* for each local block column ... */
+// 		jb = mycol+lk*grid->npcol;  /* not sure */
+// 		if(jb<nsupers){
+//             if(supernodeMask[jb]>0){
+//                 // printf("iam %5d jb %5d \n",iam, jb);
+//                 // fflush(stdout);
+//                 pc = PCOL( jb, grid );
+//                 count = rowcounts[lk];
+//                 MPI_Allgather(&count, 1, MPI_INT, recvcounts, 1, MPI_INT, cscp->comm);
+//                 displs[0] = 0;
+//                 nbg=0;
+//                 for(int i=0; i<grid->nprow; ++i)
+//                 {
+//                     nbg +=recvcounts[i];
+//                 }
+//                 if(nbg>0){
+//                     for(int i=0; i<grid->nprow-1; ++i)
+//                     {
+//                         displs[i+1] = displs[i] + recvcounts[i];
+//                     }
+//                     MPI_Allgatherv(rowlists[lk], count, mpi_int_t, tmpglo, recvcounts, displs, mpi_int_t, cscp->comm);
+//                 }
+//                 for (int_t j=0;j<grid->nprow;++j)ActiveFlag[j]=3*nsupers;
+//                 for (int_t j=0;j<grid->nprow;++j)ActiveFlag[j+grid->nprow]=j;
+//                 for (int_t j=0;j<grid->nprow;++j)ranks[j]=-1;
+
+//                 for (int_t i = 0; i < nbg; ++i) {
+//                     gb = tmpglo[i];
+//                     pr = PROW( gb, grid );
+//                     ActiveFlag[pr]=SUPERLU_MIN(ActiveFlag[pr],gb);
+//                 } /* for i ... */
+
+//                 Root=-1;
+//                 Iactive = 0;
+//                 for (int_t j=0;j<grid->nprow;++j){
+//                     if(ActiveFlag[j]!=3*nsupers){
+//                     gb = ActiveFlag[j];
+//                     pr = PROW( gb, grid );
+//                     if(gb==jb)Root=pr;
+//                     if(myrow==pr)Iactive=1;
+//                     }
+//                 }
+
+//                 quickSortM(ActiveFlag,0,grid->nprow-1,grid->nprow,0,2);
+
+//                 if(Iactive==1){
+//                     // printf("iam %5d jb %5d Root %5d \n",iam, jb,Root);
+//                     // fflush(stdout);
+//                     assert( Root>-1 );
+//                     rank_cnt = 1;
+//                     ranks[0]=Root;
+//                     for (int_t j = 0; j < grid->nprow; ++j){
+//                         if(ActiveFlag[j]!=3*nsupers && ActiveFlag[j+grid->nprow]!=Root){
+//                             ranks[rank_cnt]=ActiveFlag[j+grid->nprow];
+//                             ++rank_cnt;
+//                         }
+//                     }
+
+//                     if(rank_cnt>1){
+
+//                         for (int_t ii=0;ii<rank_cnt;ii++)   // use global ranks rather than local ranks
+//                             ranks[ii] = PNUM( ranks[ii], pc, grid );
+
+//                         msgsize = SuperSize( jb );
+//                         int needrecv=0;
+//                         C_BcTree_Create_nv(&LBtree_ptr[lk], grid->comm, ranks, rank_cnt, msgsize, 'd',&needrecv);
+//                         LBtree_ptr[lk].tag_=BC_L;
+
+//                         int needrecvrd=0;
+//                         int needsendrd=0;
+//                         C_RdTree_Create_nv(&URtree_ptr[lk], grid->comm, ranks, rank_cnt, msgsize, 'd', &needrecvrd, &needsendrd);
+//                         URtree_ptr[lk].tag_=RD_U;
+                        
+//                         // printf("iam %5d btree rank_cnt %5d \n",iam,rank_cnt);
+//                         // fflush(stdout);
+
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// 	SUPERLU_FREE(ActiveFlag);
+// 	SUPERLU_FREE(ranks);
+
+
+//     /* reduction tree for L and broadcast tree for L^T*/
+// 	if ( !(LRtree_ptr = (C_Tree*)SUPERLU_MALLOC(kr * sizeof(C_Tree))) )
+// 		ABORT("Malloc fails for LRtree_ptr[].");
+// 	if ( !(ActiveFlag = intCalloc_dist(grid->npcol*2)) )
+// 		ABORT("Calloc fails for ActiveFlag[].");
+// 	if ( !(ranks = (int*)SUPERLU_MALLOC(grid->npcol * sizeof(int))) )
+// 		ABORT("Malloc fails for ranks[].");
+// 	for (int_t lk = 0; lk <kr ; ++lk) {
+// 		C_RdTree_Nullify(&LRtree_ptr[lk]);
+// 	}
+// 	if ( !(UBtree_ptr = (C_Tree*)SUPERLU_MALLOC(kr * sizeof(C_Tree))) )
+// 		ABORT("Malloc fails for UBtree_ptr[].");
+// 	for (int_t lk = 0; lk <kr ; ++lk) {
+// 		C_BcTree_Nullify(&UBtree_ptr[lk]);
+// 	}
+
+
+// // #ifdef GPU_ACC
+// // #ifdef HAVE_NVSHMEM
+// //     if ( !(mystatusmod = (int*)SUPERLU_MALLOC(2*kr * sizeof(int))) )
+// //         ABORT("Malloc fails for mystatusmod[].");
+// // 	if ( !(h_recv_cnt = (int*)SUPERLU_MALLOC(kr * sizeof(int))) )
+// //         ABORT("Malloc fails for mystatusmod[].");
+
+// // 	int nfrecvmod=0;
+// // 	for (int i=0;i<kr;i++){
+// //         h_recv_cnt[i]=0;
+// // 	}
+// // 	for (int i=0;i<2*kr;i++) mystatusmod[i]=1;
+// // #endif
+// // #endif
+
+// 	for (int_t lk=0;lk<kr;++lk){
+// 		ib = myrow+lk*grid->nprow;  /* not sure */
+// 		if(ib<nsupers){
+//             if(supernodeMask[ib]>0){
+//                 pr = PROW( ib, grid );
+
+//                 count = colcounts[lk];
+//                 MPI_Allgather(&count, 1, MPI_INT, recvcounts, 1, MPI_INT, rscp->comm);
+//                 displs[0] = 0;
+//                 nbg=0;
+//                 for(int i=0; i<grid->npcol; ++i)
+//                 {
+//                     nbg +=recvcounts[i];
+//                 }
+//                 if(nbg>0){
+//                     for(int i=0; i<grid->npcol-1; ++i)
+//                     {
+//                         displs[i+1] = displs[i] + recvcounts[i];
+//                     }
+//                     MPI_Allgatherv(collists[lk], count, mpi_int_t, tmpglo, recvcounts, displs, mpi_int_t, rscp->comm);
+//                 }
+//                 for (int_t j=0;j<grid->npcol;++j)ActiveFlag[j]=-3*nsupers;
+//                 for (int_t j=0;j<grid->npcol;++j)ActiveFlag[j+grid->npcol]=j;
+//                 for (int_t j=0;j<grid->npcol;++j)ranks[j]=-1;
+
+//                 for (int_t j = 0; j < nbg; ++j) {
+//                     gb = tmpglo[j];
+//                     pc = PCOL( gb, grid );
+//                     ActiveFlag[pc]=SUPERLU_MAX(ActiveFlag[pc],gb);
+//                 } /* for j ... */
+
+//                 Root=-1;
+//                 Iactive = 0;
+
+//                 for (int_t j=0;j<grid->npcol;++j){
+//                     if(ActiveFlag[j]!=-3*nsupers){
+//                     jb = ActiveFlag[j];
+//                     pc = PCOL( jb, grid );
+//                     if(jb==ib)Root=pc;
+//                     if(mycol==pc)Iactive=1;
+//                     }
+//                 }
+
+//                 quickSortM(ActiveFlag,0,grid->npcol-1,grid->npcol,1,2);
+
+//                 if(Iactive==1){
+//                     assert( Root>-1 );
+//                     rank_cnt = 1;
+//                     ranks[0]=Root;
+//                     for (int_t j = 0; j < grid->npcol; ++j){
+//                         if(ActiveFlag[j]!=-3*nsupers && ActiveFlag[j+grid->npcol]!=Root){
+//                             ranks[rank_cnt]=ActiveFlag[j+grid->npcol];
+//                             ++rank_cnt;
+//                         }
+//                     }
+//                     if(rank_cnt>1){
+//                         for (int_t ii=0;ii<rank_cnt;ii++)   // use global ranks rather than local ranks
+//                             ranks[ii] = PNUM( pr, ranks[ii], grid );
+//                         msgsize = SuperSize( ib );
+//                         // C_RdTree_Create(&LRtree_ptr[lk], grid->comm, ranks, rank_cnt, msgsize, 'd');
+
+//                         int needrecvrd=0;
+//                         int needsendrd=0;
+//                         C_RdTree_Create_nv(&LRtree_ptr[lk], grid->comm, ranks, rank_cnt, msgsize, 'd', &needrecvrd, &needsendrd);
+//                         LRtree_ptr[lk].tag_=RD_L;
+                        
+//                         int needrecv=0;
+//                         C_BcTree_Create_nv(&UBtree_ptr[lk], grid->comm, ranks, rank_cnt, msgsize, 'd',&needrecv);
+//                         UBtree_ptr[lk].tag_=BC_U;   
+                                             
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// 	SUPERLU_FREE(ActiveFlag);
+// 	SUPERLU_FREE(ranks);
+
+
+
+
+//     for (int_t j=0; j<kc; j++){
+//         if(rowlists[j]){
+//             SUPERLU_FREE(rowlists[j]);
+//         }
+//     }
+//     for (int_t i=0; i<kr; i++){
+//         if(collists[i]){
+//             SUPERLU_FREE(collists[i]);
+//         }
+//     }
+//     SUPERLU_FREE(rowcounts);
+//     SUPERLU_FREE(colcounts);
+//     SUPERLU_FREE(rowlists);
+//     SUPERLU_FREE(collists);
+
+
+//     SUPERLU_FREE(tmpglo);
+//     SUPERLU_FREE(recvcounts);
+//     SUPERLU_FREE(displs);
+
+
+// 	Llu->Ufstnz_br_ptr = Ufstnz_br_ptr;
+// 	Llu->Unzval_br_ptr = Unzval_br_ptr;
+// 	Llu->Ucb_indptr = Ucb_indptr;
+// 	Llu->Ucb_valptr = Ucb_valptr;
+
+// 	Llu->LRtree_ptr = LRtree_ptr;
+// 	Llu->LBtree_ptr = LBtree_ptr;
+// 	Llu->URtree_ptr = URtree_ptr;
+// 	Llu->UBtree_ptr = UBtree_ptr;
+
+
+//     Llu->nbcol_masked=0;
+// 	for (int_t lk = 0; lk < kc; ++lk) { /* for each local block column ... */
+// 		jb = mycol+lk*grid->npcol;  /* not sure */
+//         if(jb<nsupers){
+//             if(supernodeMask[jb]==1){ // only record the columns performed on GPU
+//                Llu->nbcol_masked++;
+//             }
+//         }
+//     }
+//  	if ( !(Llu->bcols_masked =
+// 				(int*)SUPERLU_MALLOC(Llu->nbcol_masked * sizeof(int))) ) {
+// 		fprintf(stderr, "Malloc fails for nbcol_masked[].");
+// 	}
+//     Llu->nbcol_masked=0;
+// 	for (int_t lk = 0; lk < kc; ++lk) { /* for each local block column ... */
+// 		jb = mycol+lk*grid->npcol;  /* not sure */
+//         if(jb<nsupers){
+//             if(supernodeMask[jb]==1){ // only record the columns performed on GPU
+//                Llu->bcols_masked[Llu->nbcol_masked++]=lk;
+//             }
+//         }
+//     }
+//     // printf("Llu->nbcol_masked: %10d\n",Llu->nbcol_masked);
+//     // fflush(stdout);
+
+
+// #ifdef GPU_ACC
+//     if (get_acc_solve()){
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_bcols_masked, Llu->nbcol_masked * sizeof(int)));
+// 	checkGPU(gpuMemcpy(Llu->d_bcols_masked, Llu->bcols_masked, Llu->nbcol_masked * sizeof(int), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_xsup, (n+1) * sizeof(int_t)));
+// 	checkGPU(gpuMemcpy(Llu->d_xsup, xsup, (n+1) * sizeof(int_t), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_LRtree_ptr, CEILING( nsupers, grid->nprow ) * sizeof(C_Tree)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_LBtree_ptr, CEILING( nsupers, grid->npcol ) * sizeof(C_Tree)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_URtree_ptr, CEILING( nsupers, grid->nprow ) * sizeof(C_Tree)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_UBtree_ptr, CEILING( nsupers, grid->npcol ) * sizeof(C_Tree)));
+// 	checkGPU(gpuMemcpy(Llu->d_LRtree_ptr, Llu->LRtree_ptr, CEILING( nsupers, grid->nprow ) * sizeof(C_Tree), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMemcpy(Llu->d_LBtree_ptr, Llu->LBtree_ptr, CEILING( nsupers, grid->npcol ) * sizeof(C_Tree), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMemcpy(Llu->d_URtree_ptr, Llu->URtree_ptr, CEILING( nsupers, grid->nprow ) * sizeof(C_Tree), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMemcpy(Llu->d_UBtree_ptr, Llu->UBtree_ptr, CEILING( nsupers, grid->npcol ) * sizeof(C_Tree), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Lrowind_bc_dat, (Llu->Lrowind_bc_cnt) * sizeof(int_t)));
+// 	checkGPU(gpuMemcpy(Llu->d_Lrowind_bc_dat, Llu->Lrowind_bc_dat, (Llu->Lrowind_bc_cnt) * sizeof(int_t), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Lindval_loc_bc_dat, (Llu->Lindval_loc_bc_cnt) * sizeof(int_t)));
+// 	checkGPU(gpuMemcpy(Llu->d_Lindval_loc_bc_dat, Llu->Lindval_loc_bc_dat, (Llu->Lindval_loc_bc_cnt) * sizeof(int_t), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Lrowind_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int)));
+// 	checkGPU(gpuMemcpy(Llu->d_Lrowind_bc_offset, Llu->Lrowind_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Lindval_loc_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int)));
+// 	checkGPU(gpuMemcpy(Llu->d_Lindval_loc_bc_offset, Llu->Lindval_loc_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Lnzval_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int)));
+// 	checkGPU(gpuMemcpy(Llu->d_Lnzval_bc_offset, Llu->Lnzval_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int), gpuMemcpyHostToDevice));
+//     checkGPU(gpuMalloc( (void**)&Llu->d_grid, sizeof(gridinfo_t)));
+//     checkGPU(gpuMemcpy(Llu->d_grid, grid, sizeof(gridinfo_t), gpuMemcpyHostToDevice));
+
+// 	// some dummy allocation to avoid checking whether they are null pointers later
+// #if 0
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Ucolind_bc_dat, sizeof(int_t)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Ucolind_bc_offset, sizeof(int64_t)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Unzval_bc_dat, sizeof(double)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Unzval_bc_offset, sizeof(int64_t)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Uindval_loc_bc_dat, sizeof(int_t)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Uindval_loc_bc_offset, sizeof(int_t)));
+// #else
+//     Llu->d_Ucolind_bc_dat=NULL;
+//     Llu->d_Ucolind_br_dat=NULL;
+//     Llu->d_Ucolind_bc_offset=NULL;
+//     Llu->d_Ucolind_br_offset=NULL;
+//     Llu->d_Uind_br_dat=NULL;
+//     Llu->d_Uind_br_offset=NULL;
+//     Llu->d_Unzval_bc_dat=NULL;
+//     Llu->d_Unzval_bc_offset=NULL;
+//     Llu->d_Unzval_br_new_dat=NULL;
+//     Llu->d_Unzval_br_new_offset=NULL;
+//     Llu->d_Uindval_loc_bc_dat=NULL;
+//     Llu->d_Uindval_loc_bc_offset=NULL;
+// #endif
+
+
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Linv_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int)));
+// 	checkGPU(gpuMemcpy(Llu->d_Linv_bc_offset, Llu->Linv_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Uinv_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int)));
+// 	checkGPU(gpuMemcpy(Llu->d_Uinv_bc_offset, Llu->Uinv_bc_offset, CEILING( nsupers, grid->npcol ) * sizeof(long int), gpuMemcpyHostToDevice));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_ilsum, (CEILING( nsupers, grid->nprow )+1) * sizeof(int_t)));
+// 	checkGPU(gpuMemcpy(Llu->d_ilsum, Llu->ilsum, (CEILING( nsupers, grid->nprow )+1) * sizeof(int_t), gpuMemcpyHostToDevice));
+
+
+// 	/* gpuMemcpy for the following is performed in pxgssvx/pxgssvx3d */
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Lnzval_bc_dat, (Llu->Lnzval_bc_cnt) * sizeof(double)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Linv_bc_dat, (Llu->Linv_bc_cnt) * sizeof(double)));
+// 	checkGPU(gpuMalloc( (void**)&Llu->d_Uinv_bc_dat, (Llu->Uinv_bc_cnt) * sizeof(double)));
+
+
+//        /* nvshmem related*/
+// // #ifdef HAVE_NVSHMEM
+// // 	checkGPU(gpuMalloc( (void**)&d_recv_cnt, CEILING(nsupers, grid->nprow) * sizeof(int)));
+// // 	checkGPU(gpuMemcpy(d_recv_cnt, h_recv_cnt,  CEILING(nsupers, grid->nprow) * sizeof(int), gpuMemcpyHostToDevice));
+// //         checkGPU(gpuMalloc( (void**)&d_recv_cnt_u, CEILING(nsupers, grid->nprow) * sizeof(int)));
+// //         checkGPU(gpuMemcpy(d_recv_cnt_u, h_recv_cnt_u,  CEILING(nsupers, grid->nprow) * sizeof(int), gpuMemcpyHostToDevice));
+// // #endif
+//     }
+// // #ifdef HAVE_NVSHMEM
+// //     SUPERLU_FREE(h_recv_cnt);
+// //     SUPERLU_FREE(h_recv_cnt_u);
+// // #endif
+// #endif /* end ifdef GPU_ACC */
+
+
+//     return 0;
+// } // end dtrs_compute_communication_structure_sym
+
+
+
+
+
 int_t dtrs_x_reduction_newsolve(int_t nsupers, double* x, int nrhs, dLUstruct_t * LUstruct, gridinfo3d_t *grid3d, dtrf3Dpartition_t*  trf3Dpartition, double* recvbuf, xtrsTimer_t *xtrsTimer)
 
 {

@@ -40,11 +40,6 @@ if(enable_double)
   target_link_libraries(pddrive ${all_link_libs})
   install(TARGETS pddrive RUNTIME DESTINATION "${INSTALL_LIB_DIR}/EXAMPLE")
 
-  set(DEXM-SYM pddrive-sym.c dcreate_matrix.c)
-  add_executable(pddrive-sym ${DEXM-SYM})
-  target_link_libraries(pddrive-sym ${all_link_libs})
-  install(TARGETS pddrive-sym RUNTIME DESTINATION "${INSTALL_LIB_DIR}/EXAMPLE")  
-
   set(DEXM1 pddrive1.c dcreate_matrix.c)
   add_executable(pddrive1 ${DEXM1})
   target_link_libraries(pddrive1 ${all_link_libs})

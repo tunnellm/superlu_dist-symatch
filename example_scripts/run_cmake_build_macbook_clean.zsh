@@ -109,6 +109,5 @@ cmake .. \
 
 make pddrive
 make pddrive3d
-make pddrive-sym
 make pddrive3d-sym
 

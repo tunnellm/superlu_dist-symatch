@@ -205,11 +205,11 @@ int Wait_LUDiagSend(int_t k, MPI_Request *U_diag_blk_send_req,
     int pkk = PNUM (PROW (k, grid), PCOL (k, grid), grid);
 
     if (iam == pkk)
-    {
-        if(options->SymFact == NO){  
-            Wait_UDiagBlockSend(U_diag_blk_send_req, grid, SCT);
+    { 
+        Wait_UDiagBlockSend(U_diag_blk_send_req, grid, SCT);
+        if(options->SymFact == NO){ 
+            Wait_LDiagBlockSend(L_diag_blk_send_req, grid, SCT);
         }
-        Wait_LDiagBlockSend(L_diag_blk_send_req, grid, SCT);
     }
 
     return 0;

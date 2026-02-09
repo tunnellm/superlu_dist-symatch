@@ -65,21 +65,21 @@ int_t dDiagFactIBCast(int_t k,  int_t k0,      // supernode to be factored
     /*Place Irecvs first*/
     // if (IrecvPlcd_D[k] == 0 )
     // {
-    int_t nsupc = SuperSize (k);
-    if(options->SymFact == NO){  
-        if (mycol == kcol && iam != pkk)
-        {
-            dIRecv_UDiagBlock(k0, BlockUFactor,  /*pointer for the diagonal block*/
-                            nsupc * nsupc, krow,
-                            U_diag_blk_recv_req, grid, SCT, tag_ub);
-        }
+    int_t nsupc = SuperSize (k); 
+    if (mycol == kcol && iam != pkk)
+    {
+        dIRecv_UDiagBlock(k0, BlockUFactor,  /*pointer for the diagonal block*/
+                        nsupc * nsupc, krow,
+                        U_diag_blk_recv_req, grid, SCT, tag_ub);
     }
 
-    if (myrow == krow && iam != pkk)
-    {
-        dIRecv_LDiagBlock(k0, BlockLFactor,  /*pointer for the diagonal block*/
-                         nsupc * nsupc, kcol,
-                         L_diag_blk_recv_req, grid, SCT, tag_ub);
+    if(options->SymFact == NO){ 
+        if (myrow == krow && iam != pkk)
+        {
+            dIRecv_LDiagBlock(k0, BlockLFactor,  /*pointer for the diagonal block*/
+                            nsupc * nsupc, kcol,
+                            L_diag_blk_recv_req, grid, SCT, tag_ub);
+        }
     }
     IrecvPlcd_D[k] = 1;
     // }
@@ -107,14 +107,14 @@ int_t dDiagFactIBCast(int_t k,  int_t k0,      // supernode to be factored
 
         /*Isend U blocks to the process row*/
         int_t nsupc = SuperSize(k);
-        if(options->SymFact == NO){  
-            dISend_UDiagBlock(k0, BlockLFactor,
-                            nsupc * nsupc, U_diag_blk_send_req , grid, tag_ub);
-        }
+        dISend_UDiagBlock(k0, BlockLFactor,
+                        nsupc * nsupc, U_diag_blk_send_req , grid, tag_ub);
 
         /*Isend L blocks to the process col*/
-        dISend_LDiagBlock(k0, BlockLFactor,
-                         nsupc * nsupc, L_diag_blk_send_req, grid, tag_ub);
+        if(options->SymFact == NO){          
+            dISend_LDiagBlock(k0, BlockLFactor,
+                            nsupc * nsupc, L_diag_blk_send_req, grid, tag_ub);
+        }
         SCT->commVolFactor += 1.0 * nsupc * nsupc * (Pr + Pc);
     }
     // }
@@ -126,7 +126,7 @@ int_t dLPanelTrSolve( int_t k,   int* factored_L,
 		      gridinfo_t *grid,
 		      dLUstruct_t *LUstruct, superlu_dist_options_t *options)
 {
-    double alpha = 1.0;
+    double alpha = 1.0, beta = 0.0;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
     dLocalLU_t *Llu = LUstruct->Llu;
     int_t* xsup = Glu_persist->xsup;
@@ -138,92 +138,121 @@ int_t dLPanelTrSolve( int_t k,   int* factored_L,
     int_t mycol = MYCOL (iam, grid);
     int nsupc = SuperSize(k);
 
-    if(options->SymFact == NO){  
 
-    /*factor the L panel*/
-    if (mycol == kcol  && iam != pkk)
-    {
-        // factored_L[k] = 1;
-        int_t lk = LBj (k, grid);
-        double *lusup = Llu->Lnzval_bc_ptr[lk];
-        int nsupr;
-        if (Llu->Lrowind_bc_ptr[lk])
-            nsupr = Llu->Lrowind_bc_ptr[lk][1];
-        else
-            nsupr = 0;
-        /*wait for communication to finish*/
 
-        // Wait_UDiagBlock_Recv( U_diag_blk_recv_req, SCT);
-        // int_t flag = 0;
-        // while (flag == 0)
-        // {
-        //     flag = Test_UDiagBlock_Recv( U_diag_blk_recv_req, SCT);
-        // }
 
-        int_t l = nsupr;
-        double* ublk_ptr = BlockUFactor;
-        int ld_ujrow = nsupc;
 
-        // unsigned long long t1 = _rdtsc();
+    if(options->SymFact == YES){
 
-#ifdef _OPENMP
-        // #pragma omp for schedule(dynamic) nowait
-#endif
-#define BL  32
-        for (int i = 0; i < CEILING(l, BL); ++i)
+
+        /*factor the L panel*/
+        if (mycol == kcol)
         {
+            /* if (factored_L[k] == 0)
+            { */
+            /* code */
+            int_t lk = LBj (k, grid);
+            double *lusup = Llu->Lnzval_bc_ptr[lk];
+            int nsupr;
+            int nsupc1;
+            if (Llu->Lrowind_bc_ptr[lk]) nsupr = Llu->Lrowind_bc_ptr[lk][1];
+            else nsupr = 0;
+
+            /*factorize A[kk]*/
+            int_t l;
+            if(iam != pkk){
+                l = nsupr;
+                nsupc1=0;
+            }else{
+                factored_L[k] = 1;    
+                l = nsupr - nsupc;
+                nsupc1=nsupc;
+            }
+            
+
+            double* ublk_ptr = BlockUFactor;
+            int ld_ujrow = nsupc;
+            // printf("%d: L update \n",k );
+
+#define BL  32
 #ifdef _OPENMP
-            #pragma omp task
+            // #pragma omp parallel for
 #endif
+            for (int i = 0; i < CEILING(l, BL); ++i)
             {
                 int_t off = i * BL;
                 // Sherry: int_t len = MY_MIN(BL, l - i * BL);
-                int len = SUPERLU_MIN(BL, l - i * BL);
+                int len = SUPERLU_MIN(BL, (l - i * BL));
+#ifdef _OPENMP
+#pragma omp task
+#endif
+                {
 
-                superlu_dtrsm("R", "U", "N", "N", len, nsupc, alpha,
-			      ublk_ptr, ld_ujrow, &lusup[off], nsupr);
+                    for (int j = 0; j < len; ++j) {
+                    for (int k = 0; k < nsupc; ++k) {
+                        Llu->ujrow[off*nsupc +j + k*len]=0;
+                    }
+                    }
+                    superlu_dgemm("N", "N", len, nsupc, nsupc, alpha, &lusup[nsupc1 + off], nsupr, ublk_ptr, nsupc, beta, &(Llu->ujrow[off*nsupc]), len);
+                    
+                    for (int j = 0; j < len; ++j) {
+                    for (int k = 0; k < nsupc; ++k) {
+                        lusup[nsupc1 + off + j + k*nsupr] = Llu->ujrow[off*nsupc +j + k*len];
+                    }
+                    }
+                }
             }
+            // stat->ops[FACT] += nsupc*nsupc*l;
         }
-    }
 
-    if (iam == pkk)
-    {
-        /* if (factored_L[k] == 0)
-         { */
-        /* code */
-        factored_L[k] = 1;
-        int_t lk = LBj (k, grid);
-        double *lusup = Llu->Lnzval_bc_ptr[lk];
-        int nsupr;
-        if (Llu->Lrowind_bc_ptr[lk]) nsupr = Llu->Lrowind_bc_ptr[lk][1];
-        else nsupr = 0;
+    }else{  
 
-        /*factorize A[kk]*/
+        /*factor the L panel*/
+        if (mycol == kcol)
+        {
+            /* if (factored_L[k] == 0)
+            { */
+            /* code */
+            int_t lk = LBj (k, grid);
+            double *lusup = Llu->Lnzval_bc_ptr[lk];
+            int nsupr;
+            int nsupc1;
+            if (Llu->Lrowind_bc_ptr[lk]) nsupr = Llu->Lrowind_bc_ptr[lk][1];
+            else nsupr = 0;
 
-        int_t l = nsupr - nsupc;
-
-        double* ublk_ptr = BlockUFactor;
-        int ld_ujrow = nsupc;
-        // printf("%d: L update \n",k );
+            /*factorize A[kk]*/
+            int_t l;
+            if(iam != pkk){
+                l = nsupr;
+                nsupc1=0;
+            }else{
+                factored_L[k] = 1;    
+                l = nsupr - nsupc;
+                nsupc1=nsupc;
+            }
+            
+            double* ublk_ptr = BlockUFactor;
+            int ld_ujrow = nsupc;
+            // printf("%d: L update \n",k );
 
 #define BL  32
 #ifdef _OPENMP
-        // #pragma omp parallel for
+            // #pragma omp parallel for
 #endif
-        for (int i = 0; i < CEILING(l, BL); ++i)
-        {
-            int_t off = i * BL;
-            // Sherry: int_t len = MY_MIN(BL, l - i * BL);
-            int len = SUPERLU_MIN(BL, (l - i * BL));
-#ifdef _OPENMP
-//#pragma omp task
-#endif
+            for (int i = 0; i < CEILING(l, BL); ++i)
             {
-                superlu_dtrsm("R", "U", "N", "N", len, nsupc, alpha,
-			      ublk_ptr, ld_ujrow, &lusup[nsupc + off], nsupr);
+                int_t off = i * BL;
+                // Sherry: int_t len = MY_MIN(BL, l - i * BL);
+                int len = SUPERLU_MIN(BL, (l - i * BL));
+#ifdef _OPENMP
+#pragma omp task
+#endif
+                {
+                    superlu_dtrsm("R", "U", "N", "N", len, nsupc, alpha,
+                    ublk_ptr, ld_ujrow, &lusup[nsupc1 + off], nsupr);
+                }
             }
         }
-    }
 
     }
     return 0;
@@ -235,12 +264,9 @@ int_t dLPanelUpdate( int_t k,  int* IrecvPlcd_D, int* factored_L,
                     gridinfo_t *grid,
                     dLUstruct_t *LUstruct, SCT_t *SCT, superlu_dist_options_t *options)
 {
-
-    if(options->SymFact == NO){  
+ 
     dUDiagBlockRecvWait( k,  IrecvPlcd_D, factored_L,
                          U_diag_blk_recv_req, grid, LUstruct, SCT);
-    }
-
     dLPanelTrSolve( k, factored_L, BlockUFactor, grid, LUstruct,options);
 
     return 0;
@@ -274,7 +300,7 @@ int_t dUPanelTrSolve( int_t k,
     double *uval;
     int_t gb;  
     int segsize;
-    double alpha = 1.0, beta = 0.0;
+    
 
     /*factor the U panel*/
 
@@ -297,70 +323,7 @@ int_t dUPanelTrSolve( int_t k,
     }
 
 
-    if(options->SymFact == YES){  
-        if (myrow == krow){
-        int_t klst = FstBlockC (k + 1);
-        int knsupc = SuperSize (k);
-
-        /* Master thread: set up pointers to each block in the row */
-        int nb = usub[0];
-        int iukp = BR_HEADER;
-        int_t rukp = 0;
-
-        int* blocks_index_pointers = SUPERLU_MALLOC (3 * nb * sizeof(int));
-        int* blocks_value_pointers = blocks_index_pointers + nb;
-        int* nsupc_temp = blocks_value_pointers + nb;
-        int count=0;
-        for (int b = 0; b < nb; b++) { /* set up pointers to each block */
-            blocks_index_pointers[b] = iukp + UB_DESCRIPTOR;
-            blocks_value_pointers[b] = rukp;
-            gb = usub[iukp];
-            rukp += usub[iukp+1];
-            nsupc = SuperSize( gb );
-            nsupc_temp[b] = nsupc;
-            iukp += (UB_DESCRIPTOR + nsupc);  /* move to the next block */
-        }
-
-        for (int b = 0; b < nb; ++b) {
-            iukp = blocks_index_pointers[b];
-            gb = usub[blocks_index_pointers[b]-UB_DESCRIPTOR];
-            nsupc = SuperSize( gb );
-            int cnt = nsupc_temp[b];
-            nsupc_temp[b]=0;
-            /* Loop through all the segments in the block. */
-            for (int_t j = 0; j < cnt; j++) {
-                segsize = klst - usub[iukp++];
-            if (segsize) {
-                // printf("b %5d gb %5d segsize %5d j %5d\n",b, gb, segsize,j);
-                nsupc_temp[b]++;
-                count++;
-            }
-            }
-        }
-        // printf("k %5d knsupc %5d count %5d\n",k, knsupc,count);
-
-        /* Loop through all the blocks in the row. */
-        for (int b = 0; b < nb; ++b) {
-            rukp = blocks_value_pointers[b];
-            gb = usub[blocks_index_pointers[b]-UB_DESCRIPTOR];
-
-
-            for (int i = 0; i < knsupc*nsupc_temp[b]; ++i) {
-                Llu->ujrow[i]=0;
-            }
-            superlu_dgemm("N", "N", knsupc, nsupc_temp[b], knsupc, alpha, lusup, nsupr, &uval[rukp], knsupc, beta, Llu->ujrow, knsupc);
-            for (int i = 0; i < knsupc*nsupc_temp[b]; ++i) {
-                uval[rukp+i]=Llu->ujrow[i];
-            }
-
-
-            stat->ops[FACT] += knsupc*knsupc*nsupc_temp[b];
-        }  /* end for b ... */
-
-        /* Deallocate memory */
-        SUPERLU_FREE(blocks_index_pointers);
-        }
-    }else{
+    if(options->SymFact == NO){  
         if (myrow == krow){
         lk = LBi (k, grid);         /* Local block number */
         if (Llu->Unzval_br_ptr[lk])
@@ -412,8 +375,9 @@ int_t dUPanelUpdate( int_t k,  int* factored_U,
                     SuperLUStat_t *stat, SCT_t *SCT, superlu_dist_options_t * options)
 {
 
-    LDiagBlockRecvWait( k, factored_U, L_diag_blk_recv_req, grid);
-
+    if(options->SymFact == NO){ 
+        LDiagBlockRecvWait( k, factored_U, L_diag_blk_recv_req, grid);
+    }
     dUPanelTrSolve( k, BlockLFactor, bigV, ldt, Ublock_info, grid,
                        LUstruct, stat, SCT, options);
     return 0;
