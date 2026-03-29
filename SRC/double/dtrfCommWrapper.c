@@ -629,7 +629,9 @@ int_t dUPanelUpdate( int_t k,  int* factored_U,
     if(options->SymFact == NO){ 
         LDiagBlockRecvWait( k, factored_U, L_diag_blk_recv_req, grid);
     }else{
+#ifdef COMML        
         dWaitL2U_recv(k, grid, options, LUstruct, stat, SCT);
+#endif
     }
     dUPanelTrSolve( k, BlockLFactor, bigV, ldt, Ublock_info, grid,
                        LUstruct, stat, SCT, options);

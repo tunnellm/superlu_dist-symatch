@@ -20,7 +20,7 @@ export LD_LIBRARY_PATH=${CRAY_LD_LIBRARY_PATH}:$LD_LIBRARY_PATH
 
 
 export SUPERLU_LBS=GD  
-export SUPERLU_ACC_OFFLOAD=1 # this can be 0 to do CPU tests on GPU nodes
+export SUPERLU_ACC_OFFLOAD=0 # this can be 0 to do CPU tests on GPU nodes
 export GPU3DVERSION=0
 export ANC25D=0
 export NEW3DSOLVE=1    
@@ -30,7 +30,7 @@ export SUPERLU_BIND_MPI_GPU=1 # assign GPU based on the MPI rank, assuming one M
 export SUPERLU_MAXSUP=256 # max supernode size
 export SUPERLU_RELAX=64  # upper bound for relaxed supernode size
 export SUPERLU_MAX_BUFFER_SIZE=10000000 ## 500000000 # buffer size in words on GPU
-export SUPERLU_NUM_LOOKAHEADS=2   ##4, must be at least 2, see 'lookahead winSize'
+export SUPERLU_NUM_LOOKAHEADS=10   ##4, must be at least 2, see 'lookahead winSize'
 export SUPERLU_NUM_GPU_STREAMS=1
 export SUPERLU_N_GEMM=6000 # FLOPS threshold divide workload between CPU and GPU
 nmpipergpu=1
@@ -138,7 +138,9 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # for MAT in temp_13k.mtx
 # for MAT in matrix_ACTIVSg10k_AC_00.mtx
 # for MAT in symmetric/offshore.mtx  symmetric/pwtk.mtx  symmetric/Si41Ge41H72.mtx  symmetric/TEM181302.mtx symmetric/dielFilterV3real.mtx symmetric/nlpkkt80.bin symmetric/StocF-1465.bin symmetric/Geo_1438.bin
-for MAT in symmetric/Geo_1438.bin
+# for MAT in symmetric/StocF-1465.bin
+for MAT in symmetric/StocF-1465.bin
+# for MAT in symmetric/662_bus.mtx
 # for MAT in mathias/DG_GrapheneDisorder_8192.bin mathias/DNA_715_64cell.bin mathias/LU_C_BN_C_4by2.bin mathias/Li4244.bin 
 # for MAT in mathias/Li4244.bin 
 # for MAT in turon_m.mtx

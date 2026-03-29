@@ -45,7 +45,7 @@ NVSHMEM_HOME=/global/cfs/cdirs/m2957/lib/lib/PrgEnv-gnu/nvshmem_src_2.8.0-3/buil
 #NVSHMEM_HOME=${CRAY_NVIDIA_PREFIX}/comm_libs/nvshmem/
 cmake .. \
   -DCMAKE_C_FLAGS="-O2 -std=c11 -DPRNTlevel=0 -DPROFlevel=0 -DDEBUGlevel=0 -DAdd_" \
-  -DCMAKE_CXX_FLAGS="-O2 -std=c++11" \
+  -DCMAKE_CXX_FLAGS="-O2 -std=c++14" \
   -DCMAKE_Fortran_FLAGS="-O2" \
   -DCMAKE_CXX_COMPILER=CC \
   -DCMAKE_C_COMPILER=cc \
@@ -54,9 +54,10 @@ cmake .. \
   -DTPL_ENABLE_INTERNAL_BLASLIB=OFF \
   -DTPL_ENABLE_LAPACKLIB=ON \
   -DBUILD_SHARED_LIBS=OFF \
-  -DTPL_ENABLE_CUDALIB=ON \
+  -DTPL_ENABLE_CUDALIB=OFF \
   -DCMAKE_CUDA_FLAGS="-I${NVSHMEM_HOME}/include -I${MPICH_DIR}/include -ccbin=CC" \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
+  -DCMAKE_CUDA_STANDARD=14 \
   -DCMAKE_INSTALL_PREFIX=. \
   -DCMAKE_INSTALL_LIBDIR=./lib \
   -DCMAKE_BUILD_TYPE=Debug \

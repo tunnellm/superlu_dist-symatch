@@ -95,7 +95,7 @@ typedef struct {
 } dCommL_t;
 
 
-
+#define COMML 1
 
 
 #if 0 // Sherry: move to superlu_defs.h
@@ -1420,6 +1420,15 @@ int_t dzRecvUPanel(int_t k, int_t sender, double alpha,
                    double beta, double* Uval_buf,
 		   dLUstruct_t* LUstruct,  gridinfo3d_t* grid3d, SCT_t* SCT);
 
+
+
+int_t dStartL2U_comm(int_t k,gridinfo_t *grid,superlu_dist_options_t *options, dLUstruct_t *LUstruct,  SuperLUStat_t *stat, int *info, SCT_t *SCT,int tag_ub,int * orders,int maxsup);
+
+int_t dWaitL2U_recv(int_t k,gridinfo_t *grid,superlu_dist_options_t *options, dLUstruct_t *LUstruct,  SuperLUStat_t *stat, SCT_t *SCT);
+
+int_t dWaitL2U_send(int_t k,gridinfo_t *grid,superlu_dist_options_t *options, dLUstruct_t *LUstruct,  SuperLUStat_t *stat, int *info, SCT_t *SCT,int tag_ub);
+
+
     /* from communication_aux.h */
 extern int_t dIBcast_LPanel (int_t k, int_t k0, int_t* lsub, double* lusup,
 			     gridinfo_t *, int* msgcnt, MPI_Request *,
@@ -1585,6 +1594,26 @@ extern int_t ddenseTreeFactor(
 );
 
 extern int_t dsparseTreeFactor_ASYNC(
+    sForest_t* sforest,
+    commRequests_t **comReqss,    // lists of communication requests // size maxEtree level
+    dscuBufs_t *scuBufs,     // contains buffers for schur complement update
+    packLUInfo_t*packLUInfo,
+    msgs_t**msgss,                  // size=num Look ahead
+    dLUValSubBuf_t** LUvsbs,          // size=num Look ahead
+    ddiagFactBufs_t **dFBufs,         // size maxEtree level
+    factStat_t *factStat,
+    factNodelists_t  *fNlists,
+    gEtreeInfo_t*   gEtreeInfo,        // global etree info
+    superlu_dist_options_t *options,
+    int_t * gIperm_c_supno,
+    int_t ldt,
+    HyP_t* HyP,
+    dLUstruct_t *LUstruct, gridinfo3d_t * grid3d, SuperLUStat_t *stat,
+    double thresh,  SCT_t *SCT, int tag_ub,
+    int *info
+);
+
+extern int_t dsparseTreeFactor_ASYNC_commL(
     sForest_t* sforest,
     commRequests_t **comReqss,    // lists of communication requests // size maxEtree level
     dscuBufs_t *scuBufs,     // contains buffers for schur complement update
