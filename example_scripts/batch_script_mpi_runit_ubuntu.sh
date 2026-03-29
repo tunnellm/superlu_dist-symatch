@@ -86,7 +86,7 @@ export OMP_NUM_THREADS=$NTH
 # for MAT in bcsstk17.mtx
 # for MAT in boyd1.rb
 # for MAT in mesh3e1.mtx
-# for MAT in ex5.mtx
+# for MAT in 662_bus.mtx
 
 for MAT in matrix_ACTIVSg10k_AC_00.mtx 
 # for MAT in matrix_ACTIVSg70k_AC_00.mtx 

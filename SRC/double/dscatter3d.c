@@ -320,7 +320,7 @@ int_t dblock_gemm_scatterTopLeft( int_t lb, /* block number in L */
 				 int* indirect, int* indirect2, HyP_t* HyP,
                                  dLUstruct_t *LUstruct,
                                  gridinfo_t* grid,
-                                 SCT_t*SCT, SuperLUStat_t *stat
+                                 SCT_t*SCT, SuperLUStat_t *stat, superlu_dist_options_t *options
                                )
 {
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
@@ -339,6 +339,11 @@ int_t dblock_gemm_scatterTopLeft( int_t lb, /* block number in L */
 //    printf("Thread's ID %lld \n", thread_id);
     //unsigned long long t1 = _rdtsc();
     double t1 = SuperLU_timer_();
+    int_t ib   = HyP->lookAhead_info[lb].ib;
+    int_t jb   =  HyP->Ublock_info[j].jb;
+
+    if(options->SymFact == NO || ib>=jb){
+    
     dblock_gemm_scatter( lb, j, HyP->Ublock_info, HyP->lookAhead_info,
 			HyP->lookAhead_L_buff, HyP->Lnbrow,
                         HyP->bigU_host, HyP->ldu,
@@ -353,6 +358,7 @@ int_t dblock_gemm_scatterTopLeft( int_t lb, /* block number in L */
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
     SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
+    }
     return 0;
 } /* dgemm_scatterTopLeft */
 
@@ -362,7 +368,7 @@ int_t dblock_gemm_scatterTopRight( int_t lb,  int_t j,
                                   HyP_t* HyP,
                                   dLUstruct_t *LUstruct,
                                   gridinfo_t* grid,
-                                  SCT_t*SCT, SuperLUStat_t *stat
+                                  SCT_t*SCT, SuperLUStat_t *stat, superlu_dist_options_t *options
                                 )
 {
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
@@ -377,6 +383,12 @@ int_t dblock_gemm_scatterTopRight( int_t lb,  int_t j,
 #else
     volatile  int_t thread_id = 0;
 #endif
+    
+    int_t ib   = HyP->lookAhead_info[lb].ib;
+    int_t jb   =  HyP->Ublock_info_Phi[j].jb;
+
+    if(options->SymFact == NO || ib>=jb){    
+    
     //unsigned long long t1 = _rdtsc();
     double t1 = SuperLU_timer_();
     dblock_gemm_scatter( lb, j, HyP->Ublock_info_Phi, HyP->lookAhead_info, HyP->lookAhead_L_buff, HyP->Lnbrow,
@@ -390,6 +402,7 @@ int_t dblock_gemm_scatterTopRight( int_t lb,  int_t j,
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
     SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
+    }
     return 0;
 } /* dblock_gemm_scatterTopRight */
 
@@ -399,7 +412,7 @@ int_t dblock_gemm_scatterBottomLeft( int_t lb,  int_t j,
                                     HyP_t* HyP,
                                     dLUstruct_t *LUstruct,
                                     gridinfo_t* grid,
-                                    SCT_t*SCT, SuperLUStat_t *stat
+                                    SCT_t*SCT, SuperLUStat_t *stat, superlu_dist_options_t *options
                                   )
 {
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
@@ -416,6 +429,11 @@ int_t dblock_gemm_scatterBottomLeft( int_t lb,  int_t j,
 #endif
     //printf("Thread's ID %lld \n", thread_id);
     //unsigned long long t1 = _rdtsc();
+    
+    int_t ib   = HyP->Remain_info[lb].ib;
+    int_t jb   =  HyP->Ublock_info[j].jb;
+
+    if(options->SymFact == NO || ib>=jb){        
     double t1 = SuperLU_timer_();
     dblock_gemm_scatter( lb, j, HyP->Ublock_info, HyP->Remain_info, HyP->Remain_L_buff, HyP->Rnbrow,
                         HyP->bigU_host, HyP->ldu,
@@ -428,6 +446,7 @@ int_t dblock_gemm_scatterBottomLeft( int_t lb,  int_t j,
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
     SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
+    }
     return 0;
 
 } /* dblock_gemm_scatterBottomLeft */
@@ -438,7 +457,7 @@ int_t dblock_gemm_scatterBottomRight( int_t lb,  int_t j,
                                      HyP_t* HyP,
                                      dLUstruct_t *LUstruct,
                                      gridinfo_t* grid,
-                                     SCT_t*SCT, SuperLUStat_t *stat
+                                     SCT_t*SCT, SuperLUStat_t *stat, superlu_dist_options_t *options
                                    )
 {
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
@@ -455,6 +474,11 @@ int_t dblock_gemm_scatterBottomRight( int_t lb,  int_t j,
 #endif
    // printf("Thread's ID %lld \n", thread_id);
     //unsigned long long t1 = _rdtsc();
+
+    int_t ib   = HyP->Remain_info[lb].ib;
+    int_t jb   =  HyP->Ublock_info_Phi[j].jb;
+
+    if(options->SymFact == NO || ib>=jb){       
     double t1 = SuperLU_timer_();
     dblock_gemm_scatter( lb, j, HyP->Ublock_info_Phi, HyP->Remain_info, HyP->Remain_L_buff, HyP->Rnbrow,
                         HyP->bigU_Phi, HyP->ldu_Phi,
@@ -468,6 +492,7 @@ int_t dblock_gemm_scatterBottomRight( int_t lb,  int_t j,
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
     SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
+    }
     return 0;
 
 } /* dblock_gemm_scatterBottomRight */

@@ -29,6 +29,257 @@ at the top-level directory.
 
 //#include "cblas.h"
 
+
+int_t dStartL2U_comm(int_t k,
+                     gridinfo_t *grid,
+                     superlu_dist_options_t *options,
+                     dLUstruct_t *LUstruct,
+                     SuperLUStat_t *stat, int *info,
+                     SCT_t *SCT,
+                     int tag_ub,
+                     int * orders,
+                     int maxsup
+                    )
+{
+    // unpacking variables
+    Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+    dLocalLU_t *Llu = LUstruct->Llu;
+    int_t* xsup = Glu_persist->xsup;
+
+    int_t iam = grid->iam;
+    int_t Pc = grid->npcol;
+    int_t Pr = grid->nprow;
+    int_t myrow = MYROW (iam, grid);
+    int_t mycol = MYCOL (iam, grid);
+    int_t pkk = PNUM (PROW (k, grid), PCOL (k, grid), grid);
+    int dest,src;
+    int_t krow = PROW (k, grid);
+    int_t kcol = PCOL (k, grid);
+    int_t nsupc = SuperSize (k); 
+    int_t *lsub, *usub;
+    int lk,jb,knsupc,nb,nsupr,ik,len,ikcol;
+    double *lusup; 
+    int_t *lloc;
+    int_t idx_i, idx_v, luptr_tmp, lptr_tmp;
+
+    /*Post send of L*/
+    if (mycol == kcol)
+    {
+
+        lk = LBj(k, grid);
+        lsub = Llu->Lrowind_bc_ptr[lk];
+        lusup = Llu->Lnzval_bc_ptr[lk];
+        lloc = Llu->Lindval_loc_bc_ptr[lk];
+        jb = k;  
+        knsupc = SuperSize( jb );
+        if(lsub){
+            if(lsub[0]>0){
+                if(myrow==krow){
+                    nb = lsub[0] - 1;
+                    nsupr = lsub[1];
+                    idx_i = nb+2;
+                    idx_v = 2*nb+3;
+                }else{
+                    nb = lsub[0];
+                    nsupr = lsub[1];
+                    idx_i = nb;
+                    idx_v = 2*nb;
+                }
+                
+                if(nb>0){
+                    for (int i=0; i<grid->npcol; i++){
+                        Llu->Send_CommL[lk].ComQuant[i].idx=0;
+                    }
+
+                    for (int lb=0; lb<nb; lb++){
+                        luptr_tmp = lloc[lb+idx_v];
+                        lptr_tmp = lloc[lb+idx_i];
+                        ik = lsub[lptr_tmp]; /* Global block number, row-wise. */    
+                        ikcol = PCOL( ik, grid );
+                        len = lsub[lptr_tmp+1]; // number of rows in this supernode
+
+                        Llu->Send_CommL[lk].ComQuant[ikcol].dat[Llu->Send_CommL[lk].ComQuant[ikcol].idx++] = ik;
+                        int fsupc = FstBlockC( ik );
+                        
+                        /* The rows inside each L supernode are not sorted but the columns inside each U supernode are */
+                        for (int i=0; i<len; ++i){
+                            int rowid = lsub[lptr_tmp+2+i]-fsupc;
+                            orders[i] = rowid;
+                            orders[i+maxsup] = i;
+                        }
+                        quickSortM(orders,0,len-1,maxsup,0,2);
+                        
+                        for (int i=0; i<len; ++i){
+                            int rowid = lsub[lptr_tmp+2+orders[i+maxsup]]-fsupc;
+                            for (int j = 0; j < nsupc; ++j) {
+                                // printf("send %8d %8d %8d %8d %10f\n",k, ik, rowid, j, lusup[luptr_tmp + orders[i+maxsup] + j*nsupr]);
+                                Llu->Send_CommL[lk].ComQuant[ikcol].dat[Llu->Send_CommL[lk].ComQuant[ikcol].idx++] = lusup[luptr_tmp + orders[i+maxsup] + j*nsupr];
+                            }   
+                        }
+                    }
+
+                    for (int i=0; i<grid->npcol; i++){
+                        if(Llu->Send_CommL[lk].ComQuant[i].size>0){
+                            dest = PNUM(krow, i, grid);
+                            MPI_Isend (Llu->Send_CommL[lk].ComQuant[i].dat, Llu->Send_CommL[lk].ComQuant[i].size, MPI_DOUBLE, dest, SLU_MPI_TAG (5, k), grid->comm, &Llu->Send_CommL[lk].req[i]);
+                        }
+                    }
+
+                }
+            }
+        }
+    }
+
+    /*Post recv of L*/
+    if (myrow == krow)
+    {
+        lk = LBi(k, grid);    
+        if (Llu->Recv_CommL[lk].ComQuant){
+            for (int p=0; p<grid->nprow; p++){
+                if(Llu->Recv_CommL[lk].ComQuant[p].size>0){
+                    src = PNUM(p, kcol, grid);
+                    MPI_Irecv (Llu->Recv_CommL[lk].ComQuant[p].dat, Llu->Recv_CommL[lk].ComQuant[p].size, MPI_DOUBLE, src, SLU_MPI_TAG (5, k), grid->comm, &Llu->Recv_CommL[lk].req[p]);
+                }
+            }  
+        }        
+    }
+
+
+    return 0;
+}
+
+
+
+
+int_t dWaitL2U_recv(int_t k,
+                     gridinfo_t *grid,
+                     superlu_dist_options_t *options,
+                     dLUstruct_t *LUstruct,
+                     SuperLUStat_t *stat,
+                     SCT_t *SCT
+                    )
+{
+    // unpacking variables
+    Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+    dLocalLU_t *Llu = LUstruct->Llu;
+    int_t* xsup = Glu_persist->xsup;
+
+    int_t iam = grid->iam;
+    int_t Pc = grid->npcol;
+    int_t Pr = grid->nprow;
+    int_t myrow = MYROW (iam, grid);
+    int_t mycol = MYCOL (iam, grid);
+    int_t pkk = PNUM (PROW (k, grid), PCOL (k, grid), grid);
+    int dest,src;
+    int_t krow = PROW (k, grid);
+    int_t kcol = PCOL (k, grid);
+    int_t nsupc = SuperSize (k); 
+    int_t *lsub, *usub;
+    int lk,jb,knsupc,nb,nsupr,knsupr,ik,len,ikcol,gik,nub,ub,nzc,p;
+    double *lusup, *uval; 
+    int_t *lloc;
+    int_t idx_i, idx_v, luptr_tmp, lptr_tmp, iukp, klst, uptr;
+
+    
+    if (myrow == krow)
+    {
+        lk = LBi(k, grid);    
+        if (Llu->Recv_CommL[lk].req){
+            MPI_Waitall(grid->nprow,Llu->Recv_CommL[lk].req,Llu->Recv_CommL[lk].status);
+    
+            /* Copy data from communication buffer to usub*/
+            usub = Llu->Ufstnz_br_ptr[lk];
+            uval = Llu->Unzval_br_ptr[lk];
+
+            if (usub){
+
+                gik = k;      /* global U row */
+                knsupr = SuperSize(gik);     
+                nub = usub[0];                       /* number of U blocks in this row */
+                if (nub > 0){
+
+                    for (int p = 0; p < grid->nprow; ++p) {
+                        Llu->Recv_CommL[lk].ComQuant[p].idx = 0;
+                    }
+
+                    iukp = BR_HEADER;
+                    klst = FstBlockC (gik + 1);
+                    uptr=0;
+                    for (ub = 0; ub < nub; ++ub) {
+                        jb = usub[iukp];  
+                        nsupc = SuperSize (jb);              
+                        
+                     
+                        for (p = 0; p < grid->nprow; ++p) { /* Search for the buffer that matches the block column ID*/
+                            if(Llu->Recv_CommL[lk].ComQuant[p].size>0)
+                                if (jb==llround(Llu->Recv_CommL[lk].ComQuant[p].dat[Llu->Recv_CommL[lk].ComQuant[p].idx]))
+                                    break;    
+                        }
+                        assert(p < grid->nprow);
+                        Llu->Recv_CommL[lk].ComQuant[p].idx +=1;
+
+                        iukp += UB_DESCRIPTOR;
+                        nzc = 0;
+                        for (int_t j = 0; j < nsupc; ++j)
+                        {
+                            int_t segsize = klst - usub[iukp++];
+                            if(segsize>0){
+                                nzc++;
+                                for (int_t ii = 0; ii < knsupr; ++ii){
+                                    // printf("%8d %8d %8d %10f %10f\n",k, jb, j, uval[uptr],Llu->Recv_CommL[lk].ComQuant[p].dat[Llu->Recv_CommL[lk].ComQuant[p].idx]);
+                                    uval[uptr++] = Llu->Recv_CommL[lk].ComQuant[p].dat[Llu->Recv_CommL[lk].ComQuant[p].idx++];                           
+                                }
+                            }
+                        }   
+                        
+                        
+                        // for (int_t j = 0; j < nzc*knsupr; ++j){
+                        //     printf("%8d %8d %8d %10f %10f\n",k, jb, j/knsupr, uval[uptr],Llu->Recv_CommL[lk].ComQuant[p].dat[Llu->Recv_CommL[lk].ComQuant[p].idx]);
+                        //     uval[uptr++] = Llu->Recv_CommL[lk].ComQuant[p].dat[Llu->Recv_CommL[lk].ComQuant[p].idx++];
+                        
+                        // }
+                    }                
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+
+
+
+int_t dWaitL2U_send(int_t k,
+                     gridinfo_t *grid,
+                     superlu_dist_options_t *options,
+                     dLUstruct_t *LUstruct,
+                     SuperLUStat_t *stat, int *info,
+                     SCT_t *SCT,
+                     int tag_ub
+                    )
+{
+    Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+    dLocalLU_t *Llu = LUstruct->Llu;
+    int_t iam = grid->iam;
+    int_t Pc = grid->npcol;
+    int_t Pr = grid->nprow;
+    int_t kcol = PCOL (k, grid);
+    int_t mycol = MYCOL (iam, grid);
+    int lk;
+
+    /*Wait the send of L to finish*/
+    if (mycol == kcol)
+    {
+        lk = LBj(k, grid);   
+        if (Llu->Send_CommL[lk].req) 
+            MPI_Waitall(grid->npcol,Llu->Send_CommL[lk].req,Llu->Send_CommL[lk].status);
+    }
+    return 0;
+}
+
+
+
+
 int_t dDiagFactIBCast(int_t k,  int_t k0,      // supernode to be factored
                      double *BlockUFactor,
                      double *BlockLFactor,
@@ -377,6 +628,8 @@ int_t dUPanelUpdate( int_t k,  int* factored_U,
 
     if(options->SymFact == NO){ 
         LDiagBlockRecvWait( k, factored_U, L_diag_blk_recv_req, grid);
+    }else{
+        dWaitL2U_recv(k, grid, options, LUstruct, stat, SCT);
     }
     dUPanelTrSolve( k, BlockLFactor, bigV, ldt, Ublock_info, grid,
                        LUstruct, stat, SCT, options);

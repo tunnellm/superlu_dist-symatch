@@ -81,6 +81,23 @@ typedef struct {
     int_t  *perm_c;
 } dScalePermstruct_t;
 
+
+typedef struct {
+    int size;
+    int idx;
+    double *dat;
+} ComQuant_t;
+
+typedef struct {
+    MPI_Request *req;
+    MPI_Status *status;
+    ComQuant_t *ComQuant; // length nprow or npcol
+} dCommL_t;
+
+
+
+
+
 #if 0 // Sherry: move to superlu_defs.h
 /*-- Auxiliary data type used in PxGSTRS/PxGSTRS1. */
 typedef struct {
@@ -206,6 +223,12 @@ typedef struct {
     int   *ToRecv;          /* Recv from no one (0), left (1), and up (2).*/
     int   *ToSendD;         /* Whether need to send down block row.       */
     int   **ToSendR;        /* List of processes to send right block col. */
+
+
+    /*-- Data structures used for redistribution of L panel to U. --*/
+    dCommL_t *Send_CommL;
+    dCommL_t *Recv_CommL;
+
 
     /*-- Record communication schedule for forward/back solves. --*/
     /* 1/15/22 Sherry: changed int_t to int type */
@@ -1217,7 +1240,7 @@ dblock_gemm_scatterTopLeft( int_t lb,  int_t j, double* bigV,
                                  int_t * usub, int_t ldt,
 				 int* indirect, int* indirect2,
                                  HyP_t* HyP, dLUstruct_t *, gridinfo_t*,
-                                 SCT_t*SCT, SuperLUStat_t *
+                                 SCT_t*SCT, SuperLUStat_t *, superlu_dist_options_t *options
                                );
 extern int_t
 dblock_gemm_scatterTopRight( int_t lb,  int_t j, double* bigV,
@@ -1225,21 +1248,21 @@ dblock_gemm_scatterTopRight( int_t lb,  int_t j, double* bigV,
                                   int_t * usub, int_t ldt,
 				  int* indirect, int* indirect2,
                                   HyP_t* HyP, dLUstruct_t *, gridinfo_t*,
-                                  SCT_t*SCT, SuperLUStat_t * );
+                                  SCT_t*SCT, SuperLUStat_t *,superlu_dist_options_t *options );
 extern int_t
 dblock_gemm_scatterBottomLeft( int_t lb,  int_t j, double* bigV,
 				    int_t knsupc,  int_t klst, int_t* lsub,
                                     int_t * usub, int_t ldt,
 				    int* indirect, int* indirect2,
                                     HyP_t* HyP, dLUstruct_t *, gridinfo_t*,
-                                    SCT_t*SCT, SuperLUStat_t * );
+                                    SCT_t*SCT, SuperLUStat_t *,superlu_dist_options_t *options );
 extern int_t
 dblock_gemm_scatterBottomRight( int_t lb,  int_t j, double* bigV,
 				     int_t knsupc,  int_t klst, int_t* lsub,
                                      int_t * usub, int_t ldt,
 				     int* indirect, int* indirect2,
                                      HyP_t* HyP, dLUstruct_t *, gridinfo_t*,
-                                     SCT_t*SCT, SuperLUStat_t * );
+                                     SCT_t*SCT, SuperLUStat_t *,superlu_dist_options_t *options );
 
     /* from gather.h */
 extern void dgather_u(int_t num_u_blks,

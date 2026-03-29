@@ -1529,10 +1529,10 @@ pddistribute3d_Yang(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
     long int *Uinv_bc_offset;  /* size ceil(NSUPERS/Pc)     */
     int_t idx_indx,idx_lusup;
     int_t nbrow;
-    int_t  ik, il, lk, rel, knsupc, idx_r;
-    int_t  lptr1_tmp, idx_i, idx_v,m, uu;
-    int_t nub;
-    int tag;
+    int_t  ik, il, lk, rel, knsupc,knsupr, idx_r, ikcol;
+    int_t  luptr_tmp, lptr_tmp, idx_i, idx_v,m, uu;
+    int_t nub,nb;
+    int tag,srcrow,srccol,klst,iukp,nzc;
 
 
 #if ( PRNTlevel>=1 )
@@ -2384,6 +2384,130 @@ pddistribute3d_Yang(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 	// for (int lb = 0; lb < nub; ++lb) {
 	// 	printf("ID %5d lb %5d, superGridMap[lb] %5d, Unnz[lb] %5d\n",superGridMap[0],lb, superGridMap[lb], Unnz[lb]);
 	// }
+
+
+    if(options->SymFact == YES){
+            
+        k = CEILING( nsupers, grid->npcol );/* Number of local block columns */
+        if ( !(Llu->Send_CommL =
+                (dCommL_t*)SUPERLU_MALLOC(k * sizeof(dCommL_t))) )
+            ABORT("Malloc fails for Send_CommL[].");        
+
+        for (lk=0;lk<k;++lk){
+            Llu->Send_CommL[lk].req = NULL;
+            Llu->Send_CommL[lk].status = NULL;
+            Llu->Send_CommL[lk].ComQuant = NULL;
+
+            lsub = Lrowind_bc_ptr[lk];
+            lusup = Lnzval_bc_ptr[lk];
+            lloc = Lindval_loc_bc_ptr[lk];
+            jb = mycol+lk*grid->npcol;  
+            krow = PROW( jb, grid );
+            if(lsub){
+                if(lsub[0]>0){
+                    if(myrow==krow){
+                        nb = lsub[0] - 1;
+                        idx_i = nb+2;
+                        idx_v = 2*nb+3;
+                    }else{
+                        nb = lsub[0];
+                        idx_i = nb;
+                        idx_v = 2*nb;
+                    }
+                    if(nb>0){
+                        knsupc = SuperSize( jb );
+                        Llu->Send_CommL[lk].req = (MPI_Request*)SUPERLU_MALLOC(grid->npcol * sizeof(MPI_Request));
+                        Llu->Send_CommL[lk].status = (MPI_Status*)SUPERLU_MALLOC(grid->npcol * sizeof(MPI_Status));
+                        Llu->Send_CommL[lk].ComQuant = (ComQuant_t*)SUPERLU_MALLOC(grid->npcol * sizeof(ComQuant_t));
+                        for (int i=0; i<grid->npcol; i++){
+                            Llu->Send_CommL[lk].ComQuant[i].size=0;
+                            Llu->Send_CommL[lk].req[i]=MPI_REQUEST_NULL;
+                        }
+
+                        for (int lb=0; lb<nb; lb++){
+                            luptr_tmp = lloc[lb+idx_v];
+                            lptr_tmp = lloc[lb+idx_i];
+                            ik = lsub[lptr_tmp]; /* Global block number, row-wise. */    
+                            ikcol = PCOL( ik, grid );
+                            len = lsub[lptr_tmp+1]; // number of rows in this supernode
+                            Llu->Send_CommL[lk].ComQuant[ikcol].size += len*knsupc + 1; 
+                        }
+
+                        for (int i=0; i<grid->npcol; i++){
+                            if(Llu->Send_CommL[lk].ComQuant[i].size>0){
+                                Llu->Send_CommL[lk].ComQuant[i].dat = (double*)SUPERLU_MALLOC(Llu->Send_CommL[lk].ComQuant[i].size* sizeof(double));
+                            }
+                        }
+
+                    }
+                }
+            }
+        }
+
+
+
+        k = CEILING(nsupers, grid->nprow);   /* number of local block rows */
+        Llu->Recv_CommL = (dCommL_t*) SUPERLU_MALLOC(k * sizeof(dCommL_t));
+        if (!Llu->Recv_CommL) ABORT("Malloc fails for Recv_CommL[].");
+
+        for (lk = 0; lk < k; ++lk) {
+            Llu->Recv_CommL[lk].req = NULL;
+            Llu->Recv_CommL[lk].status = NULL;
+            Llu->Recv_CommL[lk].ComQuant = NULL;
+
+            usub = Ufstnz_br_ptr[lk];
+            if (usub){
+
+                gik = myrow + lk * grid->nprow;      /* global U row */
+                knsupr = SuperSize(gik);     
+
+                nub = usub[0];                       /* number of U blocks in this row */
+                if (nub > 0){
+
+                    Llu->Recv_CommL[lk].req =
+                        (MPI_Request*) SUPERLU_MALLOC(grid->nprow * sizeof(MPI_Request));
+                    Llu->Recv_CommL[lk].status =
+                        (MPI_Status*) SUPERLU_MALLOC(grid->nprow * sizeof(MPI_Status));
+                    Llu->Recv_CommL[lk].ComQuant =
+                        (ComQuant_t*) SUPERLU_MALLOC(grid->nprow * sizeof(ComQuant_t));
+
+                    if (!Llu->Recv_CommL[lk].req ||
+                        !Llu->Recv_CommL[lk].status ||
+                        !Llu->Recv_CommL[lk].ComQuant)
+                        ABORT("Malloc fails for Recv_CommL[lk].");
+
+                    for (int p = 0; p < grid->nprow; ++p) {
+                        Llu->Recv_CommL[lk].ComQuant[p].size = 0;
+                        Llu->Recv_CommL[lk].req[p]=MPI_REQUEST_NULL;
+                    }
+
+                    iukp = BR_HEADER;
+                    klst = FstBlockC (gik + 1);
+                    for (ub = 0; ub < nub; ++ub) {
+                        jb = usub[iukp];  
+                        nsupc = SuperSize (jb);              
+                        srcrow = PROW(jb, grid);         /* source process row from L */
+                        iukp += UB_DESCRIPTOR;
+                        nzc = 0;
+                        for (int_t j = 0; j < nsupc; ++j)
+                        {
+                            int_t segsize = klst - usub[iukp++];
+                            if(segsize>0)nzc++;
+                        }
+                        Llu->Recv_CommL[lk].ComQuant[srcrow].size += knsupr * nzc + 1;
+                    }
+
+                    for (int p=0; p<grid->nprow; p++){
+                        if(Llu->Recv_CommL[lk].ComQuant[p].size>0){
+                            Llu->Recv_CommL[lk].ComQuant[p].dat = (double*)SUPERLU_MALLOC(Llu->Recv_CommL[lk].ComQuant[p].size* sizeof(double));
+                        }
+                    }                    
+                }
+            }
+        }
+    }
+
+
 
 	Llu->Lrowind_bc_ptr = Lrowind_bc_ptr;
 	Llu->Lindval_loc_bc_ptr = Lindval_loc_bc_ptr;

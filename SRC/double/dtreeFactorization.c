@@ -380,7 +380,7 @@ int_t dsparseTreeFactor_ASYNC(
                     int_t lb  = ij % HyP->lookAheadBlk;
                     dblock_gemm_scatterTopLeft( lb,  j, bigV, knsupc, klst, lsub,
 					       usub, ldt,  indirect, indirect2, HyP,
-					       LUstruct, grid, SCT, stat );
+					       LUstruct, grid, SCT, stat, options);
                 }
 
 #ifdef _OPENMP
@@ -392,7 +392,7 @@ int_t dsparseTreeFactor_ASYNC(
                     int_t lb  = ij % HyP->lookAheadBlk;
                     dblock_gemm_scatterTopRight( lb,  j, bigV, knsupc, klst, lsub,
                                                 usub, ldt,  indirect, indirect2, HyP,
-						LUstruct, grid, SCT, stat);
+						LUstruct, grid, SCT, stat, options);
                 }
 
 #ifdef _OPENMP
@@ -404,7 +404,7 @@ int_t dsparseTreeFactor_ASYNC(
                     int_t lb  = ij % HyP->RemainBlk;
                     dblock_gemm_scatterBottomLeft( lb,  j, bigV, knsupc, klst, lsub,
                                                   usub, ldt,  indirect, indirect2,
-						  HyP, LUstruct, grid, SCT, stat);
+						  HyP, LUstruct, grid, SCT, stat, options);
                 } /*for (int_t ij =*/
             }
 
@@ -448,7 +448,7 @@ int_t dsparseTreeFactor_ASYNC(
                     int_t lb  = ij % HyP->RemainBlk;
                     dblock_gemm_scatterBottomRight( lb,  j, bigV, knsupc, klst, lsub,
                                                    usub, ldt,  indirect, indirect2,
-						   HyP, LUstruct, grid, SCT, stat);
+						   HyP, LUstruct, grid, SCT, stat, options);
                 } /*for (int_t ij =*/
 
             }
@@ -586,3 +586,336 @@ int_t dsparseTreeFactor_ASYNC(
 
     return 0;
 } /* dsparseTreeFactor_ASYNC */
+
+
+
+
+/*
+ * 2D factorization at individual subtree. -- CPU only
+ */
+int_t dsparseTreeFactor_ASYNC_commL(
+    sForest_t* sforest,
+    commRequests_t **comReqss,    // lists of communication requests // size maxEtree level
+    dscuBufs_t *scuBufs,       // contains buffers for schur complement update
+    packLUInfo_t*packLUInfo,
+    msgs_t**msgss,                  // size=num Look ahead
+    dLUValSubBuf_t** LUvsbs,          // size=num Look ahead
+    ddiagFactBufs_t **dFBufs,         // size maxEtree level
+    factStat_t *factStat,
+    factNodelists_t  *fNlists,
+    gEtreeInfo_t*   gEtreeInfo,        // global etree info
+    superlu_dist_options_t *options,
+    int_t * gIperm_c_supno,
+    int_t ldt,
+    HyP_t* HyP,
+    dLUstruct_t *LUstruct, gridinfo3d_t * grid3d, SuperLUStat_t *stat,
+    double thresh,  SCT_t *SCT, int tag_ub,
+    int *info
+)
+{
+    int_t nnodes =   sforest->nNodes ;      // number of nodes in the tree
+    if (nnodes < 1)
+    {
+        return 1;
+    }
+
+    /* Test the input parameters. */
+    *info = 0;
+
+#if ( DEBUGlevel>=1 )
+    CHECK_MALLOC (grid3d->iam, "Enter dsparseTreeFactor_ASYNC_commL()");
+#endif
+
+    int_t *perm_c_supno = sforest->nodeList ;  // list of nodes in the order of factorization
+    treeTopoInfo_t* treeTopoInfo = &sforest->topoInfo;
+    int_t* myIperm = treeTopoInfo->myIperm;
+
+    gridinfo_t* grid = &(grid3d->grid2d);
+    /*main loop over all the levels*/
+
+    int_t maxTopoLevel = treeTopoInfo->numLvl;
+    int_t* eTreeTopLims = treeTopoInfo->eTreeTopLims;
+    int * IrecvPlcd_D = factStat->IrecvPlcd_D;
+    int * factored_D = factStat->factored_D;
+    int * factored_L = factStat->factored_L;
+    int * factored_U = factStat->factored_U;
+    int * IbcastPanel_L = factStat->IbcastPanel_L;
+    int * IbcastPanel_U = factStat->IbcastPanel_U;
+    int_t* xsup = LUstruct->Glu_persist->xsup;
+
+    int_t numLAMax = getNumLookAhead(options);
+    int_t numLA = numLAMax;
+    int maxsup = sp_ienv_dist (3, options);       /* max supernode size */
+    int* orders = intCalloc_dist (maxsup*2); 
+
+#if ( PRNTlevel>=2 )
+    // Sherry print
+    printf("sforest: nNodes %d, numlvl %d\n", (int) nnodes, (int) maxTopoLevel);
+    //PrintInt10("perm_c_supno", nnodes, perm_c_supno);
+    PrintInt10("eTreeTopLims", maxTopoLevel + 1, eTreeTopLims);
+    for (int topoLvl = 0; topoLvl < maxTopoLevel; ++topoLvl)
+    {
+        int k_st = eTreeTopLims[topoLvl];
+        int k_end = eTreeTopLims[topoLvl + 1];
+	printf("level %d\n", topoLvl);
+	PrintInt10("perm_c_supno", k_end - k_st, &perm_c_supno[k_st]);
+    }
+    ////////
+#endif
+
+    for (int_t topoLvl = 0; topoLvl < maxTopoLevel; ++topoLvl)
+    {
+        /* code */
+        int_t k_st = eTreeTopLims[topoLvl];
+        int_t k_end = eTreeTopLims[topoLvl + 1];
+
+
+
+        for (int_t k0 = k_st; k0 < k_end; ++k0)
+        {
+            int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+            dStartL2U_comm(k, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
+        }
+
+
+        for (int_t k0 = k_st; k0 < k_end; ++k0)
+        {
+            int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+            int_t offset = k0 - k_st;
+            /* diagonal factorization */
+            if (!factored_D[k] )
+            {
+                /*If LU panels from GPU are not reduced then reduce
+                them before diagonal factorization*/
+
+		dDiagFactIBCast(k, k, dFBufs[offset]->BlockUFactor,
+				dFBufs[offset]->BlockLFactor, factStat->IrecvPlcd_D,
+				comReqss[offset]->U_diag_blk_recv_req,
+				comReqss[offset]->L_diag_blk_recv_req,
+				comReqss[offset]->U_diag_blk_send_req,
+				comReqss[offset]->L_diag_blk_send_req,
+				grid, options, thresh, LUstruct, stat, info, SCT, tag_ub);
+            }
+        }
+        double t_apt = SuperLU_timer_();
+
+        // for (int_t k0 = k_st; k0 < k_end; ++k0)
+        // {
+        //     int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+        //     dWaitL2U_recv(k, grid, options, LUstruct, stat, info, SCT, tag_ub);
+        // }
+
+
+        for (int_t k0 = k_st; k0 < k_end; ++k0)
+        {
+            int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+            int_t offset = k0 - k_st;
+
+            /*L update */
+            if (factored_L[k] == 0)
+            {
+		dLPanelUpdate(k, factStat->IrecvPlcd_D, factStat->factored_L,
+			      comReqss[offset]->U_diag_blk_recv_req,
+			      dFBufs[offset]->BlockUFactor, grid, LUstruct, SCT, options);
+                factored_L[k] = 1;
+            }
+            /*U update*/
+            if (factored_U[k] == 0)
+            {
+		dUPanelUpdate(k, factStat->factored_U, comReqss[offset]->L_diag_blk_recv_req,
+			      dFBufs[offset]->BlockLFactor, scuBufs->bigV, ldt,
+			      packLUInfo->Ublock_info, grid, LUstruct, stat, SCT, options);
+                factored_U[k] = 1;
+            }
+        }
+
+
+        for (int_t k0 = k_st; k0 < k_end; ++k0)
+        {
+            int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+            dWaitL2U_send(k, grid, options, LUstruct, stat, info, SCT, tag_ub);
+        }
+
+
+        for (int_t k0 = k_st; k0 < SUPERLU_MIN(k_end, k_st + numLA); ++k0)
+        {
+            int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+            int_t offset = k0 % numLA;
+            /* diagonal factorization */
+
+            /*L Ibcast*/
+            if (IbcastPanel_L[k] == 0)
+	    {
+		dIBcastRecvLPanel(k, k, msgss[offset]->msgcnt, comReqss[offset]->send_req,
+				  comReqss[offset]->recv_req, LUvsbs[offset]->Lsub_buf,
+				  LUvsbs[offset]->Lval_buf, factStat->factored,
+				  grid, LUstruct, SCT, tag_ub);
+                IbcastPanel_L[k] = 1; /*for consistancy; unused later*/
+            }
+
+            /*U Ibcast*/
+            if (IbcastPanel_U[k] == 0)
+            {
+		dIBcastRecvUPanel(k, k, msgss[offset]->msgcnt, comReqss[offset]->send_requ,
+				  comReqss[offset]->recv_requ, LUvsbs[offset]->Usub_buf,
+				  LUvsbs[offset]->Uval_buf, grid, LUstruct, SCT, tag_ub);
+                IbcastPanel_U[k] = 1;
+            }
+        }
+
+        // if (topoLvl) SCT->tAsyncPipeTail += SuperLU_timer_() - t_apt;
+        SCT->tAsyncPipeTail += SuperLU_timer_() - t_apt;
+
+        for (int_t k0 = k_st; k0 < k_end; ++k0)
+        {
+            int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+            int_t offset = k0 % numLA;
+
+	    dWaitL(k, msgss[offset]->msgcnt, msgss[offset]->msgcntU,
+		   comReqss[offset]->send_req, comReqss[offset]->recv_req,
+		   grid, LUstruct, SCT);
+	    dWaitU(k, msgss[offset]->msgcnt, comReqss[offset]->send_requ,
+		   comReqss[offset]->recv_requ, grid, LUstruct, SCT);
+
+            double tsch = SuperLU_timer_();
+
+            int_t LU_nonempty = dSchurComplementSetupGPU(k,
+							 msgss[offset], packLUInfo,
+							 myIperm, gIperm_c_supno,
+							 perm_c_supno, gEtreeInfo,
+							 fNlists, scuBufs,
+							 LUvsbs[offset],
+							 grid, LUstruct, HyP);
+            // initializing D2H data transfer
+            int_t jj_cpu = 0;
+
+            scuStatUpdate( SuperSize(k), HyP,  SCT, stat);
+            uPanelInfo_t* uPanelInfo = packLUInfo->uPanelInfo;
+            lPanelInfo_t* lPanelInfo = packLUInfo->lPanelInfo;
+            int_t *lsub = lPanelInfo->lsub;
+            int_t *usub = uPanelInfo->usub;
+            int* indirect  = fNlists->indirect;
+            int* indirect2  = fNlists->indirect2;
+
+            /*Schurcomplement Update*/
+
+            int_t knsupc = SuperSize(k);
+            int_t klst = FstBlockC (k + 1);
+
+            double* bigV = scuBufs->bigV;
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+            {
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic,2) nowait
+#endif
+		/* Each thread is assigned one loop index ij, responsible for
+		   block update L(lb,k) * U(k,j) -> tempv[]. */
+                for (int_t ij = 0; ij < HyP->lookAheadBlk * HyP->num_u_blks; ++ij)
+                {
+		    /* Get the entire area of L (look-ahead) X U (all-blocks). */
+		    /* for each j-block in U, go through all L-blocks in the
+		       look-ahead window. */
+                    int_t j   = ij / HyP->lookAheadBlk;
+
+                    int_t lb  = ij % HyP->lookAheadBlk;
+                    dblock_gemm_scatterTopLeft( lb,  j, bigV, knsupc, klst, lsub,
+					       usub, ldt,  indirect, indirect2, HyP,
+					       LUstruct, grid, SCT, stat, options);
+                }
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic,2) nowait
+#endif
+                for (int_t ij = 0; ij < HyP->lookAheadBlk * HyP->num_u_blks_Phi; ++ij)
+                {
+                    int_t j   = ij / HyP->lookAheadBlk ;
+                    int_t lb  = ij % HyP->lookAheadBlk;
+                    dblock_gemm_scatterTopRight( lb,  j, bigV, knsupc, klst, lsub,
+                                                usub, ldt,  indirect, indirect2, HyP,
+						LUstruct, grid, SCT, stat, options);
+                }
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic,2) nowait
+#endif
+                for (int_t ij = 0; ij < HyP->RemainBlk * HyP->num_u_blks; ++ij) //
+                {
+                    int_t j   = ij / HyP->RemainBlk;
+                    int_t lb  = ij % HyP->RemainBlk;
+                    dblock_gemm_scatterBottomLeft( lb,  j, bigV, knsupc, klst, lsub,
+                                                  usub, ldt,  indirect, indirect2,
+						  HyP, LUstruct, grid, SCT, stat, options);
+                } /*for (int_t ij =*/
+            }
+
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+            {
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic,2) nowait
+#endif
+                for (int_t ij = 0; ij < HyP->RemainBlk * (HyP->num_u_blks_Phi - jj_cpu) ; ++ij)
+                {
+                    int_t j   = ij / HyP->RemainBlk + jj_cpu;
+                    int_t lb  = ij % HyP->RemainBlk;
+                    dblock_gemm_scatterBottomRight( lb,  j, bigV, knsupc, klst, lsub,
+                                                   usub, ldt,  indirect, indirect2,
+						   HyP, LUstruct, grid, SCT, stat, options);
+                } /*for (int_t ij =*/
+
+            }
+
+            SCT->NetSchurUpTimer += SuperLU_timer_() - tsch;
+            // finish waiting for diag block send
+            int_t abs_offset = k0 - k_st;
+
+	    Wait_LUDiagSend(k, comReqss[abs_offset]->U_diag_blk_send_req,
+			    comReqss[abs_offset]->L_diag_blk_send_req,
+			    grid, SCT,options);
+
+            /*Schedule next I bcasts*/
+            for (int_t next_k0 = k0 + 1; next_k0 < SUPERLU_MIN( k0 + 1 + numLA, nnodes); ++next_k0)
+            {
+                /* code */
+                int_t next_k = perm_c_supno[next_k0];
+                int_t offset = next_k0 % numLA;
+
+                /*L Ibcast*/
+                if (IbcastPanel_L[next_k] == 0 && factored_L[next_k])
+                {
+		    dIBcastRecvLPanel(next_k, next_k, msgss[offset]->msgcnt,
+				      comReqss[offset]->send_req, comReqss[offset]->recv_req,
+				      LUvsbs[offset]->Lsub_buf, LUvsbs[offset]->Lval_buf,
+				      factStat->factored, grid, LUstruct, SCT, tag_ub);
+                    IbcastPanel_L[next_k] = 1; /*will be used later*/
+                }
+                /*U Ibcast*/
+                if (IbcastPanel_U[next_k] == 0 && factored_U[next_k])
+                {
+		    dIBcastRecvUPanel(next_k, next_k, msgss[offset]->msgcnt,
+				      comReqss[offset]->send_requ, comReqss[offset]->recv_requ,
+				      LUvsbs[offset]->Usub_buf, LUvsbs[offset]->Uval_buf,
+				      grid, LUstruct, SCT, tag_ub);
+
+                    IbcastPanel_U[next_k] = 1;
+                }
+            }
+        }/*for main loop (int_t k0 = 0; k0 < gNodeCount[tree]; ++k0)*/
+
+    }
+
+#if ( DEBUGlevel>=1 )
+    CHECK_MALLOC (grid3d->iam, "Exit dsparseTreeFactor_ASYNC_commL()");
+#endif
+
+    SUPERLU_FREE(orders);
+    return 0;
+} /* dsparseTreeFactor_ASYNC_commL */
+
+
+

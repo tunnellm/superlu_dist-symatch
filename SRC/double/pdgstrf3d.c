@@ -363,7 +363,12 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
                     sluGPU,  d2Hred,  HyP, LUstruct, grid3d, stat,
                     thresh,  SCT, tag_ub, info);                 
 #else
-                dsparseTreeFactor_ASYNC(sforest, comReqss,  &scuBufs, &packLUInfo,
+                // dsparseTreeFactor_ASYNC(sforest, comReqss,  &scuBufs, &packLUInfo,
+				// 	msgss, LUvsbs, dFBufs, &factStat, &fNlists,
+				// 	&gEtreeInfo, options, iperm_c_supno, ldt,
+				// 	HyP, LUstruct, grid3d, stat,
+				// 	thresh,  SCT, tag_ub, info );                
+                dsparseTreeFactor_ASYNC_commL(sforest, comReqss,  &scuBufs, &packLUInfo,
 					msgss, LUvsbs, dFBufs, &factStat, &fNlists,
 					&gEtreeInfo, options, iperm_c_supno, ldt,
 					HyP, LUstruct, grid3d, stat,
