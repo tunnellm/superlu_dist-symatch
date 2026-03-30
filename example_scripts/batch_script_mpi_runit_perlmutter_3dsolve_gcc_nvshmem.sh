@@ -139,7 +139,7 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # for MAT in matrix_ACTIVSg10k_AC_00.mtx
 # for MAT in symmetric/offshore.mtx  symmetric/pwtk.mtx  symmetric/Si41Ge41H72.mtx  symmetric/TEM181302.mtx symmetric/dielFilterV3real.mtx symmetric/nlpkkt80.bin symmetric/StocF-1465.bin symmetric/Geo_1438.bin
 # for MAT in symmetric/StocF-1465.bin
-for MAT in symmetric/StocF-1465.bin
+for MAT in symmetric/Geo_1438.bin symmetric/StocF-1465.bin symmetric/nlpkkt80.bin symmetric/dielFilterV3real.mtx symmetric/Si41Ge41H72.mtx
 # for MAT in symmetric/662_bus.mtx
 # for MAT in mathias/DG_GrapheneDisorder_8192.bin mathias/DNA_715_64cell.bin mathias/LU_C_BN_C_4by2.bin mathias/Li4244.bin 
 # for MAT in mathias/Li4244.bin 

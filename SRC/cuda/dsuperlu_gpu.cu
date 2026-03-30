@@ -413,6 +413,161 @@ void Scatter_GPU_kernel(
 } /* end Scatter_GPU_kernel */
 
 
+
+
+__global__
+void Scatter_GPU_kernel_Lonly(
+    int_t streamId,
+    int_t ii_st, int_t ii_end,
+    int_t jj_st, int_t jj_end, /* defines rectangular Schur block to be scatter */
+    int_t klst,
+    int_t jj0,   /* 0 on entry */
+    int_t nrows, int_t ldt, int_t npcol, int_t nprow,
+    dLUstruct_gpu_t * A_gpu)
+{
+
+	/* initializing pointers */
+	int_t *xsup = A_gpu->xsup;
+	int_t *UrowindPtr = A_gpu->UrowindPtr;
+	int_t *UrowindVec = A_gpu->UrowindVec;
+	int_t *UnzvalPtr = A_gpu->UnzvalPtr;
+	double *UnzvalVec = A_gpu->UnzvalVec;
+	int_t *LrowindPtr = A_gpu->LrowindPtr;
+	int_t *LrowindVec = A_gpu->LrowindVec;
+	int_t *LnzvalPtr = A_gpu->LnzvalPtr;
+	double *LnzvalVec = A_gpu->LnzvalVec;
+	double *bigV = A_gpu->scubufs[streamId].bigV;
+	local_l_blk_info_t *local_l_blk_infoVec = A_gpu->local_l_blk_infoVec;
+	local_u_blk_info_t *local_u_blk_infoVec = A_gpu->local_u_blk_infoVec;
+	int_t *local_l_blk_infoPtr = A_gpu->local_l_blk_infoPtr;
+	int_t *local_u_blk_infoPtr = A_gpu->local_u_blk_infoPtr;
+	Remain_info_t *Remain_info = A_gpu->scubufs[streamId].Remain_info;
+	Ublock_info_t *Ublock_info = A_gpu->scubufs[streamId].Ublock_info;
+	int_t *lsub  = A_gpu->scubufs[streamId].lsub;
+	int_t *usub  = A_gpu->scubufs[streamId].usub;
+
+	/* thread block assignment: this thread block is
+	   assigned to block (lb, j) in 2D grid */
+	int lb = blockIdx.x + ii_st;
+	int j  = blockIdx.y + jj_st;
+
+	extern __shared__ int s[];
+	int* indirect_lptr = s;  /* row-wise */
+	int* indirect2_thread= (int*) &indirect_lptr[ldt]; /* row-wise */
+	int* IndirectJ1= (int*) &indirect2_thread[ldt];    /* column-wise */
+	int* IndirectJ3= (int*) &IndirectJ1[ldt];    /* column-wise */
+	//int THREAD_BLOCK_SIZE =ldt;
+
+	int* pfxStorage = (int*) &IndirectJ3[ldt];
+
+	int thread_id = threadIdx.x;
+
+	int iukp = Ublock_info[j].iukp;
+	int jb = Ublock_info[j].jb;
+	int nsupc = SuperSize (jb);
+	int ljb = jb / npcol;
+
+	typedef int pfx_dtype ;
+        extern  __device__ void incScan(pfx_dtype *inOutArr, pfx_dtype *temp, int n);
+
+	double *tempv1;
+	if (jj_st == jj0)
+	{
+		tempv1 = (j == jj_st) ? bigV
+		         : bigV + Ublock_info[j - 1].full_u_cols * nrows;
+	}
+	else
+	{
+		tempv1 = (j == jj_st) ? bigV
+		         : bigV + (Ublock_info[j - 1].full_u_cols -
+		                   Ublock_info[jj_st - 1].full_u_cols) * nrows;
+	}
+
+	/* # of nonzero columns in block j  */
+	int nnz_cols = (j == 0) ? Ublock_info[j].full_u_cols
+	               : (Ublock_info[j].full_u_cols - Ublock_info[j - 1].full_u_cols);
+	int cum_ncol = (j == 0) ? 0
+					: Ublock_info[j - 1].full_u_cols;
+
+	int lptr = Remain_info[lb].lptr;
+	int ib   = Remain_info[lb].ib;
+	int temp_nbrow = lsub[lptr + 1]; /* number of rows in the current L block */
+	lptr += LB_DESCRIPTOR;
+
+	int_t cum_nrow;
+	if (ii_st == 0)
+	{
+		cum_nrow = (lb == 0 ? 0 : Remain_info[lb - 1].FullRow);
+	}
+	else
+	{
+		cum_nrow = (lb == 0 ? 0 : Remain_info[lb - 1].FullRow - Remain_info[ii_st - 1].FullRow);
+	}
+
+	tempv1 += cum_nrow;
+
+	if (ib >= jb)  /* ib >= jb, scatter L code */
+	{
+	
+		int rel;
+		double *nzval;
+		int_t *index = &LrowindVec[LrowindPtr[ljb]];
+		int num_l_blocks = index[0];
+		int ldv = index[1];
+
+		int fnz = FstBlockC (ib);
+		int lib = ib / nprow;
+
+		__shared__ int lib_ind;
+		/*do a search lib_ind for lib*/
+		int blks_per_threads = CEILING(num_l_blocks, blockDim.x);
+		for (int i = 0; i < blks_per_threads; ++i)
+		{
+			if (thread_id * blks_per_threads + i < num_l_blocks &&
+			        local_l_blk_infoVec[ local_l_blk_infoPtr[ljb] + thread_id * blks_per_threads + i ].lib == lib)
+			{
+				lib_ind = thread_id * blks_per_threads + i;
+			}
+		}
+		__syncthreads();
+
+		int lptrj = local_l_blk_infoVec[ local_l_blk_infoPtr[ljb] + lib_ind].lptrj;
+		int luptrj = local_l_blk_infoVec[ local_l_blk_infoPtr[ljb] + lib_ind].luptrj;
+		lptrj += LB_DESCRIPTOR;
+		int dest_nbrow = index[lptrj - 1];
+
+		if (thread_id < dest_nbrow)
+		{
+		    rel = index[lptrj + thread_id] - fnz;
+		    indirect_lptr[rel] = thread_id;
+		}
+		__syncthreads();
+
+		/* can be precalculated */
+		if (thread_id < temp_nbrow)
+		{
+			rel = lsub[lptr + thread_id] - fnz;
+			indirect2_thread[thread_id] = indirect_lptr[rel];
+		}
+		if (thread_id < nnz_cols)
+			IndirectJ3[thread_id] = (int) A_gpu->scubufs[streamId].usub_IndirectJ3[cum_ncol + thread_id];
+		__syncthreads();
+
+		int ColPerBlock = blockDim.x / temp_nbrow;
+
+		nzval = &LnzvalVec[LnzvalPtr[ljb]] + luptrj;
+		ddevice_scatter_l_2D(
+		    thread_id,
+		    nsupc, temp_nbrow,
+		    usub, iukp, klst,
+		    nzval, ldv,
+		    tempv1, nrows, indirect2_thread,
+		    nnz_cols, ColPerBlock,
+		    IndirectJ3);
+	} /* end else ib >= jb */
+
+} /* end Scatter_GPU_kernel_Lonly */
+
 #define GPU_2D_SCHUDT  /* Not used */
 
 int dSchurCompUpdate_GPU(
@@ -695,6 +850,289 @@ int dSchurCompUpdate_GPU(
 
 	return 0;
 } /* end dSchurCompUpdate_GPU */
+
+
+
+int dSchurCompUpdate_GPU_Lonly(
+    int_t streamId,
+    int_t jj_cpu, /* 0 on entry, pointing to the start of Phi part */
+    int_t nub,    /* jj_cpu on entry, pointing to the end of the Phi part */
+    int_t klst, int_t knsupc,
+    int_t Rnbrow, int_t RemainBlk,
+    int_t Remain_lbuf_send_size,
+    int_t bigu_send_size, int_t ldu,
+    int_t mcb,    /* num_u_blks_hi */
+    int_t buffer_size, int_t lsub_len, int_t usub_len,
+    int_t ldt, int_t k0,
+    dsluGPU_t *sluGPU, gridinfo_t *grid,
+    SuperLUStat_t *stat
+)
+{
+    int SCATTER_THREAD_BLOCK_SIZE=512;
+
+	dLUstruct_gpu_t * A_gpu = sluGPU->A_gpu;
+	dLUstruct_gpu_t * dA_gpu = sluGPU->dA_gpu;
+	int_t nprow = grid->nprow;
+	int_t npcol = grid->npcol;
+
+	gpuStream_t FunCallStream = sluGPU->funCallStreams[streamId];
+	gpublasHandle_t gpublas_handle0 = sluGPU->gpublasHandles[streamId];
+	int_t * lsub = A_gpu->scubufs[streamId].lsub_buf;
+	int_t * usub = A_gpu->scubufs[streamId].usub_buf;
+	Remain_info_t *Remain_info = A_gpu->scubufs[streamId].Remain_info_host;
+	double * Remain_L_buff = A_gpu->scubufs[streamId].Remain_L_buff_host;
+	Ublock_info_t *Ublock_info = A_gpu->scubufs[streamId].Ublock_info_host;
+	double * bigU = A_gpu->scubufs[streamId].bigU_host;
+
+	stat->isOffloaded[k0] = 1;
+	/* start by sending data to  */
+	int_t *xsup = A_gpu->xsup_host;
+	int_t col_back = (jj_cpu == 0) ? 0 : Ublock_info[jj_cpu - 1].full_u_cols;
+	// if(nub<1) return;
+	int_t ncols  = Ublock_info[nub - 1].full_u_cols - col_back;
+
+	/* Sherry: can get max_super_size from sp_ienv(3) */
+	int_t indirectJ1[MAX_SUPER_SIZE]; // 0 indicates an empry segment
+	int_t indirectJ2[MAX_SUPER_SIZE]; // # of nonzero segments so far
+	int_t indirectJ3[MAX_SUPER_SIZE]; /* indirectJ3[j] == k means the
+					 j-th nonzero segment points
+					 to column k in this supernode */
+	/* calculate usub_indirect */
+	for (int jj = jj_cpu; jj < nub; ++jj)
+	{
+	    int_t iukp = Ublock_info[jj].iukp;
+	    int_t jb = Ublock_info[jj].jb;
+	    int_t nsupc = SuperSize (jb);
+	    int_t addr = (jj == 0) ? 0
+	             : Ublock_info[jj - 1].full_u_cols - col_back;
+
+	    for (int_t kk = 0; kk < nsupc; ++kk) // old: MAX_SUPER_SIZE
+	    {
+	    	indirectJ1[kk] = 0;
+	    }
+
+	    for (int_t kk = 0; kk < nsupc; ++kk)
+	    {
+	 	indirectJ1[kk] = ((klst - usub[iukp + kk]) == 0) ? 0 : 1;
+	    }
+
+	    /*prefix sum - indicates # of nonzero segments up to column kk */
+	    indirectJ2[0] = indirectJ1[0];
+	    for (int_t kk = 1; kk < nsupc; ++kk) // old: MAX_SUPER_SIZE
+	    {
+	 	indirectJ2[kk] = indirectJ2[kk - 1] + indirectJ1[kk];
+	    }
+
+	    /* total number of nonzero segments in this supernode */
+	    int nnz_col = indirectJ2[nsupc - 1]; // old: MAX_SUPER_SIZE
+
+	    /* compactation */
+	    for (int_t kk = 0; kk < nsupc; ++kk) // old: MAX_SUPER_SIZE
+	    {
+	    	if (indirectJ1[kk]) /* kk is a nonzero segment */
+		{
+		    /* indirectJ3[j] == kk means the j-th nonzero segment
+		       points to column kk in this supernode */
+		    indirectJ3[indirectJ2[kk] - 1] = kk;
+		}
+	    }
+
+    	    for (int i = 0; i < nnz_col; ++i)
+	    {
+	        /* addr == total # of full columns before current block jj */
+		A_gpu->scubufs[streamId].usub_IndirectJ3_host[addr + i] = indirectJ3[i];
+	    }
+	} /* end for jj ... calculate usub_indirect */
+
+	//printf("dSchurCompUpdate_GPU[3]: jj_cpu %d, nub %d\n", jj_cpu, nub); fflush(stdout);
+
+	/*sizeof RemainLbuf = Rnbuf*knsupc */
+	double tTmp = SuperLU_timer_();
+
+	gpuEventRecord(stat->ePCIeH2D[k0], FunCallStream);
+	//YL: need the following to avoid calling gpuEventElapsedTime later with nonrecorded event
+	gpuEventRecord(stat->GemmStart[k0], FunCallStream);
+	gpuEventRecord(stat->GemmEnd[k0], FunCallStream);
+	gpuEventRecord(stat->ScatterEnd[k0], FunCallStream);
+
+	checkGPU(gpuMemcpyAsync(A_gpu->scubufs[streamId].usub_IndirectJ3,
+	                          A_gpu->scubufs[streamId].usub_IndirectJ3_host,
+	                          ncols * sizeof(int_t), gpuMemcpyHostToDevice,
+	                          FunCallStream)) ;
+
+	checkGPU(gpuMemcpyAsync(A_gpu->scubufs[streamId].Remain_L_buff, Remain_L_buff,
+	                          Remain_lbuf_send_size * sizeof(double),
+	                          gpuMemcpyHostToDevice, FunCallStream)) ;
+
+	checkGPU(gpuMemcpyAsync(A_gpu->scubufs[streamId].bigU, bigU,
+	                          bigu_send_size * sizeof(double),
+	                          gpuMemcpyHostToDevice, FunCallStream) );
+
+	checkGPU(gpuMemcpyAsync(A_gpu->scubufs[streamId].Remain_info, Remain_info,
+	                          RemainBlk * sizeof(Remain_info_t),
+	                          gpuMemcpyHostToDevice, FunCallStream) );
+
+	checkGPU(gpuMemcpyAsync(A_gpu->scubufs[streamId].Ublock_info, Ublock_info,
+	                          mcb * sizeof(Ublock_info_t), gpuMemcpyHostToDevice,
+	                          FunCallStream) );
+
+	checkGPU(gpuMemcpyAsync(A_gpu->scubufs[streamId].lsub, lsub,
+	                          lsub_len * sizeof(int_t), gpuMemcpyHostToDevice,
+	                          FunCallStream) );
+
+	checkGPU(gpuMemcpyAsync(A_gpu->scubufs[streamId].usub, usub,
+	                          usub_len * sizeof(int_t), gpuMemcpyHostToDevice,
+	                          FunCallStream) );
+
+	stat->tHost_PCIeH2D += SuperLU_timer_() - tTmp;
+	stat->cPCIeH2D += Remain_lbuf_send_size * sizeof(double)
+	                   + bigu_send_size * sizeof(double)
+	                   + RemainBlk * sizeof(Remain_info_t)
+	                   + mcb * sizeof(Ublock_info_t)
+	                   + lsub_len * sizeof(int_t)
+	                   + usub_len * sizeof(int_t);
+
+	double alpha = 1.0, beta = 0.0;
+
+	int_t ii_st  = 0;
+	int_t ii_end = 0;
+	int_t maxGemmBlockDim = (int) sqrt(buffer_size);
+	// int_t maxGemmBlockDim = 8000;
+
+	/* Organize GEMM by blocks of [ii_st : ii_end, jj_st : jj_end] that
+	   fits in the buffer_size  */
+	while (ii_end < RemainBlk) {
+    	    ii_st = ii_end;
+	    ii_end = RemainBlk;
+	    int_t nrow_max = maxGemmBlockDim;
+// nrow_max = Rnbrow;
+	    int_t remaining_rows = (ii_st == 0) ? Rnbrow : Rnbrow - Remain_info[ii_st - 1].FullRow;
+	    nrow_max = (remaining_rows / nrow_max) > 0 ? remaining_rows / CEILING(remaining_rows,  nrow_max) : nrow_max;
+
+	    int_t ResRow = (ii_st == 0) ? 0 : Remain_info[ii_st - 1].FullRow;
+	    for (int_t i = ii_st; i < RemainBlk - 1; ++i)
+    	    {
+		if ( Remain_info[i + 1].FullRow > ResRow + nrow_max)
+		{
+		    ii_end = i;
+		    break;  /* row dimension reaches nrow_max */
+		}
+	    }
+
+	    int_t nrows;   /* actual row dimension for GEMM */
+	    int_t st_row;
+	    if (ii_st > 0)
+	    {
+		nrows = Remain_info[ii_end - 1].FullRow - Remain_info[ii_st - 1].FullRow;
+		st_row = Remain_info[ii_st - 1].FullRow;
+	    }
+	    else
+	    {
+		nrows = Remain_info[ii_end - 1].FullRow;
+		st_row = 0;
+	    }
+
+	    int jj_st = jj_cpu;
+	    int jj_end = jj_cpu;
+
+	    while (jj_end < nub && nrows > 0 )
+	    {
+		int_t remaining_cols = (jj_st == jj_cpu) ? ncols : ncols - Ublock_info[jj_st - 1].full_u_cols;
+		if ( remaining_cols * nrows < buffer_size)
+		{
+			jj_st = jj_end;
+			jj_end = nub;
+		}
+		else  /* C matrix cannot fit in buffer, need to break into pieces */
+		{
+		    int_t ncol_max = buffer_size / nrows;
+		    /** Must revisit **/
+		    ncol_max = SUPERLU_MIN(ncol_max, maxGemmBlockDim);
+		    ncol_max = (remaining_cols / ncol_max) > 0 ?
+		           remaining_cols / CEILING(remaining_cols,  ncol_max)
+		           : ncol_max;
+
+		    jj_st = jj_end;
+		    jj_end = nub;
+
+		    int_t ResCol = (jj_st == 0) ? 0 : Ublock_info[jj_st - 1].full_u_cols;
+		    for (int_t j = jj_st; j < nub - 1; ++j)
+		    {
+			if (Ublock_info[j + 1].full_u_cols > ResCol + ncol_max)
+			{
+				jj_end = j;
+				break;
+			}
+		    }
+	    	} /* end-if-else */
+
+		int ncols;
+		int st_col;
+		if (jj_st > 0)
+		{
+		    ncols = Ublock_info[jj_end - 1].full_u_cols - Ublock_info[jj_st - 1].full_u_cols;
+		    st_col = Ublock_info[jj_st - 1].full_u_cols;
+		    if (ncols == 0) exit(0);
+		}
+		else
+		{
+		    ncols = Ublock_info[jj_end - 1].full_u_cols;
+		    st_col = 0;
+		}
+
+		/* none of the matrix dimension is zero. */
+		if (nrows > 0 && ldu > 0 && ncols > 0)
+		{
+		    if (nrows * ncols > buffer_size) {
+			printf("!! Matrix size %lld x %lld exceeds buffer_size %lld\n",
+			       nrows, ncols, buffer_size);
+			fflush(stdout);
+		    }
+		    assert(nrows * ncols <= buffer_size);
+		    gpublasSetStream(gpublas_handle0, FunCallStream);
+		    gpuEventRecord(stat->GemmStart[k0], FunCallStream);
+		    gpublasDgemm(gpublas_handle0, GPUBLAS_OP_N, GPUBLAS_OP_N,
+		            nrows, ncols, ldu, &alpha,
+		            &A_gpu->scubufs[streamId].Remain_L_buff[(knsupc - ldu) * Rnbrow + st_row], Rnbrow,
+		            &A_gpu->scubufs[streamId].bigU[st_col * ldu], ldu,
+		            &beta, A_gpu->scubufs[streamId].bigV, nrows);
+
+// #define SCATTER_OPT
+#ifdef SCATTER_OPT
+		    gpuStreamSynchronize(FunCallStream);
+#warning this function is synchronous
+#endif
+		    gpuEventRecord(stat->GemmEnd[k0], FunCallStream);
+
+		    stat->GemmFLOPCounter += 2.0 * (double) nrows * ncols * ldu;
+
+		    /*
+		     * Scattering the output
+		     */
+		     // dim3 dimBlock(THREAD_BLOCK_SIZE);   // 1d thread
+		    dim3 dimBlock(ldt);   // 1d thread
+
+		    dim3 dimGrid(ii_end - ii_st, jj_end - jj_st);
+
+		    Scatter_GPU_kernel_Lonly <<< dimGrid, dimBlock, (4*ldt + 2*SCATTER_THREAD_BLOCK_SIZE)*sizeof(int), FunCallStream>>>
+			(streamId, ii_st, ii_end,  jj_st, jj_end, klst,
+			 0, nrows, ldt, npcol, nprow, dA_gpu);
+#ifdef SCATTER_OPT
+		    gpuStreamSynchronize(FunCallStream);
+#warning this function is synchrnous
+#endif
+
+		    gpuEventRecord(stat->ScatterEnd[k0], FunCallStream);
+
+		    stat->ScatterMOPCounter +=  3.0 * (double) nrows * ncols;
+		} /* endif ... none of the matrix dimension is zero. */
+
+	    } /* end while jj_end < nub */
+
+	} /* end while (ii_end < RemainBlk) */
+
+	return 0;
+} /* end dSchurCompUpdate_GPU_Lonly */
 
 
 static void print_occupancy()

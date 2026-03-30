@@ -171,6 +171,31 @@ extern int dsparseTreeFactor_ASYNC_GPU(
     double thresh, SCT_t *SCT, int tag_ub,
     int *info);
 
+
+
+extern int dsparseTreeFactor_ASYNC_commL_GPU(
+    sForest_t *sforest,
+    commRequests_t **comReqss, // lists of communication requests,
+                               // size = maxEtree level
+    dscuBufs_t *scuBufs,        // contains buffers for schur complement update
+    packLUInfo_t *packLUInfo,
+    msgs_t **msgss,          // size = num Look ahead
+    dLUValSubBuf_t **LUvsbs, // size = num Look ahead
+    ddiagFactBufs_t **dFBufs, // size = maxEtree level
+    factStat_t *factStat,
+    factNodelists_t *fNlists,
+    gEtreeInfo_t *gEtreeInfo, // global etree info
+    superlu_dist_options_t *options,
+    int_t *gIperm_c_supno,
+    int ldt,
+    dsluGPU_t *sluGPU,
+    d2Hreduce_t *d2Hred,
+    HyP_t *HyP,
+    dLUstruct_t *LUstruct, gridinfo3d_t *grid3d, 
+    SuperLUStat_t *stat,
+    double thresh, SCT_t *SCT, int tag_ub,
+    int *info);    
+
 int dinitD2Hreduce(
     int next_k,
     d2Hreduce_t* d2Hred,
@@ -214,6 +239,19 @@ int dSchurCompUpdate_GPU(
     SuperLUStat_t *
 );
 
+
+int dSchurCompUpdate_GPU_Lonly(
+    int_t streamId,
+    int_t jj_cpu, int_t nub, int_t klst, int_t knsupc,
+    int_t Rnbrow, int_t RemainBlk,
+    int_t Remain_lbuf_send_size,
+    int_t bigu_send_size, int_t ldu,
+    int_t mcb,
+    int_t buffer_size, int_t lsub_len, int_t usub_len,
+    int_t ldt, int_t k0,
+    dsluGPU_t *sluGPU, gridinfo_t *grid,
+    SuperLUStat_t *
+);
 
 extern void dCopyLUToGPU3D (int* isNodeInMyGrid, dLocalLU_t *A_host,
            dsluGPU_t *sluGPU, Glu_persist_t *Glu_persist, int_t n,
