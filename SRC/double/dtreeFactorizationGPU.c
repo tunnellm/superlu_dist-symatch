@@ -825,6 +825,57 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
         dsyncAllfunCallStreams(sluGPU, SCT);
 
 
+    /* Go through each leaf node */
+    for (int_t k0 = 0; k0 < eTreeTopLims[1]; ++k0)
+    {
+        int_t k = perm_c_supno[k0]; // direct computation no perm_c_supno
+        int_t offset = k0;
+        /* k-th diagonal factorization */
+
+        /* If LU panels from GPU are not reduced, then reduce
+	   them before diagonal factorization */
+        if (!gpuLUreduced[k] && superlu_acc_offload)
+        {
+            double tt_start1 = SuperLU_timer_();
+
+            dinitD2Hreduce(k, d2Hred, last_flag,
+                          HyP, sluGPU, grid, LUstruct, SCT);
+            int_t copyL_kljb = d2Hred->copyL_kljb;
+            int_t copyU_kljb = d2Hred->copyU_kljb;
+
+            if (copyL_kljb || copyU_kljb)
+                SCT->PhiMemCpyCounter++;
+            dsendLUpanelGPU2HOST(k, d2Hred, sluGPU, stat);
+
+            dreduceGPUlu(last_flag, d2Hred, sluGPU, SCT, grid, LUstruct);
+
+            gpuLUreduced[k] = 1;
+            SCT->PhiMemCpyTimer += SuperLU_timer_() - tt_start1;
+        }
+
+        double t1 = SuperLU_timer_();
+
+        /*Now factor and broadcast diagonal block*/
+        // sDiagFactIBCast(k, dFBufs[offset], factStat, comReqss[offset], grid,
+        //                 options, thresh, LUstruct, stat, info, SCT);
+
+#if 0
+        sDiagFactIBCast(k,  dFBufs[offset], factStat, comReqss[offset], grid,
+                        options, thresh, LUstruct, stat, info, SCT, tag_ub);
+#else
+        dStartL2U_comm(k, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
+        dDiagFactIBCast(k, k, dFBufs[offset]->BlockUFactor, dFBufs[offset]->BlockLFactor,
+                        factStat->IrecvPlcd_D,
+                        comReqss[offset]->U_diag_blk_recv_req,
+                        comReqss[offset]->L_diag_blk_recv_req,
+                        comReqss[offset]->U_diag_blk_send_req,
+                        comReqss[offset]->L_diag_blk_send_req,
+                        grid, options, thresh, LUstruct, stat, info, SCT, tag_ub);
+#endif
+        factored_D[k] = 1;
+
+        SCT->pdgstrf2_timer += (SuperLU_timer_() - t1);
+    } /* for all leaves ... */
 
     //printf(".. SparseFactor_GPU: after leaves\n"); fflush(stdout);
 
@@ -836,13 +887,6 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
         /* code */
         int k_st = eTreeTopLims[topoLvl];
         int k_end = eTreeTopLims[topoLvl + 1];
-
-        for (int k0 = k_st; k0 < k_end; ++k0)
-        {
-            int k = perm_c_supno[k0];   // direct computation no perm_c_supno
-            dStartL2U_comm(k, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
-        }
-
 
         /* Process all the nodes in 'topoLvl': diagonal factorization */
         for (int k0 = k_st; k0 < k_end; ++k0)
@@ -874,6 +918,8 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
                     gpuLUreduced[k] = 1;
                     SCT->PhiMemCpyTimer += SuperLU_timer_() - tt_start1;
                 }
+
+                dStartL2U_comm(k, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
 
                 double t1 = SuperLU_timer_();
                 /* Factor diagonal block on CPU */
@@ -1129,7 +1175,64 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
 
             //printf("... after look-ahead update, topoLvl %d\t maxTopoLevel %d\n", topoLvl, maxTopoLevel); fflush(stdout);
 
+//             /* Reduce the L & U panels from GPU to CPU.       */
+//             if (topoLvl < maxTopoLevel - 1)
+//             { /* Not the root */
+//                 int_t k_parent = gEtreeInfo->setree[k];
+// 		if (k_parent < nnodes)
+//                     gEtreeInfo->numChildLeft[k_parent]--;
+//                 if (k_parent < nnodes && gEtreeInfo->numChildLeft[k_parent] == 0)
+//                 { /* if k is the last child in this level */
+//                     int_t k0_parent = myIperm[k_parent];
+//                     if (k0_parent > 0)
+//                     {
+//                         /* code */
+//                         //      printf("Before assert: iam %d, k %d, k_parent %d, k0_parent %d, nnodes %d\n", grid3d->iam, k, k_parent, k0_parent, nnodes); fflush(stdout);
+//                         //	      exit(-1);
+//                         assert(k0_parent < nnodes);
+//                         int offset = k0_parent - k_end;
+//                         if (!gpuLUreduced[k_parent] && superlu_acc_offload)
+//                         {
+//                             double tt_start1 = SuperLU_timer_();
 
+//                             dinitD2Hreduce(k_parent, d2Hred, last_flag,
+//                                           HyP, sluGPU, grid, LUstruct, SCT);
+//                             int_t copyL_kljb = d2Hred->copyL_kljb;
+//                             int_t copyU_kljb = d2Hred->copyU_kljb;
+
+//                             if (copyL_kljb || copyU_kljb)
+//                                 SCT->PhiMemCpyCounter++;
+//                             dsendLUpanelGPU2HOST(k_parent, d2Hred, sluGPU, stat);
+
+//                             /* Reduce the LU panels from GPU */
+//                             dreduceGPUlu(last_flag, d2Hred,
+//                                         sluGPU, SCT, grid, LUstruct);
+
+//                             gpuLUreduced[k_parent] = 1;
+//                             SCT->PhiMemCpyTimer += SuperLU_timer_() - tt_start1;
+//                         }
+
+//                         /* Factorize diagonal block on CPU */
+// #if 0
+//                         sDiagFactIBCast(k_parent,  dFBufs[offset], factStat,
+// 					comReqss[offset], grid, options, thresh,
+// 					LUstruct, stat, info, SCT, tag_ub);
+// #else
+//                         dStartL2U_comm(k_parent, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
+
+//                         dDiagFactIBCast(k_parent, k_parent, dFBufs[offset]->BlockUFactor,
+//                                         dFBufs[offset]->BlockLFactor, factStat->IrecvPlcd_D,
+//                                         comReqss[offset]->U_diag_blk_recv_req,
+//                                         comReqss[offset]->L_diag_blk_recv_req,
+//                                         comReqss[offset]->U_diag_blk_send_req,
+//                                         comReqss[offset]->L_diag_blk_send_req,
+//                                         grid, options, thresh, LUstruct, stat, info, SCT, tag_ub);
+// #endif
+//                         factored_D[k_parent] = 1;
+//                     } /* end if k0_parent > 0 */
+
+//                 } /* end if all children are done */
+//             }     /* end if non-root */
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1265,6 +1368,108 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
                     IbcastPanel_U[next_k] = 1;
                 }
             } /* end for look-ahead window */
+
+//             if (topoLvl < maxTopoLevel - 1) /* not root */
+//             {
+//                 /*look-ahead LU factorization*/
+//                 int kx_st = eTreeTopLims[topoLvl + 1];
+//                 int kx_end = eTreeTopLims[topoLvl + 2];
+//                 for (int k0x = kx_st; k0x < kx_end; k0x++)
+//                 {
+//                     /* code */
+//                     int kx = perm_c_supno[k0x];
+//                     int offset = k0x - kx_st;
+//                     if (IrecvPlcd_D[kx] && !factored_L[kx])
+//                     {
+//                         /*check if received*/
+//                         int_t recvUDiag=1;
+//                         recvUDiag = checkRecvUDiag(kx, comReqss[offset],
+//                                                         grid, SCT);
+//                         if (recvUDiag)
+//                         {
+// #if 0
+//                             sLPanelTrSolve( kx,  dFBufs[offset],
+//                                             factStat, comReqss[offset],
+//                                             grid, LUstruct, SCT);
+// #else
+//                             dLPanelTrSolve(kx, factStat->factored_L,
+//                                            dFBufs[offset]->BlockUFactor, grid, LUstruct,options);
+// #endif
+
+//                             factored_L[kx] = 1;
+
+//                             /*check if an L_Ibcast is possible*/
+
+//                             if (IbcastPanel_L[kx] == 0 &&
+//                                 k0x - k0 < numLA + 1 && // is within look-ahead window
+//                                 factored_L[kx])
+//                             {
+//                                 int_t offset1 = k0x % numLA;
+// #if 0
+//                                 sIBcastRecvLPanel( kx, comReqss[offset1], LUvsbs[offset1],
+//                                                    msgss[offset1], factStat,
+// 						   grid, LUstruct, SCT, tag_ub);
+// #else
+//                                 dIBcastRecvLPanel(kx, kx, msgss[offset1]->msgcnt,
+//                                                   comReqss[offset1]->send_req,
+//                                                   comReqss[offset1]->recv_req,
+//                                                   LUvsbs[offset1]->Lsub_buf,
+//                                                   LUvsbs[offset1]->Lval_buf,
+//                                                   factStat->factored,
+//                                                   grid, LUstruct, SCT, tag_ub);
+// #endif
+//                                 IbcastPanel_L[kx] = 1; /*will be used later*/
+//                             }
+//                         }
+//                     }
+
+//                     if (IrecvPlcd_D[kx] && !factored_U[kx])
+//                     {
+//                         /*check if received*/
+//                         int_t recvLDiag=1;
+//                         if(options->SymFact == NO){
+//                             recvLDiag = checkRecvLDiag(kx, comReqss[offset],
+//                                                          grid, SCT);
+//                         }
+//                         if (recvLDiag)
+//                         {
+// #if 0
+//                             sUPanelTrSolve( kx, ldt, dFBufs[offset], scuBufs, packLUInfo,
+//                                             grid, LUstruct, stat, SCT);
+// #else
+//                             dUPanelTrSolve(kx, dFBufs[offset]->BlockLFactor,
+//                                            scuBufs->bigV,
+//                                            ldt, packLUInfo->Ublock_info,
+//                                            grid, LUstruct, stat, SCT, options);
+// #endif
+//                             factored_U[kx] = 1;
+//                             /*check if an L_Ibcast is possible*/
+
+//                             if (IbcastPanel_U[kx] == 0 &&
+//                                 k0x - k0 < numLA + 1 && // is within lookahead window
+//                                 factored_U[kx])
+//                             {
+//                                 int_t offset = k0x % numLA;
+// #if 0
+//                                 sIBcastRecvUPanel( kx, comReqss[offset],
+// 						   LUvsbs[offset],
+// 						   msgss[offset], factStat,
+// 						   grid, LUstruct, SCT, tag_ub);
+// #else
+//                                 dIBcastRecvUPanel(kx, kx, msgss[offset]->msgcnt,
+//                                                   comReqss[offset]->send_requ,
+//                                                   comReqss[offset]->recv_requ,
+//                                                   LUvsbs[offset]->Usub_buf,
+//                                                   LUvsbs[offset]->Uval_buf,
+//                                                   grid, LUstruct, SCT, tag_ub);
+// #endif
+//                                 IbcastPanel_U[kx] = 1; /*will be used later*/
+//                             }
+//                         }
+//                     }
+//                 } /* end look-ahead */
+
+//             } /* end if non-root level */
 
             /* end Schur complement update */
             SCT->NetSchurUpTimer += SuperLU_timer_() - tsch;

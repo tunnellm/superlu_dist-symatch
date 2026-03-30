@@ -1064,7 +1064,7 @@ int dSchurCompUpdate_GPU_Lonly(
 				break;
 			}
 		    }
-	    	} /* end-if-else */
+		} /* end-if-else */
 
 		int ncols;
 		int st_col;
@@ -1089,8 +1089,16 @@ int dSchurCompUpdate_GPU_Lonly(
 			fflush(stdout);
 		    }
 		    assert(nrows * ncols <= buffer_size);
-		    gpublasSetStream(gpublas_handle0, FunCallStream);
-		    gpuEventRecord(stat->GemmStart[k0], FunCallStream);
+		    
+			gpublasSetStream(gpublas_handle0, FunCallStream);
+		    
+			int lb = ii_end-1;
+			int j  = jj_st-1; // the lower right corner of the blocks
+			int ib   = Remain_info[lb].ib;
+			int jb = Ublock_info[j].jb;
+			if (ib >= jb)  /* ib >= jb, at least some blocks fall into L */	
+			{
+			gpuEventRecord(stat->GemmStart[k0], FunCallStream);
 		    gpublasDgemm(gpublas_handle0, GPUBLAS_OP_N, GPUBLAS_OP_N,
 		            nrows, ncols, ldu, &alpha,
 		            &A_gpu->scubufs[streamId].Remain_L_buff[(knsupc - ldu) * Rnbrow + st_row], Rnbrow,
@@ -1105,7 +1113,7 @@ int dSchurCompUpdate_GPU_Lonly(
 		    gpuEventRecord(stat->GemmEnd[k0], FunCallStream);
 
 		    stat->GemmFLOPCounter += 2.0 * (double) nrows * ncols * ldu;
-
+			}
 		    /*
 		     * Scattering the output
 		     */
