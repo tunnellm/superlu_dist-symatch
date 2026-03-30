@@ -825,57 +825,57 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
         dsyncAllfunCallStreams(sluGPU, SCT);
 
 
-    /* Go through each leaf node */
-    for (int_t k0 = 0; k0 < eTreeTopLims[1]; ++k0)
-    {
-        int_t k = perm_c_supno[k0]; // direct computation no perm_c_supno
-        int_t offset = k0;
-        /* k-th diagonal factorization */
+//     /* Go through each leaf node */
+//     for (int_t k0 = 0; k0 < eTreeTopLims[1]; ++k0)
+//     {
+//         int_t k = perm_c_supno[k0]; // direct computation no perm_c_supno
+//         int_t offset = k0;
+//         /* k-th diagonal factorization */
 
-        /* If LU panels from GPU are not reduced, then reduce
-	   them before diagonal factorization */
-        if (!gpuLUreduced[k] && superlu_acc_offload)
-        {
-            double tt_start1 = SuperLU_timer_();
+//         /* If LU panels from GPU are not reduced, then reduce
+// 	   them before diagonal factorization */
+//         if (!gpuLUreduced[k] && superlu_acc_offload)
+//         {
+//             double tt_start1 = SuperLU_timer_();
 
-            dinitD2Hreduce(k, d2Hred, last_flag,
-                          HyP, sluGPU, grid, LUstruct, SCT);
-            int_t copyL_kljb = d2Hred->copyL_kljb;
-            int_t copyU_kljb = d2Hred->copyU_kljb;
+//             dinitD2Hreduce_Lonly(k, d2Hred, last_flag,
+//                           HyP, sluGPU, grid, LUstruct, SCT);
+//             int_t copyL_kljb = d2Hred->copyL_kljb;
+//             int_t copyU_kljb = d2Hred->copyU_kljb;
 
-            if (copyL_kljb || copyU_kljb)
-                SCT->PhiMemCpyCounter++;
-            dsendLUpanelGPU2HOST(k, d2Hred, sluGPU, stat);
+//             if (copyL_kljb || copyU_kljb)
+//                 SCT->PhiMemCpyCounter++;
+//             dsendLUpanelGPU2HOST(k, d2Hred, sluGPU, stat);
 
-            dreduceGPUlu(last_flag, d2Hred, sluGPU, SCT, grid, LUstruct);
+//             dreduceGPUlu(last_flag, d2Hred, sluGPU, SCT, grid, LUstruct);
 
-            gpuLUreduced[k] = 1;
-            SCT->PhiMemCpyTimer += SuperLU_timer_() - tt_start1;
-        }
+//             gpuLUreduced[k] = 1;
+//             SCT->PhiMemCpyTimer += SuperLU_timer_() - tt_start1;
+//         }
 
-        double t1 = SuperLU_timer_();
+//         double t1 = SuperLU_timer_();
 
-        /*Now factor and broadcast diagonal block*/
-        // sDiagFactIBCast(k, dFBufs[offset], factStat, comReqss[offset], grid,
-        //                 options, thresh, LUstruct, stat, info, SCT);
+//         /*Now factor and broadcast diagonal block*/
+//         // sDiagFactIBCast(k, dFBufs[offset], factStat, comReqss[offset], grid,
+//         //                 options, thresh, LUstruct, stat, info, SCT);
 
-#if 0
-        sDiagFactIBCast(k,  dFBufs[offset], factStat, comReqss[offset], grid,
-                        options, thresh, LUstruct, stat, info, SCT, tag_ub);
-#else
-        dStartL2U_comm(k, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
-        dDiagFactIBCast(k, k, dFBufs[offset]->BlockUFactor, dFBufs[offset]->BlockLFactor,
-                        factStat->IrecvPlcd_D,
-                        comReqss[offset]->U_diag_blk_recv_req,
-                        comReqss[offset]->L_diag_blk_recv_req,
-                        comReqss[offset]->U_diag_blk_send_req,
-                        comReqss[offset]->L_diag_blk_send_req,
-                        grid, options, thresh, LUstruct, stat, info, SCT, tag_ub);
-#endif
-        factored_D[k] = 1;
+// #if 0
+//         sDiagFactIBCast(k,  dFBufs[offset], factStat, comReqss[offset], grid,
+//                         options, thresh, LUstruct, stat, info, SCT, tag_ub);
+// #else
+//         dStartL2U_comm(k, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
+//         dDiagFactIBCast(k, k, dFBufs[offset]->BlockUFactor, dFBufs[offset]->BlockLFactor,
+//                         factStat->IrecvPlcd_D,
+//                         comReqss[offset]->U_diag_blk_recv_req,
+//                         comReqss[offset]->L_diag_blk_recv_req,
+//                         comReqss[offset]->U_diag_blk_send_req,
+//                         comReqss[offset]->L_diag_blk_send_req,
+//                         grid, options, thresh, LUstruct, stat, info, SCT, tag_ub);
+// #endif
+//         factored_D[k] = 1;
 
-        SCT->pdgstrf2_timer += (SuperLU_timer_() - t1);
-    } /* for all leaves ... */
+//         SCT->pdgstrf2_timer += (SuperLU_timer_() - t1);
+//     } /* for all leaves ... */
 
     //printf(".. SparseFactor_GPU: after leaves\n"); fflush(stdout);
 
@@ -901,7 +901,7 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
                 if (!gpuLUreduced[k] && superlu_acc_offload)
                 {
                     double tt_start1 = SuperLU_timer_();
-                    dinitD2Hreduce(k, d2Hred, last_flag,
+                    dinitD2Hreduce_Lonly(k, d2Hred, last_flag,
                                      HyP, sluGPU, grid, LUstruct, SCT);
                     int_t copyL_kljb = d2Hred->copyL_kljb;
                     int_t copyU_kljb = d2Hred->copyU_kljb;
@@ -1195,7 +1195,7 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
 //                         {
 //                             double tt_start1 = SuperLU_timer_();
 
-//                             dinitD2Hreduce(k_parent, d2Hred, last_flag,
+//                             dinitD2Hreduce_Lonly(k_parent, d2Hred, last_flag,
 //                                           HyP, sluGPU, grid, LUstruct, SCT);
 //                             int_t copyL_kljb = d2Hred->copyL_kljb;
 //                             int_t copyU_kljb = d2Hred->copyU_kljb;
@@ -1480,6 +1480,133 @@ int dsparseTreeFactor_ASYNC_commL_GPU(
 
     return 0;
 } /* end dsparseTreeFactor_ASYNC_commL_GPU */
+
+
+
+
+
+
+
+
+
+
+// int dsparseTreeFactor_ASYNC_commL_GPU(
+//     sForest_t *sforest,
+//     commRequests_t **comReqss, // lists of communication requests,
+//                                // size = maxEtree level
+//     dscuBufs_t *scuBufs,        // contains buffers for schur complement update
+//     packLUInfo_t *packLUInfo,
+//     msgs_t **msgss,          // size = num Look ahead
+//     dLUValSubBuf_t **LUvsbs, // size = num Look ahead
+//     ddiagFactBufs_t **dFBufs, // size = maxEtree level
+//     factStat_t *factStat,
+//     factNodelists_t *fNlists,
+//     gEtreeInfo_t *gEtreeInfo, // global etree info
+//     superlu_dist_options_t *options,
+//     int_t *gIperm_c_supno,
+//     int ldt,
+//     dsluGPU_t *sluGPU,
+//     d2Hreduce_t *d2Hred,
+//     HyP_t *HyP,
+//     dLUstruct_t *LUstruct, gridinfo3d_t *grid3d, SuperLUStat_t *stat,
+//     double thresh, SCT_t *SCT, int tag_ub,
+//     int *info)
+// {
+//     int_t nnodes =   sforest->nNodes ;      // number of nodes in the tree
+//     if (nnodes < 1)
+//     {
+//         return 1;
+//     }
+
+//     /* Test the input parameters. */
+//     *info = 0;
+
+// #if ( DEBUGlevel>=1 )
+//     CHECK_MALLOC (grid3d->iam, "Enter dsparseTreeFactor_ASYNC_commL()");
+// #endif
+
+//     int_t *perm_c_supno = sforest->nodeList ;  // list of nodes in the order of factorization
+//     treeTopoInfo_t* treeTopoInfo = &sforest->topoInfo;
+//     int_t* myIperm = treeTopoInfo->myIperm;
+
+//     gridinfo_t* grid = &(grid3d->grid2d);
+//     /*main loop over all the levels*/
+
+//     int_t maxTopoLevel = treeTopoInfo->numLvl;
+//     int_t* eTreeTopLims = treeTopoInfo->eTreeTopLims;
+//     int * IrecvPlcd_D = factStat->IrecvPlcd_D;
+//     int * factored_D = factStat->factored_D;
+//     int * factored_L = factStat->factored_L;
+//     int * factored_U = factStat->factored_U;
+//     int * IbcastPanel_L = factStat->IbcastPanel_L;
+//     int * IbcastPanel_U = factStat->IbcastPanel_U;
+//     int_t* xsup = LUstruct->Glu_persist->xsup;
+
+//     int_t numLAMax = getNumLookAhead(options);
+//     int_t numLA = numLAMax;
+//     int maxsup = sp_ienv_dist (3, options);       /* max supernode size */
+//     int* orders = intCalloc_dist (maxsup*2); 
+
+// #if ( PRNTlevel>=2 )
+//     // Sherry print
+//     printf("sforest: nNodes %d, numlvl %d\n", (int) nnodes, (int) maxTopoLevel);
+//     //PrintInt10("perm_c_supno", nnodes, perm_c_supno);
+//     PrintInt10("eTreeTopLims", maxTopoLevel + 1, eTreeTopLims);
+//     for (int topoLvl = 0; topoLvl < maxTopoLevel; ++topoLvl)
+//     {
+//         int k_st = eTreeTopLims[topoLvl];
+//         int k_end = eTreeTopLims[topoLvl + 1];
+// 	printf("level %d\n", topoLvl);
+// 	PrintInt10("perm_c_supno", k_end - k_st, &perm_c_supno[k_st]);
+//     }
+//     ////////
+// #endif
+
+//     for (int_t topoLvl = 0; topoLvl < maxTopoLevel; ++topoLvl)
+//     {
+//         /* code */
+//         int_t k_st = eTreeTopLims[topoLvl];
+//         int_t k_end = eTreeTopLims[topoLvl + 1];
+
+
+
+//         for (int_t k0 = k_st; k0 < k_end; ++k0)
+//         {
+//             int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+//             dStartL2U_comm(k, grid, options, LUstruct, stat, info, SCT, tag_ub, orders,maxsup);
+//         }
+
+
+
+//         for (int_t k0 = k_st; k0 < k_end; ++k0)
+//         {
+//             int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+//             dWaitL2U_recv(k, grid, options, LUstruct, stat, SCT);
+//         }
+
+
+
+//         for (int_t k0 = k_st; k0 < k_end; ++k0)
+//         {
+//             int_t k = perm_c_supno[k0];   // direct computation no perm_c_supno
+//             dWaitL2U_send(k, grid, options, LUstruct, stat, info, SCT, tag_ub);
+//         }
+
+
+
+//     }
+
+// #if ( DEBUGlevel>=1 )
+//     CHECK_MALLOC (grid3d->iam, "Exit dsparseTreeFactor_ASYNC_commL_GPU()");
+// #endif
+
+//     SUPERLU_FREE(orders);
+//     return 0;
+// } /* dsparseTreeFactor_ASYNC_commL_GPU */
+
+
+
+
 
 
 #endif // matching: enable GPU

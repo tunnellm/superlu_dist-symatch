@@ -207,6 +207,18 @@ int dinitD2Hreduce(
     dLUstruct_t *LUstruct, SCT_t* SCT
 );
 
+
+int dinitD2Hreduce_Lonly(
+    int next_k,
+    d2Hreduce_t* d2Hred,
+    int last_flag,
+    // int_t *perm_c_supno,
+    HyP_t* HyP,
+    dsluGPU_t *sluGPU,
+    gridinfo_t *grid,
+    dLUstruct_t *LUstruct, SCT_t* SCT
+);
+
 extern int dreduceGPUlu(int last_flag, d2Hreduce_t* d2Hred,
    	dsluGPU_t *sluGPU, SCT_t *SCT, gridinfo_t *grid,
 	 dLUstruct_t *LUstruct);

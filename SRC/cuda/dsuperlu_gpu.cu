@@ -1447,6 +1447,80 @@ int dinitD2Hreduce(
     return 0;
 } /* dinitD2Hreduce */
 
+
+int dinitD2Hreduce_Lonly(
+    int next_k,  d2Hreduce_t* d2Hred, int last_flag, HyP_t* HyP,
+    dsluGPU_t *sluGPU, gridinfo_t *grid, dLUstruct_t *LUstruct, SCT_t* SCT
+)
+{
+    Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+    dLocalLU_t *Llu = LUstruct->Llu;
+    int_t* xsup = Glu_persist->xsup;
+    int_t iam = grid->iam;
+    int_t myrow = MYROW (iam, grid);
+    int_t mycol = MYCOL (iam, grid);
+    int_t** Lrowind_bc_ptr = Llu->Lrowind_bc_ptr;
+    int_t** Ufstnz_br_ptr = Llu->Ufstnz_br_ptr;
+
+
+    // int_t next_col = SUPERLU_MIN (k0 + num_look_aheads + 1, nsupers - 1);
+    // int_t next_k = perm_c_supno[next_col];  /* global block number for next colum*/
+    int_t mkcol, mkrow;
+
+    int_t kljb = LBj( next_k, grid );   /*local block number for next block*/
+    int_t kijb = LBi( next_k, grid );   /*local block number for next block*/
+
+    int_t *kindexL ;                     /*for storing index vectors*/
+    int_t *kindexU ;
+    mkrow = PROW (next_k, grid);
+    mkcol = PCOL (next_k, grid);
+    int_t ksup_size = SuperSize(next_k);
+
+    int_t copyL_kljb = 0;
+    int_t copyU_kljb = 0;
+    int_t l_copy_len = 0;
+    int_t u_copy_len = 0;
+
+    if (mkcol == mycol &&  Lrowind_bc_ptr[kljb] != NULL  && last_flag)
+    {
+	if (HyP->Lblock_dirty_bit[kljb] > -1)
+	    {
+		copyL_kljb = 1;
+		int_t lastk0 = HyP->Lblock_dirty_bit[kljb];
+		int_t streamIdk0Offload =  lastk0 % sluGPU->nGPUStreams;
+		if (sluGPU->lastOffloadStream[streamIdk0Offload] == lastk0 && lastk0 != -1)
+		    {
+			// printf("Waiting for Offload =%d to finish StreamId=%d\n", lastk0, streamIdk0Offload);
+			double ttx = SuperLU_timer_();
+			gpuStreamSynchronize(sluGPU->funCallStreams[streamIdk0Offload]);
+			SCT->PhiWaitTimer += SuperLU_timer_() - ttx;
+			sluGPU->lastOffloadStream[streamIdk0Offload] = -1;
+		    }
+	    }
+
+	kindexL = Lrowind_bc_ptr[kljb];
+	l_copy_len = kindexL[1] * ksup_size;
+    }
+
+    // wait for streams if they have not been finished
+
+    // d2Hred->next_col = next_col;
+    d2Hred->next_k = next_k;
+    d2Hred->kljb = kljb;
+    d2Hred->kijb = kijb;
+    d2Hred->copyL_kljb = copyL_kljb;
+    d2Hred->copyU_kljb = copyU_kljb;
+    d2Hred->l_copy_len = l_copy_len;
+    d2Hred->u_copy_len = u_copy_len;
+    d2Hred->kindexU = kindexU;
+    d2Hred->kindexL = kindexL;
+    d2Hred->mkrow = mkrow;
+    d2Hred->mkcol = mkcol;
+    d2Hred->ksup_size = ksup_size;
+    return 0;
+} /* dinitD2Hreduce_Lonly */
+
+
 int dreduceGPUlu(
     int last_flag,
     d2Hreduce_t* d2Hred,
