@@ -911,6 +911,129 @@ void dgstrf2(int_t k, double* diagBlk, int_t LDA, double* BlockUfactor, int_t LD
 }
 
 
+
+/*
+ * Inertia of a symmetric 2x2 block:
+ *     [ a  b ]
+ *     [ b  c ]
+ *
+ * Uses trace and determinant classification, with tolerance.
+ *
+ * For a 2x2 symmetric matrix:
+ *   det < 0         => one positive, one negative
+ *   det > 0, tr > 0 => two positive
+ *   det > 0, tr < 0 => two negative
+ *   det ~ 0         => one zero + sign(trace) on the other
+ *   tr ~ 0, det ~ 0 => both zero
+ */
+static void inertia_2x2(double a, double b, double c, double tol,
+                        int *n_pos, int *n_neg, int *n_zero) {
+    const double tr  = a + c;
+    const double det = a * c - b * b;
+
+    const int sdet = (det > tol) ? 1 : (det < -tol) ? -1 : 0;
+
+    const int str  = (tr > tol) ? 1 : (tr < -tol) ? -1 : 0;
+
+    if (sdet < 0) {
+        /* Indefinite */
+        (*n_pos)++;
+        (*n_neg)++;
+        return;
+    }
+
+    if (sdet > 0) {
+        if (str > 0) {
+            (*n_pos) += 2;
+        } else if (str < 0) {
+            (*n_neg) += 2;
+        } else {
+            /*
+             * det > 0 but trace ~ 0 is theoretically impossible in exact arithmetic
+             * for a real symmetric 2x2 block, except as a numerical pathology.
+             * Fall back to explicit eigenvalues.
+             */
+            const double half_tr = 0.5 * tr;
+            const double disc_sq = fmax(0.0, half_tr * half_tr - det);
+            const double disc    = sqrt(disc_sq);
+            const double lam1    = half_tr + disc;
+            const double lam2    = half_tr - disc;
+
+            const int s1 = (lam1 > tol) ? 1 : (lam1 < -tol) ? -1 : 0;
+            const int s2 = (lam2 > tol) ? 1 : (lam2 < -tol) ? -1 : 0;
+
+            if (s1 > 0) (*n_pos)++; else if (s1 < 0) (*n_neg)++; else (*n_zero)++;
+            if (s2 > 0) (*n_pos)++; else if (s2 < 0) (*n_neg)++; else (*n_zero)++;
+        }
+        return;
+    }
+
+    /* det ~ 0: at least one eigenvalue is ~0 */
+    if (str > 0) {
+        (*n_pos)++;
+        (*n_zero)++;
+    } else if (str < 0) {
+        (*n_neg)++;
+        (*n_zero)++;
+    } else {
+        (*n_zero) += 2;
+    }
+}
+
+
+
+void inertia_from_dsytrf(char uplo,
+                              int n,
+                              const double *A,
+                              int lda,
+                              const int *ipiv,
+                              double tol, int* out) {
+    out[0]=0;
+    out[1]=0;
+    out[2]=0;
+
+    if (!A || !ipiv || n < 0 || lda < (n > 0 ? n : 1)) {
+        fprintf(stderr, "inertia_from_dsytrf: invalid input\n");
+    }
+
+    const char ul = (char)toupper((unsigned char)uplo);
+    if (ul != 'L' && ul != 'U') {
+        fprintf(stderr, "inertia_from_dsytrf: uplo must be 'L' or 'U'\n");
+    }
+
+    int i = 0;
+    while (i < n) {
+        if (ipiv[i] > 0) {
+            /* 1x1 pivot block */
+            const double d = A[i + (size_t)i * lda];
+            const int s = (d > tol) ? 1 : (d < -tol) ? -1 : 0;
+            if (s > 0) out[0]++;
+            else if (s < 0) out[1]++;
+            else out[2]++;
+            i += 1;
+        } else {
+            /* 2x2 pivot block: occupies rows/cols i and i+1 */
+            if (i + 1 >= n) {
+                fprintf(stderr, "inertia_from_dsytrf: malformed ipiv at end of array\n");
+                break;
+            }
+
+            const double a = A[i + (size_t)i * lda];
+            const double c = A[(i + 1) + (size_t)(i + 1) * lda];
+            const double b = (ul == 'L')
+                ? A[(i + 1) + (size_t)i * lda]
+                : A[i + (size_t)(i + 1) * lda];
+
+            inertia_2x2(a, b, c, tol, &out[0], &out[1], &out[2]);
+            i += 2;
+        }
+    }
+
+}
+
+
+
+
 /************************************************************************/
 /*! \brief
  *
@@ -1016,6 +1139,13 @@ void Local_Dgstrf2(superlu_dist_options_t *options, int_t k, double thresh,
             // printf("info %10d\n",*info);
             // exit(1);
           }
+
+        const double tol_inertia=1e-30;
+        int inertia[3];
+        inertia_from_dsytrf('L',nsupc,lusup,nsupr,Llu->diagpivot,tol_inertia,inertia);
+        stat->inertia[0]+=inertia[0];
+        stat->inertia[1]+=inertia[1];
+        stat->inertia[2]+=inertia[2];
 
         dsytri_("L",&nsupc,lusup,&nsupr,Llu->diagpivot,ujrow,&INFO);
 

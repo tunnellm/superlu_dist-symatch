@@ -1582,7 +1582,7 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 		{
 			if (options->PrintStat)
 			{
-				int_t TinyPivots;
+				int_t TinyPivots,sytrf_2x2,inertia[3];
 				float for_lu, total, avg, loc_max;
 				float mem_stage[3];
 				struct { float val; int rank; } local_struct, global_struct;
@@ -1590,6 +1590,17 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				MPI_Reduce( &stat->TinyPivots, &TinyPivots, 1, mpi_int_t,
 						   MPI_SUM, 0, grid->comm );
 				stat->TinyPivots = TinyPivots;
+
+				MPI_Reduce( &stat->sytrf_2x2, &sytrf_2x2, 1, mpi_int_t,
+						   MPI_SUM, 0, grid->comm );
+				stat->sytrf_2x2 = sytrf_2x2;
+
+
+				MPI_Reduce( &stat->inertia, &inertia, 3, mpi_int_t,
+						   MPI_SUM, 0, grid->comm );
+				stat->inertia[0] = inertia[0];
+				stat->inertia[1] = inertia[1];
+				stat->inertia[2] = inertia[2];
 
 				/*-- Compute high watermark of all stages --*/
 				if (parSymbFact == TRUE)
@@ -1662,6 +1673,7 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 					printf("**************************************************\n\n");
 					printf("** number of Tiny Pivots: %8d\n\n", stat->TinyPivots);
 					printf("** number of 2x2 Pivots by sytrf: %8d\n\n", stat->sytrf_2x2);
+					printf("** Inertia (pos,neg,zero): %10d %10d %10d\n\n", stat->inertia[0],stat->inertia[1],stat->inertia[2]);
 					printf("info %10d\n",*info);
 					fflush(stdout);
 				}
