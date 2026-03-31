@@ -342,9 +342,9 @@ int_t dblock_gemm_scatterTopLeft( int_t lb, /* block number in L */
     int_t ib   = HyP->lookAhead_info[lb].ib;
     int_t jb   =  HyP->Ublock_info[j].jb;
 
-#ifdef COMML
-    if(options->SymFact == NO || ib>=jb){
-#endif 
+
+    if(options->SymFact == NO || (ib>=jb && options->CommL == YES)){
+
 
     dblock_gemm_scatter( lb, j, HyP->Ublock_info, HyP->lookAhead_info,
 			HyP->lookAhead_L_buff, HyP->Lnbrow,
@@ -359,10 +359,8 @@ int_t dblock_gemm_scatterTopLeft( int_t lb, /* block number in L */
                       );
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
-    SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
-#ifdef COMML    
+    SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1); 
     }
-#endif
     return 0;
 } /* dgemm_scatterTopLeft */
 
@@ -391,9 +389,7 @@ int_t dblock_gemm_scatterTopRight( int_t lb,  int_t j,
     int_t ib   = HyP->lookAhead_info[lb].ib;
     int_t jb   =  HyP->Ublock_info_Phi[j].jb;
 
-#ifdef COMML
-    if(options->SymFact == NO || ib>=jb){
-#endif 
+    if(options->SymFact == NO || (ib>=jb && options->CommL == YES)){
     
     //unsigned long long t1 = _rdtsc();
     double t1 = SuperLU_timer_();
@@ -408,9 +404,7 @@ int_t dblock_gemm_scatterTopRight( int_t lb,  int_t j,
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
     SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
-#ifdef COMML
     }
-#endif
     return 0;
 } /* dblock_gemm_scatterTopRight */
 
@@ -441,9 +435,7 @@ int_t dblock_gemm_scatterBottomLeft( int_t lb,  int_t j,
     int_t ib   = HyP->Remain_info[lb].ib;
     int_t jb   =  HyP->Ublock_info[j].jb;
 
-#ifdef COMML
-    if(options->SymFact == NO || ib>=jb){
-#endif       
+    if(options->SymFact == NO || (ib>=jb && options->CommL == YES)){      
     double t1 = SuperLU_timer_();
     dblock_gemm_scatter( lb, j, HyP->Ublock_info, HyP->Remain_info, HyP->Remain_L_buff, HyP->Rnbrow,
                         HyP->bigU_host, HyP->ldu,
@@ -456,9 +448,7 @@ int_t dblock_gemm_scatterBottomLeft( int_t lb,  int_t j,
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
     SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
-#ifdef COMML
     }
-#endif
     return 0;
 
 } /* dblock_gemm_scatterBottomLeft */
@@ -490,9 +480,7 @@ int_t dblock_gemm_scatterBottomRight( int_t lb,  int_t j,
     int_t ib   = HyP->Remain_info[lb].ib;
     int_t jb   =  HyP->Ublock_info_Phi[j].jb;
 
-#ifdef COMML
-    if(options->SymFact == NO || ib>=jb){
-#endif       
+    if(options->SymFact == NO || (ib>=jb && options->CommL == YES)){    
     double t1 = SuperLU_timer_();
     dblock_gemm_scatter( lb, j, HyP->Ublock_info_Phi, HyP->Remain_info, HyP->Remain_L_buff, HyP->Rnbrow,
                         HyP->bigU_Phi, HyP->ldu_Phi,
@@ -505,10 +493,8 @@ int_t dblock_gemm_scatterBottomRight( int_t lb,  int_t j,
 
     //unsigned long long t2 = _rdtsc();
     double t2 = SuperLU_timer_();
-    SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);
-#ifdef COMML    
+    SCT->SchurCompUdtThreadTime[thread_id * CACHE_LINE_SIZE] += (double) (t2 - t1);  
     }
-#endif
     return 0;
 
 } /* dblock_gemm_scatterBottomRight */

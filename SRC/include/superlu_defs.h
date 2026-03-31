@@ -769,6 +769,7 @@ typedef struct {
     yes_no_t      Use_TensorCore;  /* Use Tensor Core or not                */
     yes_no_t      Algo3d;          /* use 3D factorization/solve algorithms */
     yes_no_t      SymFact;         /* symmetric factorization, feature 2x2 pivoting */
+    yes_no_t      CommL;         /* communication L to U in symmetric factorization */
     int           *indicator_2x2;  /* size N, indicating 2x2 pivot found from symmeetric matching,
 				      needed when SymFact = YES     */
 } superlu_dist_options_t;

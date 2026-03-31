@@ -95,7 +95,6 @@ typedef struct {
 } dCommL_t;
 
 
-#define COMML 1
 
 
 #if 0 // Sherry: move to superlu_defs.h
