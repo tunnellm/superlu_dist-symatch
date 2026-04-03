@@ -1093,7 +1093,7 @@ int dSchurCompUpdate_GPU_Lonly(
 			gpublasSetStream(gpublas_handle0, FunCallStream);
 		    
 			int lb = ii_end-1;
-			int j  = jj_st-1; // the lower right corner of the blocks
+			int j  = jj_st; // the lower right corner of the blocks
 			int ib   = Remain_info[lb].ib;
 			int jb = Ublock_info[j].jb;
 			if (ib >= jb)  /* ib >= jb, at least some blocks fall into L */	
