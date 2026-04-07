@@ -995,6 +995,7 @@ typedef struct
 int_t	 n_crs;
 int_t	*crs_vrts; /* crs_vrts[u] = 1 indicates vertex u is a singleton 1x1 pivot
                 crs_vrts[u] = 2 indicates vertex u in the coarse G is a heavy 2x2 pivot */
+int_t *ftoc;					/* fine to coarse ids */
 } crs_info_t;
 
 typedef struct

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -14,6 +15,7 @@
 using std::vector;	using std::cout;	using std::endl;	using std::string;
 using std::setw;	using std::stringstream;	using std::iota;
 using std::sort;	using std::transform;	using std::pair;
+using std::ostream;	using std::ofstream;
 
 
 
@@ -48,41 +50,75 @@ public:
 	
 	virtual
 	void
-	printx (bool one_based = false)
+	printx (const char *fname = nullptr, bool one_based = false)
 	{
 		int tmp = 0;
 		if (one_based)
 			tmp = 1;
-		
-		cout << string(80, '*') << endl;
-		cout << "#vertices " << this->nv
-			 << " #edges " << this->nedges
-			 << " type " << (this->gt == Directed ? "Directed" : "Undirected")
-			 << " ew " << (this->wgtd_edges ? "yes" : "no")
-			 << " sorted-adj " << (this->adj_sorted ? "yes" : "no")
-			 << endl;
 
-		cout << "adj-list:" << endl;
+		ofstream ofs;
+		ostream &os = fname ? (ofs.open(fname), ofs) : cout;
+		
+		os << string(80, '*') << endl;
+		os << "#vertices " << this->nv
+		   << " #edges " << this->nedges
+		   << " type " << (this->gt == Directed ? "Directed" : "Undirected")
+		   << " ew " << (this->wgtd_edges ? "yes" : "no")
+		   << " sorted-adj " << (this->adj_sorted ? "yes" : "no")
+		   << endl;
+
+		os << "adj-list:" << endl;
 		for (VIDX_T v = 0; v < this->nv; ++v)
 		{
-			cout << setw(4) << v+tmp
-				 << " [" << xadj[v] << ", " << xadj[v+1] << ")"
-				 << " :";
-			stringstream ss;
+			// sorted printing
+			vector<pair<VIDX_T, EW_T>> curadj;
 			for (uint64_t eptr = this->xadj[v]; eptr < this->xadj[v+1]; ++eptr)
 			{
-				VIDX_T u = this->adj[eptr];
+				if (this->wgtd_edges)
+					curadj.push_back({this->adj[eptr], this->ew[eptr]});
+				else
+					curadj.push_back({this->adj[eptr], 0x0});
+			}
+			sort(curadj.begin(), curadj.end());
+
+			os << setw(4) << v+tmp
+			   << " [" << xadj[v] << ", " << xadj[v+1] << ")"
+			   << " :";
+			stringstream ss;
+			for (auto &el: curadj)
+			{
 				ss << " ";
 				if (this->wgtd_edges)
 					ss << "(";
-				ss << setw(5) << u+tmp;
+				ss << setw(5) << el.first;
 				if (this->wgtd_edges)
-					ss << ", " << this->ew[eptr] << ")";
+					ss << ", " << std::fixed << std::setprecision(7)
+					   << el.second << ")";
 			}
-			cout << ss.str() << endl;
+			os << ss.str() << endl;
+			
+			
+			// os << setw(4) << v+tmp
+			//    << " [" << xadj[v] << ", " << xadj[v+1] << ")"
+			//    << " :";
+			// stringstream ss;
+			// for (uint64_t eptr = this->xadj[v]; eptr < this->xadj[v+1]; ++eptr)
+			// {
+			// 	VIDX_T u = this->adj[eptr];
+			// 	ss << " ";
+			// 	if (this->wgtd_edges)
+			// 		ss << "(";
+			// 	ss << setw(5) << u+tmp;
+			// 	if (this->wgtd_edges)
+			// 		ss << ", " << this->ew[eptr] << ")";
+			// }
+			// os << ss.str() << endl;
 		}
 
-		cout << string(80, '*') << endl;
+		os << string(80, '*') << endl;
+
+		if (fname != nullptr)
+			ofs.close();
 	}
 
 	

@@ -22,6 +22,7 @@
 #define _WRMATCH_HPP_
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <tuple>
 #include <utility>
@@ -59,6 +60,8 @@ double cost_matching(int n, int *ver, int *edges, double *weight, int *match);
 double cost_matching_prod(int n, int *ver, int *edges, double *weight,
 						  int *match);
 
+int verify_matching(int n, int *ver, int *edges, int *p);
+
 #ifdef __cplusplus
 }
 #endif
@@ -78,6 +81,9 @@ public:
 
 	WrMatch (Graph<WM_VIDX_T, WM_EW_T> *g)
 	{
+		std::chrono::steady_clock::time_point tbeg;
+		tbeg = std::chrono::steady_clock::now();
+		
 		n = g->nv;
 
 		ver = (WM_VIDX_T *) malloc(sizeof(*ver) * (n+2));
@@ -95,6 +101,10 @@ public:
 		}
 
 		p = (WM_VIDX_T *) malloc(sizeof(*p) * (n+2));
+
+		int64_t t1 = std::chrono::duration_cast<std::chrono::microseconds>
+			(std::chrono::steady_clock::now() - tbeg).count();
+		cout << "wrmatch setup " << (static_cast<double>(t1)/1e+3) << "\n";
 	}
 
 
@@ -271,6 +281,7 @@ public:
 	match ()
 	{
 		sweight(n, ver, edges, p, ws, weight, p_init);
+		// verify_matching(n, ver, edges, p);
 	}
 
 

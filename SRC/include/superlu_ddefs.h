@@ -642,14 +642,23 @@ extern int  dldperm_dist(int, int, int_t, int_t [], int_t [],
 extern int  dldperm_dist_symatch(int, int, int_t, int_t [], int_t [],
 								 double [], int_t *,
 								 int_t *, int_t **);
+extern int  dldperm_dist_symatch_v1(int, int, int_t, int_t [], int_t [],
+								    double [], int_t *, crs_info_t *);
 extern int coarsen_graph(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
 extern int coarsen_graph_v2(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
+extern int coarsen_graph_v3(SuperMatrix *G, SuperMatrix *Gc, crs_info_t *crs_info);
 extern void apply_perm_sym(int n, int_t nnz, int_t *colptr, int_t *adjncy,
 						   double *nzval, int_t *p);
+extern void apply_perm_sym_v2(int n, int_t nnz, int_t *colptr, int_t *adjncy,
+						   double *nzval, int_t *p);	
+extern void apply_perm_sym_pattern(int n, int_t nnz, int_t *colptr,
+								   int_t *adjncy, int_t *p);
 extern int is_symmetric(int n, int_t nnz, int_t *colptr, int_t *adjncy,
 						double *nzval);
+extern void
+is_symmetric_v2(int n, int_t nnz, int_t *colptr, int_t *adjncy, double *nzval);
 extern int is_postorder(int n, int *parents);
-
+extern void ensure_graphs();
 /* @EDIT-SYMATCH End */
 extern int  dstatic_schedule(superlu_dist_options_t *, int, int,
 		            dLUstruct_t *, gridinfo_t *, SuperLUStat_t *,

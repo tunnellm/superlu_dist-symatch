@@ -830,7 +830,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 			  t = SuperLU_timer_();
 			  
-		      coarsen_graph_v2(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
+		      // coarsen_graph_v2(&GA, &GA_c, crs_info.n_crs, crs_info.crs_vrts);
+			  coarsen_graph_v3(&GA, &GA_c, &crs_info);
 			  
 			  t = SuperLU_timer_()-t;
 
@@ -843,13 +844,16 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      int_t		 nnz_c	  = cGstore->nnz;
 		      int_t	    *c_colptr = cGstore->colptr;
 		      int_t	    *c_rowind = cGstore->rowind;
-		      double    *c_nzval  = cGstore->nzval;
-#if ( DEBUGlevel>=1 )
+		      // double    *c_nzval  = cGstore->nzval;
+
+			  #if ( DEBUGlevel>=1 )
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
-#endif
+			  #endif
 			  // exit(33);
 
 			  t = SuperLU_timer_();
+
+			  
 			  
 			  /* @EDIT-SYMATCH 3. Pc = fill(Bc) */
 		      int_t *crs_perm_c =       // Sherry: why not intMalloc_dist?
@@ -857,32 +861,36 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      get_perm_c_dist(iam, permc_spec, &GA_c, crs_perm_c);
 
 			  t = SuperLU_timer_()-t;
+			  printf("get_perm_c_dist (Pc = fill(Bc)): %f \n",t);
 
 			  #if ( PRNTlevel>=1 )
 			  printf("get_perm_c_dist (Pc = fill(Bc)): %f \n",t);
 			  #endif
 
-
 		      /* Compute coarse etree of Pc*A*Pc' */
-
-			  t = SuperLU_timer_();
+			  
 
 		      /* @EDIT-SYMATCH 4. C = Pc Bc PcT */
+			  t = SuperLU_timer_();
 		      /* colptr/rowind/nzval are both input and output */
-		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, crs_perm_c);
+		      apply_perm_sym_pattern(n_c, nnz_c, c_colptr, c_rowind,
+									 crs_perm_c);
 
 			  t = SuperLU_timer_()-t;
+			  printf("apply_perm_sym (C = PcBcPc^T): %f \n",t);
 
 			  #if ( PRNTlevel>=1 )
 			  printf("apply_perm_sym (C = PcBcPc^T): %f \n",t);
 			  #endif
-
 			  
-#if ( DEBUGlevel>=1 )
+			  #if ( DEBUGlevel>=1 )
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
-#endif
+			  #endif
+			  
 			  // exit(44);
 
+			  
+			  /* etree */
 		      int_t *c_etree = intMalloc_dist(n_c);
 		      int_t *c_colend = (int_t*) intMalloc_dist(n_c);
 
@@ -890,8 +898,11 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				  c_colend[i] = c_colptr[i+1];
 
 			  t=SuperLU_timer_();
+			  
 			  sp_symetree_dist(c_colptr, c_colend, c_rowind, n_c, c_etree);
+			  
 			  t = SuperLU_timer_()-t;
+			  printf("sp_symetree_dist: %f \n",t);
 
               #if ( PRNTlevel>=1 )
 			  printf("sp_symetree_dist: %f \n",t);
@@ -906,26 +917,37 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			  fclose(outfile);
 			  #endif
 
+
+			  
 		      /* Postorder the etree -> crs_perm_c[] is modified */
+			  t=SuperLU_timer_();
 		      int_t *post = (int_t *) TreePostorder_dist(n_c, c_etree);
 
-			  // exit(44);
+			  t = SuperLU_timer_()-t;
+			  printf("TreePostorder: %f \n",t);
 
-			  t=SuperLU_timer_();
+			  // exit(44);
+			  
 			  
 			  /* @EDIT-SYMATCH 5. D = Pe C PeT */
 		      /* Permute GA_c again by post[] */
-		      apply_perm_sym(n_c, nnz_c, c_colptr, c_rowind, c_nzval, post);
-#if ( DEBUGlevel>=1 )
+			  t=SuperLU_timer_();
+		      apply_perm_sym_pattern(n_c, nnz_c, c_colptr, c_rowind, post);
+			  
+			  #if ( DEBUGlevel>=1 )
 		      is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
-#endif
+			  #endif
+			  
 			  t = SuperLU_timer_()-t;
+			  printf("apply_perm_sym (D = PeCPe^T): %f \n",t);
 
 			  #if ( PRNTlevel>=1 )
 			  printf("apply_perm_sym (D = PeCPe^T): %f \n",t);
 			  #endif
 			  
 			  // exit(55);
+
+			  t=SuperLU_timer_();
 
 		      int *iwork = int32Malloc_dist(n_c);
 		      for (i = 0; i < n_c; ++i)
@@ -948,16 +970,17 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      for (i = 0; i < n_c; ++i)
 				  c_etree[i] = iwork[i];
 		      //PrintInt10("postordered coarse etree", n_c, c_etree);
-#if ( DEBUGlevel>=1 )
+			  
+		      #if ( DEBUGlevel>=1 )
 			  is_postorder(n_c, c_etree);
-#endif
+			  #endif
+			  
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
 			  fprintf(outfile, "=== c_etree (D) ===\n");
 			  for (i = 0; i < n_c; ++i)
 				  fprintf(outfile, "%d %d\n", i, c_etree[i]);
 			  fprintf(outfile, "\n\n\n");
-
 			  /* indicator on B */
 			  int *indicator_2x2_tmp = (int*) int32Malloc_dist(n);
 			  for (i = 0, j = 0; i < crs_info.n_crs; ++i)
@@ -979,7 +1002,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      SUPERLU_FREE(post);
 		      SUPERLU_FREE(iwork);
 
-		      fprintf(stdout, "Projecting back the coarse column permutation ...\n");
+		      // fprintf(stdout, "Projecting back the coarse column permutation ...\n");
 		      if ( !(options->indicator_2x2 = (int*) int32Malloc_dist(n)) )
 			  ABORT("Malloc fails for indicator_2x2[].");
 		      int *indicator_2x2 = options->indicator_2x2;
@@ -987,10 +1010,11 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      /* cumulative crs_vrts. */
 		      int_t *crs_vrts_cum = (int_t *) intMalloc_dist(crs_info.n_crs+1);
 		      crs_vrts_cum[0] = 0;
-#if 1   // Oguz's code: before apply crs_perm_c[]
+			  
+			  #if 1   // Oguz's code: before apply crs_perm_c[]
 		      for (i = 0; i < crs_info.n_crs; ++i)
 				  crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
-#else   // Sherry mod
+			  #else   // Sherry mod
 		      for (i = 0; i < crs_info.n_crs; ++i) {
 			  crs_vrts_cum[i+1] = crs_vrts_cum[i] + crs_info.crs_vrts[i];
 			  if (crs_info.crs_vrts[i] == 1) { /* 1x1 pivot */
@@ -1002,7 +1026,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			      ABORT("Invalid value of crs_vrts[i]");
 			  }
 		      }
-#endif
+			  #endif
+			  
 		      /* reverse crs_perm_c. */
 		      int_t *rev_crs_perm_c = (int_t *) intMalloc_dist(crs_info.n_crs);
 		      for (i = 0; i < crs_info.n_crs; ++i)
@@ -1010,7 +1035,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 		      int cur = 0, rev_i;
 
-#if 0  // Oguz's code
+			  #if 0  // Oguz's code
 		      /* Expand crs_perm_c into perm_c[] */
 		      for (i = 0; i < crs_info.n_crs; ++i) // new label in coarse G
 			  {
@@ -1018,7 +1043,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			      for (j = crs_vrts_cum[rev_i]; j < crs_vrts_cum[rev_i+1]; ++j)
 				  perm_c[j] = cur++;
 			  }
-#else  // Sherry mod
+			  #else  // Sherry mod
 		      /* Expand crs_perm_c into perm_c[] */
 		      for (i = 0; i < crs_info.n_crs; ++i)	// new label in coarse G
 			  {
@@ -1039,9 +1064,10 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 					  ABORT("Invalid value of crs_vrts[i]");
 				  }
 		      }
-#if ( DEBUGlevel>=1 )
+
+			  #if ( DEBUGlevel>=1 )
 		      PrintInt32("indicator_2x2", n, options->indicator_2x2);
-#endif
+			  #endif
 
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
@@ -1103,12 +1129,6 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				  j = crs_vrts_cum[rev_i];
 				  k = perm_c[j];
 
-				  /*
-				  if (perm_c[fine_p]==3258) {
-					  printf(">> j %d, k %d, rev_p %d, fine_p %d\n",
-						 j, k, rev_p, fine_p); fflush(stdout);
-						 }*/
-
 				  if (crs_info.crs_vrts[rev_i] == 1) { /* 1x1 pivot */
 					  etree[k] = fine_p; //perm_c[fine_p];
 				  } else if (crs_info.crs_vrts[rev_i] == 2) { /* 2x2 pivot */
@@ -1120,9 +1140,9 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      //etree[n-1] = n;
 
 		      //PrintInt10("etree", n, etree);
-#endif
+			  #endif
 
-			//   is_postorder(n, etree);
+			  // is_postorder(n, etree);
 
 			  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
@@ -1187,12 +1207,12 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      SUPERLU_FREE(c_etree);
 		      SUPERLU_FREE(crs_vrts_cum);
 		      if (rev_crs_perm_c)
-			  SUPERLU_FREE(rev_crs_perm_c);
+				  SUPERLU_FREE(rev_crs_perm_c);
 
 		      check_perm_dist("uncoarsen_perm_c", GA.nrow, perm_c);
 
-		      fprintf(stdout, "DONE.\n"); fflush(stdout);
-
+		      // fprintf(stdout, "DONE.\n"); fflush(stdout);
+			  fflush(stdout);
 			}  /* end if (options->RowPerm == SymMatch) */		
 			else {
 				get_perm_c_dist(iam, permc_spec, &GA, perm_c);
@@ -1207,6 +1227,10 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	    }
 
 	    stat->utime[COLPERM] = SuperLU_timer_() - t2;
+
+		printf("COLPERM: %f \n", stat->utime[COLPERM]);
+
+		// exit(79);
 
 	    /* Compute the elimination tree of Pc*(A'+A)*Pc' or Pc*A'*A*Pc'
 	       (a.k.a. column etree), depending on the choice of ColPerm.

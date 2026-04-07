@@ -9,7 +9,8 @@ LIBS = -ldl $(OPTLIBS)
 #CFLAGS = -Wall -Wno-unused-variable -Wno-unused-label -Werror -fno-exceptions				\
 -fstack-protector -Wl,-z,relro -Wl,-z,now -Wformat-security -Wpointer-arith	\
 -Winit-self -Wl,-O1 -Wl,--no-undefined
-CFLAGS = -Wno-unused-variable -fopenmp
+CFLAGS = -Wno-unused-variable -Wno-implicit-function-declaration \
+-Wno-return-mismatch -fopenmp
 
 # SOURCES=$(wildcard *.c)
 SOURCES=wframe3-exec.c wframe3-lib.c
