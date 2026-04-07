@@ -33,3 +33,6 @@
 
 /* Enable symatch */
 #cmakedefine HAVE_SYMATCH @HAVE_SYMATCH@
+
+/* Enable MC80 */
+#cmakedefine HAVE_MC80 @HAVE_MC80@
