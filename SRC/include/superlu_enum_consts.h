@@ -29,7 +29,7 @@ at the top-level directory.
 typedef enum {NO, YES}                                          yes_no_t;
 typedef enum {DOFACT, SamePattern, SamePattern_SameRowPerm, FACTORED} fact_t;
 typedef enum {NOROWPERM, LargeDiag_MC64, LargeDiag_HWPM, MY_PERMR,
-	SymMatch} rowperm_t;
+	SymMatch, MC80} rowperm_t;
 typedef enum {NATURAL, MMD_ATA, MMD_AT_PLUS_A, COLAMD,
 	      METIS_AT_PLUS_A, PARMETIS, METIS_ATA, ZOLTAN, MY_PERMC} colperm_t;
 typedef enum {NOTRANS, TRANS, CONJ}                             trans_t;

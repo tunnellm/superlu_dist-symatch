@@ -1127,7 +1127,7 @@ int dSolveInit(superlu_dist_options_t *options, SuperMatrix *A,
     SOLVEstruct->row_to_proc = row_to_proc;
     if ( !(inv_perm_c = intMalloc_dist(A->ncol)) )
         ABORT("Malloc fails for inv_perm_c[].");
-    if (options->RowPerm == SymMatch && options->Algo3d==YES ) { /* Sherry: compute (Pc*Pr)' */
+    if ((options->RowPerm == SymMatch || options->RowPerm == MC80) && options->Algo3d==YES ) { /* Sherry: compute (Pc*Pr)' */
 	for (i = 0; i < A->ncol; ++i) inv_perm_c[perm_c[perm_r[i]]] = i;
     } else {
 	for (i = 0; i < A->ncol; ++i) inv_perm_c[perm_c[i]] = i;

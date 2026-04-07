@@ -3,6 +3,7 @@
 #include <stdlib.h>  // For NULL
 #include <mpi.h>
 #include "superlu_ddefs.h"
+#include "hsl_mc80d.h"
 
 #undef LOG_FUNC_ENTER
 #define LOG_FUNC_ENTER() printf("\033[1;32mEntering function %s at %s:%d\033[0m\n", __func__, __FILE__, __LINE__)
@@ -29,9 +30,9 @@ void validateInput_pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     int Fact = options->Fact;
     if (Fact < 0 || Fact > FACTORED)
         *info = -1;
-    else if (options->RowPerm < 0 || options->RowPerm > SymMatch)
+    else if (options->RowPerm < 0 || options->RowPerm > MC80)
         *info = -1;
-    else if (options->ColPerm < 0 || options->ColPerm > SymMatch)
+    else if (options->ColPerm < 0 || options->ColPerm > MC80)
         *info = -1;
     else if (options->IterRefine < 0 || options->IterRefine > SLU_EXTRA)
         *info = -1;
@@ -634,6 +635,99 @@ void dperform_row_permutation(
 			for (int_t i = 0; i < m; ++i) perm_r[i] = i;
 		    }
             }
+			else if ( options->RowPerm == MC80 )
+			{
+				printf("options->RowPerm == MC80\n");
+				fflush(stdout);
+
+				t = SuperLU_timer_();
+
+				struct mc80_control mc80_control;
+   				struct mc80_info mc80_info;
+				mc80_default_control_d(&mc80_control);
+
+				mc80_control.f_arrays = 0;
+
+				int		 ord		= 1;	/* AMD */
+				int_t	*order_mc80 = (int_t *) intMalloc_dist(n);
+				int_t	*perm_mc80  = (int_t *) intMalloc_dist(n);
+				double	*scale_mc80 = (double *) doubleMalloc_dist(n);
+
+				mc80_order_full_d(ord, n, colptr, rowind, a_GA,
+								  order_mc80, &mc80_control, &mc80_info,
+								  perm_mc80, scale_mc80);
+
+				printf("info:\n"
+					   "  compress_rank %d\n"
+					   "  flag %d\n"
+					   "  flag68 %d\n"
+					   "  max_cycle %d\n"
+					   "  struct_rank %d\n"
+					   "  stat %d\n",
+					   mc80_info.compress_rank, mc80_info.flag,
+					   mc80_info.flag68, mc80_info.max_cycle,
+					   mc80_info.struct_rank, mc80_info.stat);
+
+
+				crs_info->n_crs	= 0;				
+				crs_info->ftoc	= (int_t *) malloc(sizeof(*(crs_info->ftoc)) * n);
+				int_t curidx	= 0;
+				int_t n_1x1		= 0;
+				int_t v;
+				for (v = 0; v < n; ++v)
+				{
+					int_t u = perm_mc80[v];
+					
+					if (u == -1)
+					{
+						crs_info->ftoc[curidx] = crs_info->n_crs;
+						++(crs_info->n_crs);
+						perm_r[v] = curidx++;
+						++n_1x1;
+					}
+					else if (v < u)
+					{
+						assert(perm_mc80[u] == v);
+						crs_info->ftoc[curidx]	= crs_info->n_crs;
+						crs_info->ftoc[curidx+1] = crs_info->n_crs;
+						++(crs_info->n_crs);
+						perm_r[v] = curidx++;
+						perm_r[u] = curidx++;
+					}
+				}				
+
+				if (crs_info->n_crs > 0)
+					crs_info->crs_vrts =
+						(int_t *)malloc(sizeof(*(crs_info->crs_vrts)) *
+										(crs_info->n_crs));
+
+				int_t crs_idx = 0;
+				for (v = 0; v < n; ++v)
+				{
+					int_t u = perm_mc80[v];
+
+					if (u == -1)
+						(crs_info->crs_vrts)[crs_idx++] = 1;
+					else if (v < u)
+						(crs_info->crs_vrts)[crs_idx++] = 2;
+				}
+
+				printf ("#1x1 %d #2x2 %d #crs %d\n",
+						n_1x1, n - n_1x1, crs_info->n_crs);
+
+				t = SuperLU_timer_();
+
+				apply_perm_sym(n, nnz, colptr, rowind, a_GA, perm_r);
+
+				t = SuperLU_timer_() - t;
+				printf("apply_perm_sym (B = PrAPr^T): %f \n", t);				
+
+				printf("MC80 over\n");
+
+
+				fflush(stdout);
+				// exit(0);
+			}
             else // LargeDiag_HWPM
             {
 #ifdef HAVE_COMBBLAS

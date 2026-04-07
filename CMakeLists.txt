@@ -56,6 +56,10 @@ option(TPL_ENABLE_MAGMALIB "Enable the MAGMA library" OFF)
 option(TPL_ENABLE_SYMATCHLIB   "Build the symatch library" ON)
 option(TPL_SYMATCH_LIBRARIES "List of absolute paths to symatch link libraries [].")
 option(TPL_SYMATCH_INCLUDE_DIRS "List of absolute paths to symatch include directories [].")
+#-- MC80
+option(TPL_ENABLE_MC80   "Build the MC80 library" ON)
+option(TPL_MC80_LIBRARIES "List of absolute paths to MC80 link libraries [].")
+option(TPL_MC80_INCLUDE_DIRS "List of absolute paths to MC80 include directories [].")
 
 ######################################################################
 #
@@ -549,6 +553,27 @@ if(SYMATCH_FOUND)
   set(LOADER $(CXX))
 else()
   set(LOADER $(CC))
+endif()
+
+
+#--------------------- MC80 ---------------------
+if(TPL_ENABLE_MC80)
+  foreach(dir ${TPL_MC80_INCLUDE_DIRS})
+    set(CMAKE_C_FLAGS "-I${dir} ${CMAKE_C_FLAGS}")
+  endforeach()
+
+  message("-- Enabled support for MC80.")
+  set(MC80_FOUND TRUE)
+
+  set(MC80_LIB ${TPL_MC80_LIBRARIES})
+  set(MC80_LIB_EXPORT ${MC80_LIB})
+
+else()
+  message("-- Will not link/use with MC80.")
+endif()
+
+if(MC80_FOUND)
+  set(HAVE_MC80 TRUE)
 endif()
 
 

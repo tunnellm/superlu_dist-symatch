@@ -727,7 +727,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			(parSymbFact == NO || options->RowPerm != NO))
 	    {
 		int need_value = (options->RowPerm == LargeDiag_MC64 ||
-						  options->RowPerm == SymMatch);
+						  options->RowPerm == SymMatch ||
+						  options->RowPerm == MC80);
 		pdCompRow_loc_to_CompCol_global(need_value, A, grid, &GA);
 		GAstore = (NCformat *)GA.Store;
 		nnz = GAstore->nnz;
@@ -823,7 +824,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		  /* generate uncoarsened versions of GA and perm_c but also
 			 maintain the contracted versions */
 		  /* @EDIT-SYMATCH Add branch here */
-		  if (options->RowPerm == SymMatch)
+		  if (options->RowPerm == SymMatch || options->RowPerm == MC80)
 		  {
 			  /* @EDIT-SYMATCH 2. Bc = coarsen(B) */
 		      SuperMatrix GA_c;
@@ -1311,7 +1312,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	{
 	    /* CASE OF SERIAL SYMBOLIC */
   	    /* Apply column permutation to the original distributed A */
-	    if (options->RowPerm == SymMatch) {  /* Sherry mod: need appy perm_r[]
+	    if (options->RowPerm == SymMatch || options->RowPerm == MC80) {  /* Sherry mod: need appy perm_r[]
 						    to columns */
 		for (j = 0; j < nnz_loc; ++j) colind[j] = perm_c[perm_r[colind[j]]];
 	    } else {
@@ -2348,7 +2349,7 @@ if (grid3d->zscp.Iam == 0)  /* on 2D grid-0 */
 	            default: break;
 		}
 	}
-    if (options->RowPerm == SymMatch) {
+    if (options->RowPerm == SymMatch || options->RowPerm == MC80) {
 	SUPERLU_FREE(options->indicator_2x2);
     }
 #if 0

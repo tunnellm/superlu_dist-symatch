@@ -2561,7 +2561,7 @@ void permCol_SymbolicFact3d(superlu_dist_options_t *options, int n, SuperMatrix 
     int_t m       = GA->nrow;
     int_t nnz;
 
-    if (options->RowPerm == SymMatch) {
+    if (options->RowPerm == SymMatch || options->RowPerm == MC80) {
 
         GAstore = (NCformat *) GA->Store;
         colptr = GAstore->colptr;
