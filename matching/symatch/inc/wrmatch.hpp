@@ -73,6 +73,10 @@ int verify_matching(int n, int *ver, int *edges, int *p);
 // void sweight(int n,int *ver,int *edges,int *s,double *ws,double *weight,int *init)
 
 
+namespace
+SyMatch
+{
+
 class
 WrMatch
 {
@@ -380,4 +384,7 @@ public:
 	wed			*we;			// struct in suitor library, tuple: (u,v,weight)
 	uint64_t	 nedges;
 };
+
+}
+
 #endif

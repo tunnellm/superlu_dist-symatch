@@ -87,8 +87,8 @@ using std::max;	using std::min;	using std::abs;
  */
 
 // temporary debugging - delete after ensuring
-Graph<int_t, double> *g_dbg;
-Graph<int_t, double> *g_dbg_v1;
+SyMatch::Graph<int_t, double> *g_dbg;
+SyMatch::Graph<int_t, double> *g_dbg_v1;
 
 
 struct
@@ -202,7 +202,8 @@ dldperm_dist_symatch_v1
 	tmr_gm_form.start_timer();
 
 	// form directly from sparse matrix
-	GModel *gm = new StandardSymDiag(n, colptr, adjncy, nzval);
+	SyMatch::GModel *gm =
+		new SyMatch::StandardSymDiag(n, colptr, adjncy, nzval);
 	gm->form_graph(true);
 	auto *g = gm->g;
 	// g_dbg_v1 = gm->g;				// @DELETE
@@ -227,7 +228,7 @@ dldperm_dist_symatch_v1
 	tmr_match.start_timer();
 
 	// WrMatch *wrm = new WgtGPASeq(g);
-	WrMatch *wrm = new WgtSuitorSeqFor(g);
+	SyMatch::WrMatch *wrm = new SyMatch::WgtSuitorSeqFor(g);
 	wrm->match();
 
 	tmr_match.stop_timer();
@@ -404,10 +405,10 @@ dldperm_dist_symatch
 
 	// Create a matrix market object from CSC.
 	// Unfilled members: svals, header.
-	MatMarket_t<int_t, double>	mm;
-	mm.fmt		  = MatMarket_t<int_t, double>::Coordinate;
-	mm.type		  = MatMarket_t<int_t, double>::Real;
-	mm.storage	  = MatMarket_t<int_t, double>::Symmetric;	// assumed
+	SyMatch::MatMarket_t<int_t, double>	mm;
+	mm.fmt		  = SyMatch::MatMarket_t<int_t, double>::Coordinate;
+	mm.type		  = SyMatch::MatMarket_t<int_t, double>::Real;
+	mm.storage	  = SyMatch::MatMarket_t<int_t, double>::Symmetric;	// assumed
 	mm.nr		  = mm.nc = n;
 	mm.nnzs		  = nnz;
 	mm.vals_exist = true;
@@ -447,7 +448,7 @@ dldperm_dist_symatch
 	tmr_gm_form.start_timer();
 
 	// Form the graph model for matching.
-	GModel *gm = new StandardSymDiag(&mm);
+	SyMatch::GModel *gm = new SyMatch::StandardSymDiag(&mm);
 	gm->form_graph(true);
 	auto *g = gm->g;
 	// g_dbg = gm->g;				// @DELETE
@@ -472,7 +473,7 @@ dldperm_dist_symatch
 	tmr_match.start_timer();
 
 	// WrMatch *wrm = new WgtGPASeq(g);
-	WrMatch *wrm = new WgtSuitorSeqFor(g);
+	SyMatch::WrMatch *wrm = new SyMatch::WgtSuitorSeqFor(g);
 	wrm->match();
 
 	tmr_match.stop_timer();
@@ -627,6 +628,30 @@ dldperm_dist_symatch
 
 	return 0;
 }
+
+
+
+
+
+// GPU version, SUMAC
+// int
+// dldperm_dist_symatch_g
+// (
+//     int			  job,
+// 	int			  n,
+// 	int_t		  nnz,
+// 	int_t		  colptr[],
+// 	int_t		  adjncy[],
+// 	double		  nzval[],
+// 	int_t		 *perm,
+// 	crs_info_t	 *crs_info
+// )
+// {
+	
+
+
+// 	return 0;
+// }
 
 
 

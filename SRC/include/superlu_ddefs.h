@@ -644,6 +644,8 @@ extern int  dldperm_dist_symatch(int, int, int_t, int_t [], int_t [],
 								 int_t *, int_t **);
 extern int  dldperm_dist_symatch_v1(int, int, int_t, int_t [], int_t [],
 								    double [], int_t *, crs_info_t *);
+/* extern int  dldperm_dist_symatch_g(int, int, int_t, int_t [], int_t [], */
+/* 								    double [], int_t *, crs_info_t *); */
 extern int coarsen_graph(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
 extern int coarsen_graph_v2(SuperMatrix *G, SuperMatrix *G_c, int_t n, int_t *crs_vrts);
 extern int coarsen_graph_v3(SuperMatrix *G, SuperMatrix *Gc, crs_info_t *crs_info);

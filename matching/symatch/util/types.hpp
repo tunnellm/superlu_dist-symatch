@@ -11,6 +11,10 @@ using std::vector;	using std::tuple;	using std::string;
 
 
 
+namespace
+SyMatch
+{
+
 // Matrix market information
 template <typename IDX_T,
 		  typename VAL_T>
@@ -69,6 +73,6 @@ MatMarket_t
 	
 };
 
-
+}
 
 #endif

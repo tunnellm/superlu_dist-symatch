@@ -9,6 +9,9 @@
 #include "util.hpp"
 #include "wrmatch.hpp"
 
+// symatch headers (gpu, SUMAC)
+// #include "graph.hpp"
+
 
 int
 dldperm_dist_symatch(int job, int n, int_t nnz, int_t colptr[], int_t adjncy[],

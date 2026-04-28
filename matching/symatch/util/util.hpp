@@ -17,6 +17,10 @@ using std::stringstream;	using std::move;	using std::ofstream;
 
 
 
+namespace
+SyMatch
+{
+	
 template <typename IDX_T,
 		  typename VAL_T>
 void
@@ -209,6 +213,6 @@ mmwrite
 	outfile.close();
 }
 
-
+}
 
 #endif

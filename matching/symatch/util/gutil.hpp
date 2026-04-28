@@ -15,6 +15,10 @@ using std::iota;
 
 
 
+namespace
+SyMatch
+{
+
 // if type of graph is bipartite, the graph will be an undirected bipartite
 //   graph whether it is square (symmetric or general) or rectangular
 // otherwise
@@ -203,5 +207,6 @@ mm_to_gr
 	return;
 }
 
+}
 
 #endif

@@ -20,6 +20,10 @@ using std::ostream;	using std::ofstream;
 
 
 
+namespace
+SyMatch
+{
+
 template <typename VIDX_T,
 		  typename EW_T = int32_t>
 class Graph
@@ -311,7 +315,6 @@ Graph<VIDX_T, EW_T>::sort_adj
 	return;
 }
 	
-
-
+}
 
 #endif

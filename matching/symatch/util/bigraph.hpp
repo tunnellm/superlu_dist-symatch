@@ -5,6 +5,10 @@
 
 
 
+namespace
+SyMatch
+{
+
 template <typename VIDX_T,
 		  typename EW_T = int32_t>
 class BiGraph : public Graph<VIDX_T, EW_T>
@@ -85,7 +89,7 @@ public:
 	
 };
 
-
+}
 
 
 

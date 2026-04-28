@@ -42,6 +42,10 @@ using std::log;
 
 
 
+namespace
+SyMatch
+{
+
 class
 GModel
 {
@@ -1059,5 +1063,7 @@ public:
 	}
 	
 };
+
+}
 
 #endif

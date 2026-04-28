@@ -28,6 +28,10 @@ typedef double	EW_T;
 
 
 
+namespace
+SyMatch
+{
+
 enum
 match_alg_t
 {
@@ -42,5 +46,7 @@ params_t
 {
 	std::string mmfile;
 };
+
+}
 
 #endif

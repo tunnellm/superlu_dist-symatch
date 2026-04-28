@@ -33,3 +33,6 @@
 
 /* Enable symatch */
 #define HAVE_SYMATCH TRUE
+
+/* Enable MC80 */
+#define HAVE_MC80 TRUE
