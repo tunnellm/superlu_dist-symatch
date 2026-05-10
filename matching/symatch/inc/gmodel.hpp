@@ -813,7 +813,7 @@ public:
 
 
 
-	
+
 	void
 	form_graph_mm (bool use_diag_wgts)
 	{

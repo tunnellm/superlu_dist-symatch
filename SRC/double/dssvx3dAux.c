@@ -552,20 +552,21 @@ void dperform_row_permutation(
 
 				t = SuperLU_timer_();
 
-		        /* *iinfo = dldperm_dist_symatch */
-				/* 	(job, m, nnz, colptr, rowind, a_GA, */
-				/* 	 perm_r,  */
-				/* 	 &(crs_info->n_crs), &(crs_info->crs_vrts)); */
+		        *iinfo = dldperm_dist_symatch_v2
+					(job, m, nnz, colptr, rowind, a_GA,
+					 perm_r,
+					 crs_info);
 
-				*iinfo = dldperm_dist_symatch_v1
-					(job, m, nnz, colptr, rowind, a_GA, perm_r, crs_info);
+				/* *iinfo = dldperm_dist_symatch_g */
+				/* 	(job, m, nnz, colptr, rowind, a_GA, perm_r, crs_info); */
 
 				/* ensure_graphs(); */
-				  /* exit(29); */
+				// exit(29);
 
 				t = SuperLU_timer_() - t;
 
 				printf("dldperm_dist_symatch (Pr): %f \n",t);
+				// fflush(stdout);
 				
 #if ( PRNTlevel>=1 )
 				printf("dldperm_dist_symatch (Pr): %f \n",t);
@@ -621,6 +622,8 @@ void dperform_row_permutation(
 			// exit(22);
 				t = SuperLU_timer_() - t;
 				printf("apply_perm_sym (B = PrAPr^T): %f \n",t);
+				// fflush(stdout);
+				
 #if ( PRNTlevel>=1 )
 				printf("apply_perm_sym (B = PrAPr^T): %f \n",t);
 #endif

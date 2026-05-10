@@ -537,6 +537,8 @@ if(TPL_ENABLE_SYMATCHLIB)
     set(CMAKE_CXX_FLAGS "-I${dir} ${CMAKE_CXX_FLAGS}")
   endforeach()
 
+# set(CMAKE_CXX_FLAGS "-DMULTIPHASE -DPRINT -DNGPU=1 ${CMAKE_CXX_FLAGS}")
+
   message("-- Enabled support for symmetric matching.")
   set(SYMATCH_FOUND TRUE)
   # set(CMAKE_CXX_STANDARD 14)

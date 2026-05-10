@@ -114,6 +114,26 @@ public:
 
 
 
+	WrMatch (WM_VIDX_T nv, WM_VIDX_T *xadj, WM_VIDX_T *adj, WM_EW_T *ew)
+	{
+		std::chrono::steady_clock::time_point tbeg;
+		tbeg = std::chrono::steady_clock::now();
+		
+		n	   = nv;
+		ver	   = xadj;
+		edges  = adj;
+		weight = ew;
+		
+		p = (WM_VIDX_T *) malloc(sizeof(*p) * (n+2));
+
+		int64_t t1 = std::chrono::duration_cast<std::chrono::microseconds>
+			(std::chrono::steady_clock::now() - tbeg).count();
+		cout << "wrmatch setup " << (static_cast<double>(t1)/1e+3) << "\n";
+	}
+
+
+
+
 	virtual void match () = 0;
 
 
@@ -278,6 +298,16 @@ public:
 		ws	   = (WM_EW_T *) malloc(sizeof(*ws) * (max_n+1));
 	}
 
+
+
+
+	WgtSuitorSeqFor (WM_VIDX_T nv, WM_VIDX_T *xadj, WM_VIDX_T *adj,
+					 WM_EW_T *ew) :
+		WrMatch(nv, xadj, adj, ew)
+	{
+		p_init = (WM_VIDX_T *) malloc(sizeof(*p_init) * (n+2));
+		ws	   = (WM_EW_T *) malloc(sizeof(*ws) * (max_n+1));
+	}
 
 
 

@@ -10,7 +10,10 @@
 #include "wrmatch.hpp"
 
 // symatch headers (gpu, SUMAC)
-// #include "graph.hpp"
+#include "types.hpp"
+#include "graph.hpp"
+#include "graph_gpu.hpp"
+
 
 
 int
@@ -20,6 +23,11 @@ dldperm_dist_symatch(int job, int n, int_t nnz, int_t colptr[], int_t adjncy[],
 
 int
 dldperm_dist_symatch_v1(int job, int n, int_t nnz, int_t colptr[],
+						int_t adjncy[], double nzval[], int_t *perm,
+						crs_info_t *crs_info);
+
+int
+dldperm_dist_symatch_v2(int job, int n, int_t nnz, int_t colptr[],
 						int_t adjncy[], double nzval[], int_t *perm,
 						crs_info_t *crs_info);
 

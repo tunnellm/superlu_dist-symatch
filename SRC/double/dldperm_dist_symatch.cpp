@@ -176,6 +176,219 @@ pair_hash
 
 
 
+// assumes symmetry and weights
+static
+void
+form_graph_sp
+(
+	int32_t	  n,
+	int32_t	  nnz,
+	int_t	  colptr[],
+	int_t	  adjncy[],
+	double	  nzval[],
+	int32_t	 *g_nv,
+	int32_t **g_xadj,
+	int32_t **g_adj,
+	double	**g_ew
+)
+{
+	*g_nv	   = 2*n;
+	int32_t nv = *g_nv;
+
+	// find size of adj lists
+	*g_xadj = (int32_t *) calloc(nv+2, sizeof(**g_xadj));
+	int32_t *xadj = *g_xadj;
+	for (int32_t c = 0; c < n; ++c)
+	{
+		for (int32_t rptr = colptr[c]; rptr < colptr[c+1]; ++rptr)
+		{
+			int32_t r = adjncy[rptr];
+			double	v = nzval[rptr];
+
+			if (v == 0.0)
+				continue;
+
+			if (r < c)
+			{
+				++(xadj[r+2]);
+				++(xadj[c+2]);
+			}
+			else if (r == c)
+			{
+				++(xadj[r+2]);
+				++(xadj[n+r+2]);
+			}
+		}
+	}
+
+
+
+	// prefix sum to get beg/end pointers
+	for (int32_t i = 2; i < nv+2; ++i)
+		xadj[i] += xadj[i-1];
+
+
+	// allocate
+	*g_adj		 = (int32_t *) malloc(sizeof(**g_adj) * (xadj[nv+1]));
+	*g_ew		 = (double *) malloc(sizeof(**g_ew) * (xadj[nv+1]));
+	int32_t *adj = *g_adj;
+	double	*ew	 = *g_ew;	
+
+
+	// fill adj and ew, finalize xadj
+	for (int32_t c = 0; c < n; ++c)
+	{
+		for (int32_t rptr = colptr[c]; rptr < colptr[c+1]; ++rptr)
+		{
+			int32_t r = adjncy[rptr];
+			double	v = nzval[rptr];
+
+			if (v == 0.0)
+				continue;
+
+			v = fabs(v);
+
+			if (r < c)
+			{
+				adj[xadj[r+1]] = c;
+				ew[xadj[r+1]]  = 2*v;
+				++(xadj[r+1]);
+				adj[xadj[c+1]] = r;
+				ew[xadj[c+1]]  = 2*v;
+				++(xadj[c+1]);
+			}
+			else if (r == c)
+			{
+				adj[xadj[r+1]]	 = c+n;
+				ew[xadj[r+1]]	 = v;
+				++(xadj[r+1]);
+				adj[xadj[c+n+1]] = r;
+				ew[xadj[c+n+1]]  = v;
+				++(xadj[c+n+1]);
+			}
+		}
+	}
+
+
+	cout << "#vertices " << nv
+		 << " #edges " << xadj[nv]
+		 << endl;
+	
+
+	return;
+}
+
+
+
+
+
+// assumes symmetry and weights
+// forms structures according to suitor library to bypass conversion
+static
+void
+form_graph_sp2
+(
+	int32_t	  n,
+	int32_t	  nnz,
+	int_t	  colptr[],
+	int_t	  adjncy[],
+	double	  nzval[],
+	int32_t	 *g_nv,
+	int32_t **g_xadj,
+	int32_t **g_adj,
+	double	**g_ew
+)
+{
+	*g_nv	   = 2*n;
+	int32_t nv = *g_nv;
+
+	// find size of adj lists
+	*g_xadj = (int32_t *) calloc(nv+3, sizeof(**g_xadj));
+	int32_t *xadj = *g_xadj;
+	for (int32_t c = 0; c < n; ++c)
+	{
+		for (int32_t rptr = colptr[c]; rptr < colptr[c+1]; ++rptr)
+		{
+			int32_t r = adjncy[rptr];
+			double	v = nzval[rptr];
+
+			if (v == 0.0)
+				continue;
+
+			if (r < c)
+			{
+				++(xadj[r+3]);
+				++(xadj[c+3]);
+			}
+			else if (r == c)
+			{
+				++(xadj[r+3]);
+				++(xadj[n+r+3]);
+			}
+		}
+	}
+
+
+
+	// prefix sum to get beg/end pointers
+	for (int32_t i = 3; i < nv+3; ++i)
+		xadj[i] += xadj[i-1];
+
+
+	// allocate
+	*g_adj		 = (int32_t *) malloc(sizeof(**g_adj) * (xadj[nv+2]));
+	*g_ew		 = (double *) malloc(sizeof(**g_ew) * (xadj[nv+2]));
+	int32_t *adj = *g_adj;
+	double	*ew	 = *g_ew;	
+
+
+	// fill adj and ew, finalize xadj
+	for (int32_t c = 0; c < n; ++c)
+	{
+		for (int32_t rptr = colptr[c]; rptr < colptr[c+1]; ++rptr)
+		{
+			int32_t r = adjncy[rptr];
+			double	v = nzval[rptr];
+
+			if (v == 0.0)
+				continue;
+
+			v = fabs(v);
+
+			if (r < c)
+			{
+				adj[xadj[r+2]] = c+1; // 1-based
+				ew[xadj[r+2]]  = 2*v;
+				++(xadj[r+2]);
+				adj[xadj[c+2]] = r+1; // 1-based
+				ew[xadj[c+2]]  = 2*v;
+				++(xadj[c+2]);
+			}
+			else if (r == c)
+			{
+				adj[xadj[r+2]]	 = c+n+1; // 1-based
+				ew[xadj[r+2]]	 = v;
+				++(xadj[r+2]);
+				adj[xadj[c+n+2]] = r+1; // 1-based
+				ew[xadj[c+n+2]]  = v;
+				++(xadj[c+n+2]);
+			}
+		}
+	}
+
+
+	cout << "#vertices " << nv
+		 << " #edges " << xadj[nv+1]
+		 << endl;
+	
+
+	return;
+}
+
+
+
+
+
 int
 dldperm_dist_symatch_v1
 (
@@ -367,6 +580,137 @@ dldperm_dist_symatch_v1
 		 << "  " << tmr_sym_all.getstr()
 		 << endl;
 
+
+
+	return 0;
+}
+
+
+
+
+
+// structures setup to bypass suitor library conversion
+int
+dldperm_dist_symatch_v2
+(
+    int			  job,
+	int			  n,
+	int_t		  nnz,
+	int_t		  colptr[],
+	int_t		  adjncy[],
+	double		  nzval[],
+	int_t		 *perm,
+	crs_info_t	 *crs_info
+)
+{
+	timer tmr_sym_all("sym-all");
+	timer tmr_gm_form("gm-form");
+	timer tmr_match("match");
+	timer tmr_perm("perm");
+	timer tmr_crsinf("crs-info");
+
+	cout << string(80, '=') << endl;
+
+	tmr_sym_all.start_timer();
+	tmr_gm_form.start_timer();
+
+	// form directly from sparse matrix
+	int32_t nv, *xadj, *adj;
+	double *ew;
+	form_graph_sp2(n, nnz, colptr, adjncy, nzval,
+				   &nv, &xadj, &adj, &ew);
+
+	tmr_gm_form.stop_timer();
+
+	cout << "formed the graph model, running the matching..." << endl;
+
+	// check the suitor library's global params
+	if (nv > max_n || xadj[nv+1]+1 > max_m)
+	{
+		cerr << "matching lib's max_n and max_m variables too small "
+			 << max_n << " " << max_m
+			 << " graph nv " << nv
+			 << " adj size " << xadj[nv+1]
+			 << " .ABORT."
+			 << endl;
+		exit(EXIT_FAILURE);
+	}
+
+	tmr_match.start_timer();
+
+	SyMatch::WrMatch *wrm =
+		new SyMatch::WgtSuitorSeqFor(nv, xadj, adj, ew);
+	wrm->match();
+
+	tmr_match.stop_timer();
+
+	tmr_perm.start_timer();
+
+	// Compute the permutation
+	int32_t *m		= wrm->p;	// raw match	
+	int_t	 curidx = 0;
+	crs_info->n_crs	= 0;
+	// fine to crs mapping (for after Pr is applied)
+	crs_info->ftoc	= (int_t *) malloc(sizeof(*(crs_info->ftoc)) * n);
+	for (int_t v = 1; v <= n; ++v)
+	{
+		int_t u = m[v];		
+		
+		if (u == 0 || u > n) // singleton
+		{
+			crs_info->ftoc[curidx] = crs_info->n_crs;
+			++(crs_info->n_crs);
+			perm[v-1] = curidx++;			
+		}
+		else if (v < u)
+		{
+			crs_info->ftoc[curidx]	 = crs_info->n_crs;
+			crs_info->ftoc[curidx+1] = crs_info->n_crs;
+			++(crs_info->n_crs);
+			perm[v-1] = curidx++;
+			perm[u-1] = curidx++;
+		}
+	}
+
+	tmr_perm.stop_timer();
+
+	tmr_crsinf.start_timer();
+
+	// 2nd pass - coarsening information.
+	if (crs_info->n_crs > 0)
+		crs_info->crs_vrts =
+			(int_t *)malloc(sizeof(*(crs_info->crs_vrts)) * (crs_info->n_crs));	
+
+	int_t crs_idx = 0;
+	for (int_t v = 1; v <= n; ++v)
+	{
+		int_t u = m[v];
+
+		if (u == 0 || u > n) // singleton
+			(crs_info->crs_vrts)[crs_idx++] = 1;
+		else if (v < u)
+			(crs_info->crs_vrts)[crs_idx++] = 2;
+	}
+
+	tmr_crsinf.stop_timer();
+	tmr_sym_all.stop_timer();
+
+	cout << "#2x2 " << n-(crs_info->n_crs)
+		 << " #1x1 " << 2*(crs_info->n_crs)-n << "\n";
+	cout << "Number of coarse vertices " << crs_info->n_crs << "\n";
+	fprintf(stdout, "matching cost %lf\n", wrm->cost());
+	cout << string(80, '=') << endl;
+
+	// arrays will be deleted by wrm
+	delete wrm;
+
+	cout << "time:\n"
+		 << "  " << tmr_gm_form.getstr() << "\n"
+		 << "  " << tmr_match.getstr() << "\n"
+		 << "  " << tmr_perm.getstr() << "\n"
+		 << "  " << tmr_crsinf.getstr() << "\n"
+		 << "  " << tmr_sym_all.getstr()
+		 << endl;
 
 
 	return 0;
@@ -634,24 +978,143 @@ dldperm_dist_symatch
 
 
 // GPU version, SUMAC
-// int
-// dldperm_dist_symatch_g
-// (
-//     int			  job,
-// 	int			  n,
-// 	int_t		  nnz,
-// 	int_t		  colptr[],
-// 	int_t		  adjncy[],
-// 	double		  nzval[],
-// 	int_t		 *perm,
-// 	crs_info_t	 *crs_info
-// )
-// {
+int
+dldperm_dist_symatch_g
+(
+    int			  job,
+	int			  n,
+	int_t		  nnz,
+	int_t		  colptr[],
+	int_t		  adjncy[],
+	double		  nzval[],
+	int_t		 *perm,
+	crs_info_t	 *crs_info
+)
+{
+	timer tmr_sym_all("sym-all");
+	timer tmr_gm_form("gm-form");
+	timer tmr_prep("prep-graph");
+	timer tmr_match("match");
+	timer tmr_perm("perm");
+	timer tmr_crsinf("crs-info");
+	
+	cout << string(80, '=') << endl;
+
+	tmr_sym_all.start_timer();
+	tmr_gm_form.start_timer();	
+
+	// form directly from sparse matrix
+	int32_t nv, *xadj, *adj;
+	double *ew;
+	form_graph_sp(n, nnz, colptr, adjncy, nzval,
+				  &nv, &xadj, &adj, &ew);
+
+	tmr_gm_form.stop_timer();
 	
 
+	cout << "formed the graph model, running the matching..." << endl;
+	
 
-// 	return 0;
-// }
+	tmr_prep.start_timer();
+
+	Graph		*gs		= nullptr;
+	gs					= new Graph(nv, xadj[nv], xadj, adj, ew);
+	GraphGPU	*gs_gpu = new GraphGPU(gs, 1, 1, 1, 1);
+
+	cudaDeviceSynchronize();
+
+	tmr_prep.stop_timer();
+	tmr_match.start_timer();
+
+	printf("Starting Matching\n");
+    fflush(stdout);
+
+	double total;
+    total = gs_gpu->run_pointer_chase();
+    cudaDeviceSynchronize();
+
+    printf("Finished Matching\n");
+
+	tmr_match.stop_timer();
+
+
+	// setup perm and crs
+	tmr_perm.start_timer();
+
+	assert(sizeof(GraphElem) == 4);
+	
+	GraphElem	*m		= gs_gpu->get_matching();
+	int_t		 curidx = 0;
+	crs_info->n_crs		= 0;
+	// fine to crs mapping (for after Pr is applied)
+	crs_info->ftoc	= (int_t *) malloc(sizeof(*(crs_info->ftoc)) * n);
+	for (int32_t v = 0; v < n; ++v)
+	{
+		int32_t u = m[v];
+
+		// printf("%d %d\n", v, u);
+
+		if (u == -1 || u >= n) // singleton
+		{
+			crs_info->ftoc[curidx] = crs_info->n_crs;
+			++(crs_info->n_crs);
+			perm[v] = curidx++;			
+		}
+		else if (v < u)
+		{
+			crs_info->ftoc[curidx]	 = crs_info->n_crs;
+			crs_info->ftoc[curidx+1] = crs_info->n_crs;
+			++(crs_info->n_crs);
+			perm[v] = curidx++;
+			perm[u] = curidx++;
+		}
+	}
+
+	tmr_perm.stop_timer();
+
+	tmr_crsinf.start_timer();
+
+	// 2nd pass - coarsening information.
+	if (crs_info->n_crs > 0)
+		crs_info->crs_vrts =
+			(int_t *)malloc(sizeof(*(crs_info->crs_vrts)) * (crs_info->n_crs));	
+
+	int_t crs_idx = 0;
+	for (int32_t v = 0; v < n; ++v)
+	{
+		int32_t u = m[v];
+
+		if (u == -1 || u >= n) // singleton
+			(crs_info->crs_vrts)[crs_idx++] = 1;
+		else if (v < u)
+			(crs_info->crs_vrts)[crs_idx++] = 2;
+	}
+
+	tmr_crsinf.stop_timer();
+	tmr_sym_all.stop_timer();
+
+	cout << "#2x2 " << n-(crs_info->n_crs)
+		 << " #1x1 " << 2*(crs_info->n_crs)-n << "\n";
+	cout << "Number of coarse vertices " << crs_info->n_crs << "\n";
+	// fprintf(stdout, "matching cost %lf\n", wrm->cost());
+	cout << string(80, '=') << endl;
+
+
+	free(xadj);
+	free(adj);
+	free(ew);
+
+	cout << "time:\n"
+		 << "  " << tmr_gm_form.getstr() << "\n"
+		 << "  " << tmr_match.getstr() << "\n"
+		 << "  " << tmr_perm.getstr() << "\n"
+		 << "  " << tmr_crsinf.getstr() << "\n"
+		 << "  " << tmr_sym_all.getstr()
+		 << endl;
+
+
+	return 0;
+}
 
 
 
