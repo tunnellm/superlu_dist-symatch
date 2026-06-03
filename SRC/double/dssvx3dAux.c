@@ -8,6 +8,22 @@
 #undef LOG_FUNC_ENTER
 #define LOG_FUNC_ENTER() printf("\033[1;32mEntering function %s at %s:%d\033[0m\n", __func__, __FILE__, __LINE__)
 
+
+
+typedef
+struct mstats_t_
+{
+	int32_t n1x1;
+	int32_t n2x2;
+	double	w1x1;
+	double	w2x2;
+	double	t_match;			/* pure match time */
+} mstats_t;
+
+
+
+
+
 /**
  * @brief Validates the input parameters for a given problem.
  *
@@ -468,6 +484,58 @@ void dperform_LargeDiag_MC64(
 } /* dperform_LargeDiag_MC64 */
 
 
+
+
+
+static
+void
+get_mstats
+(
+	int_t		 n,
+	int_t		*xadj,
+	int_t		*adj,
+	double		*val,
+	crs_info_t	*crs_info,
+	mstats_t	*ms
+)
+{
+
+	ms->n2x2 = n - crs_info->n_crs;
+	ms->n1x1 = crs_info->n_crs - ms->n2x2;
+	ms->w1x1 = 0;
+	ms->w2x2 = 0;
+
+	int32_t v = 0;
+	int32_t vc, eptr;
+	for (vc = 0; vc < crs_info->n_crs; ++vc)
+	{
+		int32_t u = v + (crs_info->crs_vrts[vc]-1);
+		double ew = 0.0;
+		
+		for (eptr = xadj[v]; eptr < xadj[v+1]; ++eptr)
+		{
+			if (adj[eptr] == u)
+			{
+				ew = val[eptr];
+				break;
+			}
+		}
+
+		if (u == v)
+			ms->w1x1 += fabs(ew);
+		else
+			ms->w2x2 += 2*fabs(ew);
+
+		v += crs_info->crs_vrts[vc];
+	}
+
+	return;
+}
+
+
+
+
+
 void dperform_row_permutation(
     superlu_dist_options_t *options,
     fact_t Fact,
@@ -552,13 +620,20 @@ void dperform_row_permutation(
 
 				t = SuperLU_timer_();
 
-		        *iinfo = dldperm_dist_symatch_v2
-					(job, m, nnz, colptr, rowind, a_GA,
-					 perm_r,
-					 crs_info);
+				int symalg = atoi(getenv("SYM_ALG"));
 
-				/* *iinfo = dldperm_dist_symatch_g */
-				/* 	(job, m, nnz, colptr, rowind, a_GA, perm_r, crs_info); */
+				if (symalg == 0) /* Suitor */
+				{
+					*iinfo = dldperm_dist_symatch_v2
+						(job, m, nnz, colptr, rowind, a_GA,
+						 perm_r,
+						 crs_info);
+				}
+				else if (symalg == 1) /* SUMAC */
+				{
+					*iinfo = dldperm_dist_symatch_g
+						(job, m, nnz, colptr, rowind, a_GA, perm_r, crs_info);
+				}
 
 				/* ensure_graphs(); */
 				// exit(29);
@@ -757,9 +832,45 @@ void dperform_row_permutation(
     }
     else // options->RowPerm == NOROWPERM / NATURAL
     {
-        for (int i = 0; i < m; ++i)
+		for (int i = 0; i < m; ++i)
             perm_r[i] = i;
     }
+
+
+
+	if (options->RowPerm == SymMatch || options->RowPerm == MC80)
+	{
+		mstats_t ms;
+		get_mstats(n, colptr, rowind, a_GA, crs_info, &ms);
+
+		fprintf(stdout,
+				"#1x1 %d #2x2 %d w1x1 %lf w2x2 %lf wtot %lf pure-time %lf\n",
+				ms.n1x1, ms.n2x2, ms.w1x1, ms.w2x2, ms.w1x1+ms.w2x2,
+				ms.t_match);
+	}
+	else						/* natural, MC64 */
+	{
+		int32_t n1x1 = n, n2x2 = 0;
+		double w1x1 = 0.0, w2x2 = 0.0;		
+
+		for (int32_t c = 0; c < n; ++c)
+		{
+			for (int32_t eptr = colptr[c]; eptr < colptr[c+1]; ++eptr)
+			{
+				if (c == rowind[eptr])
+				{
+					w1x1 += fabs(a_GA[eptr]);
+					break;
+				}
+			}
+		}
+
+		fprintf(stdout,
+				"#1x1 %d #2x2 %d w1x1 %lf w2x2 %lf wtot %lf pure-time %lf\n",
+				n1x1, n2x2, w1x1, w2x2, w1x1+w2x2, 0.0);
+	}
+
+	// exit(17);
 
     #if (DEBUGlevel >= 2)
 	if (!grid->iam)

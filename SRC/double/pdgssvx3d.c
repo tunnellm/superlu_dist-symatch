@@ -723,12 +723,19 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	     * Numerical values are gathered only when a row permutation
 	     * for large diagonal is sought after.
 	     */
-	    if (Fact != SamePattern_SameRowPerm &&
-			(parSymbFact == NO || options->RowPerm != NO))
+
+		/* @OGUZ-EDIT keep GA for natural order stats */
+	    /* if (Fact != SamePattern_SameRowPerm && */
+		/* 	(parSymbFact == NO || options->RowPerm != NO)) */
+		if (Fact != SamePattern_SameRowPerm &&
+			(parSymbFact == NO))
 	    {
+		/* @OGUZ-EDIT keep GA for natural order stats */
 		int need_value = (options->RowPerm == LargeDiag_MC64 ||
 						  options->RowPerm == SymMatch ||
-						  options->RowPerm == MC80);
+						  options->RowPerm == MC80 ||
+						  options->RowPerm == NO 
+						  );
 		pdCompRow_loc_to_CompCol_global(need_value, A, grid, &GA);
 		GAstore = (NCformat *)GA.Store;
 		nnz = GAstore->nnz;
@@ -1264,7 +1271,9 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		}
 
 		/* Destroy GA */
-		if (parSymbFact == NO || options->RowPerm != NO)
+		/* @OGUZ-EDIT keep GA for natural order stats */
+		// if (parSymbFact == NO || options->RowPerm != NO)
+		if (parSymbFact == NO)
 		    Destroy_CompCol_Matrix_dist(&GA);
 
 	    } /* end if Fact not SamePattern_SameRowPerm */
