@@ -1,0 +1,21 @@
+modules
+  gcc-native/12.3
+  cudatoolkit/12.4
+
+extra modules
+  nccl/2.24.3
+
+to compile, run make under respective directories
+for sumac, can build library using make lib
+note: the Makefile's are edited
+make sure 32 and 64 compilation are specified
+flags in sumac/vite:
+vite: -DUSE_32_BIT_GRAPH
+sumac: -DUSE_32BIT_GRAPH
+
+to run the executable, convert the mtx files to bin format using vite library:
+./vite/bin/fileConvert -m -f debug-mat.mtx -o debug-mat.mtx.bin
+
+run the sumac code
+./sumac/LDgpu/ldgpu1 debug-mat.mtx.bin 1
+the 2nd parameter is number of batches (in case the graph is big)
