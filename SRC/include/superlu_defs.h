@@ -91,7 +91,7 @@ at the top-level directory.
 #define SUPERLU_DIST_PATCH_VERSION     0
 #define SUPERLU_DIST_RELEASE_DATE      "May 8, 2024"
 
-#include "superlu_dist_config.h"
+#include <superlu_dist_config.h>
 
 #ifdef HAVE_CUDA
 #define GPU_ACC

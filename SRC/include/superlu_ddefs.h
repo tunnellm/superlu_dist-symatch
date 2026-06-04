@@ -1193,7 +1193,8 @@ extern int dcreate_batch_systems(handle_t *SparseMatrix_handles, int batchCount,
 extern void dGatherNRformat_loc3d(fact_t Fact, NRformat_loc *A, double *B,
 				   int ldb, int nrhs, gridinfo3d_t *grid3d,
 				   NRformat_loc3d **);
-extern void dGatherNRformat_loc3d_allgrid(fact_t Fact, NRformat_loc *A, double *B,
+extern void dGatherNRformat_loc3d_allgrid(superlu_dist_options_t *options,
+				   fact_t Fact, NRformat_loc *A, double *B,
 				   int ldb, int nrhs, gridinfo3d_t *grid3d,
 				   NRformat_loc3d **);
 extern int dScatter_B3d(NRformat_loc3d *A3d, gridinfo3d_t *grid3d);

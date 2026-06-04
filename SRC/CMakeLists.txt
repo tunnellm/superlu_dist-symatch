@@ -10,7 +10,6 @@ set(headers
     include/gpu_api_utils.h
     include/gpu_wrapper.h
     include/superlu_upacked.h
-    include/superlu_dist_config.h
     include/superlu_FortranCInterface.h
     include/oneside.h
     CplusplusFactor/lupanels.hpp
@@ -41,6 +40,7 @@ set(headers
     CplusplusFactor/batch_factorize.h 
     CplusplusFactor/batch_factorize_marshall.h 
 )
+list(APPEND headers ${SuperLU_DIST_BINARY_DIR}/SRC/superlu_dist_config.h)
 #    ${CMAKE_CURRENT_BINARY_DIR}/superlu_dist_config.h
 #    ${PROJECT_SOURCE_DIR}/SRC/superlu_FortranCInterface.h
 #    colamd.h

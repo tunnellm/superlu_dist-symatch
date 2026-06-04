@@ -1113,7 +1113,8 @@ extern int zcreate_batch_systems(handle_t *SparseMatrix_handles, int batchCount,
 extern void zGatherNRformat_loc3d(fact_t Fact, NRformat_loc *A, doublecomplex *B,
 				   int ldb, int nrhs, gridinfo3d_t *grid3d,
 				   NRformat_loc3d **);
-extern void zGatherNRformat_loc3d_allgrid(fact_t Fact, NRformat_loc *A, doublecomplex *B,
+extern void zGatherNRformat_loc3d_allgrid(superlu_dist_options_t *options,
+				   fact_t Fact, NRformat_loc *A, doublecomplex *B,
 				   int ldb, int nrhs, gridinfo3d_t *grid3d,
 				   NRformat_loc3d **);
 extern int zScatter_B3d(NRformat_loc3d *A3d, gridinfo3d_t *grid3d);
@@ -1629,4 +1630,3 @@ extern doublecomplex *zready_lsum;
 #endif
 
 #endif /* __SUPERLU_dDEFS */
-

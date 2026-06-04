@@ -802,8 +802,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	   B2d is allocated;
 	   B is then aliased to B2d for the following 2D solve;
 	*/
-	dGatherNRformat_loc3d_allgrid(Fact, (NRformat_loc *)A->Store,
-						  B, ldb, nrhs, grid3d, &A3d);  
+	dGatherNRformat_loc3d_allgrid(options, Fact, (NRformat_loc *)A->Store,
+					B, ldb, nrhs, grid3d, &A3d);
 
 	B = (double *)A3d->B2d; /* B is now pointing to B2d,
 			   allocated in dGatherNRformat_loc3d.  */
