@@ -56,8 +56,9 @@ option(TPL_ENABLE_MAGMALIB "Enable the MAGMA library" OFF)
 option(TPL_ENABLE_SYMATCHLIB   "Build the symatch library" ON)
 option(TPL_SYMATCH_LIBRARIES "List of absolute paths to symatch link libraries [].")
 option(TPL_SYMATCH_INCLUDE_DIRS "List of absolute paths to symatch include directories [].")
+option(TPL_ENABLE_SUMAC   "Enable SUMAC GPU symmetric matching" OFF)
 #-- MC80
-option(TPL_ENABLE_MC80   "Build the MC80 library" ON)
+option(TPL_ENABLE_MC80   "Build the MC80 library" OFF)
 option(TPL_MC80_LIBRARIES "List of absolute paths to MC80 link libraries [].")
 option(TPL_MC80_INCLUDE_DIRS "List of absolute paths to MC80 include directories [].")
 
@@ -557,6 +558,10 @@ else()
   set(LOADER $(CC))
 endif()
 
+if(TPL_ENABLE_SUMAC)
+  message("-- Enabled support for SUMAC GPU symmetric matching.")
+  set(HAVE_SUMAC TRUE)
+endif()
 
 #--------------------- MC80 ---------------------
 if(TPL_ENABLE_MC80)

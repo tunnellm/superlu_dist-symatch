@@ -34,5 +34,8 @@
 /* Enable symatch */
 #cmakedefine HAVE_SYMATCH @HAVE_SYMATCH@
 
+/* Enable SUMAC GPU symmetric matching */
+#cmakedefine HAVE_SUMAC @HAVE_SUMAC@
+
 /* Enable MC80 */
 #cmakedefine HAVE_MC80 @HAVE_MC80@

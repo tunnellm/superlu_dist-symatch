@@ -646,29 +646,36 @@ dldperm_dist_symatch_v2
 
 	tmr_perm.start_timer();
 
-	// Compute the permutation
-	int32_t *m		= wrm->p;	// raw match	
-	int_t	 curidx = 0;
-	crs_info->n_crs	= 0;
+	// Compute the permutation in the same weight-sorted block order as the
+	// original Suitor conversion path.
+	vector<tuple<int_t, int_t, double>> m_sorted;
+	wrm->sort_matching(m_sorted, false);
+	int_t curidx = 0;
+	crs_info->n_crs = 0;
 	// fine to crs mapping (for after Pr is applied)
-	crs_info->ftoc	= (int_t *) malloc(sizeof(*(crs_info->ftoc)) * n);
-	for (int_t v = 1; v <= n; ++v)
+	crs_info->ftoc = (int_t *) malloc(sizeof(*(crs_info->ftoc)) * n);
+	for (auto &mt : m_sorted)
 	{
-		int_t u = m[v];		
-		
-		if (u == 0 || u > n) // singleton
+		int_t v = get<0>(mt);
+		int_t u = get<1>(mt);
+
+		if (u == 0) // unmatched vertex
 		{
-			crs_info->ftoc[curidx] = crs_info->n_crs;
-			++(crs_info->n_crs);
-			perm[v-1] = curidx++;			
+			if (v <= n)
+			{
+				crs_info->ftoc[curidx] = crs_info->n_crs++;
+				perm[v-1] = curidx++;
+			}
+			continue;
 		}
-		else if (v < u)
+
+		int_t cid = crs_info->n_crs++;
+		perm[min(v, u)-1] = curidx;
+		crs_info->ftoc[curidx++] = cid;
+		if (u <= n && v <= n)
 		{
-			crs_info->ftoc[curidx]	 = crs_info->n_crs;
-			crs_info->ftoc[curidx+1] = crs_info->n_crs;
-			++(crs_info->n_crs);
-			perm[v-1] = curidx++;
-			perm[u-1] = curidx++;
+			perm[max(v, u)-1] = curidx;
+			crs_info->ftoc[curidx++] = cid;
 		}
 	}
 
@@ -682,14 +689,22 @@ dldperm_dist_symatch_v2
 			(int_t *)malloc(sizeof(*(crs_info->crs_vrts)) * (crs_info->n_crs));	
 
 	int_t crs_idx = 0;
-	for (int_t v = 1; v <= n; ++v)
+	for (auto &mt : m_sorted)
 	{
-		int_t u = m[v];
+		int_t v = get<0>(mt);
+		int_t u = get<1>(mt);
 
-		if (u == 0 || u > n) // singleton
-			(crs_info->crs_vrts)[crs_idx++] = 1;
-		else if (v < u)
-			(crs_info->crs_vrts)[crs_idx++] = 2;
+		if (u == 0) // unmatched vertex
+		{
+			if (v <= n)
+				(crs_info->crs_vrts)[crs_idx++] = 1;
+			continue;
+		}
+
+		(crs_info->crs_vrts)[crs_idx] = 1;
+		if (u <= n && v <= n)
+			(crs_info->crs_vrts)[crs_idx] = 2;
+		++crs_idx;
 	}
 
 	tmr_crsinf.stop_timer();
@@ -977,6 +992,7 @@ dldperm_dist_symatch
 
 
 
+#ifdef HAVE_SUMAC
 // GPU version, SUMAC
 int
 dldperm_dist_symatch_g
@@ -1115,6 +1131,7 @@ dldperm_dist_symatch_g
 
 	return 0;
 }
+#endif
 
 
 

@@ -10,9 +10,11 @@
 #include "wrmatch.hpp"
 
 // symatch headers (gpu, SUMAC)
+#ifdef HAVE_SUMAC
 #include "types.hpp"
 #include "graph.hpp"
 #include "graph_gpu.hpp"
+#endif
 
 
 

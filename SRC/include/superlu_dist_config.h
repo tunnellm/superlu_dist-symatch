@@ -34,5 +34,8 @@
 /* Enable symatch */
 #define HAVE_SYMATCH TRUE
 
+/* Enable SUMAC GPU symmetric matching */
+/* #undef HAVE_SUMAC */
+
 /* Enable MC80 */
-#define HAVE_MC80 TRUE
+/* #undef HAVE_MC80 */

@@ -33,6 +33,7 @@ if [ "$#" -eq 1 ]; then
 	-DTPL_PARMETIS_INCLUDE_DIRS="$HOME/mso/code/lib/ParMETIS/parmetis/include;$HOME/mso/code/lib/METIS/metis/include;$HOME/mso/code/lib/GKlib/GKlib/include" \
 	-DTPL_PARMETIS_LIBRARIES="$HOME/mso/code/lib/ParMETIS/parmetis/lib/libparmetis.a;$HOME/mso/code/lib/METIS/metis/lib/libmetis.a;$HOME/mso/code/lib/GKlib/GKlib/lib/libGKlib.a" \
 	-DTPL_ENABLE_SYMATCHLIB=ON \
+	-DTPL_ENABLE_SUMAC=ON \
 	-DTPL_SYMATCH_INCLUDE_DIRS="$HOME/mso/code/superlu_dist-symatch/matching/symatch/inc;$HOME/mso/code/superlu_dist-symatch/matching/symatch/util;$HOME/mso/code/superlu_dist-symatch/matching/lib/matching;${NCCL_HOME}/include;$HOME/mso/code/superlu_dist-symatch/matching/lib/sumac" \
 	-DTPL_SYMATCH_LIBRARIES="$HOME/mso/code/superlu_dist-symatch/matching/lib/matching/lib/libsuitor.a;${NCCL_HOME}/lib/libnccl.so;$HOME/mso/code/superlu_dist-symatch/matching/lib/sumac/libsumac.a" \
         -DTPL_ENABLE_MC80=ON \

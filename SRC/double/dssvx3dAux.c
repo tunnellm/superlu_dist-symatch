@@ -3,7 +3,9 @@
 #include <stdlib.h>  // For NULL
 #include <mpi.h>
 #include "superlu_ddefs.h"
+#ifdef HAVE_MC80
 #include "hsl_mc80d.h"
+#endif
 
 #undef LOG_FUNC_ENTER
 #define LOG_FUNC_ENTER() printf("\033[1;32mEntering function %s at %s:%d\033[0m\n", __func__, __FILE__, __LINE__)
@@ -620,7 +622,8 @@ void dperform_row_permutation(
 
 				t = SuperLU_timer_();
 
-				int symalg = atoi(getenv("SYM_ALG"));
+				const char *symalg_env = getenv("SYM_ALG");
+				int symalg = symalg_env ? atoi(symalg_env) : 0;
 
 				if (symalg == 0) /* Suitor */
 				{
@@ -631,8 +634,20 @@ void dperform_row_permutation(
 				}
 				else if (symalg == 1) /* SUMAC */
 				{
+#ifdef HAVE_SUMAC
 					*iinfo = dldperm_dist_symatch_g
 						(job, m, nnz, colptr, rowind, a_GA, perm_r, crs_info);
+#else
+					fprintf(stderr,
+							"SYM_ALG=1 requires SUMAC support; configure with -DTPL_ENABLE_SUMAC=ON\n");
+					*iinfo = -1;
+#endif
+				}
+				else
+				{
+					fprintf(stderr, "Unsupported SYM_ALG=%d; use 0 for Suitor\n",
+							symalg);
+					*iinfo = -1;
 				}
 
 				/* ensure_graphs(); */
@@ -662,6 +677,7 @@ void dperform_row_permutation(
 						MPI_Bcast(crs_info->crs_vrts, crs_info->n_crs, mpi_int_t,
 								  0, grid->comm);
 					}
+					MPI_Bcast(crs_info->ftoc, m, mpi_int_t, 0, grid->comm);
 		        }
 	            } else {
 		        MPI_Bcast( iinfo, 1, MPI_INT, 0, grid->comm );
@@ -677,6 +693,9 @@ void dperform_row_permutation(
 						MPI_Bcast(crs_info->crs_vrts, crs_info->n_crs, mpi_int_t,
 								  0, grid->comm);
 					}
+					crs_info->ftoc = (int_t *)
+						malloc(sizeof(*(crs_info->ftoc)) * m);
+					MPI_Bcast(crs_info->ftoc, m, mpi_int_t, 0, grid->comm);
 		        }
 	            }
 
@@ -713,8 +732,9 @@ void dperform_row_permutation(
 			for (int_t i = 0; i < m; ++i) perm_r[i] = i;
 		    }
             }
-			else if ( options->RowPerm == MC80 )
-			{
+            else if ( options->RowPerm == MC80 )
+            {
+#ifdef HAVE_MC80
 				printf("options->RowPerm == MC80\n");
 				fflush(stdout);
 
@@ -805,7 +825,12 @@ void dperform_row_permutation(
 
 				fflush(stdout);
 				// exit(0);
-			}
+#else
+				fprintf(stderr,
+						"RowPerm=MC80 requires MC80 support; configure with -DTPL_ENABLE_MC80=ON\n");
+				*iinfo = -1;
+#endif
+            }
             else // LargeDiag_HWPM
             {
 #ifdef HAVE_COMBBLAS
@@ -838,7 +863,8 @@ void dperform_row_permutation(
 
 
 
-	if (options->RowPerm == SymMatch || options->RowPerm == MC80)
+	if ((options->RowPerm == SymMatch || options->RowPerm == MC80) &&
+		*iinfo == 0)
 	{
 		mstats_t ms;
 		get_mstats(n, colptr, rowind, a_GA, crs_info, &ms);
@@ -960,5 +986,3 @@ int dDistributePermutedMatrix(const superlu_dist_options_t *options,
 #ifdef REFACTOR_DistributePermutedMatrix
 
 #endif // REFACTOR_DistributePermutedMatrix
-
-
