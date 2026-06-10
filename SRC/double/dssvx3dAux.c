@@ -50,8 +50,10 @@ void validateInput_pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
         *info = -1;
     else if (options->RowPerm < 0 || options->RowPerm > MC80)
         *info = -1;
-    else if (options->ColPerm < 0 || options->ColPerm > MC80)
+    else if (options->ColPerm < 0 || options->ColPerm > MY_PERMC)
         *info = -1;
+    else if (SLU_IS_SYMATCH_ROWPERM(options->RowPerm) && (options->Algo3d==NO || options->SymFact == NO))  
+        *info = -1;        
     else if (options->IterRefine < 0 || options->IterRefine > SLU_EXTRA)
         *info = -1;
     else if (options->IterRefine == SLU_EXTRA)
@@ -615,39 +617,30 @@ void dperform_row_permutation(
                 printf("dprod %e\n", dprod);
 #endif
 
-            } else if ( options->RowPerm == SymMatch ) {
+            } else if ( options->RowPerm == SUITOR || options->RowPerm == SUMAC ) {
 		    /* Get a new perm_r[] from SymMatch */
 
 	            if ( !iam ) { /* Process 0 finds a row permutation */
 
 				t = SuperLU_timer_();
 
-				const char *symalg_env = getenv("SYM_ALG");
-				int symalg = symalg_env ? atoi(symalg_env) : 0;
-
-				if (symalg == 0) /* Suitor */
+				if (options->RowPerm == SUITOR) /* Suitor */
 				{
 					*iinfo = dldperm_dist_symatch_v2
 						(job, m, nnz, colptr, rowind, a_GA,
 						 perm_r,
 						 crs_info);
 				}
-				else if (symalg == 1) /* SUMAC */
+				else if (options->RowPerm == SUMAC) /* SUMAC */
 				{
 #ifdef HAVE_SUMAC
 					*iinfo = dldperm_dist_symatch_g
 						(job, m, nnz, colptr, rowind, a_GA, perm_r, crs_info);
 #else
 					fprintf(stderr,
-							"SYM_ALG=1 requires SUMAC support; configure with -DTPL_ENABLE_SUMAC=ON\n");
+							"We require SUMAC support; configure with -DTPL_ENABLE_SUMAC=ON\n");
 					*iinfo = -1;
 #endif
-				}
-				else
-				{
-					fprintf(stderr, "Unsupported SYM_ALG=%d; use 0 for Suitor\n",
-							symalg);
-					*iinfo = -1;
 				}
 
 				/* ensure_graphs(); */
@@ -863,7 +856,7 @@ void dperform_row_permutation(
 
 
 
-	if ((options->RowPerm == SymMatch || options->RowPerm == MC80) &&
+	if (SLU_IS_SYMATCH_ROWPERM(options->RowPerm) &&
 		*iinfo == 0)
 	{
 		mstats_t ms;
