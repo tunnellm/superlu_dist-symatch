@@ -101,6 +101,8 @@ public:
     int_t find(int_t k);
     // for L panel I don't need any special transformation function
     int_t panelSolve(int_t ksupsz, Ftype *DiagBlk, int_t LDD);
+    int_t panelSolveSymmetric(int_t ksupsz, Ftype *DiagBlk, int_t LDD,
+                              Ftype *Work, int_t LDWork);
     int_t diagFactor(int_t k, Ftype *UBlk, int_t LDU, threshPivValType<Ftype> thresh, int_t *xsup,
                      superlu_dist_options_t *options, SuperLUStat_t *stat, int *info);
     int_t packDiagBlock(Ftype *DiagLBlk, int_t LDD);
@@ -247,6 +249,7 @@ public:
     // for U panel
     // int_t packed2skyline(int_t* usub, Ftype* uval );
     int_t packed2skyline(int_t k, int_t *usub, Ftype *uval, int_t *xsup);
+    int_t loadFromSkyline(int_t k, int_t *usub, Ftype *uval, int_t *xsup);
     int_t panelSolve(int_t ksupsz, Ftype *DiagBlk, int_t LDD);
     int_t diagFactor(int_t k, Ftype *UBlk, int_t LDU, Ftype thresh, int_t *xsup,
                      superlu_dist_options_t *options,
@@ -354,6 +357,12 @@ struct xLUstruct_t
     SCT_t *SCT;
     superlu_dist_options_t *options;
     SuperLUStat_t *stat;
+    LUStruct_type<Ftype> *LUstructPtr;
+    int *symL2UOrders;
+    Ftype *symFactWork;
+    int *symFactIPIV;
+    int64_t symFactWorkSize;
+    int symFactTagUb;
 
     // Adding more variables for factorization
     trf3dpartitionType<Ftype> *trf3Dpartition;
@@ -468,6 +477,7 @@ struct xLUstruct_t
         /* free diagonal L and U blocks */
         // dfreeDiagFactBufsArr(maxLeafNodes, dFBufs);
         freeDiagFactBufsArr(numDiagBufs, dFBufs);
+        freeSymFactWorkspace();
 
         SUPERLU_FREE(bigV);
         SUPERLU_FREE(indirect);
@@ -555,6 +565,12 @@ struct xLUstruct_t
 
     //
     int_t dDiagFactorPanelSolve(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
+    int_t dSymDiagFactorPanelSolve(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
+    int_t dSymStartL2U(int_t k);
+    int_t dSymFinishL2U(int_t k);
+    int initSymFactWorkspace();
+    int freeSymFactWorkspace();
+    int ensureSymFactWorkSize(int64_t minSize);
     int_t dPanelBcast(int_t k, int_t offset);
     int_t dsparseTreeFactorBaseline(
         sForest_t *sforest,
@@ -659,4 +675,3 @@ struct xLUstruct_t
     int_t dDFactPSolveGPU(int_t k, int_t handle_offset, int buffer_offset, diagFactBufs_type<Ftype>** dFBufs);
 #endif
 };
-

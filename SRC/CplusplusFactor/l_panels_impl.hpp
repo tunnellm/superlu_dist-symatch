@@ -80,6 +80,40 @@ int_t xlpanel_t<Ftype>::panelSolve(int_t ksupsz, Ftype* DiagBlk, int_t LDD)
     return 0;
 }
 
+template <typename Ftype>
+int_t xlpanel_t<Ftype>::panelSolveSymmetric(int_t ksupsz, Ftype* DiagBlk, int_t LDD,
+                                            Ftype *Work, int_t LDWork)
+{
+    if (isEmpty())
+        return 0;
+
+    Ftype* lPanelStPtr = blkPtr(0);
+    int_t len = nzrows();
+    if (haveDiag())
+    {
+        lPanelStPtr = blkPtr(1);
+        len -= nbrow(0);
+    }
+
+    if (len <= 0)
+        return 0;
+    if (LDWork < len)
+        ABORT("Symmetric L-panel workspace has an invalid leading dimension.");
+
+    Ftype alpha = one<Ftype>();
+    Ftype beta = zeroT<Ftype>();
+    superlu_gemm<Ftype>("N", "N",
+                  len, ksupsz, ksupsz, alpha,
+                  lPanelStPtr, LDA(),
+                  DiagBlk, LDD, beta,
+                  Work, LDWork);
+
+    for (int_t j = 0; j < ksupsz; ++j)
+        memcpy(&lPanelStPtr[j * LDA()], &Work[j * LDWork], len * sizeof(Ftype));
+
+    return 0;
+}
+
 
 
 template <typename Ftype>

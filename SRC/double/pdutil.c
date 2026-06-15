@@ -29,6 +29,45 @@ at the top-level directory.
 #include "gpu_api_utils.h"
 #endif
 
+static size_t
+pdutil_checked_product(size_t a, size_t b, const char *what)
+{
+    (void) what;
+    if (a != 0 && b > ((size_t)-1) / a)
+        ABORT("Workspace size overflows allocation size.");
+    return a * b;
+}
+
+static int_t
+pdutil_checked_workspace_count(int_t a, int_t b, int_t c, int_t d,
+                               const char *what)
+{
+    if (a < 0 || b < 0 || c < 0 || d < 0)
+        ABORT("Negative workspace size.");
+
+    size_t first = pdutil_checked_product((size_t) a, (size_t) b, what);
+    size_t second = pdutil_checked_product((size_t) c, (size_t) d, what);
+    if (first > ((size_t)-1) - second)
+        ABORT("Workspace size overflows allocation size.");
+
+    size_t total = first + second;
+    int_t out = (int_t) total;
+    if (out < 0 || (size_t) out != total)
+        ABORT("Workspace size overflows int_t.");
+    return out;
+}
+
+static size_t
+pdutil_checked_alloc_bytes(int_t count, size_t elem_size, const char *what)
+{
+    if (count < 0)
+        ABORT("Negative allocation size.");
+    size_t n = (size_t) count;
+    if ((int_t) n != count)
+        ABORT("Allocation size overflows int_t.");
+    return pdutil_checked_product(n, elem_size, what);
+}
+
 /*! \brief Gather A from the distributed compressed row format to global A in compressed column format.
  */
 int pdCompRow_loc_to_CompCol_global
@@ -808,13 +847,20 @@ pdgstrs_init_device_lsum_x(superlu_dist_options_t *options, int_t n, int_t m_loc
     /* Allocate working storage. */
     int_t nlb = CEILING (nsupers, Pr);    /* Number of local block rows. */
     int_t nc = CEILING (nsupers, Pc);    /* Number of local block cols. */
-    int_t sizelsum = (((size_t)ldalsum)*nrhs + nlb*LSUM_H);
-    checkGPU(gpuMalloc( (void**)&(SOLVEstruct->d_lsum), sizelsum * sizeof(double)));
-    checkGPU(gpuMalloc( (void**)&(SOLVEstruct->d_x), (ldalsum * nrhs + nlb * XK_H) * sizeof(double)));
-    checkGPU(gpuMemset( SOLVEstruct->d_lsum, 0, sizelsum * sizeof(double)));
-    checkGPU(gpuMemset( SOLVEstruct->d_x, 0, (ldalsum * nrhs + nlb * XK_H) * sizeof(double)));
+    int_t sizelsum = pdutil_checked_workspace_count(ldalsum, nrhs, nlb, LSUM_H,
+                                                    "GPU lsum workspace");
+    int_t sizex = pdutil_checked_workspace_count(ldalsum, nrhs, nlb, XK_H,
+                                                 "GPU x workspace");
+    size_t lsum_bytes = pdutil_checked_alloc_bytes(sizelsum, sizeof(double),
+                                                   "GPU lsum workspace");
+    size_t x_bytes = pdutil_checked_alloc_bytes(sizex, sizeof(double),
+                                                "GPU x workspace");
+    checkGPU(gpuMalloc( (void**)&(SOLVEstruct->d_lsum), lsum_bytes));
+    checkGPU(gpuMalloc( (void**)&(SOLVEstruct->d_x), x_bytes));
+    checkGPU(gpuMemset( SOLVEstruct->d_lsum, 0, lsum_bytes));
+    checkGPU(gpuMemset( SOLVEstruct->d_x, 0, x_bytes));
 
-    double* lsum = (double*)SUPERLU_MALLOC(sizelsum * sizeof(double));
+    double* lsum = (double*)SUPERLU_MALLOC(lsum_bytes);
     for (int_t ii=0; ii < sizelsum; ii++ )
 	lsum[ii]=zero;
     int_t ii = 0;
@@ -830,8 +876,8 @@ pdgstrs_init_device_lsum_x(superlu_dist_options_t *options, int_t n, int_t m_loc
         }
         ii += knsupc;
     }
-    checkGPU(gpuMalloc( (void**)&(SOLVEstruct->d_lsum_save), sizelsum * sizeof(double)));
-    checkGPU(gpuMemcpy(SOLVEstruct->d_lsum_save, lsum, sizelsum * sizeof(double), gpuMemcpyHostToDevice));
+    checkGPU(gpuMalloc( (void**)&(SOLVEstruct->d_lsum_save), lsum_bytes));
+    checkGPU(gpuMemcpy(SOLVEstruct->d_lsum_save, lsum, lsum_bytes, gpuMemcpyHostToDevice));
     SUPERLU_FREE(lsum);
 
     int* fmod = getfmod_newsolve(nlb, nsupers, supernodeMask, LUstruct->Llu->Lrowind_bc_ptr, LUstruct->Llu->Lindval_loc_bc_ptr, grid);
@@ -1360,5 +1406,3 @@ dDestroy_Tree(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     CHECK_MALLOC(iam, "Exit dDestroy_Tree()");
 #endif
 }
-
-

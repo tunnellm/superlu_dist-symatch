@@ -266,7 +266,7 @@ int main (int argc, char *argv[])
     // options.RowPerm = LargeDiag_MC64;
 	/* options.Equil = NO; */
 	/* options.ColPerm = NATURAL; */
-    if (options.RowPerm == SymMatch) {	
+    if (SLU_IS_SYMATCH_ROWPERM(options.RowPerm)) {
 	options.SymFact = YES;       /* perform symmetric factorization */
     }
 

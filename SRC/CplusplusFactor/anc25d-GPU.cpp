@@ -2,6 +2,7 @@
 #include "superlu_ddefs.h"
 #include "lupanels.hpp"
 #include "lupanels_GPU.cuh"
+#include "gpu_mpi_utils.hpp"
 
 int_t LUstruct_v100::dAncestorFactorBaselineGPU(
     int_t alvl,
@@ -108,14 +109,22 @@ int_t LUstruct_v100::dAncestorFactorBaselineGPU(
 
                 if (UidxSendCounts[k] > 0)
                 {
-                    MPI_Bcast(k_upanel.gpuPanel.index, UidxSendCounts[k], mpi_int_t, krow(k), grid3d->cscp.comm);
-                    MPI_Bcast(k_upanel.gpuPanel.val, UvalSendCounts[k], MPI_DOUBLE, krow(k), grid3d->cscp.comm);
+                    superlu_gpu_mpi_bcast(k_upanel.gpuPanel.index, k_upanel.index,
+                                          sizeof(int_t), static_cast<int>(UidxSendCounts[k]),
+                                          mpi_int_t, krow(k), grid3d->cscp.comm);
+                    superlu_gpu_mpi_bcast(k_upanel.gpuPanel.val, k_upanel.val,
+                                          sizeof(double), static_cast<int>(UvalSendCounts[k]),
+                                          MPI_DOUBLE, krow(k), grid3d->cscp.comm);
                 }
 
                 if (LidxSendCounts[k] > 0)
                 {
-                    MPI_Bcast(k_lpanel.gpuPanel.index, LidxSendCounts[k], mpi_int_t, kcol(k), grid3d->rscp.comm);
-                    MPI_Bcast(k_lpanel.gpuPanel.val, LvalSendCounts[k], MPI_DOUBLE, kcol(k), grid3d->rscp.comm);
+                    superlu_gpu_mpi_bcast(k_lpanel.gpuPanel.index, k_lpanel.index,
+                                          sizeof(int_t), static_cast<int>(LidxSendCounts[k]),
+                                          mpi_int_t, kcol(k), grid3d->rscp.comm);
+                    superlu_gpu_mpi_bcast(k_lpanel.gpuPanel.val, k_lpanel.val,
+                                          sizeof(double), static_cast<int>(LvalSendCounts[k]),
+                                          MPI_DOUBLE, kcol(k), grid3d->rscp.comm);
                 }
 
 /*=======   Schurcomplement Update      ======*/
@@ -135,12 +144,16 @@ int_t LUstruct_v100::dAncestorFactorBaselineGPU(
             
             // Brodcast the l and u panels to the root with MPI_Comm = anc25d.getComm(alvl);
             if (mycol == kcol(k))
-                MPI_Bcast(lPanelVec[g2lCol(k)].gpuPanel.val, 
-                          lPanelVec[g2lCol(k)].nzvalSize(), MPI_DOUBLE, kRoot, anc25d.getComm(alvl));
+                superlu_gpu_mpi_bcast(lPanelVec[g2lCol(k)].gpuPanel.val,
+                          lPanelVec[g2lCol(k)].val, sizeof(double),
+                          static_cast<int>(lPanelVec[g2lCol(k)].nzvalSize()),
+                          MPI_DOUBLE, kRoot, anc25d.getComm(alvl));
                            
             if (myrow == krow(k))
-                MPI_Bcast(uPanelVec[g2lRow(k)].gpuPanel.val, 
-                           uPanelVec[g2lRow(k)].nzvalSize(), MPI_DOUBLE, kRoot, anc25d.getComm(alvl));
+                superlu_gpu_mpi_bcast(uPanelVec[g2lRow(k)].gpuPanel.val,
+                           uPanelVec[g2lRow(k)].val, sizeof(double),
+                           static_cast<int>(uPanelVec[g2lRow(k)].nzvalSize()),
+                           MPI_DOUBLE, kRoot, anc25d.getComm(alvl));
             // MPI_Barrier(grid3d->comm);
 
         } /*for k0= k_st:k_end */

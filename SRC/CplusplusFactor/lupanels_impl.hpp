@@ -12,18 +12,78 @@
 #include "xlupanels.hpp"
 #include "superlu_blas.hpp"
 
+static inline size_t xlu_checked_product(size_t a, size_t b, const char *what)
+{
+    (void) what;
+    if (a != 0 && b > static_cast<size_t>(-1) / a)
+        ABORT("Workspace size overflows allocation size.");
+    return a * b;
+}
+
+static inline size_t xlu_checked_alloc_bytes(int_t count, size_t elem_size,
+                                             const char *what)
+{
+    if (count < 0)
+        ABORT("Negative allocation size.");
+    size_t n = static_cast<size_t>(count);
+    if (static_cast<int_t>(n) != count)
+        ABORT("Allocation size overflows int_t.");
+    return xlu_checked_product(n, elem_size, what);
+}
+
+static inline size_t xlu_checked_square_alloc_bytes(int_t dim, size_t elem_size,
+                                                    const char *what)
+{
+    if (dim < 0)
+        ABORT("Negative allocation size.");
+    size_t n = static_cast<size_t>(dim);
+    if (static_cast<int_t>(n) != dim)
+        ABORT("Allocation size overflows int_t.");
+    size_t count = xlu_checked_product(n, n, what);
+    return xlu_checked_product(count, elem_size, what);
+}
+
+static inline size_t xlu_checked_bigv_alloc_bytes(int_t ldt, int_t num_threads,
+                                                  size_t elem_size,
+                                                  const char *what)
+{
+    if (ldt < 0 || num_threads < 0)
+        ABORT("Negative allocation size.");
+    size_t n = static_cast<size_t>(ldt);
+    size_t nt = static_cast<size_t>(num_threads);
+    if (static_cast<int_t>(n) != ldt || static_cast<int_t>(nt) != num_threads)
+        ABORT("Allocation size overflows int_t.");
+    size_t count = xlu_checked_product(8, n, what);
+    count = xlu_checked_product(count, n, what);
+    count = xlu_checked_product(count, nt, what);
+    return xlu_checked_product(count, elem_size, what);
+}
+
 template <typename Ftype>
 diagFactBufs_type<Ftype> **xLUstruct_t<Ftype>::initDiagFactBufsArr(int_t num_bufs, int_t ldt)
 {
     
     // diagFactBufs_type<Ftype> **dFBufs = new diagFactBufs_type<Ftype> *[num_bufs]; // use SuperLU_MALLOC instead
-    diagFactBufs_type<Ftype> **dFBufs = (diagFactBufs_type<Ftype> **)SUPERLU_MALLOC(num_bufs * sizeof(diagFactBufs_type<Ftype> *));
-    for (int i = 0; i < num_bufs; i++)
+    size_t ptr_bytes = xlu_checked_alloc_bytes(num_bufs,
+                                               sizeof(diagFactBufs_type<Ftype> *),
+                                               "diagonal factor buffer array");
+    size_t block_bytes = xlu_checked_square_alloc_bytes(ldt, sizeof(Ftype),
+                                                        "diagonal factor block");
+    if (num_bufs == 0)
+        return NULL;
+    diagFactBufs_type<Ftype> **dFBufs = (diagFactBufs_type<Ftype> **)SUPERLU_MALLOC(ptr_bytes);
+    if (dFBufs == NULL)
+        ABORT("Malloc fails for diagonal factor buffer array.");
+    for (int_t i = 0; i < num_bufs; i++)
     {
         // dFBufs[i] = new diagFactBufs_type<Ftype>; // use SuperLU_MALLOC instead
         dFBufs[i] = (diagFactBufs_type<Ftype> *)SUPERLU_MALLOC(sizeof(diagFactBufs_type<Ftype>));
-        dFBufs[i]->BlockUFactor = (Ftype *)SUPERLU_MALLOC(ldt * ldt * sizeof(Ftype));
-        dFBufs[i]->BlockLFactor = (Ftype *)SUPERLU_MALLOC(ldt * ldt * sizeof(Ftype));
+        if (dFBufs[i] == NULL)
+            ABORT("Malloc fails for diagonal factor buffers.");
+        dFBufs[i]->BlockUFactor = (Ftype *)SUPERLU_MALLOC(block_bytes);
+        dFBufs[i]->BlockLFactor = (Ftype *)SUPERLU_MALLOC(block_bytes);
+        if (dFBufs[i]->BlockUFactor == NULL || dFBufs[i]->BlockLFactor == NULL)
+            ABORT("Malloc fails for diagonal factor buffers.");
     }
     return dFBufs;
 }
@@ -73,7 +133,10 @@ template <typename Ftype>
 Ftype* getBigV(int_t ldt, int_t num_threads)
 {
     Ftype *bigV;
-    if (!(bigV = (Ftype*) SUPERLU_MALLOC (8 * ldt * ldt * num_threads * sizeof(Ftype))))
+    size_t bigv_bytes = xlu_checked_bigv_alloc_bytes(ldt, num_threads,
+                                                     sizeof(Ftype),
+                                                     "dgemm buffV");
+    if (!(bigV = (Ftype*) SUPERLU_MALLOC (bigv_bytes)))
         ABORT ("Malloc failed for dgemm buffV");
     return bigV;
 }
@@ -89,9 +152,12 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
                              threshPivValType<Ftype> thresh_, int *info_) :
                              nsupers(nsupers_), trf3Dpartition(trf3Dpartition_),
                              ldt(ldt_), /* maximum supernode size */
-			     grid3d(grid3d_in), SCT(SCT_),
-			     options(options_), stat(stat_),
-			     thresh(thresh_), info(info_), anc25d(grid3d_in)
+				     grid3d(grid3d_in), SCT(SCT_),
+				     options(options_), stat(stat_),
+	                             LUstructPtr(LUstruct), symL2UOrders(NULL),
+	                             symFactWork(NULL), symFactIPIV(NULL),
+	                             symFactWorkSize(0), symFactTagUb(0),
+				     thresh(thresh_), info(info_), anc25d(grid3d_in)
 {
     maxLvl = log2i(grid3d->zscp.Np) + 1;
     isNodeInMyGrid = getIsNodeInMyGrid(nsupers, maxLvl, trf3Dpartition->myNodeCount, trf3Dpartition->treePerm);
@@ -106,6 +172,14 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     Pr = grid->nprow;
     myrow = MYROW(iam, grid);
     mycol = MYCOL(iam, grid);
+    if (options->SymFact == YES)
+    {
+        if (options->CommL != YES)
+            ABORT("LUv1 SymFact requires CommL=YES to reconstruct U panels.");
+        symFactTagUb = set_tag_ub();
+        if (symFactTagUb <= 0)
+            ABORT("Invalid MPI tag upper bound for LUv1 SymFact L2U communication.");
+    }
     xsup = LUstruct->Glu_persist->xsup;
     int_t **Lrowind_bc_ptr = LUstruct->Llu->Lrowind_bc_ptr;
     int_t **Ufstnz_br_ptr = LUstruct->Llu->Ufstnz_br_ptr;
@@ -216,9 +290,18 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     nThreads = getNumThreads(iam);
     // bigV = dgetBigV(ldt, nThreads);
     bigV = getBigV<Ftype>(ldt, nThreads);
-    indirect = (int_t *)SUPERLU_MALLOC(nThreads * ldt * sizeof(int_t));
-    indirectRow = (int_t *)SUPERLU_MALLOC(nThreads * ldt * sizeof(int_t));
-    indirectCol = (int_t *)SUPERLU_MALLOC(nThreads * ldt * sizeof(int_t));
+    if (nThreads < 0 || ldt < 0)
+        ABORT("Negative allocation size.");
+    size_t indirect_count = xlu_checked_product(static_cast<size_t>(nThreads),
+                                                static_cast<size_t>(ldt),
+                                                "panel indirect workspace");
+    size_t indirect_bytes = xlu_checked_product(indirect_count, sizeof(int_t),
+                                                "panel indirect workspace");
+    indirect = (int_t *)SUPERLU_MALLOC(indirect_bytes);
+    indirectRow = (int_t *)SUPERLU_MALLOC(indirect_bytes);
+    indirectCol = (int_t *)SUPERLU_MALLOC(indirect_bytes);
+    if (indirect == NULL || indirectRow == NULL || indirectCol == NULL)
+        ABORT("Malloc fails for panel indirect workspace.");
 
     // allocating communication buffers
     LvalRecvBufs.resize(options->num_lookaheads);
@@ -232,10 +315,23 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 
     for (int i = 0; i < options->num_lookaheads; i++)
     {
-        LvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(sizeof(Ftype) * maxLvalCount);
-        UvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(sizeof(Ftype) * maxUvalCount);
-        LidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(sizeof(int_t) * maxLidxCount);
-        UidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(sizeof(int_t) * maxUidxCount);
+        size_t lval_bytes = xlu_checked_alloc_bytes(maxLvalCount, sizeof(Ftype),
+                                                    "L value receive buffer");
+        size_t uval_bytes = xlu_checked_alloc_bytes(maxUvalCount, sizeof(Ftype),
+                                                    "U value receive buffer");
+        size_t lidx_bytes = xlu_checked_alloc_bytes(maxLidxCount, sizeof(int_t),
+                                                    "L index receive buffer");
+        size_t uidx_bytes = xlu_checked_alloc_bytes(maxUidxCount, sizeof(int_t),
+                                                    "U index receive buffer");
+        LvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(lval_bytes);
+        UvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(uval_bytes);
+        LidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(lidx_bytes);
+        UidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(uidx_bytes);
+        if ((lval_bytes != 0 && LvalRecvBufs[i] == NULL) ||
+            (uval_bytes != 0 && UvalRecvBufs[i] == NULL) ||
+            (lidx_bytes != 0 && LidxRecvBufs[i] == NULL) ||
+            (uidx_bytes != 0 && UidxRecvBufs[i] == NULL))
+            ABORT("Malloc fails for panel receive buffers.");
 
         //TODO: check if setup correctly
         #pragma warning disabling bcaststruct 
@@ -258,7 +354,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 
     for (int i = 0; i < numDiagBufs; i++) /* Sherry?? these strcutures not used */
     {
-        diagFactBufs[i] = (Ftype *)SUPERLU_MALLOC(sizeof(Ftype) * ldt * ldt);
+        diagFactBufs[i] = (Ftype *)SUPERLU_MALLOC(
+            xlu_checked_square_alloc_bytes(ldt, sizeof(Ftype), "diagonal factor buffer"));
+        if (diagFactBufs[i] == NULL)
+            ABORT("Malloc fails for diagonal factor buffer.");
         // bcastStruct bcDiagRow(grid3d->rscp.comm, MPI_DOUBLE, SYNC);
         // bcastDiagRow[i] = bcDiagRow;
         // bcastStruct bcDiagCol(grid3d->cscp.comm, MPI_DOUBLE, SYNC);
@@ -278,6 +377,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     dFBufs = initDiagFactBufsArr(numDiagBufs, ldt);
     maxLeafNodes = mxLeafNode;
 
+    initSymFactWorkspace();
     
     double tGPU = SuperLU_timer_();
     if(superlu_acc_offload)
@@ -309,6 +409,115 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 #endif
     
 } /* constructor xLUstruct_t */
+
+template <typename Ftype>
+int xLUstruct_t<Ftype>::initSymFactWorkspace()
+{
+    return 0;
+}
+
+template <typename Ftype>
+int xLUstruct_t<Ftype>::freeSymFactWorkspace()
+{
+    return 0;
+}
+
+template <typename Ftype>
+int xLUstruct_t<Ftype>::ensureSymFactWorkSize(int64_t minSize)
+{
+    return 0;
+}
+
+template <>
+inline int xLUstruct_t<double>::initSymFactWorkspace()
+{
+    if (options->SymFact != YES)
+        return 0;
+
+    if (ldt < 0 || maxLvalCount < 0)
+        ABORT("Negative SymFact workspace size.");
+    size_t diag_work_count = xlu_checked_product(static_cast<size_t>(ldt),
+                                                 static_cast<size_t>(ldt),
+                                                 "SymFact work");
+    int64_t diag_work_size = (int64_t)diag_work_count;
+    if (diag_work_size < 0 || (size_t)diag_work_size != diag_work_count)
+        ABORT("SymFact workspace size overflows int64_t.");
+    int64_t panel_work_size = (int64_t)maxLvalCount;
+    int64_t workspace_size = SUPERLU_MAX(diag_work_size, panel_work_size);
+    if (workspace_size <= 0)
+        workspace_size = 1;
+
+    symFactWorkSize = workspace_size;
+    size_t work_count = (size_t)workspace_size;
+    if ((int64_t)work_count != workspace_size)
+        ABORT("SymFact workspace size overflows allocation size.");
+    symFactWork = (double *)SUPERLU_MALLOC(
+        xlu_checked_product(work_count, sizeof(double), "SymFact work"));
+    if (symFactWork == NULL)
+        ABORT("Malloc fails for SymFact work[].");
+
+    size_t ipiv_count = (size_t)ldt;
+    if ((int_t)ipiv_count != ldt)
+        ABORT("SymFact IPIV size overflows allocation size.");
+    symFactIPIV = (int *)SUPERLU_MALLOC(
+        xlu_checked_product(ipiv_count, sizeof(int), "SymFact IPIV"));
+    if (symFactIPIV == NULL)
+        ABORT("Malloc fails for SymFact IPIV[].");
+
+    size_t order_count = xlu_checked_product(2, ipiv_count, "SymFact L2U order");
+    symL2UOrders = (int *)SUPERLU_MALLOC(
+        xlu_checked_product(order_count, sizeof(int), "SymFact L2U order"));
+    if (symL2UOrders == NULL)
+        ABORT("Malloc fails for SymFact L2U order workspace.");
+
+    return 0;
+}
+
+template <>
+inline int xLUstruct_t<double>::freeSymFactWorkspace()
+{
+    if (symL2UOrders != NULL)
+    {
+        SUPERLU_FREE(symL2UOrders);
+        symL2UOrders = NULL;
+    }
+
+    if (symFactWork != NULL)
+    {
+        SUPERLU_FREE(symFactWork);
+        symFactWork = NULL;
+    }
+
+    if (symFactIPIV != NULL)
+    {
+        SUPERLU_FREE(symFactIPIV);
+        symFactIPIV = NULL;
+    }
+
+    symFactWorkSize = 0;
+    return 0;
+}
+
+template <>
+inline int xLUstruct_t<double>::ensureSymFactWorkSize(int64_t minSize)
+{
+    if (minSize <= symFactWorkSize)
+        return 0;
+
+    if (symFactWork != NULL)
+        SUPERLU_FREE(symFactWork);
+
+    symFactWorkSize = minSize;
+    size_t work_count = (size_t)symFactWorkSize;
+    if ((int64_t)work_count != symFactWorkSize)
+        ABORT("SymFact workspace size overflows allocation size.");
+    symFactWork = (double *)SUPERLU_MALLOC(
+        xlu_checked_product(work_count, sizeof(double), "SymFact work"));
+    if (symFactWork == NULL)
+        ABORT("Malloc fails for SymFact work[].");
+
+    return 0;
+}
 
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSchurComplementUpdate(
@@ -557,6 +766,9 @@ int_t xLUstruct_t<Ftype>::dSchurCompUpdateExcludeOne(
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dDiagFactorPanelSolve(int_t k, int_t offset, diagFactBufs_type<Ftype>**dFBufs)
 {
+    if (options->SymFact == YES)
+        return dSymDiagFactorPanelSolve(k, offset, dFBufs);
+
 
     int_t ksupc = SuperSize(k);
     /*=======   Diagonal Factorization      ======*/
@@ -586,8 +798,182 @@ int_t xLUstruct_t<Ftype>::dDiagFactorPanelSolve(int_t k, int_t offset, diagFactB
 }
 
 template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymDiagFactorPanelSolve(int_t k, int_t offset,
+                                                   diagFactBufs_type<Ftype> **dFBufs)
+{
+    ABORT("LUv1 SymFact is implemented for double precision only.");
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymStartL2U(int_t k)
+{
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymFinishL2U(int_t k)
+{
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymStartL2U(int_t k)
+{
+    if (options->SymFact != YES || options->CommL != YES)
+    {
+        if (options->SymFact == YES)
+            ABORT("LUv1 SymFact requires CommL=YES to reconstruct U panels.");
+        return 0;
+    }
+
+    if (symL2UOrders == NULL)
+        ABORT("SymFact L2U order workspace is not allocated.");
+    if (symFactTagUb <= 0)
+        ABORT("Invalid MPI tag upper bound for LUv1 SymFact L2U communication.");
+
+    dStartL2U_comm(k, grid, options, LUstructPtr, stat, info, SCT, symFactTagUb,
+                   symL2UOrders, ldt);
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymFinishL2U(int_t k)
+{
+    if (options->SymFact != YES || options->CommL != YES)
+    {
+        if (options->SymFact == YES)
+            ABORT("LUv1 SymFact requires CommL=YES to reconstruct U panels.");
+        return 0;
+    }
+
+    dLocalLU_t *Llu = LUstructPtr->Llu;
+    dWaitL2U_recv(k, grid, options, LUstructPtr, stat, SCT);
+
+    if (myrow == krow(k))
+    {
+        int_t lk = LBi(k, grid);
+        if (Llu->Ufstnz_br_ptr[lk] != NULL && Llu->Unzval_br_ptr[lk] != NULL)
+        {
+            uPanelVec[g2lRow(k)].loadFromSkyline(k, Llu->Ufstnz_br_ptr[lk],
+                                                 Llu->Unzval_br_ptr[lk], xsup);
+#ifdef HAVE_CUDA
+            if (superlu_acc_offload)
+                uPanelVec[g2lRow(k)].copyBackToGPU();
+#endif
+        }
+    }
+
+    dWaitL2U_send(k, grid, options, LUstructPtr, stat, info, SCT, symFactTagUb);
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t offset,
+                                                           ddiagFactBufs_t **dFBufs)
+{
+    dSymStartL2U(k);
+
+    int_t ksupc = SuperSize(k);
+    double *invDiag = dFBufs[offset]->BlockUFactor;
+
+#ifndef SLU_HAVE_LAPACK
+    ABORT("LUv1 SymFact requires LAPACK dsytrf/dsytri support.");
+#else
+    if (iam == procIJ(k, k))
+    {
+        xlpanel_t<double> &lpanel = lPanelVec[g2lCol(k)];
+        double *diag = lpanel.blkPtr(0);
+        int_t ldd = lpanel.LDA();
+        int nsupc_i = (int)ksupc;
+        int ldd_i = (int)ldd;
+        int_t jfst = FstBlockC(k);
+        int lwork = -1;
+        int lapack_info = 0;
+        char uplo = 'L';
+        double thresh1 = thresh / 10.0;
+        double *work = symFactWork;
+        int *ipiv = symFactIPIV;
+
+        if (work == NULL || ipiv == NULL)
+            ABORT("LUv1 SymFact workspace is not allocated.");
+
+        if (options->ReplaceTinyPivot == YES)
+        {
+            int ntiny = 0;
+            int n2x2 = 0;
+            dsytrf_mod_(&uplo, &nsupc_i, diag, &ldd_i, &thresh1, ipiv,
+                         work, &lwork, info, &ntiny, &n2x2);
+            int64_t requested_work_size = (int64_t)work[0];
+            ensureSymFactWorkSize(requested_work_size);
+            work = symFactWork;
+            lwork = (int)requested_work_size;
+            dsytrf_mod_(&uplo, &nsupc_i, diag, &ldd_i, &thresh1, ipiv,
+                         work, &lwork, info, &ntiny, &n2x2);
+            stat->TinyPivots += ntiny;
+            stat->sytrf_2x2 += n2x2;
+        }
+        else
+        {
+            dsytrf_(&uplo, &nsupc_i, diag, &ldd_i, ipiv, work, &lwork, info);
+            int64_t requested_work_size = (int64_t)work[0];
+            ensureSymFactWorkSize(requested_work_size);
+            work = symFactWork;
+            lwork = (int)requested_work_size;
+            dsytrf_(&uplo, &nsupc_i, diag, &ldd_i, ipiv, work, &lwork, info);
+        }
+
+        if (*info > 0)
+            *info += jfst;
+        else if (*info < 0)
+            *info -= jfst;
+
+        const double tol_inertia = 1e-30;
+        int inertia[3];
+        inertia_from_dsytrf(uplo, nsupc_i, diag, ldd_i, ipiv,
+                            tol_inertia, inertia);
+        stat->inertia[0] += inertia[0];
+        stat->inertia[1] += inertia[1];
+        stat->inertia[2] += inertia[2];
+
+        dsytri_(&uplo, &nsupc_i, diag, &ldd_i, ipiv, work, &lapack_info);
+
+        for (int_t j = 0; j < ksupc; ++j)
+            for (int_t i = j + 1; i < ksupc; ++i)
+                diag[j + i * ldd] = diag[i + j * ldd];
+
+        for (int_t j = 0; j < ksupc; ++j)
+            memcpy(&invDiag[j * ksupc], &diag[j * ldd], ksupc * sizeof(double));
+
+        stat->ops[FACT] += (flops_t)ksupc * ksupc * ksupc;
+    }
+
+    if (mycol == kcol(k))
+        MPI_Bcast((void *)invDiag, ksupc * ksupc, MPI_DOUBLE,
+                  krow(k), (grid->cscp).comm);
+
+    if (mycol == kcol(k))
+    {
+        xlpanel_t<double> &lpanel = lPanelVec[g2lCol(k)];
+        ensureSymFactWorkSize((int64_t)lpanel.nzrows() * (int64_t)ksupc);
+        lpanel.panelSolveSymmetric(ksupc, invDiag, ksupc, symFactWork,
+                                   lpanel.nzrows());
+#ifdef HAVE_CUDA
+        if (superlu_acc_offload)
+            lpanel.copyBackToGPU();
+#endif
+    }
+#endif
+
+    return 0;
+}
+
+template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dPanelBcast(int_t k, int_t offset)
 {
+    if (options->SymFact == YES)
+        dSymFinishL2U(k);
+
     /*=======   Panel Broadcast             ======*/
     xupanel_t<Ftype> k_upanel(UidxRecvBufs[offset], UvalRecvBufs[offset]);
     xlpanel_t<Ftype> k_lpanel(LidxRecvBufs[offset], LvalRecvBufs[offset]);
@@ -610,4 +996,3 @@ int_t xLUstruct_t<Ftype>::dPanelBcast(int_t k, int_t offset)
     }
     return 0;
 }
-

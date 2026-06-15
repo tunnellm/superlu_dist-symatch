@@ -1,6 +1,7 @@
 #include "mpi.h"
 // #include "cublasDefs.hhandle, "
 #include "lupanels.hpp"
+#include "gpu_mpi_utils.hpp"
 
 #ifdef HAVE_CUDA
 
@@ -76,11 +77,12 @@ int_t LUstruct_v100::zSendLPanelGPU(int_t k0, int_t receiverGrid)
 		int_t lk = g2lCol(k0);
         if (!lPanelVec[lk].isEmpty())
 		{
-            MPI_Send(lPanelVec[lk].blkPtrGPU(0), lPanelVec[lk].nzvalSize(), 
+            superlu_gpu_mpi_send(lPanelVec[lk].blkPtrGPU(0), LvalRecvBufs[0],
+                    sizeof(double), static_cast<int>(lPanelVec[lk].nzvalSize()),
                     MPI_DOUBLE, receiverGrid, k0, grid3d->zscp.comm);
-			SCT->commVolRed += lPanelVec[lk].nzvalSize() * sizeof(double);
+				SCT->commVolRed += lPanelVec[lk].nzvalSize() * sizeof(double);
+			}
 		}
-	}
 	return 0;
 }
 
@@ -94,8 +96,10 @@ int_t LUstruct_v100::zRecvLPanelGPU(int_t k0, int_t senderGrid, double alpha, do
 		{
             
             MPI_Status status;
-			MPI_Recv(A_gpu.LvalRecvBufs[0], lPanelVec[lk].nzvalSize(), MPI_DOUBLE, senderGrid, k0,
-					 grid3d->zscp.comm, &status);
+				superlu_gpu_mpi_recv(A_gpu.LvalRecvBufs[0], LvalRecvBufs[0],
+						 sizeof(double), static_cast<int>(lPanelVec[lk].nzvalSize()),
+						 MPI_DOUBLE, senderGrid, k0,
+						 grid3d->zscp.comm, &status);
 
 			/*reduce the updates*/
             cublasHandle_t handle=A_gpu.cuHandles[0];
@@ -125,11 +129,12 @@ int_t LUstruct_v100::zSendUPanelGPU(int_t k0, int_t receiverGrid)
 		int_t lk = g2lRow(k0);
         if (!uPanelVec[lk].isEmpty())
 		{
-            MPI_Send(uPanelVec[lk].blkPtrGPU(0), uPanelVec[lk].nzvalSize(), 
+            superlu_gpu_mpi_send(uPanelVec[lk].blkPtrGPU(0), UvalRecvBufs[0],
+                    sizeof(double), static_cast<int>(uPanelVec[lk].nzvalSize()),
                     MPI_DOUBLE, receiverGrid, k0, grid3d->zscp.comm);
-			SCT->commVolRed += uPanelVec[lk].nzvalSize() * sizeof(double);
+				SCT->commVolRed += uPanelVec[lk].nzvalSize() * sizeof(double);
+			}
 		}
-	}
 	return 0;
 }
 
@@ -143,8 +148,10 @@ int_t LUstruct_v100::zRecvUPanelGPU(int_t k0, int_t senderGrid, double alpha, do
 		{
 
             MPI_Status status;
-			MPI_Recv(A_gpu.UvalRecvBufs[0], uPanelVec[lk].nzvalSize(), MPI_DOUBLE, senderGrid, k0,
-					 grid3d->zscp.comm, &status);
+				superlu_gpu_mpi_recv(A_gpu.UvalRecvBufs[0], UvalRecvBufs[0],
+						 sizeof(double), static_cast<int>(uPanelVec[lk].nzvalSize()),
+						 MPI_DOUBLE, senderGrid, k0,
+						 grid3d->zscp.comm, &status);
 
 			/*reduce the updates*/
             cublasHandle_t handle=A_gpu.cuHandles[0];

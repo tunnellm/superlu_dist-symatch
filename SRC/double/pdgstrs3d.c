@@ -28,6 +28,56 @@ at the top-level directory.
 #include "superlu_ddefs.h"
 #define ISEND_IRECV
 
+static size_t
+pdgstrs3d_checked_product(size_t a, size_t b, const char *what)
+{
+    (void) what;
+    if (a != 0 && b > ((size_t)-1) / a)
+        ABORT("Workspace size overflows allocation size.");
+    return a * b;
+}
+
+static int_t
+pdgstrs3d_checked_workspace_count(int_t a, int_t b, int_t c, int_t d,
+                                  const char *what)
+{
+    if (a < 0 || b < 0 || c < 0 || d < 0)
+        ABORT("Negative workspace size.");
+
+    size_t first = pdgstrs3d_checked_product((size_t) a, (size_t) b, what);
+    size_t second = pdgstrs3d_checked_product((size_t) c, (size_t) d, what);
+    if (first > ((size_t)-1) - second)
+        ABORT("Workspace size overflows allocation size.");
+
+    size_t total = first + second;
+    int_t out = (int_t) total;
+    if (out < 0 || (size_t) out != total)
+        ABORT("Workspace size overflows int_t.");
+    return out;
+}
+
+static int_t
+pdgstrs3d_checked_size_to_int_t(size_t count, const char *what)
+{
+    (void) what;
+    int_t out = (int_t) count;
+    if (out < 0 || (size_t) out != count)
+        ABORT("Workspace size overflows int_t.");
+    return out;
+}
+
+static size_t
+pdgstrs3d_checked_alloc_bytes(int_t count, size_t elem_size,
+                              const char *what)
+{
+    if (count < 0)
+        ABORT("Negative allocation size.");
+    size_t n = (size_t) count;
+    if ((int_t) n != count)
+        ABORT("Allocation size overflows int_t.");
+    return pdgstrs3d_checked_product(n, elem_size, what);
+}
+
 // Broadcast the RHS to all grids from grid 0
 int_t dtrs_B_init3d(int_t nsupers, double* x, int nrhs, dLUstruct_t * LUstruct,
 	gridinfo3d_t *grid3d)
@@ -84,7 +134,10 @@ int_t dtrs_B_init3d_newsolve(int_t nsupers, double* x, int nrhs, dLUstruct_t * L
     int_t Pr = grid->nprow;
     int_t nlb = CEILING (nsupers, Pr);    /* Number of local block rows. */
 
-    if (!(xtmp = doubleCalloc_dist (Llu->ldalsum * nrhs + nlb * XK_H)))
+    int_t x_count = pdgstrs3d_checked_workspace_count(Llu->ldalsum, nrhs,
+                                                      nlb, XK_H,
+                                                      "3D solve xtmp workspace");
+    if (!(xtmp = doubleCalloc_dist (x_count)))
     ABORT ("Malloc fails for xtmp[].");
 
 	for (int_t k = 0; k < nsupers; ++k)
@@ -3317,17 +3370,50 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 
     /* Allocate working storage. */
     knsupc = sp_ienv_dist(3, options);
-    maxrecvsz = knsupc * nrhs + SUPERLU_MAX( XK_H, LSUM_H );
-    sizelsum = (((size_t)ldalsum)*nrhs + nlb*LSUM_H);
-    sizelsum = ((sizelsum + (aln_d - 1)) / aln_d) * aln_d;
+    maxrecvsz = pdgstrs3d_checked_workspace_count(knsupc, nrhs, 1,
+                                                  SUPERLU_MAX( XK_H, LSUM_H ),
+                                                  "3D forward recvbuf");
+    sizelsum = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb, LSUM_H,
+                                                 "3D forward lsum workspace");
+    if (aln_d > 1) {
+        size_t lsum_aligned = (size_t) sizelsum;
+        size_t addend = (size_t) aln_d - 1;
+        if (lsum_aligned > ((size_t)-1) - addend)
+            ABORT("Workspace size overflows allocation size.");
+        lsum_aligned = ((lsum_aligned + addend) / (size_t) aln_d) * (size_t) aln_d;
+        sizelsum = pdgstrs3d_checked_size_to_int_t(lsum_aligned,
+                                                   "3D forward lsum workspace");
+    }
+    int_t x_count = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb,
+                                                      XK_H,
+                                                      "3D forward x workspace");
+    sizertemp = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, 0, 0,
+                                                  "3D forward rtemp workspace");
+    if (aln_d > 1) {
+        size_t rtemp_aligned = (size_t) sizertemp;
+        size_t addend = (size_t) aln_d - 1;
+        if (rtemp_aligned > ((size_t)-1) - addend)
+            ABORT("Workspace size overflows allocation size.");
+        rtemp_aligned = ((rtemp_aligned + addend) / (size_t) aln_d) * (size_t) aln_d;
+        sizertemp = pdgstrs3d_checked_size_to_int_t(rtemp_aligned,
+                                                    "3D forward rtemp workspace");
+    }
 
 
 
 /* skip rtemp on CPU if using GPU solve*/
 if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
-    sizertemp=ldalsum * nrhs;
-    sizertemp = ((sizertemp + (aln_d - 1)) / aln_d) * aln_d;
-    if ( !(rtemp = (double*)SUPERLU_MALLOC((sizertemp*num_thread + 1) * sizeof(double))) )
+    size_t rtemp_thread_count = pdgstrs3d_checked_product((size_t) sizertemp,
+                                                          (size_t) num_thread,
+                                                          "3D forward rtemp workspace");
+    int_t rtemp_thread_count_i = pdgstrs3d_checked_size_to_int_t(rtemp_thread_count,
+                                                                 "3D forward rtemp workspace");
+    if (rtemp_thread_count > ((size_t)-1) - 1)
+        ABORT("Workspace size overflows allocation size.");
+    size_t rtemp_alloc_bytes = pdgstrs3d_checked_product(rtemp_thread_count + 1,
+                                                         sizeof(double),
+                                                         "3D forward rtemp workspace");
+    if ( !(rtemp = (double*)SUPERLU_MALLOC(rtemp_alloc_bytes)) )
 	ABORT("Malloc fails for rtemp[].");
 #ifdef _OPENMP
 #pragma omp parallel default(shared) private(ii)
@@ -3337,7 +3423,7 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 		rtemp[thread_id*sizertemp+ii]=zero;
     }
 #else
-    for ( ii=0; ii<sizertemp*num_thread; ii++ )
+    for ( ii=0; ii<rtemp_thread_count_i; ii++ )
 	rtemp[ii]=zero;
 #endif
 }
@@ -3456,7 +3542,13 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 	for (i = 0; i < nlb; ++i) fmod[i*aln_i] += frecv[i];
 }
-	if ( !(recvbuf_BC_fwd = (double*)SUPERLU_MALLOC(maxrecvsz*(nfrecvx+1) * sizeof(double))) )  // this needs to be optimized for 1D row mapping
+    size_t recvbuf_BC_count = pdgstrs3d_checked_product((size_t) maxrecvsz,
+                                                        (size_t) nfrecvx + 1,
+                                                        "3D forward recvbuf_BC");
+    size_t recvbuf_BC_bytes = pdgstrs3d_checked_product(recvbuf_BC_count,
+                                                        sizeof(double),
+                                                        "3D forward recvbuf_BC");
+	if ( !(recvbuf_BC_fwd = (double*)SUPERLU_MALLOC(recvbuf_BC_bytes)) )  // this needs to be optimized for 1D row mapping
 		ABORT("Malloc fails for recvbuf_BC_fwd[].");
 	nfrecvx_buf=0;
 
@@ -3528,8 +3620,14 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 	d_grid=Llu->d_grid;
 
 	checkGPU(gpuMemcpy(d_fmod, SOLVEstruct->d_fmod_save, nlb * sizeof(int), gpuMemcpyDeviceToDevice));
-    checkGPU(gpuMemcpy(d_lsum, SOLVEstruct->d_lsum_save, sizelsum * sizeof(double), gpuMemcpyDeviceToDevice));
-	checkGPU(gpuMemcpy(d_x, x, (ldalsum * nrhs + nlb * XK_H) * sizeof(double), gpuMemcpyHostToDevice));
+    checkGPU(gpuMemcpy(d_lsum, SOLVEstruct->d_lsum_save,
+                       pdgstrs3d_checked_alloc_bytes(sizelsum, sizeof(double),
+                                                     "3D forward lsum workspace"),
+                       gpuMemcpyDeviceToDevice));
+	checkGPU(gpuMemcpy(d_x, x,
+                       pdgstrs3d_checked_alloc_bytes(x_count, sizeof(double),
+                                                     "3D forward x workspace"),
+                       gpuMemcpyHostToDevice));
 
 	k = CEILING( nsupers, grid->npcol);/* Number of local block columns divided by #warps per block used as number of thread blocks*/
 	knsupc = sp_ienv_dist(3, options);
@@ -3563,7 +3661,10 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 	                        flag_bc_q, flag_rd_q, dready_x, dready_lsum, my_flag_bc, my_flag_rd, d_nfrecv, h_nfrecv,
 	                        d_status,d_colnum,d_mynum, d_mymaskstart,d_mymasklength,
 	                        d_nfrecvmod,d_statusmod,d_colnummod,d_mynummod,d_mymaskstartmod,d_mymasklengthmod,d_recv_cnt,d_msgnum,d_flag_mod,procs);
-	checkGPU(gpuMemcpy(x, d_x, (ldalsum * nrhs + nlb * XK_H) * sizeof(double), gpuMemcpyDeviceToHost));
+	checkGPU(gpuMemcpy(x, d_x,
+                       pdgstrs3d_checked_alloc_bytes(x_count, sizeof(double),
+                                                     "3D forward x workspace"),
+                       gpuMemcpyDeviceToHost));
 
 
 #if ( PROFlevel>=1 )
@@ -5391,15 +5492,48 @@ void dBackSolve3d_newsolve_reusepdgstrs(superlu_dist_options_t *options, int_t n
 
     /* Allocate working storage. */
     knsupc = sp_ienv_dist(3, options);
-    maxrecvsz = knsupc * nrhs + SUPERLU_MAX( XK_H, LSUM_H );
-    sizelsum = (((size_t)ldalsum)*nrhs + nlb*LSUM_H);
-    sizelsum = ((sizelsum + (aln_d - 1)) / aln_d) * aln_d;
+    maxrecvsz = pdgstrs3d_checked_workspace_count(knsupc, nrhs, 1,
+                                                  SUPERLU_MAX( XK_H, LSUM_H ),
+                                                  "3D back recvbuf");
+    sizelsum = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb, LSUM_H,
+                                                 "3D back lsum workspace");
+    if (aln_d > 1) {
+        size_t lsum_aligned = (size_t) sizelsum;
+        size_t addend = (size_t) aln_d - 1;
+        if (lsum_aligned > ((size_t)-1) - addend)
+            ABORT("Workspace size overflows allocation size.");
+        lsum_aligned = ((lsum_aligned + addend) / (size_t) aln_d) * (size_t) aln_d;
+        sizelsum = pdgstrs3d_checked_size_to_int_t(lsum_aligned,
+                                                   "3D back lsum workspace");
+    }
+    int_t x_count = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb,
+                                                      XK_H,
+                                                      "3D back x workspace");
+    sizertemp = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, 0, 0,
+                                                  "3D back rtemp workspace");
+    if (aln_d > 1) {
+        size_t rtemp_aligned = (size_t) sizertemp;
+        size_t addend = (size_t) aln_d - 1;
+        if (rtemp_aligned > ((size_t)-1) - addend)
+            ABORT("Workspace size overflows allocation size.");
+        rtemp_aligned = ((rtemp_aligned + addend) / (size_t) aln_d) * (size_t) aln_d;
+        sizertemp = pdgstrs3d_checked_size_to_int_t(rtemp_aligned,
+                                                    "3D back rtemp workspace");
+    }
 
 /* skip rtemp on CPU if using GPU solve*/
 if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
-    sizertemp=ldalsum * nrhs;
-    sizertemp = ((sizertemp + (aln_d - 1)) / aln_d) * aln_d;
-    if ( !(rtemp = (double*)SUPERLU_MALLOC((sizertemp*num_thread + 1) * sizeof(double))) )
+    size_t rtemp_thread_count = pdgstrs3d_checked_product((size_t) sizertemp,
+                                                          (size_t) num_thread,
+                                                          "3D back rtemp workspace");
+    int_t rtemp_thread_count_i = pdgstrs3d_checked_size_to_int_t(rtemp_thread_count,
+                                                                 "3D back rtemp workspace");
+    if (rtemp_thread_count > ((size_t)-1) - 1)
+        ABORT("Workspace size overflows allocation size.");
+    size_t rtemp_alloc_bytes = pdgstrs3d_checked_product(rtemp_thread_count + 1,
+                                                         sizeof(double),
+                                                         "3D back rtemp workspace");
+    if ( !(rtemp = (double*)SUPERLU_MALLOC(rtemp_alloc_bytes)) )
 	ABORT("Malloc fails for rtemp[].");
 #ifdef _OPENMP
 #pragma omp parallel default(shared) private(ii)
@@ -5409,7 +5543,7 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 		rtemp[thread_id*sizertemp+ii]=zero;
     }
 #else
-    for ( ii=0; ii<sizertemp*num_thread; ii++ )
+    for ( ii=0; ii<rtemp_thread_count_i; ii++ )
 	rtemp[ii]=zero;
 #endif
 }
@@ -5597,7 +5731,13 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 	// for (i = 0; i < nlb; ++i)printf("bmod[i]: %5d\n",bmod[i]);
 }
 
-	if ( !(recvbuf_BC_fwd = (double*)SUPERLU_MALLOC(maxrecvsz*(nbrecvx+1) * sizeof(double))) )  // this needs to be optimized for 1D row mapping
+    size_t recvbuf_BC_count = pdgstrs3d_checked_product((size_t) maxrecvsz,
+                                                        (size_t) nbrecvx + 1,
+                                                        "3D back recvbuf_BC");
+    size_t recvbuf_BC_bytes = pdgstrs3d_checked_product(recvbuf_BC_count,
+                                                        sizeof(double),
+                                                        "3D back recvbuf_BC");
+	if ( !(recvbuf_BC_fwd = (double*)SUPERLU_MALLOC(recvbuf_BC_bytes)) )  // this needs to be optimized for 1D row mapping
 		ABORT("Malloc fails for recvbuf_BC_fwd[].");
 	nbrecvx_buf=0;
 
@@ -5645,8 +5785,14 @@ if (get_acc_solve()){  /* GPU trisolve*/
 	d_grid=Llu->d_grid;
 
 	checkGPU(gpuMemcpy(d_bmod, SOLVEstruct->d_bmod_save, nlb * sizeof(int), gpuMemcpyDeviceToDevice));
-    checkGPU(gpuMemcpy(d_lsum, SOLVEstruct->d_lsum_save, sizelsum * sizeof(double), gpuMemcpyDeviceToDevice));
-    checkGPU(gpuMemcpy(d_x, x, (ldalsum * nrhs + nlb * XK_H) * sizeof(double), gpuMemcpyHostToDevice));
+    checkGPU(gpuMemcpy(d_lsum, SOLVEstruct->d_lsum_save,
+                       pdgstrs3d_checked_alloc_bytes(sizelsum, sizeof(double),
+                                                     "3D back lsum workspace"),
+                       gpuMemcpyDeviceToDevice));
+    checkGPU(gpuMemcpy(d_x, x,
+                       pdgstrs3d_checked_alloc_bytes(x_count, sizeof(double),
+                                                     "3D back x workspace"),
+                       gpuMemcpyHostToDevice));
 
 	k = CEILING( nsupers, grid->npcol);/* Number of local block columns divided by #warps per block used as number of thread blocks*/
 	knsupc = sp_ienv_dist(3, options);
@@ -5683,7 +5829,10 @@ if (get_acc_solve()){  /* GPU trisolve*/
                         d_recv_cnt_u, d_msgnum, d_flag_mod_u, procs);
 
 
-    checkGPU(gpuMemcpy(x, d_x, (ldalsum * nrhs + nlb * XK_H) * sizeof(double), gpuMemcpyDeviceToHost));
+    checkGPU(gpuMemcpy(x, d_x,
+                       pdgstrs3d_checked_alloc_bytes(x_count, sizeof(double),
+                                                     "3D back x workspace"),
+                       gpuMemcpyDeviceToHost));
 
 
 #if ( PROFlevel>=1 )
@@ -7230,11 +7379,19 @@ pdgstrs3d (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
 
     /* Allocate working storage. */
     knsupc = sp_ienv_dist (3,options);
-    maxrecvsz = knsupc * nrhs + SUPERLU_MAX (XK_H, LSUM_H);
+    maxrecvsz = pdgstrs3d_checked_workspace_count(knsupc, nrhs, 1,
+                                                  SUPERLU_MAX (XK_H, LSUM_H),
+                                                  "3D solve recvbuf");
+    int_t lsum_count = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb,
+                                                         LSUM_H,
+                                                         "3D solve lsum workspace");
+    int_t x_count = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb,
+                                                      XK_H,
+                                                      "3D solve x workspace");
     if (!
-            (lsum = doubleCalloc_dist (((size_t) ldalsum) * nrhs + nlb * LSUM_H)))
+            (lsum = doubleCalloc_dist (lsum_count)))
         ABORT ("Calloc fails for lsum[].");
-    if (!(x = doubleMalloc_dist (ldalsum * nrhs + nlb * XK_H)))
+    if (!(x = doubleMalloc_dist (x_count)))
         ABORT ("Malloc fails for x[].");
     if (!(recvbuf = doubleMalloc_dist (maxrecvsz)))
         ABORT ("Malloc fails for recvbuf[].");
@@ -7257,7 +7414,10 @@ pdgstrs3d (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
         }
     }
     double* xT;
-    if (!(xT = doubleMalloc_dist (ldaspaT * nrhs + nub * XK_H)))
+    int_t xT_count = pdgstrs3d_checked_workspace_count(ldaspaT, nrhs, nub,
+                                                       XK_H,
+                                                       "3D solve xT workspace");
+    if (!(xT = doubleMalloc_dist (xT_count)))
         ABORT ("Malloc fails for xT[].");
     /**
      * Setup the headers for xT
@@ -7555,14 +7715,28 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 
     /* Allocate working storage. */
     knsupc = sp_ienv_dist (3,options);
-    maxrecvsz = knsupc * nrhs + SUPERLU_MAX (XK_H, LSUM_H);
+    maxrecvsz = pdgstrs3d_checked_workspace_count(knsupc, nrhs, 1,
+                                                  SUPERLU_MAX (XK_H, LSUM_H),
+                                                  "3D new solve recvbuf");
 
 
     int_t sizelsum,sizertemp,aln_d,aln_i;
     aln_d = 1;//ceil(CACHELINE/(double)dword);
     aln_i = 1;//ceil(CACHELINE/(double)iword);
-    sizelsum = (((size_t)ldalsum)*nrhs + nlb*LSUM_H);
-    sizelsum = ((sizelsum + (aln_d - 1)) / aln_d) * aln_d;
+    sizelsum = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb, LSUM_H,
+                                                 "3D new solve lsum workspace");
+    if (aln_d > 1) {
+        size_t lsum_aligned = (size_t) sizelsum;
+        size_t addend = (size_t) aln_d - 1;
+        if (lsum_aligned > ((size_t)-1) - addend)
+            ABORT("Workspace size overflows allocation size.");
+        lsum_aligned = ((lsum_aligned + addend) / (size_t) aln_d) * (size_t) aln_d;
+        sizelsum = pdgstrs3d_checked_size_to_int_t(lsum_aligned,
+                                                   "3D new solve lsum workspace");
+    }
+    int_t x_count = pdgstrs3d_checked_workspace_count(ldalsum, nrhs, nlb,
+                                                      XK_H,
+                                                      "3D new solve x workspace");
 
     int num_thread = 1;
 #ifdef _OPENMP
@@ -7587,8 +7761,16 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
 
 /* skip lsum on CPU if using GPU solve*/
 if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
+    size_t lsum_thread_count = pdgstrs3d_checked_product((size_t) sizelsum,
+                                                         (size_t) num_thread,
+                                                         "3D new solve lsum workspace");
+    int_t lsum_thread_count_i = pdgstrs3d_checked_size_to_int_t(lsum_thread_count,
+                                                                "3D new solve lsum workspace");
+    size_t lsum_thread_bytes = pdgstrs3d_checked_product(lsum_thread_count,
+                                                         sizeof(double),
+                                                         "3D new solve lsum workspace");
 #ifdef _OPENMP
-    if ( !(lsum = (double*)SUPERLU_MALLOC(sizelsum*num_thread * sizeof(double))))
+    if ( !(lsum = (double*)SUPERLU_MALLOC(lsum_thread_bytes)))
 	ABORT("Malloc fails for lsum[].");
 #pragma omp parallel default(shared) private(ii)
     {
@@ -7597,15 +7779,15 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
     	    lsum[thread_id*sizelsum+ii]=zero;
     }
 #else
-    if ( !(lsum = (double*)SUPERLU_MALLOC(sizelsum*num_thread * sizeof(double))))
+    if ( !(lsum = (double*)SUPERLU_MALLOC(lsum_thread_bytes)))
   	    ABORT("Malloc fails for lsum[].");
-    for ( ii=0; ii < sizelsum*num_thread; ii++ )
+    for ( ii=0; ii < lsum_thread_count_i; ii++ )
 	lsum[ii]=zero;
 #endif
 }
 
     /* intermediate solution x[] vector has same structure as lsum[], see leading comment */
-    if ( !(x = doubleCalloc_dist(ldalsum * nrhs + nlb * XK_H)) )
+    if ( !(x = doubleCalloc_dist(x_count)) )
 	ABORT("Calloc fails for x[].");
     if (!(recvbuf = doubleMalloc_dist (maxrecvsz)))
         ABORT ("Malloc fails for recvbuf[].");

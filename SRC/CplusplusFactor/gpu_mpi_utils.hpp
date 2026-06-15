@@ -1,0 +1,111 @@
+#pragma once
+
+#include <cstdlib>
+#include <cstring>
+
+#include "mpi.h"
+#include "gpuCommon.hpp"
+
+#ifdef HAVE_CUDA
+
+#if defined(__has_include)
+#if __has_include(<mpi-ext.h>)
+#include <mpi-ext.h>
+#define SUPERLU_HAVE_MPI_EXT_HEADER 1
+#endif
+#endif
+
+static inline int superlu_env_truthy(const char *value)
+{
+    if (!value || !value[0]) return -1;
+    if (!std::strcmp(value, "1") || !std::strcmp(value, "true") ||
+        !std::strcmp(value, "TRUE") || !std::strcmp(value, "yes") ||
+        !std::strcmp(value, "YES") || !std::strcmp(value, "on") ||
+        !std::strcmp(value, "ON")) {
+        return 1;
+    }
+    if (!std::strcmp(value, "0") || !std::strcmp(value, "false") ||
+        !std::strcmp(value, "FALSE") || !std::strcmp(value, "no") ||
+        !std::strcmp(value, "NO") || !std::strcmp(value, "off") ||
+        !std::strcmp(value, "OFF")) {
+        return 0;
+    }
+    return -1;
+}
+
+static inline bool superlu_cuda_aware_mpi()
+{
+    static int cached = -1;
+    if (cached >= 0) return cached != 0;
+
+    const int forced = superlu_env_truthy(std::getenv("SUPERLU_CUDA_AWARE_MPI"));
+    if (forced >= 0) {
+        cached = forced;
+        return cached != 0;
+    }
+
+#if defined(SUPERLU_HAVE_MPI_EXT_HEADER) && defined(OMPI_HAVE_MPI_EXT_CUDA) && OMPI_HAVE_MPI_EXT_CUDA
+    cached = MPIX_Query_cuda_support() != 0;
+#else
+    cached = 0;
+#endif
+    return cached != 0;
+}
+
+static inline void superlu_gpu_mpi_send(const void *device_buf, void *host_stage,
+                                        size_t elem_size, int count,
+                                        MPI_Datatype dtype, int dest, int tag,
+                                        MPI_Comm comm)
+{
+    if (count <= 0) return;
+    if (superlu_cuda_aware_mpi()) {
+        MPI_Send(const_cast<void *>(device_buf), count, dtype, dest, tag, comm);
+        return;
+    }
+
+    gpuErrchk(cudaMemcpy(host_stage, device_buf, elem_size * (size_t)count,
+                         cudaMemcpyDeviceToHost));
+    MPI_Send(host_stage, count, dtype, dest, tag, comm);
+}
+
+static inline void superlu_gpu_mpi_recv(void *device_buf, void *host_stage,
+                                        size_t elem_size, int count,
+                                        MPI_Datatype dtype, int src, int tag,
+                                        MPI_Comm comm, MPI_Status *status)
+{
+    if (count <= 0) return;
+    if (superlu_cuda_aware_mpi()) {
+        MPI_Recv(device_buf, count, dtype, src, tag, comm, status);
+        return;
+    }
+
+    MPI_Recv(host_stage, count, dtype, src, tag, comm, status);
+    gpuErrchk(cudaMemcpy(device_buf, host_stage, elem_size * (size_t)count,
+                         cudaMemcpyHostToDevice));
+}
+
+static inline void superlu_gpu_mpi_bcast(void *device_buf, void *host_stage,
+                                         size_t elem_size, int count,
+                                         MPI_Datatype dtype, int root,
+                                         MPI_Comm comm)
+{
+    if (count <= 0) return;
+    if (superlu_cuda_aware_mpi()) {
+        MPI_Bcast(device_buf, count, dtype, root, comm);
+        return;
+    }
+
+    int rank = -1;
+    MPI_Comm_rank(comm, &rank);
+    if (rank == root) {
+        gpuErrchk(cudaMemcpy(host_stage, device_buf, elem_size * (size_t)count,
+                             cudaMemcpyDeviceToHost));
+    }
+    MPI_Bcast(host_stage, count, dtype, root, comm);
+    if (rank != root) {
+        gpuErrchk(cudaMemcpy(device_buf, host_stage, elem_size * (size_t)count,
+                             cudaMemcpyHostToDevice));
+    }
+}
+
+#endif /* HAVE_CUDA */

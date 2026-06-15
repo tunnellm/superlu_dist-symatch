@@ -1173,6 +1173,8 @@ extern void dsyr_(char*, int*, double*, double*, int*, double*, int*);
 #endif
 extern void dsytri_(char*, int*, double*, int*, int*, double*, int*);
 #endif
+extern void inertia_from_dsytrf(char, int, const double *, int,
+                                const int *, double, int *);
 
 /*==== For 3D code ====*/
 extern int dcreate_matrix3d(SuperMatrix *A, int nrhs, double **rhs,

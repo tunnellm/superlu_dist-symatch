@@ -20,6 +20,7 @@ set(headers
     CplusplusFactor/anc25d.hpp
     CplusplusFactor/anc25d_impl.hpp
     CplusplusFactor/lupanelsComm3dGPU_impl.hpp
+    CplusplusFactor/gpu_mpi_utils.hpp
     CplusplusFactor/lupanels_GPU_impl.hpp
     CplusplusFactor/lupanels_comm3d_impl.hpp
     CplusplusFactor/cublas_cusolver_wrappers.hpp

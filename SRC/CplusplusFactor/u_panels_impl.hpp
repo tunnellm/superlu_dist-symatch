@@ -109,6 +109,43 @@ int_t xupanel_t<Ftype>::packed2skyline(int_t k, int_t *usub, Ftype *uval, int_t*
 }
 
 template <typename Ftype>
+int_t xupanel_t<Ftype>::loadFromSkyline(int_t k, int_t *usub, Ftype *uval, int_t *xsup)
+{
+    if (isEmpty() || usub == NULL || uval == NULL)
+        return 0;
+
+    int_t kSupSz = SuperSize(k);
+    int_t kLastRow = xsup[k + 1];
+    int_t srcUvalPtr = 0;
+    int_t dstUvalPtr = 0;
+    int_t usubPtr = BR_HEADER;
+    int_t nub = usub[0];
+
+    for (int_t ub = 0; ub < nub; ub++)
+    {
+        int_t gblockId = usub[usubPtr];
+        int_t gsupc = SuperSize(gblockId);
+        for (int_t col = 0; col < gsupc; col++)
+        {
+            int_t segsize = kLastRow - usub[usubPtr + UB_DESCRIPTOR + col];
+            if (segsize)
+            {
+                for (int_t row = 0; row < kSupSz; row++)
+                {
+                    if (row < kSupSz - segsize)
+                        val[dstUvalPtr++] = zeroT<Ftype>();
+                    else
+                        val[dstUvalPtr++] = uval[srcUvalPtr++];
+                }
+            }
+        }
+
+        usubPtr += UB_DESCRIPTOR + gsupc;
+    }
+    return 0;
+}
+
+template <typename Ftype>
 int_t xupanel_t<Ftype>::find(int_t k)
 {
     //TODO: possible to optimize
