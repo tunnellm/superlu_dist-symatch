@@ -485,7 +485,8 @@ struct LUstruct_v100
 
     for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
-        cusolverDnDestroy(A_gpu.cuSolveHandles[stream]);
+        if (A_gpu.cuSolveHandles[stream] != NULL)
+            cusolverDnDestroy(A_gpu.cuSolveHandles[stream]);
         cublasDestroy(A_gpu.cuHandles[stream]);
         cublasDestroy(A_gpu.lookAheadLHandle[stream]);
         cublasDestroy(A_gpu.lookAheadUHandle[stream]);
@@ -643,4 +644,3 @@ struct LUstruct_v100
     int_t dDFactPSolveGPU(int_t k, int_t handle_offset, int buffer_offset, ddiagFactBufs_t **dFBufs);
 #endif
 };
-

@@ -407,6 +407,11 @@ struct xLUstructGPU_t
     int maxSuperSize;
     // Ftype arrays are problematic 
     cudaStream_t cuStreams[MAX_CUDA_STREAMS];
+    cudaEvent_t panelReadyEvents[MAX_CUDA_STREAMS];
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    cudaEvent_t diagD2HStartEvents[MAX_CUDA_STREAMS];
+    cudaEvent_t diagD2HEndEvents[MAX_CUDA_STREAMS];
+#endif
     cublasHandle_t cuHandles[MAX_CUDA_STREAMS];
     
     int* dperm_c_supno;
@@ -429,6 +434,7 @@ struct xLUstructGPU_t
 
     cusolverDnHandle_t cuSolveHandles[MAX_CUDA_STREAMS];
     Ftype* diagFactWork[MAX_CUDA_STREAMS];
+    int* diagFactIPIV[MAX_CUDA_STREAMS];
     int* diagFactInfo[MAX_CUDA_STREAMS]; // CPU pointers
     /*data structure for lookahead Update */
     cublasHandle_t lookAheadLHandle[MAX_CUDA_STREAMS];

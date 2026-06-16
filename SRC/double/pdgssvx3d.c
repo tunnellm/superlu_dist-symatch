@@ -38,6 +38,19 @@ at the top-level directory.
 
 // #include "dssvx3dAux.c"
 
+#ifdef SLU_SYM_GPU3D_DEBUG_TRACE
+#define SLU_SYM_GPU3D_TRACE_C(grid3d_, msg_) do { \
+    printf("[sym-gpu3d-trace] rank %d: %s\n", \
+           ((grid3d_) != NULL) ? (grid3d_)->iam : -1, (msg_)); \
+    fflush(stdout); \
+} while (0)
+#else
+#define SLU_SYM_GPU3D_TRACE_C(grid3d_, msg_) do { \
+    (void)(grid3d_); \
+    (void)(msg_); \
+} while (0)
+#endif
+
 // int_t dgatherAllFactoredLU3d( dtrf3Dpartition_t*  trf3Dpartition,
 // 			   dLUstruct_t* LUstruct, gridinfo3d_t* grid3d, SCT_t* SCT );
 #include <stdbool.h>
@@ -1460,15 +1473,23 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			{
 #define TEMPLATED_VERSION
 #ifdef TEMPLATED_VERSION
-dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct, grid3d,
-						  SCT, options, stat, thresh, info);
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "before dCreateLUgpuHandle");
+	dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct, grid3d,
+							  SCT, options, stat, thresh, info);
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "after dCreateLUgpuHandle");
 
-			/* call pdgstrf3d() in C++ code */
-			pdgstrf3d_LUv1(dLUgpu);
+				/* call pdgstrf3d() in C++ code */
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "before pdgstrf3d_LUv1");
+				pdgstrf3d_LUv1(dLUgpu);
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "after pdgstrf3d_LUv1");
 
-			dCopyLUGPU2Host(dLUgpu, LUstruct);
-			dDestroyLUgpuHandle(dLUgpu);
-		    //TODO: dCreateLUgpuHandle,pdgstrf3d_LUpackedInterface,dCopyLUGPU2Host,dDestroyLUgpuHandle haven't been created
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "before dCopyLUGPU2Host");
+				dCopyLUGPU2Host(dLUgpu, LUstruct);
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "after dCopyLUGPU2Host");
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "before dDestroyLUgpuHandle");
+				dDestroyLUgpuHandle(dLUgpu);
+	SLU_SYM_GPU3D_TRACE_C(grid3d, "after dDestroyLUgpuHandle");
+			    //TODO: dCreateLUgpuHandle,pdgstrf3d_LUpackedInterface,dCopyLUGPU2Host,dDestroyLUgpuHandle haven't been created
 #else // non-templated version (not used anymore)
 			/* call constructor in C++ code */
 			LUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct, grid3d,

@@ -326,6 +326,11 @@ struct LUstructGPU_t
     int maxSuperSize;
     // double arrays are problematic 
     cudaStream_t cuStreams[MAX_CUDA_STREAMS];
+    cudaEvent_t panelReadyEvents[MAX_CUDA_STREAMS];
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    cudaEvent_t diagD2HStartEvents[MAX_CUDA_STREAMS];
+    cudaEvent_t diagD2HEndEvents[MAX_CUDA_STREAMS];
+#endif
     cublasHandle_t cuHandles[MAX_CUDA_STREAMS];
     
     // Magma is needed for non-uniform batched execution 

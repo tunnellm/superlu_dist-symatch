@@ -145,6 +145,12 @@ public:
                         int_t ksupsz,
                         Ftype *DiagBlk, // device pointer
                         int_t LDD);
+    int_t panelSolveSymmetricGPU(cublasHandle_t handle, cudaStream_t cuStream,
+                                 int_t ksupsz,
+                                 Ftype *DiagBlk, // device pointer
+                                 int_t LDD,
+                                 Ftype *Work, // device pointer
+                                 int_t LDWork);
 
     int_t diagFactorPackDiagBlockGPU(int_t k,
                                      Ftype *UBlk, int_t LDU,     // CPU pointers
@@ -363,6 +369,128 @@ struct xLUstruct_t
     int *symFactIPIV;
     int64_t symFactWorkSize;
     int symFactTagUb;
+    int symGPU3DContract = 0;
+    double symContractValidateTol = 1.0e8;
+    int64_t symContract1Accepted = 0;
+    int64_t symContract1Fallbacks = 0;
+    double symContract1MaxResid = 0.0;
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    enum SymGPU3DTimingId
+    {
+        SYM_GPU3D_T_L2U_START = 0,
+        SYM_GPU3D_T_DIAG_D2H,
+        SYM_GPU3D_T_DIAG_D2H_COPY,
+        SYM_GPU3D_T_DIAG_D2H_WAIT,
+        SYM_GPU3D_T_DIAG_PREFETCH_ISSUE,
+        SYM_GPU3D_T_DIAG_PREFETCH_WAIT,
+        SYM_GPU3D_T_CPU_SYTRF,
+        SYM_GPU3D_T_GPU_SYTRI,
+        SYM_GPU3D_T_GPU_SYTRI_VALIDATE,
+        SYM_GPU3D_T_CPU_SYTRI,
+        SYM_GPU3D_T_DIAG_PACK,
+        SYM_GPU3D_T_DIAG_BCAST,
+        SYM_GPU3D_T_INV_H2D,
+        SYM_GPU3D_T_LDIAG_D2D,
+        SYM_GPU3D_T_LPANEL_TRANSFORM,
+        SYM_GPU3D_T_L2U_FINISH,
+        SYM_GPU3D_T_PANEL_BCAST,
+        SYM_GPU3D_T_PANEL_BCAST_MPI,
+        SYM_GPU3D_T_PANEL_INDEX_D2H,
+        SYM_GPU3D_T_PANEL_BCAST_SINGLETON,
+        SYM_GPU3D_T_SCHUR_UPDATE,
+        SYM_GPU3D_T_SCHUR_SYNC,
+        SYM_GPU3D_T_LOOKAHEAD_UPDATE,
+        SYM_GPU3D_T_LOOKAHEAD_SYNC,
+        SYM_GPU3D_T_EXCLUDE_UPDATE,
+        SYM_GPU3D_T_SCHED_LOOKAHEAD_DISPATCH,
+        SYM_GPU3D_T_SCHED_PREFETCH_READY,
+        SYM_GPU3D_T_SCHED_FACTOR_DISPATCH,
+        SYM_GPU3D_T_SCHED_BCAST_ADVANCE,
+        SYM_GPU3D_T_SCHED_FINAL_SYNC,
+        SYM_GPU3D_T_INITIAL_FACTOR_DISPATCH,
+        SYM_GPU3D_T_INITIAL_PANEL_BCAST,
+        SYM_GPU3D_T_FACTOR_TREE_WALL,
+        SYM_GPU3D_T_COUNT
+    };
+
+    enum SymGPU3DStatId
+    {
+        SYM_GPU3D_S_FACTOR_TREES = 0,
+        SYM_GPU3D_S_FACTOR_NODES,
+        SYM_GPU3D_S_INITIAL_FACTOR_NODES,
+        SYM_GPU3D_S_PARENT_FACTOR_NODES,
+        SYM_GPU3D_S_LOOKAHEAD_UPDATES,
+        SYM_GPU3D_S_EXCLUDE_UPDATES,
+        SYM_GPU3D_S_PANEL_BCASTS,
+        SYM_GPU3D_S_PANEL_BCAST_BYTES,
+        SYM_GPU3D_S_PANEL_BCAST_MPI_BYTES,
+        SYM_GPU3D_S_PANEL_INDEX_D2H_BYTES,
+        SYM_GPU3D_S_L2U_LOCAL_BYTES,
+        SYM_GPU3D_S_L2U_SEND_BYTES,
+        SYM_GPU3D_S_L2U_RECV_BYTES,
+        SYM_GPU3D_S_L2U_HOST_STAGING_BYTES,
+        SYM_GPU3D_S_L2U_CUDA_AWARE_SEND_BYTES,
+        SYM_GPU3D_S_DIAG_D2H_BYTES,
+        SYM_GPU3D_S_DIAG_PREFETCH_HITS,
+        SYM_GPU3D_S_DIAG_PREFETCH_MISSES,
+        SYM_GPU3D_S_DIAG_PREFETCH_ISSUES,
+        SYM_GPU3D_S_SCHED_WINDOWS,
+        SYM_GPU3D_S_SCHED_WINDOW_NODES,
+        SYM_GPU3D_S_SCHED_READY_BCASTS,
+        SYM_GPU3D_S_SCHED_MAX_WINDOW,
+        SYM_GPU3D_S_SCHED_MAX_NUM_LA,
+        SYM_GPU3D_S_COUNT
+    };
+
+    double symGPU3DTime[SYM_GPU3D_T_COUNT] = {};
+    long long symGPU3DCount[SYM_GPU3D_T_COUNT] = {};
+    long long symGPU3DStat[SYM_GPU3D_S_COUNT] = {};
+
+    void symTimingAdd(SymGPU3DTimingId id, double elapsed)
+    {
+        symGPU3DTime[id] += elapsed;
+        symGPU3DCount[id] += 1;
+    }
+
+    void symStatAdd(SymGPU3DStatId id, long long value = 1)
+    {
+        symGPU3DStat[id] += value;
+    }
+
+    void symStatMax(SymGPU3DStatId id, long long value)
+    {
+        if (value > symGPU3DStat[id])
+            symGPU3DStat[id] = value;
+    }
+
+    struct SymTimingScope
+    {
+        xLUstruct_t<Ftype> *owner;
+        SymGPU3DTimingId id;
+        double start;
+
+        SymTimingScope(xLUstruct_t<Ftype> *owner_, SymGPU3DTimingId id_)
+            : owner(owner_), id(id_), start(SuperLU_timer_()) {}
+
+        ~SymTimingScope()
+        {
+            if (owner != NULL)
+                owner->symTimingAdd(id, SuperLU_timer_() - start);
+        }
+    };
+
+    void printSymGPU3DTiming();
+#endif
+#ifdef HAVE_CUDA
+    std::vector<double *> symL2USendBufsGPU;
+    std::vector<int_t *> symL2USendMapsGPU;
+    std::vector<int_t *> symL2ULocalMapsGPU;
+    std::vector<int> symPanelReadyEventIds;
+    std::vector<Ftype *> symDiagPrefetchBufs;
+    std::vector<cudaEvent_t> symDiagPrefetchDoneEvents;
+    std::vector<int> symDiagPrefetchEventIds;
+    std::vector<int_t> symDiagPrefetchNodes;
+#endif
 
     // Adding more variables for factorization
     trf3dpartitionType<Ftype> *trf3Dpartition;
@@ -450,6 +578,10 @@ struct xLUstruct_t
 
     ~xLUstruct_t()
     {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        if (options != NULL && options->SymFact == YES)
+            printSymGPU3DTiming();
+#endif
 
         /* Yang: Deallocate the lPanelVec[i] and uPanelVec[i] here instead of using destructors ~lpanel_t or ~upanel_t,
         as xlpanel_t/upanel_t is used for holding temporary communication buffers as well. Note that lPanelVec[i].val is not deallocated here as it's pointing to the L data in the C code*/
@@ -506,7 +638,13 @@ struct xLUstruct_t
 
             for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
             {
-                cusolverDnDestroy(A_gpu.cuSolveHandles[stream]);
+                cudaEventDestroy(A_gpu.panelReadyEvents[stream]);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                cudaEventDestroy(A_gpu.diagD2HStartEvents[stream]);
+                cudaEventDestroy(A_gpu.diagD2HEndEvents[stream]);
+#endif
+                if (A_gpu.cuSolveHandles[stream] != NULL)
+                    cusolverDnDestroy(A_gpu.cuSolveHandles[stream]);
                 cublasDestroy(A_gpu.cuHandles[stream]);
                 cublasDestroy(A_gpu.lookAheadLHandle[stream]);
                 cublasDestroy(A_gpu.lookAheadUHandle[stream]);
@@ -565,9 +703,13 @@ struct xLUstruct_t
 
     //
     int_t dDiagFactorPanelSolve(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
-    int_t dSymDiagFactorPanelSolve(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
-    int_t dSymStartL2U(int_t k);
+    int_t dSymDiagFactorPanelSolve(int_t k, int_t handle_offset, int_t buffer_offset,
+                                   diagFactBufs_type<Ftype>** dFBufs);
+    int_t dSymStartL2U(int_t k, int_t stream_offset = 0);
     int_t dSymFinishL2U(int_t k);
+#ifdef HAVE_CUDA
+    int_t dSymStartDiagPrefetch(int_t k, int_t stream_offset);
+#endif
     int initSymFactWorkspace();
     int freeSymFactWorkspace();
     int ensureSymFactWorkSize(int64_t minSize);
@@ -645,6 +787,7 @@ struct xLUstruct_t
 
     int_t dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
     int_t dPanelBcastGPU(int_t k, int_t offset);
+    int_t dSymStartL2UGPU(int_t k, int_t stream_offset);
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);
