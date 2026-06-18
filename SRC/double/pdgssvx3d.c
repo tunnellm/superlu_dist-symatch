@@ -1178,7 +1178,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		      int_t		 nnz_c	  = cGstore->nnz;
 		      int_t	    *c_colptr = cGstore->colptr;
 		      int_t	    *c_rowind = cGstore->rowind;
-		      // double    *c_nzval  = cGstore->nzval;
+		      double    *c_nzval  = cGstore->nzval;
 
 			  #if ( DEBUGlevel>=1 )
 			  is_symmetric(n_c, nnz_c, c_colptr, c_rowind, c_nzval);
