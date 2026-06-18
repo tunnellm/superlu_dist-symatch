@@ -1,4 +1,4 @@
-#pragma once 
+#pragma once
 #include <thrust/for_each.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/system/cuda/execution_policy.h>
@@ -47,6 +47,21 @@ static inline int superlu_gpu3d_contract_for_setup()
 }
 
 size_t getGPUMemPerProcs(MPI_Comm baseCommunicator);
+
+template <typename Ftype>
+static inline int_t *xlu_sym_v2_panel_index_table(
+    trf3dpartitionType<Ftype> *trf3Dpartition)
+{
+    (void)trf3Dpartition;
+    return NULL;
+}
+
+template <>
+inline int_t *xlu_sym_v2_panel_index_table<double>(
+    trf3dpartitionType<double> *trf3Dpartition)
+{
+    return trf3Dpartition ? trf3Dpartition->symV2PanelLocalIndex : NULL;
+}
 
 template <typename Ftype>
 __global__ void indirectCopy(Ftype *dest, Ftype *src, int_t *idx, int n)
@@ -196,6 +211,10 @@ __device__ int computeIndirectMapGPU(int *rcS2D, int_t srcLen, int_t *srcVec,
         return 0;
     }
 
+    if (threadId < srcLen)
+        dstIdx[srcVec[threadId]] = GLOBAL_BLOCK_NOT_FOUND;
+    __syncthreads();
+
     if (threadId < dstLen)
         dstIdx[dstVec[threadId]] = threadId;
     __syncthreads();
@@ -245,7 +264,9 @@ __device__ void scatterGPU_dev(
     }
     else
     {
-        lj = dA->g2lCol(gj);
+        lj = dA->lPanelIndex(gj);
+        if (lj < 0)
+            return;
         li = dA->lPanelVec[lj].find(gi);
         Dst = dA->lPanelVec[lj].blkPtr(li);
         lddst = dA->lPanelVec[lj].LDA();
@@ -292,14 +313,21 @@ __device__ void scatterGPU_dev(
 #pragma unroll 4
         while (j < ncols)
         {
+            int di = rowS2D[i];
+            int dj = colS2D[j];
+            if (di < 0 || di >= dstRowLen || dj < 0 || dj >= dstColLen)
+            {
+                j += colsPerThreadBlock;
+                continue;
+            }
 
 #define ATOMIC_SCATTER
 // Atomic Scatter is need if I want to perform multiple Schur Complement
 //  update concurrently
 #ifdef ATOMIC_SCATTER
-            atomicAddT<Ftype>(&Dst[rowS2D[i] + lddst * colS2D[j]], -Src[i + ldsrc * j]);
+            atomicAddT<Ftype>(&Dst[di + lddst * dj], -Src[i + ldsrc * j]);
 #else
-            Dst[rowS2D[i] + lddst * colS2D[j]] -= Src[i + ldsrc * j];
+            Dst[di + lddst * dj] -= Src[i + ldsrc * j];
 #endif
             j += colsPerThreadBlock;
         }
@@ -319,20 +347,20 @@ __global__ void scatterGPU(
 
 template <typename Ftype>
 __global__ void scatterGPU_batch(
-    int* iSt_batch, int *iEnd_batch, int *jSt_batch, int *jEnd_batch, 
-    Ftype **gemmBuff_ptrs, int *LDgemmBuff_batch, xlpanelGPU_t<Ftype> *lpanels, 
+    int* iSt_batch, int *iEnd_batch, int *jSt_batch, int *jEnd_batch,
+    Ftype **gemmBuff_ptrs, int *LDgemmBuff_batch, xlpanelGPU_t<Ftype> *lpanels,
     xupanelGPU_t<Ftype> *upanels, xLUstructGPU_t<Ftype> *dA
 )
 {
     int batch_index = blockIdx.z;
     int iSt = iSt_batch[batch_index], iEnd = iEnd_batch[batch_index];
     int jSt = jSt_batch[batch_index], jEnd = jEnd_batch[batch_index];
-    
+
     int ii = iSt + blockIdx.x;
     int jj = jSt + blockIdx.y;
     if(ii >= iEnd || jj >= jEnd)
         return;
-    
+
     Ftype* gemmBuff = gemmBuff_ptrs[batch_index];
     if(gemmBuff == NULL)
         return;
@@ -346,7 +374,7 @@ __global__ void scatterGPU_batch(
 template <typename Ftype>
 void scatterGPU_driver(
     int iSt, int iEnd, int jSt, int jEnd, Ftype *gemmBuff, int LDgemmBuff,
-    int maxSuperSize, int ldt, xlpanelGPU_t<Ftype> lpanel, xupanelGPU_t<Ftype> upanel, 
+    int maxSuperSize, int ldt, xlpanelGPU_t<Ftype> lpanel, xupanelGPU_t<Ftype> upanel,
     xLUstructGPU_t<Ftype> *dA, cudaStream_t cuStream
 )
 {
@@ -362,27 +390,352 @@ void scatterGPU_driver(
 }
 
 template <typename Ftype>
+__global__ void scatterSymLowerGPU(
+    int_t ii, int_t jj,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> lpanel,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    int threadId = threadIdx.x;
+    int gi = lpanel.gid(ii);
+    int gj = lpanel.gid(jj);
+    if (gi < gj)
+        return;
+
+    int lj = dA->lPanelIndex(gj);
+    if (lj < 0)
+        return;
+    int li = dA->lPanelVec[lj].find(gi);
+    if (li == GLOBAL_BLOCK_NOT_FOUND)
+        return;
+
+    Ftype *Dst = dA->lPanelVec[lj].blkPtr(li);
+    int_t lddst = dA->lPanelVec[lj].LDA();
+    int_t dstRowLen = dA->lPanelVec[lj].nbrow(li);
+    int_t *dstRowList = dA->lPanelVec[lj].rowList(li);
+    int_t dstColLen = dA->supersize(gj);
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *colS2D = &rowS2D[dA->maxSuperSize];
+    int *dstIdx = &colS2D[dA->maxSuperSize];
+
+    int nrows = lpanel.nbrow(ii);
+    int ncols = lpanel.nbrow(jj);
+
+    computeIndirectMapGPU(rowS2D, nrows, lpanel.rowList(ii),
+                          dstRowLen, dstRowList, dstIdx);
+    computeIndirectMapGPU(colS2D, ncols, lpanel.rowList(jj),
+                          dstColLen, NULL, dstIdx);
+
+    int nThreads = blockDim.x;
+    int colsPerThreadBlock = nThreads / nrows;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    if (threadId < nrows * colsPerThreadBlock)
+    {
+        int i = threadId % nrows;
+        int j = threadId / nrows;
+        while (j < ncols)
+        {
+            int di = rowS2D[i];
+            int dj = colS2D[j];
+            if (di >= 0 && di < dstRowLen && dj >= 0 && dj < dstColLen)
+                atomicAddT<Ftype>(&Dst[di + lddst * dj],
+                              -gemmBuff[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
+template <typename Ftype>
+void scatterSymLowerGPU_driver(
+    int_t ii, int_t jj,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int maxSuperSize, int ldt,
+    xlpanelGPU_t<Ftype> lpanel,
+    xLUstructGPU_t<Ftype> *dA,
+    cudaStream_t cuStream)
+{
+    dim3 dimBlock(ldt);
+    dim3 dimGrid(1);
+    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+
+    scatterSymLowerGPU<Ftype><<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+        ii, jj, gemmBuff, LDgemmBuff, lpanel, dA);
+
+    gpuErrchk(cudaGetLastError());
+}
+
+template <typename Ftype>
+__device__ inline Ftype symDeviceZero();
+
+template <typename Ftype>
+__global__ void buildSymRawLRangeGPU(
+    Ftype *rawBlock, int_t ldraw,
+    xlpanelGPU_t<Ftype> lpanel,
+    int_t jSt, int_t jEnd,
+    const Ftype *diag, int_t diag_ld)
+{
+    int_t ncols = lpanel.stRow(jEnd) - lpanel.stRow(jSt);
+    int_t ksupc = diag_ld;
+    int_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int_t total = ksupc * ncols;
+    if (idx >= total)
+        return;
+
+    int_t lrow_local = idx % ncols;
+    int_t diag_col = idx / ncols;
+    int_t lrow = lpanel.stRow(jSt) + lrow_local;
+    Ftype sum = symDeviceZero<Ftype>();
+    for (int_t p = 0; p < ksupc; ++p)
+        sum += lpanel.val[lrow + p * lpanel.LDA()] *
+               diag[p + diag_col * diag_ld];
+    rawBlock[lrow_local + diag_col * ldraw] = sum;
+}
+
+template <typename Ftype>
+__device__ void scatterSymLowerRangeGPU_dev(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> &lpanel,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    int_t ii = iSt + blockIdx.x;
+    int_t jj = jSt + blockIdx.y;
+    int threadId = threadIdx.x;
+
+    int_t gi = lpanel.gid(ii);
+    int_t gj = lpanel.gid(jj);
+    if (gi < gj)
+        return;
+
+    int_t lj = dA->lPanelIndex(gj);
+    if (lj < 0)
+        return;
+    int_t li = dA->lPanelVec[lj].find(gi);
+    if (li == GLOBAL_BLOCK_NOT_FOUND)
+        return;
+
+    Ftype *Dst = dA->lPanelVec[lj].blkPtr(li);
+    int_t lddst = dA->lPanelVec[lj].LDA();
+    int_t dstRowLen = dA->lPanelVec[lj].nbrow(li);
+    int_t *dstRowList = dA->lPanelVec[lj].rowList(li);
+    int_t dstColLen = dA->supersize(gj);
+    int_t *dstColList = NULL;
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *colS2D = &rowS2D[dA->maxSuperSize];
+    int *dstIdx = &colS2D[dA->maxSuperSize];
+
+    int nrows = lpanel.nbrow(ii);
+    int ncols = lpanel.nbrow(jj);
+
+    computeIndirectMapGPU(rowS2D, nrows, lpanel.rowList(ii),
+                          dstRowLen, dstRowList, dstIdx);
+    computeIndirectMapGPU(colS2D, ncols, lpanel.rowList(jj),
+                          dstColLen, dstColList, dstIdx);
+
+    int nThreads = blockDim.x;
+    int colsPerThreadBlock = nThreads / nrows;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    int rowOff = lpanel.stRow(ii) - lpanel.stRow(iSt);
+    int colOff = lpanel.stRow(jj) - lpanel.stRow(jSt);
+    Ftype *Src = &gemmBuff[rowOff + colOff * LDgemmBuff];
+
+    if (threadId < nrows * colsPerThreadBlock)
+    {
+        int i = threadId % nrows;
+        int j = threadId / nrows;
+        while (j < ncols)
+        {
+            int di = rowS2D[i];
+            int dj = colS2D[j];
+            if (di >= 0 && di < dstRowLen && dj >= 0 && dj < dstColLen)
+                atomicAddT<Ftype>(&Dst[di + lddst * dj],
+                              -Src[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
+template <typename Ftype>
+__global__ void scatterSymLowerRangeGPU(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> lpanel,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    scatterSymLowerRangeGPU_dev(iSt, jSt, gemmBuff, LDgemmBuff,
+                                lpanel, dA);
+}
+
+template <typename Ftype>
+void scatterSymLowerRangeGPU_driver(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int maxSuperSize, int ldt,
+    xlpanelGPU_t<Ftype> lpanel,
+    xLUstructGPU_t<Ftype> *dA,
+    cudaStream_t cuStream)
+{
+    dim3 dimBlock(ldt);
+    dim3 dimGrid(iEnd - iSt, jEnd - jSt);
+    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+
+    scatterSymLowerRangeGPU<Ftype>
+        <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+            iSt, jSt, gemmBuff, LDgemmBuff, lpanel, dA);
+
+    gpuErrchk(cudaGetLastError());
+}
+
+template <typename Ftype>
+__device__ void scatterSymLowerTwoLRangeGPU_dev(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> &rowPanel,
+    xlpanelGPU_t<Ftype> &colPanel,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    int_t ii = iSt + blockIdx.x;
+    int_t jj = jSt + blockIdx.y;
+    int threadId = threadIdx.x;
+
+    int_t gi = rowPanel.gid(ii);
+    int_t gj = colPanel.gid(jj);
+    if (gi < gj)
+        return;
+
+    int_t lj = dA->lPanelIndex(gj);
+    if (lj < 0)
+        return;
+    int_t li = dA->lPanelVec[lj].find(gi);
+    if (li == GLOBAL_BLOCK_NOT_FOUND)
+        return;
+
+    Ftype *Dst = dA->lPanelVec[lj].blkPtr(li);
+    int_t lddst = dA->lPanelVec[lj].LDA();
+    int_t dstRowLen = dA->lPanelVec[lj].nbrow(li);
+    int_t *dstRowList = dA->lPanelVec[lj].rowList(li);
+    int_t dstColLen = dA->supersize(gj);
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *colS2D = &rowS2D[dA->maxSuperSize];
+    int *dstIdx = &colS2D[dA->maxSuperSize];
+
+    int nrows = rowPanel.nbrow(ii);
+    int ncols = colPanel.nbrow(jj);
+
+    computeIndirectMapGPU(rowS2D, nrows, rowPanel.rowList(ii),
+                          dstRowLen, dstRowList, dstIdx);
+    computeIndirectMapGPU(colS2D, ncols, colPanel.rowList(jj),
+                          dstColLen, NULL, dstIdx);
+
+    int nThreads = blockDim.x;
+    int colsPerThreadBlock = nThreads / nrows;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    int rowOff = rowPanel.stRow(ii) - rowPanel.stRow(iSt);
+    int colOff = colPanel.stRow(jj) - colPanel.stRow(jSt);
+    Ftype *Src = &gemmBuff[rowOff + colOff * LDgemmBuff];
+
+    if (threadId < nrows * colsPerThreadBlock)
+    {
+        int i = threadId % nrows;
+        int j = threadId / nrows;
+        while (j < ncols)
+        {
+            int di = rowS2D[i];
+            int dj = colS2D[j];
+            if (di >= 0 && di < dstRowLen && dj >= 0 && dj < dstColLen)
+                atomicAddT<Ftype>(&Dst[di + lddst * dj],
+                              -Src[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
+template <typename Ftype>
+__global__ void scatterSymLowerTwoLRangeGPU(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> rowPanel,
+    xlpanelGPU_t<Ftype> colPanel,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    scatterSymLowerTwoLRangeGPU_dev(iSt, jSt, gemmBuff, LDgemmBuff,
+                                    rowPanel, colPanel, dA);
+}
+
+template <typename Ftype>
+void scatterSymLowerTwoLRangeGPU_driver(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int maxSuperSize, int ldt,
+    xlpanelGPU_t<Ftype> rowPanel,
+    xlpanelGPU_t<Ftype> colPanel,
+    xLUstructGPU_t<Ftype> *dA,
+    cudaStream_t cuStream)
+{
+    dim3 dimBlock(ldt);
+    dim3 dimGrid(iEnd - iSt, jEnd - jSt);
+    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+
+    scatterSymLowerTwoLRangeGPU<Ftype>
+        <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+            iSt, jSt, gemmBuff, LDgemmBuff, rowPanel, colPanel, dA);
+
+    gpuErrchk(cudaGetLastError());
+}
+
+template <>
+__device__ inline double symDeviceZero<double>()
+{
+    return 0.0;
+}
+
+template <>
+__device__ inline float symDeviceZero<float>()
+{
+    return 0.0f;
+}
+
+template <>
+__device__ inline doublecomplex symDeviceZero<doublecomplex>()
+{
+    doublecomplex z = {0.0, 0.0};
+    return z;
+}
+
+template <typename Ftype>
 void scatterGPU_batchDriver(
-    int* iSt_batch, int *iEnd_batch, int *jSt_batch, int *jEnd_batch, 
-    int max_ilen, int max_jlen, Ftype **gemmBuff_ptrs, int *LDgemmBuff_batch, 
-    int maxSuperSize, int ldt, xlpanelGPU_t<Ftype> *lpanels, xupanelGPU_t<Ftype> *upanels, 
+    int* iSt_batch, int *iEnd_batch, int *jSt_batch, int *jEnd_batch,
+    int max_ilen, int max_jlen, Ftype **gemmBuff_ptrs, int *LDgemmBuff_batch,
+    int maxSuperSize, int ldt, xlpanelGPU_t<Ftype> *lpanels, xupanelGPU_t<Ftype> *upanels,
     xLUstructGPU_t<Ftype> *dA, int batchCount, cudaStream_t cuStream
 )
 {
     const int op_increment = 65535;
-    
+
     for(int op_start = 0; op_start < batchCount; op_start += op_increment)
 	{
 		int batch_size = std::min(op_increment, batchCount - op_start);
-    
+
         dim3 dimBlock(ldt); // 1d thread
         dim3 dimGrid(max_ilen, max_jlen, batch_size);
         size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
 
         scatterGPU_batch<Ftype><<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
-            iSt_batch + op_start, iEnd_batch + op_start, jSt_batch + op_start, 
-            jEnd_batch + op_start, gemmBuff_ptrs + op_start, LDgemmBuff_batch + op_start, 
-            lpanels + op_start, upanels + op_start, dA 
+            iSt_batch + op_start, iEnd_batch + op_start, jSt_batch + op_start,
+            jEnd_batch + op_start, gemmBuff_ptrs + op_start, LDgemmBuff_batch + op_start,
+            lpanels + op_start, upanels + op_start, dA
         );
     }
 }
@@ -445,7 +798,7 @@ int_t xLUstruct_t<Ftype>::dSchurComplementUpdateGPU(
     {
         iSt = iEnd;
         iEnd = lpanel.getEndBlock(iSt, maxGemmRows);
-        
+
         assert(iEnd > iSt);
         int jSt = 0;
         int jEnd = 0;
@@ -460,11 +813,11 @@ int_t xLUstruct_t<Ftype>::dSchurComplementUpdateGPU(
             int gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
             int gemm_n = upanel.stCol(jEnd) - upanel.stCol(jSt);
             int gemm_k = supersize(k);
-#if 0           
+#if 0
             printf("k = %d, iSt = %d, iEnd = %d, jst = %d, jend = %d\n", k, iSt, iEnd, jSt, jEnd);
             printf("m=%d, n=%d, k=%d\n", gemm_m, gemm_n, gemm_k);
 	    fflush(stdout);
-#endif	    
+#endif
 
             Ftype alpha = one<Ftype>();
             Ftype beta = zeroT<Ftype>();
@@ -481,7 +834,7 @@ int_t xLUstruct_t<Ftype>::dSchurComplementUpdateGPU(
 
             scatterGPU_driver<Ftype>(
                 iSt, iEnd, jSt, jEnd, A_gpu.gpuGemmBuffs[streamId], gemm_m,
-                A_gpu.maxSuperSize, ldt, lpanel.gpuPanel, upanel.gpuPanel, 
+                A_gpu.maxSuperSize, ldt, lpanel.gpuPanel, upanel.gpuPanel,
                 dA_gpu, cuStream
             );
         }
@@ -752,6 +1105,387 @@ int_t xLUstruct_t<Ftype>::dSchurCompUpLimitedMem(
     return 0;
 }
 
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartLLGPU(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel,
+    cublasHandle_t handle, cudaStream_t cuStream,
+    Ftype *rawBlock, Ftype *gemmBuff)
+{
+    if (iSt >= iEnd || jSt >= jEnd || lpanel.isEmpty())
+        return 0;
+    if (symV2DiagBlocksGPU.size() != static_cast<size_t>(nsupers) ||
+        symV2DiagBlocksGPU[k] == NULL)
+        ABORT("SymFact V2 LL update diagonal block is missing.");
+
+    int gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
+    int gemm_n = lpanel.stRow(jEnd) - lpanel.stRow(jSt);
+    int gemm_k = supersize(k);
+    if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
+        return 0;
+
+    int threads = 256;
+    int blocks = (gemm_k * gemm_n + threads - 1) / threads;
+    buildSymRawLRangeGPU<Ftype><<<blocks, threads, 0, cuStream>>>(
+        rawBlock, gemm_n, lpanel.gpuPanel, jSt, jEnd,
+        symV2DiagBlocksGPU[k], gemm_k);
+    gpuErrchk(cudaGetLastError());
+
+    Ftype alpha = one<Ftype>();
+    Ftype beta = zeroT<Ftype>();
+    cublasSetStream(handle, cuStream);
+    myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        gemm_m, gemm_n, gemm_k, &alpha,
+                        lpanel.blkPtrGPU(iSt), lpanel.LDA(),
+                        rawBlock, gemm_n, &beta,
+                        gemmBuff, gemm_m);
+
+    scatterSymLowerRangeGPU_driver<Ftype>(
+        iSt, iEnd, jSt, jEnd, gemmBuff, gemm_m,
+        A_gpu.maxSuperSize, ldt, lpanel.gpuPanel, dA_gpu, cuStream);
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLLGPU(
+    int_t lStart, int_t lEnd,
+    int_t jStart, int_t jEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel,
+    cublasHandle_t handle, cudaStream_t cuStream,
+    Ftype *rawBlock, Ftype *gemmBuff)
+{
+    if (lStart >= lEnd || jStart >= jEnd || lpanel.isEmpty())
+        return 0;
+
+    for (int_t jSt = jStart; jSt < jEnd; ++jSt)
+    {
+        int_t jNext = jSt + 1;
+        int ncols = lpanel.stRow(jNext) - lpanel.stRow(jSt);
+        if (ncols <= 0)
+            continue;
+
+        int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+        int maxGemmRows = nrows;
+        if (nrows * ncols > A_gpu.gemmBufferSize)
+            maxGemmRows = SUPERLU_MAX(1, A_gpu.gemmBufferSize / ncols);
+
+        int_t iEnd = lStart;
+        while (iEnd < lEnd)
+        {
+            int_t iSt = iEnd;
+            iEnd = lpanel.getEndBlock(iSt, maxGemmRows);
+            if (iEnd > lEnd)
+                iEnd = lEnd;
+            if (iEnd <= iSt)
+                iEnd = iSt + 1;
+
+            dSymSchurCompUpdatePartLLGPU(iSt, iEnd, jSt, jNext,
+                                         k, lpanel, handle, cuStream,
+                                         rawBlock, gemmBuff);
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateLLGPU(
+    int streamId,
+    int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel)
+{
+    if (lpanel.isEmpty())
+        return 0;
+
+    int_t laLoc = lpanel.find(laIdx);
+    if (laLoc == GLOBAL_BLOCK_NOT_FOUND)
+        return 0;
+
+    if (k >= 0 && static_cast<size_t>(k) < symPanelReadyEventIds.size() &&
+        symPanelReadyEventIds[k] >= 0)
+    {
+        gpuErrchk(cudaStreamWaitEvent(A_gpu.lookAheadLStream[streamId],
+                                      A_gpu.panelReadyEvents[symPanelReadyEventIds[k]], 0));
+        gpuErrchk(cudaStreamWaitEvent(A_gpu.lookAheadUStream[streamId],
+                                      A_gpu.panelReadyEvents[symPanelReadyEventIds[k]], 0));
+    }
+
+    cublasHandle_t colHandle = A_gpu.lookAheadLHandle[streamId];
+    cudaStream_t colStream = A_gpu.lookAheadLStream[streamId];
+    Ftype *colRawBlock = A_gpu.symPartnerLStageBufs[streamId];
+    Ftype *colGemmBuff = A_gpu.lookAheadLGemmBuffer[streamId];
+
+    cublasHandle_t rowHandle = A_gpu.lookAheadUHandle[streamId];
+    cudaStream_t rowStream = A_gpu.lookAheadUStream[streamId];
+    Ftype *rowRawBlock = A_gpu.lookAheadUGemmBuffer[streamId];
+    Ftype *rowGemmBuff = A_gpu.gpuGemmBuffs[streamId];
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t laGid = lpanel.gid(laLoc);
+    for (int_t ii = st_lb; ii < nlb; ++ii)
+    {
+        if (ii == laLoc || lpanel.gid(ii) >= laGid)
+            dSymSchurCompUpdatePartLLGPU(ii, ii + 1, laLoc, laLoc + 1,
+                                         k, lpanel, colHandle, colStream,
+                                         colRawBlock, colGemmBuff);
+        else
+            dSymSchurCompUpdatePartLLGPU(laLoc, laLoc + 1, ii, ii + 1,
+                                         k, lpanel, rowHandle, rowStream,
+                                         rowRawBlock, rowGemmBuff);
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneLLGPU(
+    int streamId,
+    int_t k, int_t ex, xlpanel_t<Ftype> &lpanel)
+{
+    if (lpanel.isEmpty())
+        return 0;
+
+    if (k >= 0 && static_cast<size_t>(k) < symPanelReadyEventIds.size() &&
+        symPanelReadyEventIds[k] >= 0)
+        gpuErrchk(cudaStreamWaitEvent(A_gpu.cuStreams[streamId],
+                                      A_gpu.panelReadyEvents[symPanelReadyEventIds[k]], 0));
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t exLoc = lpanel.find(ex);
+    cublasHandle_t handle = A_gpu.cuHandles[streamId];
+    cudaStream_t cuStream = A_gpu.cuStreams[streamId];
+    Ftype *rawBlock = A_gpu.lookAheadUGemmBuffer[streamId];
+    Ftype *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
+
+    if (exLoc == GLOBAL_BLOCK_NOT_FOUND)
+    {
+        dSymSchurCompUpLimitedMemLLGPU(st_lb, nlb, st_lb, nlb,
+                                       k, lpanel, handle, cuStream,
+                                       rawBlock, gemmBuff);
+    }
+    else
+    {
+        dSymSchurCompUpLimitedMemLLGPU(st_lb, exLoc, st_lb, exLoc,
+                                       k, lpanel, handle, cuStream,
+                                       rawBlock, gemmBuff);
+        dSymSchurCompUpLimitedMemLLGPU(exLoc + 1, nlb, st_lb, exLoc,
+                                       k, lpanel, handle, cuStream,
+                                       rawBlock, gemmBuff);
+        dSymSchurCompUpLimitedMemLLGPU(exLoc + 1, nlb, exLoc + 1, nlb,
+                                       k, lpanel, handle, cuStream,
+                                       rawBlock, gemmBuff);
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartnerGPU(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+    cublasHandle_t handle, cudaStream_t cuStream,
+    Ftype *gemmBuff)
+{
+    if (iSt >= iEnd || jSt >= jEnd ||
+        lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    for (int_t jj = jSt; jj < jEnd; ++jj)
+    {
+        int gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
+        int gemm_n = partner_panel.nbrow(jj);
+        int gemm_k = supersize(k);
+        if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
+            continue;
+
+        Ftype alpha = one<Ftype>();
+        Ftype beta = zeroT<Ftype>();
+        cublasSetStream(handle, cuStream);
+        myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                            gemm_m, gemm_n, gemm_k, &alpha,
+                            lpanel.blkPtrGPU(iSt), lpanel.LDA(),
+                            partner_panel.blkPtrGPU(jj),
+                            partner_panel.LDA(), &beta,
+                            gemmBuff, gemm_m);
+
+        scatterSymLowerTwoLRangeGPU_driver<Ftype>(
+            iSt, iEnd, jj, jj + 1, gemmBuff, gemm_m,
+            A_gpu.maxSuperSize, ldt, lpanel.gpuPanel,
+            partner_panel.gpuPanel,
+            dA_gpu, cuStream);
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartnerGPU(
+    int_t lStart, int_t lEnd,
+    int_t partnerStart, int_t partnerEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+    cublasHandle_t handle, cudaStream_t cuStream,
+    Ftype *gemmBuff)
+{
+    if (lStart >= lEnd || partnerStart >= partnerEnd ||
+        lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    int_t nlb = lpanel.nblocks();
+    int_t nub = partner_panel.nblocks();
+    lStart = SUPERLU_MAX((int_t)0, lStart);
+    partnerStart = SUPERLU_MAX((int_t)0, partnerStart);
+    lEnd = SUPERLU_MIN(lEnd, nlb);
+    partnerEnd = SUPERLU_MIN(partnerEnd, nub);
+    if (lStart >= lEnd || partnerStart >= partnerEnd)
+        return 0;
+
+    for (int_t jSt = partnerStart; jSt < partnerEnd; ++jSt)
+    {
+        int ncols = partner_panel.nbrow(jSt);
+        if (ncols <= 0)
+            continue;
+
+        int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+        int maxGemmRows = nrows;
+        if (nrows * ncols > A_gpu.gemmBufferSize)
+            maxGemmRows = SUPERLU_MAX(1, A_gpu.gemmBufferSize / ncols);
+
+        int_t iEnd = lStart;
+        while (iEnd < lEnd)
+        {
+            int_t iSt = iEnd;
+            iEnd = lpanel.getEndBlock(iSt, maxGemmRows);
+            if (iEnd > lEnd)
+                iEnd = lEnd;
+            if (iEnd <= iSt)
+                iEnd = iSt + 1;
+
+            dSymSchurCompUpdatePartWithLPartnerGPU(iSt, iEnd, jSt, jSt + 1,
+                                                   k, lpanel, partner_panel,
+                                                   handle, cuStream,
+                                                   gemmBuff);
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLPartnerGPU(
+    int streamId,
+    int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
+    xlpanel_t<Ftype> &partner_panel)
+{
+    if (lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t nub = partner_panel.nblocks();
+    int_t laILoc = lpanel.find(laIdx);
+    int_t laJLoc = partner_panel.find(laIdx);
+
+    cublasHandle_t colHandle = A_gpu.lookAheadLHandle[streamId];
+    cudaStream_t colStream = A_gpu.lookAheadLStream[streamId];
+    Ftype *colGemmBuff = A_gpu.lookAheadLGemmBuffer[streamId];
+
+    cublasHandle_t rowHandle = A_gpu.lookAheadUHandle[streamId];
+    cudaStream_t rowStream = A_gpu.lookAheadUStream[streamId];
+    Ftype *rowGemmBuff = A_gpu.gpuGemmBuffs[streamId];
+
+    if (laJLoc != GLOBAL_BLOCK_NOT_FOUND)
+        dSymSchurCompUpLimitedMemWithLPartnerGPU(st_lb, nlb,
+                                                 laJLoc, laJLoc + 1,
+                                                 k, lpanel, partner_panel,
+                                                 colHandle, colStream,
+                                                 colGemmBuff);
+
+    if (laILoc != GLOBAL_BLOCK_NOT_FOUND)
+    {
+        if (laJLoc == GLOBAL_BLOCK_NOT_FOUND)
+        {
+            dSymSchurCompUpLimitedMemWithLPartnerGPU(laILoc, laILoc + 1,
+                                                     0, nub,
+                                                     k, lpanel, partner_panel,
+                                                     rowHandle, rowStream,
+                                                     rowGemmBuff);
+        }
+        else
+        {
+            dSymSchurCompUpLimitedMemWithLPartnerGPU(laILoc, laILoc + 1,
+                                                     0, laJLoc,
+                                                     k, lpanel, partner_panel,
+                                                     rowHandle, rowStream,
+                                                     rowGemmBuff);
+            dSymSchurCompUpLimitedMemWithLPartnerGPU(laILoc, laILoc + 1,
+                                                     laJLoc + 1, nub,
+                                                     k, lpanel, partner_panel,
+                                                     rowHandle, rowStream,
+                                                     rowGemmBuff);
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLPartnerGPU(
+    int streamId,
+    int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
+    xlpanel_t<Ftype> &partner_panel)
+{
+    if (lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t nub = partner_panel.nblocks();
+    int_t exILoc = lpanel.find(ex);
+    int_t exJLoc = partner_panel.find(ex);
+    cublasHandle_t handle = A_gpu.cuHandles[streamId];
+    cudaStream_t cuStream = A_gpu.cuStreams[streamId];
+    Ftype *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
+
+    auto update_i_range = [&](int_t ist, int_t iend)
+    {
+        if (ist >= iend)
+            return;
+        if (exJLoc == GLOBAL_BLOCK_NOT_FOUND)
+        {
+            dSymSchurCompUpLimitedMemWithLPartnerGPU(ist, iend, 0, nub,
+                                                     k, lpanel, partner_panel,
+                                                     handle, cuStream,
+                                                     gemmBuff);
+        }
+        else
+        {
+            dSymSchurCompUpLimitedMemWithLPartnerGPU(ist, iend, 0, exJLoc,
+                                                     k, lpanel, partner_panel,
+                                                     handle, cuStream,
+                                                     gemmBuff);
+            dSymSchurCompUpLimitedMemWithLPartnerGPU(ist, iend,
+                                                     exJLoc + 1, nub,
+                                                     k, lpanel, partner_panel,
+                                                     handle, cuStream,
+                                                     gemmBuff);
+        }
+    };
+
+    if (exILoc == GLOBAL_BLOCK_NOT_FOUND)
+    {
+        update_i_range(st_lb, nlb);
+    }
+    else
+    {
+        update_i_range(st_lb, exILoc);
+        update_i_range(exILoc + 1, nlb);
+    }
+
+    return 0;
+}
+
 int getMPIProcsPerGPU()
 {
     if (!(getenv("MPI_PROCESS_PER_GPU")))
@@ -793,12 +1527,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 {
     int i, stream;
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "enter setLUstruct_GPU");
-    
+
 #if (DEBUGlevel >= 1)
     int iam = 0;
     CHECK_MALLOC(iam, "Enter setLUstruct_GPU()"); fflush(stdout);
 #endif
-	
+
     A_gpu.Pr = Pr;
     A_gpu.Pc = Pc;
     A_gpu.maxSuperSize = ldt;
@@ -824,16 +1558,41 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     memReqData += (nsupers + 1) * sizeof(int_t);
 
     tRegion[0] = SuperLU_timer_();
-    
+
     size_t totalNzvalSize = 0; /* too big for gemmBufferSize */
     size_t max_gemmCsize = 0;  /* Sherry added 2/20/2023 */
     size_t max_nzrow = 0;  /* Yang added 10/20/2023 */
-    size_t max_nzcol = 0;  
-    
-    /*Memory for lpapenl and upanel Data*/
-    for (i = 0; i < CEILING(nsupers, Pc); ++i)
+    size_t max_nzcol = 0;
+    bool sym_v2_mode = (options->SymFact == YES && symGPU3DVersion == 2);
+    bool need_u_panel_storage = needsUPanelStorage();
+    int_t localPanelGpuCount = symV2PanelCount();
+    int_t localRowGpuCount = symV2RowCount();
+    int_t localPanelGpuAlloc = SUPERLU_MAX((int_t)1, localPanelGpuCount);
+    int_t localRowGpuAlloc = SUPERLU_MAX((int_t)1, localRowGpuCount);
+    A_gpu.useSymV2PanelIndex = sym_v2_mode ? 1 : 0;
+    A_gpu.symV2PanelLocalIndex = NULL;
+    size_t sym_diag_buf_dim = static_cast<size_t>(SUPERLU_MAX((int_t)1, ldt));
+    if (sym_v2_mode)
     {
-        if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+        sym_diag_buf_dim = 1;
+        for (int_t k = 0; k < nsupers; ++k)
+        {
+            if (symV2PanelRoot(k) == mycol)
+                sym_diag_buf_dim =
+                    SUPERLU_MAX(sym_diag_buf_dim,
+                                static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                                supersize(k))));
+        }
+    }
+    size_t sym_diag_buf_elems =
+        xlu_checked_product(sym_diag_buf_dim, sym_diag_buf_dim,
+                            "GPU diagonal factor buffer");
+
+    /*Memory for lpapenl and upanel Data*/
+    for (i = 0; i < localPanelGpuCount; ++i)
+    {
+        int_t gid = symV2PanelGid(i);
+        if (gid < nsupers && isNodeInMyGrid[gid] == 1)
         {
             memReqData += lPanelVec[i].totalSize();
             totalNzvalSize += lPanelVec[i].nzvalSize();
@@ -842,59 +1601,95 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 	    //max_gemmCsize = SUPERoLU_MAX(max_gemmCsize, ???);
         }
     }
-    for (i = 0; i < CEILING(nsupers, Pr); ++i)
+    for (i = 0; i < localRowGpuCount; ++i)
     {
-        if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
+        int_t gid = symV2RowGid(i);
+        if (gid < nsupers && isNodeInMyGrid[gid] == 1)
         {
-            memReqData += uPanelVec[i].totalSize();
-            totalNzvalSize += uPanelVec[i].nzvalSize();
-            if(uPanelVec[i].nzvalSize()>0)
+            if (!sym_v2_mode)
+            {
+                memReqData += sizeof(int_t) * uPanelVec[i].indexSize();
+                memReqData += sizeof(Ftype) * uPanelVec[i].nzvalSize();
+                totalNzvalSize += uPanelVec[i].nzvalSize();
+            }
+            if(!sym_v2_mode && uPanelVec[i].nzvalSize()>0)
                 max_nzcol = SUPERLU_MAX(uPanelVec[i].nzcols(),max_nzcol);
         }
     }
     max_gemmCsize = max_nzcol*max_nzrow;
-    
-    memReqData += CEILING(nsupers, Pc) * sizeof(lpanelGPU_t);
-    memReqData += CEILING(nsupers, Pr) * sizeof(upanelGPU_t);
+
+    memReqData += localPanelGpuAlloc * sizeof(lpanelGPU_t);
+    if (need_u_panel_storage)
+        memReqData += localRowGpuAlloc * sizeof(upanelGPU_t);
+    if (sym_v2_mode)
+        memReqData += nsupers * sizeof(int_t);
 
     memReqData += sizeof(xLUstructGPU_t<Ftype>);
-    
+
     // Per stream data
     // TODO: estimate based on ancestor size
     int_t maxBuffSize = sp_ienv_dist (8, options);
     int maxsup = sp_ienv_dist(3, options); // max. supernode size
     maxBuffSize = SUPERLU_MAX(maxsup * maxsup, maxBuffSize); // Sherry added 7/10/23
-    
- #if 0   
-    A_gpu.gemmBufferSize = SUPERLU_MIN(maxBuffSize, totalNzvalSize); 
- #else 
+
+ #if 0
+    A_gpu.gemmBufferSize = SUPERLU_MIN(maxBuffSize, totalNzvalSize);
+ #else
     A_gpu.gemmBufferSize = SUPERLU_MIN(maxBuffSize, SUPERLU_MAX(max_gemmCsize,totalNzvalSize)); /* Yang added 10/20/2023 */
  #endif
- 
-    size_t dataPerStream = 3 * sizeof(Ftype) * maxLvalCount + 3 * sizeof(Ftype) * maxUvalCount + 2 * sizeof(int_t) * maxLidxCount + 2 * sizeof(int_t) * maxUidxCount + A_gpu.gemmBufferSize * sizeof(Ftype) + ldt * ldt * sizeof(Ftype);
+
+    int_t u_recv_val_count = sym_v2_mode ? 0 : maxUvalCount;
+    int_t u_recv_idx_count = sym_v2_mode ? 0 : maxUidxCount;
+    int_t lookahead_u_val_count =
+        sym_v2_mode ? maxLvalCount : maxUvalCount;
+
+    size_t dataPerStream = (3 * sizeof(Ftype) * maxLvalCount +
+                            2 * sizeof(Ftype) * maxSymPartnerLvalCount +
+                            sizeof(Ftype) * u_recv_val_count +
+                            sizeof(Ftype) * lookahead_u_val_count +
+                            2 * sizeof(int_t) * maxLidxCount +
+                            sizeof(int_t) * maxSymPartnerLidxCount +
+                            sizeof(int_t) * u_recv_idx_count +
+                            A_gpu.gemmBufferSize * sizeof(Ftype) +
+                            sym_diag_buf_elems * sizeof(Ftype));
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
-    std::printf("[sym-gpu3d-trace] rank %d: GPU memory estimate free_per_rank=%zu memReqData=%zu dataPerStream=%zu totalNzval=%zu gemmBuffer=%zu maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld\n",
+    std::printf("[sym-gpu3d-trace] rank %d: GPU memory estimate free_per_rank=%zu memReqData=%zu dataPerStream=%zu totalNzval=%zu gemmBuffer=%zu diagDim=%zu diagElems=%zu maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld maxSymPartnerLval=%lld maxSymPartnerLidx=%lld\n",
                 (grid3d != NULL) ? grid3d->iam : -1,
                 useableGPUMem, memReqData, dataPerStream, totalNzvalSize,
-                A_gpu.gemmBufferSize, (long long)maxLvalCount,
-                (long long)maxUvalCount, (long long)maxLidxCount,
-                (long long)maxUidxCount);
+                A_gpu.gemmBufferSize, sym_diag_buf_dim, sym_diag_buf_elems,
+                (long long)maxLvalCount, (long long)maxUvalCount,
+                (long long)maxLidxCount, (long long)maxUidxCount,
+                (long long)maxSymPartnerLvalCount,
+                (long long)maxSymPartnerLidxCount);
     std::fflush(stdout);
 #endif
-    if (memReqData + 2 * dataPerStream > useableGPUMem)
+    size_t two_stream_bytes =
+        xlu_checked_product(2, dataPerStream,
+                            "GPU two-stream buffer estimate");
+    if (memReqData > static_cast<size_t>(-1) - two_stream_bytes)
+        ABORT("GPU two-stream memory estimate overflows allocation size.");
+    size_t required_two_stream_bytes = memReqData + two_stream_bytes;
+    if (required_two_stream_bytes > useableGPUMem)
     {
-        printf("Not enough memory on GPU: available = %zu, required for 2 streams =%zu, exiting\n", useableGPUMem, memReqData + 2 * dataPerStream);
+        printf("Not enough memory on GPU: available=%zu required_for_2_streams=%zu "
+               "memReqData=%zu dataPerStream=%zu gemmBuffer=%zu diagDim=%zu "
+               "diagElems=%zu maxLval=%lld maxUval=%lld maxSymPartnerLval=%lld, exiting\n",
+               useableGPUMem, required_two_stream_bytes, memReqData,
+               dataPerStream, A_gpu.gemmBufferSize, sym_diag_buf_dim,
+               sym_diag_buf_elems, (long long)maxLvalCount,
+               (long long)maxUvalCount, (long long)maxSymPartnerLvalCount);
         exit(-1);
     }
 
     tRegion[0] = SuperLU_timer_() - tRegion[0];
-#if ( PRNTlevel>=1 )    
+#if ( PRNTlevel>=1 )
     // print the time taken to estimate memory on GPU
     if (grid3d->iam == 0)
     {
         printf("GPU deviceCount=%d\n", deviceCount);
-	printf("\t.. totalNzvalSize %ld, gemmBufferSize %ld\n",
-	       (long) totalNzvalSize, (long) A_gpu.gemmBufferSize);
+	printf("\t.. totalNzvalSize %ld, gemmBufferSize %ld, diagBufDim %ld, diagBufElems %ld\n",
+	       (long) totalNzvalSize, (long) A_gpu.gemmBufferSize,
+	       (long) sym_diag_buf_dim, (long) sym_diag_buf_elems);
     }
 #endif
 
@@ -916,11 +1711,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         (options->SymFact != YES) ||
         (symGpuContract == 1 || symGpuContract == 2);
 
-#if ( PRNTlevel>=1 )    
+#if ( PRNTlevel>=1 )
     if (!grid3d->iam)
         printf("Using %d CUDA LookAhead streams\n", rNumberOfStreams);
     // size_t totalMemoryRequired = memReqData + numberOfStreams * dataPerStream;
-#endif    
+#endif
 
 #if 0 /**** Old code ****/
     upanelGPU_t *uPanelVec_GPU = new upanelGPU_t[CEILING(nsupers, Pr)];
@@ -976,10 +1771,14 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuCurrentPtr = (Ftype *)gpuCurrentPtr + maxLvalCount;
         A_gpu.UvalRecvBufs[stream] = (Ftype *)gpuCurrentPtr;
         gpuCurrentPtr = (Ftype *)gpuCurrentPtr + maxUvalCount;
+        A_gpu.symPartnerLvalRecvBufs[stream] = (Ftype *)gpuCurrentPtr;
+        gpuCurrentPtr = (Ftype *)gpuCurrentPtr + maxSymPartnerLvalCount;
         A_gpu.LidxRecvBufs[stream] = (int_t *)gpuCurrentPtr;
         gpuCurrentPtr = (int_t *)gpuCurrentPtr + maxLidxCount;
         A_gpu.UidxRecvBufs[stream] = (int_t *)gpuCurrentPtr;
         gpuCurrentPtr = (int_t *)gpuCurrentPtr + maxUidxCount;
+        A_gpu.symPartnerLidxRecvBufs[stream] = (int_t *)gpuCurrentPtr;
+        gpuCurrentPtr = (int_t *)gpuCurrentPtr + maxSymPartnerLidxCount;
 
         A_gpu.gpuGemmBuffs[stream] = (Ftype *)gpuCurrentPtr;
         gpuCurrentPtr = (Ftype *)gpuCurrentPtr + A_gpu.gemmBufferSize;
@@ -1015,37 +1814,70 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     tUsend = SuperLU_timer_();
     xlpanelGPU_t<Ftype> *lPanelVec_GPU = copyLpanelsToGPU();
     tUsend = SuperLU_timer_() - tUsend;
-#else 
-    xupanelGPU_t<Ftype> *uPanelVec_GPU = new xupanelGPU_t<Ftype>[CEILING(nsupers, Pr)];
-    xlpanelGPU_t<Ftype> *lPanelVec_GPU = new xlpanelGPU_t<Ftype>[CEILING(nsupers, Pc)];
+#else
+    xupanelGPU_t<Ftype> *uPanelVec_GPU = NULL;
+    if (need_u_panel_storage)
+        uPanelVec_GPU = new xupanelGPU_t<Ftype>[localRowGpuAlloc]();
+    xlpanelGPU_t<Ftype> *lPanelVec_GPU =
+        new xlpanelGPU_t<Ftype>[localPanelGpuAlloc]();
+    bool sym_v2_skip_u_gpu_setup =
+        (options->SymFact == YES && symGPU3DVersion == 2);
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before copy panels to GPU");
     tLsend = SuperLU_timer_();
-    for (i = 0; i < CEILING(nsupers, Pc); ++i)
+    for (i = 0; i < localPanelGpuCount; ++i)
     {
-        if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+        int_t gid = symV2PanelGid(i);
+        if (gid < nsupers && isNodeInMyGrid[gid] == 1)
             lPanelVec_GPU[i] = lPanelVec[i].copyToGPU();
     }
     tLsend = SuperLU_timer_() - tLsend;
     tUsend = SuperLU_timer_();
     // cudaCheckError();
-    for (i = 0; i < CEILING(nsupers, Pr); ++i)
+    for (i = 0; uPanelVec_GPU != NULL && i < localRowGpuCount; ++i)
     {
-        if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
-            uPanelVec_GPU[i] = uPanelVec[i].copyToGPU();
+        int_t gid = symV2RowGid(i);
+        if (gid < nsupers && isNodeInMyGrid[gid] == 1)
+        {
+            if (!sym_v2_skip_u_gpu_setup)
+                uPanelVec_GPU[i] = uPanelVec[i].copyToGPU();
+        }
     }
     tUsend = SuperLU_timer_() - tUsend;
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after copy panels to GPU");
 #endif
     tRegion[1] = SuperLU_timer_() - tRegion[1];
 
-    gpuErrchk(cudaMalloc(&A_gpu.lPanelVec, CEILING(nsupers, Pc) * sizeof(xlpanelGPU_t<Ftype>)));
-    gpuErrchk(cudaMemcpy(A_gpu.lPanelVec, lPanelVec_GPU,
-               CEILING(nsupers, Pc) * sizeof(xlpanelGPU_t<Ftype>), cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMalloc(&A_gpu.uPanelVec, CEILING(nsupers, Pr) * sizeof(xupanelGPU_t<Ftype>)));
-    gpuErrchk(cudaMemcpy(A_gpu.uPanelVec, uPanelVec_GPU,
-               CEILING(nsupers, Pr) * sizeof(xupanelGPU_t<Ftype>), cudaMemcpyHostToDevice));
+    if (sym_v2_mode)
+    {
+        int_t *sym_v2_panel_index =
+            xlu_sym_v2_panel_index_table<Ftype>(trf3Dpartition);
+        if (sym_v2_panel_index == NULL)
+            ABORT("SymFact V2 GPU panel-local index table is missing.");
+        gpuErrchk(cudaMalloc(&A_gpu.symV2PanelLocalIndex,
+                             nsupers * sizeof(int_t)));
+        gpuErrchk(cudaMemcpy(A_gpu.symV2PanelLocalIndex,
+                             sym_v2_panel_index,
+                             nsupers * sizeof(int_t),
+                             cudaMemcpyHostToDevice));
+    }
 
-    delete [] uPanelVec_GPU;
+    gpuErrchk(cudaMalloc(&A_gpu.lPanelVec,
+                         localPanelGpuAlloc * sizeof(xlpanelGPU_t<Ftype>)));
+    gpuErrchk(cudaMemcpy(A_gpu.lPanelVec, lPanelVec_GPU,
+               localPanelGpuAlloc * sizeof(xlpanelGPU_t<Ftype>),
+               cudaMemcpyHostToDevice));
+    A_gpu.uPanelVec = NULL;
+    if (uPanelVec_GPU != NULL)
+    {
+        gpuErrchk(cudaMalloc(&A_gpu.uPanelVec,
+                             localRowGpuAlloc * sizeof(xupanelGPU_t<Ftype>)));
+        gpuErrchk(cudaMemcpy(A_gpu.uPanelVec, uPanelVec_GPU,
+                   localRowGpuAlloc * sizeof(xupanelGPU_t<Ftype>),
+                   cudaMemcpyHostToDevice));
+    }
+
+    if (uPanelVec_GPU != NULL)
+        delete [] uPanelVec_GPU;
     delete [] lPanelVec_GPU;
 
     tRegion[2] = SuperLU_timer_();
@@ -1078,11 +1910,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 
         gpuCusolverErrchk(cusolverDnDestroy(cusolverH));
     }
-#if ( PRNTlevel >= 1 )    
+#if ( PRNTlevel >= 1 )
     printf("Size of dfactBuf is %d\n", dfactBufSize);
-#endif    
+#endif
     tRegion[2] = SuperLU_timer_() - tRegion[2];
-    
+
     tRegion[3] = SuperLU_timer_();
 
     double tcuMalloc=SuperLU_timer_();
@@ -1092,9 +1924,24 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
         gpuErrchk(cudaMalloc(&A_gpu.LvalRecvBufs[stream], sizeof(Ftype) * maxLvalCount));
-        gpuErrchk(cudaMalloc(&A_gpu.UvalRecvBufs[stream], sizeof(Ftype) * maxUvalCount));
+        A_gpu.UvalRecvBufs[stream] = NULL;
+        if (u_recv_val_count > 0)
+            gpuErrchk(cudaMalloc(&A_gpu.UvalRecvBufs[stream],
+                                 sizeof(Ftype) *
+                                     static_cast<size_t>(u_recv_val_count)));
+        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLvalRecvBufs[stream],
+                             sizeof(Ftype) *
+                                 static_cast<size_t>(SUPERLU_MAX((int_t)1, maxSymPartnerLvalCount))));
+        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLStageBufs[stream],
+                             sizeof(Ftype) *
+                                 static_cast<size_t>(SUPERLU_MAX((int_t)1, maxSymPartnerLvalCount))));
         gpuErrchk(cudaMalloc(&A_gpu.LidxRecvBufs[stream], sizeof(int_t) * maxLidxCount));
-        gpuErrchk(cudaMalloc(&A_gpu.UidxRecvBufs[stream], sizeof(int_t) * maxUidxCount));
+        A_gpu.UidxRecvBufs[stream] = NULL;
+        if (u_recv_idx_count > 0)
+            gpuErrchk(cudaMalloc(&A_gpu.UidxRecvBufs[stream],
+                                 sizeof(int_t) *
+                                     static_cast<size_t>(u_recv_idx_count)));
+        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLidxRecvBufs[stream], sizeof(int_t) * maxSymPartnerLidxCount));
         A_gpu.diagFactWork[stream] = NULL;
         A_gpu.diagFactIPIV[stream] = NULL;
         A_gpu.diagFactInfo[stream] = NULL;
@@ -1112,22 +1959,27 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         /*lookAhead buffers and stream*/
         gpuErrchk(cudaMalloc(&A_gpu.lookAheadLGemmBuffer[stream], sizeof(Ftype) * maxLvalCount));
 
-        gpuErrchk(cudaMalloc(&A_gpu.lookAheadUGemmBuffer[stream], sizeof(Ftype) * maxUvalCount));
+        gpuErrchk(cudaMalloc(&A_gpu.lookAheadUGemmBuffer[stream],
+                             sizeof(Ftype) *
+                                 static_cast<size_t>(SUPERLU_MAX((int_t)1, lookahead_u_val_count))));
             // Sherry: replace this by new code
 	        //cudaMalloc(&A_gpu.dFBufs[stream], ldt * ldt * sizeof(Ftype));
 	        //cudaMalloc(&A_gpu.gpuGemmBuffs[stream], A_gpu.gemmBufferSize * sizeof(Ftype));
     }
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after per-stream buffer allocation");
-    
+
     /* Sherry: dfBufs[] changed to Ftype pointer **, max(batch, numCudaStreams) */
     int mxLeafNode = trf3Dpartition->mxLeafNode, mx_fsize = 0;
 
-    /* Compute gemmCsize[] for batch operations 
+    /* Compute gemmCsize[] for batch operations
        !!!!!!! WARNING: this only works for 1 MPI  !!!!!! */
+    if (sym_v2_mode && options->batchCount > 0)
+        ABORT("SymFact GPU3DVERSION=2 does not support batchCount>0 until LDL-native batch sizing is implemented.");
+
     if ( options->batchCount > 0 ) {
 	trf3Dpartition->gemmCsizes = int32Calloc_dist(mxLeafNode);
 	int k, k0, k_st, k_end, offset, Csize;
-	
+
 	for (int ilvl = 0; ilvl < maxLvl; ++ilvl) {  /* Loop through the Pz tree levels */
 	    int treeId = trf3Dpartition->myTreeIdxs[ilvl];
 	    sForest_t* sforest = trf3Dpartition->sForests[treeId];
@@ -1139,7 +1991,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 		for (int topoLvl = 0; topoLvl < maxTopoLevel; ++topoLvl) {
 		    k_st = sforest->topoInfo.eTreeTopLims[topoLvl];
 		    k_end = sforest->topoInfo.eTreeTopLims[topoLvl + 1];
-		
+
 		    for (k0 = k_st; k0 < k_end; ++k0) {
 			offset = k0 - k_st;
 			k = perm_c_supno[k0];
@@ -1151,68 +2003,73 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 	    }
 	}
     }
-    
+
     int num_dfbufs;  /* number of diagonal buffers */
     if ( options->batchCount > 0 ) { /* use batch code */
 	num_dfbufs = mxLeafNode;
     } else { /* use pipelined code */
-	// num_dfbufs = MAX_CUDA_STREAMS; // 
+	// num_dfbufs = MAX_CUDA_STREAMS; //
     num_dfbufs = A_gpu.numCudaStreams;
     }
     int num_gemmbufs = num_dfbufs;
-#if ( PRNTlevel >= 1 )    
+#if ( PRNTlevel >= 1 )
     printf(".. setLUstrut_GPU: num_dfbufs %d, num_gemmbufs %d\n", num_dfbufs, num_gemmbufs);
     fflush(stdout);
 #endif
 
     A_gpu.dFBufs = (Ftype **) SUPERLU_MALLOC(num_dfbufs * sizeof(Ftype *));
     A_gpu.gpuGemmBuffs = (Ftype **) SUPERLU_MALLOC(num_gemmbufs * sizeof(Ftype *));
-    
-    int l, sum_diag_size = 0, sum_gemmC_size = 0;
-    
+
+    int l;
+    size_t sum_diag_size = 0;
+    size_t sum_gemmC_size = 0;
+
     if ( options->batchCount > 0 ) { /* set up variable-size buffers for batch code */
 	for (i = 0; i < num_dfbufs; ++i) {
 	    l = trf3Dpartition->diagDims[i];
 	    gpuErrchk(cudaMalloc(&(A_gpu.dFBufs[i]), l * l * sizeof(Ftype)));
 	    //printf("\t diagDims[%d] %d\n", i, l);
 	    gpuErrchk(cudaMalloc(&(A_gpu.gpuGemmBuffs[i]), trf3Dpartition->gemmCsizes[i] * sizeof(Ftype)));
-	    sum_diag_size += l * l;
-	    sum_gemmC_size += trf3Dpartition->gemmCsizes[i];
+	    sum_diag_size += static_cast<size_t>(l) * static_cast<size_t>(l);
+	    sum_gemmC_size += static_cast<size_t>(trf3Dpartition->gemmCsizes[i]);
 	}
     } else { /* uniform-size buffers */
-	l = ldt * ldt;
+	size_t dfbuf_elems = sym_diag_buf_elems;
         xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before dfbuf/gemmbuf allocation");
 	for (i = 0; i < num_dfbufs; ++i) {
-        gpuErrchk(cudaMalloc(&(A_gpu.dFBufs[i]), l * sizeof(Ftype)));
+        gpuErrchk(cudaMalloc(&(A_gpu.dFBufs[i]), dfbuf_elems * sizeof(Ftype)));
 	    gpuErrchk(cudaMalloc(&(A_gpu.gpuGemmBuffs[i]), A_gpu.gemmBufferSize * sizeof(Ftype)));
+	    sum_diag_size += dfbuf_elems;
+	    sum_gemmC_size += A_gpu.gemmBufferSize;
 	}
         xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after dfbuf/gemmbuf allocation");
     }
-    
+
     // Wajih: Adding allocation for batched LU and SCU marshalled data
     // TODO: these are serialized workspaces, so the allocations can be shared
-    
-#if 0    
+
+#if 0
     A_gpu.marshall_data.setBatchSize(num_dfbufs);
     A_gpu.sc_marshall_data.setBatchSize(num_dfbufs);
 #endif
 
     // TODO: where should these be freed?
-    // Allocate GPU copy for the node list 
+    // Allocate GPU copy for the node list
     gpuErrchk(cudaMalloc(&(A_gpu.dperm_c_supno), sizeof(int) * mx_fsize));
-    // Allocate GPU copy of all the gemm buffer pointers and copy the host array to the GPU 
+    // Allocate GPU copy of all the gemm buffer pointers and copy the host array to the GPU
     gpuErrchk(cudaMalloc(&(A_gpu.dgpuGemmBuffs), sizeof(Ftype*) * num_gemmbufs));
     gpuErrchk(cudaMemcpy(A_gpu.dgpuGemmBuffs, A_gpu.gpuGemmBuffs, sizeof(Ftype*) * num_gemmbufs, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaGetLastError());
 
     tcuMalloc = SuperLU_timer_() - tcuMalloc;
 #if ( PRNTlevel>=1 )
     printf("Time to allocate GPU memory: %g\n", tcuMalloc);
-    printf("\t.. sum_diag_size %d\t sum_gemmC_size %d\n", sum_diag_size, sum_gemmC_size);
+    printf("\t.. sum_diag_size %zu\t sum_gemmC_size %zu\n", sum_diag_size, sum_gemmC_size);
     fflush(stdout);
 #endif
 
     double tcuStream=SuperLU_timer_();
-    
+
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
         // cublasCreate(&A_gpu.cuHandles[stream]);
@@ -1225,7 +2082,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     double tcuStreamCreate=SuperLU_timer_();
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
-        cudaStreamCreate(&A_gpu.cuStreams[stream]);
+        gpuErrchk(cudaStreamCreate(&A_gpu.cuStreams[stream]));
         gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
                                            cudaEventDisableTiming));
         gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[stream],
@@ -1234,12 +2091,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuErrchk(cudaEventCreate(&A_gpu.diagD2HStartEvents[stream]));
         gpuErrchk(cudaEventCreate(&A_gpu.diagD2HEndEvents[stream]));
 #endif
-        cublasCreate(&A_gpu.cuHandles[stream]);
+        gpublasCheckErrors(cublasCreate(&A_gpu.cuHandles[stream]));
         /*lookAhead buffers and stream*/
-        cublasCreate(&A_gpu.lookAheadLHandle[stream]);
-        cudaStreamCreate(&A_gpu.lookAheadLStream[stream]);
-        cublasCreate(&A_gpu.lookAheadUHandle[stream]);
-        cudaStreamCreate(&A_gpu.lookAheadUStream[stream]);
+        gpublasCheckErrors(cublasCreate(&A_gpu.lookAheadLHandle[stream]));
+        gpuErrchk(cudaStreamCreate(&A_gpu.lookAheadLStream[stream]));
+        gpublasCheckErrors(cublasCreate(&A_gpu.lookAheadUHandle[stream]));
+        gpuErrchk(cudaStreamCreate(&A_gpu.lookAheadUStream[stream]));
 
     }
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after stream/handle creation");
@@ -1263,7 +2120,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     }
     tcuStreamCreate = SuperLU_timer_() - tcuStreamCreate;
     tRegion[3] = SuperLU_timer_() - tRegion[3];
-    
+
 #if ( PRNTlevel >= 1 )
     printf("Time to create cublas streams: %g\n", tcuStream);
     printf("Time to create CUDA streams: %g\n", tcuStreamCreate);
@@ -1282,9 +2139,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "exit setLUstruct_GPU");
 
 #endif /* match #if 0 ... #else ... */
-    
+
     // cudaCheckError();
-    
+
 #if (DEBUGlevel >= 1)
 	CHECK_MALLOC(iam, "Exit setLUstruct_GPU()");
 #endif
@@ -1295,26 +2152,42 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::copyLUGPUtoHost()
 {
 
-    for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
-        if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+    for (int_t i = 0; i < symV2PanelCount(); ++i)
+        if (symV2PanelGid(i) < nsupers &&
+            isNodeInMyGrid[symV2PanelGid(i)] == 1)
             lPanelVec[i].copyFromGPU();
 
-    for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
-        if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
-            uPanelVec[i].copyFromGPU();
+    if (needsUPanelStorage())
+    {
+        if (uPanelVec == NULL)
+            ABORT("U host panel storage is missing.");
+        for (int_t i = 0; i < symV2RowCount(); ++i)
+            if (symV2RowGid(i) < nsupers &&
+                isNodeInMyGrid[symV2RowGid(i)] == 1)
+                uPanelVec[i].copyFromGPU();
+    }
     return 0;
 }
 
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::copyLUHosttoGPU()
 {
-    for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
-        if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+    for (int_t i = 0; i < symV2PanelCount(); ++i)
+        if (symV2PanelGid(i) < nsupers &&
+            isNodeInMyGrid[symV2PanelGid(i)] == 1)
             lPanelVec[i].copyBackToGPU();
 
-    for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
-        if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
-            uPanelVec[i].copyBackToGPU();
+    if (needsUPanelStorage())
+    {
+        if (uPanelVec == NULL)
+            ABORT("U host panel storage is missing.");
+        if (A_gpu.uPanelVec == NULL)
+            ABORT("U GPU panel storage is missing.");
+        for (int_t i = 0; i < symV2RowCount(); ++i)
+            if (symV2RowGid(i) < nsupers &&
+                isNodeInMyGrid[symV2RowGid(i)] == 1)
+                uPanelVec[i].copyBackToGPU();
+    }
     return 0;
 }
 
@@ -1322,11 +2195,18 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::checkGPU()
 {
 
-    for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
+    for (int_t i = 0; i < symV2PanelCount(); ++i)
         lPanelVec[i].checkGPU();
 
-    for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
-        uPanelVec[i].checkGPU();
+    if (needsUPanelStorage())
+    {
+        if (uPanelVec == NULL)
+            ABORT("U host panel storage is missing.");
+        if (A_gpu.uPanelVec == NULL)
+            ABORT("U GPU panel storage is missing.");
+        for (int_t i = 0; i < symV2RowCount(); ++i)
+            uPanelVec[i].checkGPU();
+    }
 
     std::cout << "Checking LU struct completed succesfully"
               << "\n";
@@ -1448,7 +2328,7 @@ xupanelGPU_t<Ftype> *xLUstruct_t<Ftype>::copyUpanelsToGPU()
     int iam = 0;
     CHECK_MALLOC(iam, "Enter copyUpanelsToGPU()");
 #endif
-    
+
     xupanelGPU_t<Ftype> *uPanelVec_GPU = new xupanelGPU_t<Ftype>[CEILING(nsupers, Pr)];
 
     gpuUvalSize = 0;
@@ -1566,23 +2446,23 @@ xupanelGPU_t<Ftype> *xLUstruct_t<Ftype>::copyUpanelsToGPU()
 
         SUPERLU_FREE(valBuffer);
     } /* end else AVOID_CPU_NZVAL not set */
-    
+
     if ( gpuUidxSize>0 ) /* Sherry fix: gpuUidxSize can be 0 */
 	SUPERLU_FREE(idxBuffer);
 
 #if (DEBUGlevel >= 1)
     CHECK_MALLOC(iam, "Exit copyUpanelsToGPU()");
 #endif
-    
+
     return uPanelVec_GPU;
-    
+
 } /* copyUpanelsToGPU */
 //#endif
 
 
-//////// Rest of the code for batch not used anymore 
+//////// Rest of the code for batch not used anymore
 #if (0)
-// Marshall Functors for batched execution 
+// Marshall Functors for batched execution
 template <typename Ftype>
 struct MarshallLUFunc {
     int k_st, *ld_batch, *dim_batch;
@@ -1597,9 +2477,9 @@ struct MarshallLUFunc {
         this->diag_ptrs = diag_ptrs;
         this->A_gpu = A_gpu;
     }
-    
+
     __device__ void operator()(const unsigned int &i) const
-    {   
+    {
         int k = A_gpu->dperm_c_supno[k_st + i];
         int_t* xsup = A_gpu->xsup;
         lpanelGPU_t &lpanel = A_gpu->lPanelVec[A_gpu->g2lCol(k)];
@@ -1629,9 +2509,9 @@ struct MarshallTRSMUFunc {
         this->panel_dim_batch = panel_dim_batch;
         this->A_gpu = A_gpu;
     }
-    
+
     __device__ void operator()(const unsigned int &i) const
-    {   
+    {
         int k = A_gpu->dperm_c_supno[k_st + i];
         int_t* xsup = A_gpu->xsup;
         int ksupc = SuperSize(k);
@@ -1653,7 +2533,7 @@ struct MarshallTRSMUFunc {
             panel_ptrs[i] = diag_ptrs[i] = NULL;
             panel_ld_batch[i] = diag_ld_batch[i] = 1;
             panel_dim_batch[i] = diag_dim_batch[i] = 0;
-        }    
+        }
     }
 };
 
@@ -1676,7 +2556,7 @@ struct MarshallTRSMLFunc {
         this->panel_dim_batch = panel_dim_batch;
         this->A_gpu = A_gpu;
     }
-    
+
     __device__ void operator()(const unsigned int &i) const
     {
         int k = A_gpu->dperm_c_supno[k_st + i];
@@ -1706,7 +2586,7 @@ struct MarshallTRSMLFunc {
             panel_ptrs[i] = diag_ptrs[i] = NULL;
             panel_ld_batch[i] = diag_ld_batch[i] = 1;
             panel_dim_batch[i] = diag_dim_batch[i] = 0;
-        }    
+        }
     }
 };
 
@@ -1717,7 +2597,7 @@ struct MarshallInitSCUFunc {
     xLUstructGPU_t<Ftype> *A_gpu;
 
     MarshallInitSCUFunc(
-        int k_st, int *ist, int *iend, int *maxGemmRows, int *maxGemmCols, 
+        int k_st, int *ist, int *iend, int *maxGemmRows, int *maxGemmCols,
         lpanelGPU_t* lpanels, upanelGPU_t* upanels, xLUstructGPU_t<Ftype> *A_gpu
     )
     {
@@ -1730,15 +2610,15 @@ struct MarshallInitSCUFunc {
         this->upanels = upanels;
         this->A_gpu = A_gpu;
     }
-    
+
     __device__ void operator()(const unsigned int &i) const
-    {   
+    {
         int k = A_gpu->dperm_c_supno[k_st + i];
         size_t gemmBufferSize = A_gpu->gemmBufferSize;
-        
+
         lpanelGPU_t &lpanel = A_gpu->lPanelVec[A_gpu->g2lCol(k)];
         upanelGPU_t &upanel = A_gpu->uPanelVec[A_gpu->g2lCol(k)];
-        
+
         lpanels[i] = lpanel;
         upanels[i] = upanel;
 
@@ -1797,7 +2677,7 @@ struct MarshallSCUOuterFunc {
         this->done_flags = done_flags;
         this->A_gpu = A_gpu;
     }
-    
+
     __device__ void operator()(const unsigned int &i) const
     {
         int k = A_gpu->dperm_c_supno[k_st + i];
@@ -1805,7 +2685,7 @@ struct MarshallSCUOuterFunc {
         upanelGPU_t &upanel = A_gpu->uPanelVec[A_gpu->g2lCol(k)];
         int& iEnd = iend[i];
 
-        // Not done if even one operation still has work to do 
+        // Not done if even one operation still has work to do
         if(!lpanel.isEmpty() && !upanel.isEmpty() && iEnd < lpanel.nblocks())
         {
             int& iSt = ist[i];
@@ -1834,12 +2714,12 @@ template<typename T>
 struct element_diff : public thrust::unary_function<T,T>
 {
     T* st, *end;
-    element_diff(T* st, T *end) 
+    element_diff(T* st, T *end)
     {
         this->st = st;
         this->end = end;
     }
-    
+
     __device__ T operator()(const T &x) const
     {
         return end[x] - st[x];
@@ -1854,7 +2734,7 @@ struct MarshallSCUInnerFunc {
     int* lda_array, *ldb_array, *ldc_array, *m_array, *n_array, *k_array;
 
     MarshallSCUInnerFunc(
-        int k_st, int *ist, int *iend, int *jst, int *jend, int *maxGemmCols, 
+        int k_st, int *ist, int *iend, int *jst, int *jend, int *maxGemmCols,
         Ftype** A_ptrs, int* lda_array, Ftype** B_ptrs, int* ldb_array, Ftype **C_ptrs, int *ldc_array,
         int *m_array, int *n_array, int *k_array, xLUstructGPU_t<Ftype> *A_gpu
     )
@@ -1883,17 +2763,17 @@ struct MarshallSCUInnerFunc {
         int_t* xsup = A_gpu->xsup;
         lpanelGPU_t &lpanel = A_gpu->lPanelVec[A_gpu->g2lCol(k)];
         upanelGPU_t &upanel = A_gpu->uPanelVec[A_gpu->g2lCol(k)];
-        
-        int iSt = ist[i], iEnd = iend[i]; 
+
+        int iSt = ist[i], iEnd = iend[i];
         int& jSt = jst[i], &jEnd = jend[i];
-        
-        // Not done if even one operation still has work to do 
+
+        // Not done if even one operation still has work to do
         if(!lpanel.isEmpty() && !upanel.isEmpty() && jEnd < upanel.nblocks())
         {
             jSt = jEnd;
             jEnd = upanel.getEndBlock(jSt, maxGemmCols[i]);
             assert(jEnd > jSt);
-        
+
             A_ptrs[i] = lpanel.blkPtr(iSt);
             B_ptrs[i] = upanel.blkPtr(jSt);
             C_ptrs[i] = A_gpu->dgpuGemmBuffs[i];
@@ -1901,7 +2781,7 @@ struct MarshallSCUInnerFunc {
             lda_array[i] = lpanel.LDA();
             ldb_array[i] = upanel.LDA();
             ldc_array[i] = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
-                        
+
             m_array[i] = ldc_array[i];
             n_array[i] = upanel.stCol(jEnd) - upanel.stCol(jSt);
             k_array[i] = SuperSize(k);
@@ -1915,13 +2795,13 @@ struct MarshallSCUInnerFunc {
     }
 }
 
-// Marshalling routines for batched execution 
+// Marshalling routines for batched execution
 void xLUstruct_t<Ftype>::marshallBatchedLUData(int k_st, int k_end, int_t *perm_c_supno)
 {
-    // First gather up all the pointer and meta data on the host 
+    // First gather up all the pointer and meta data on the host
     LUMarshallData& mdata = A_gpu.marshall_data;
     mdata.batchsize = k_end - k_st;
-    
+
     MarshallLUFunc func(k_st, mdata.dev_diag_ptrs, mdata.dev_diag_ld_array, mdata.dev_diag_dim_array, dA_gpu);
 
     thrust::for_each(
@@ -1938,21 +2818,21 @@ void xLUstruct_t<Ftype>::marshallBatchedLUData(int k_st, int k_end, int_t *perm_
     // for (int_t k0 = k_st; k0 < k_end; k0++)
     // {
     //     int_t k = perm_c_supno[k0];
-        
+
 	// 	if (iam == procIJ(k, k))
-	// 	{			
+	// 	{
     //         assert(mdata.batchsize < mdata.host_diag_ptrs.size());
 
     //         xlpanel_t<Ftype> &lpanel = lPanelVec[g2lCol(k)];
 	// 		diag_ptrs[mdata.batchsize] = lpanel.blkPtrGPU(0);
 	// 		ld_batch[mdata.batchsize] = lpanel.LDA();
-	// 		dim_batch[mdata.batchsize] = SuperSize(k);	
+	// 		dim_batch[mdata.batchsize] = SuperSize(k);
 	// 		mdata.batchsize++;
-	// 	}     
+	// 	}
     // }
 
     // mdata.setMaxDiag();
-    // // Then copy the marshalled data over to the GPU 
+    // // Then copy the marshalled data over to the GPU
     // gpuErrchk(cudaMemcpy(mdata.dev_diag_ptrs, diag_ptrs, mdata.batchsize * sizeof(Ftype*), cudaMemcpyHostToDevice));
     // gpuErrchk(cudaMemcpy(mdata.dev_diag_ld_array, ld_batch, mdata.batchsize * sizeof(int), cudaMemcpyHostToDevice));
     // gpuErrchk(cudaMemcpy(mdata.dev_diag_dim_array, dim_batch, mdata.batchsize * sizeof(int), cudaMemcpyHostToDevice));
@@ -1960,12 +2840,12 @@ void xLUstruct_t<Ftype>::marshallBatchedLUData(int k_st, int k_end, int_t *perm_
 
 void xLUstruct_t<Ftype>::marshallBatchedTRSMUData(int k_st, int k_end, int_t *perm_c_supno)
 {
-    // First gather up all the pointer and meta data on the host 
+    // First gather up all the pointer and meta data on the host
     LUMarshallData& mdata = A_gpu.marshall_data;
     mdata.batchsize = k_end - k_st;
 
     MarshallTRSMUFunc func(
-        k_st, mdata.dev_diag_ptrs, mdata.dev_diag_ld_array, mdata.dev_diag_dim_array, 
+        k_st, mdata.dev_diag_ptrs, mdata.dev_diag_ld_array, mdata.dev_diag_dim_array,
         mdata.dev_panel_ptrs, mdata.dev_panel_ld_array, mdata.dev_panel_dim_array, dA_gpu
     );
 
@@ -1990,7 +2870,7 @@ void xLUstruct_t<Ftype>::marshallBatchedTRSMUData(int k_st, int k_end, int_t *pe
 	// 	int ksupc = SuperSize(k);
 
 	// 	if (myrow == krow(k))
-	// 	{			
+	// 	{
     //         upanel_t& upanel = uPanelVec[g2lRow(k)];
     //         xlpanel_t<Ftype> &lpanel = lPanelVec[g2lCol(k)];
     //         if(!upanel.isEmpty())
@@ -2000,7 +2880,7 @@ void xLUstruct_t<Ftype>::marshallBatchedTRSMUData(int k_st, int k_end, int_t *pe
     //             panel_ptrs[mdata.batchsize] = upanel.blkPtrGPU(0);
     //             panel_ld_batch[mdata.batchsize] = upanel.LDA();
     //             panel_dim_batch[mdata.batchsize] = upanel.nzcols();
-                
+
     //             // Hackathon change: using the original diagonal block instead of the bcast buffer
     //             // diag_ptrs[mdata.batchsize] = A_gpu.dFBufs[buffer_offset];
     //             // diag_ld_batch[mdata.batchsize] = ksupc;
@@ -2011,13 +2891,13 @@ void xLUstruct_t<Ftype>::marshallBatchedTRSMUData(int k_st, int k_end, int_t *pe
 
     //             mdata.batchsize++;
     //         }
-	// 	}     
+	// 	}
     // }
 
     // mdata.setMaxDiag();
     // mdata.setMaxPanel();
-    
-    // // Then copy the marshalled data over to the GPU 
+
+    // // Then copy the marshalled data over to the GPU
     // gpuErrchk(cudaMemcpy(mdata.dev_diag_ptrs, diag_ptrs, mdata.batchsize * sizeof(Ftype*), cudaMemcpyHostToDevice));
     // gpuErrchk(cudaMemcpy(mdata.dev_diag_ld_array, diag_ld_batch, mdata.batchsize * sizeof(int), cudaMemcpyHostToDevice));
     // gpuErrchk(cudaMemcpy(mdata.dev_diag_dim_array, diag_dim_batch, mdata.batchsize * sizeof(int), cudaMemcpyHostToDevice));
@@ -2028,12 +2908,12 @@ void xLUstruct_t<Ftype>::marshallBatchedTRSMUData(int k_st, int k_end, int_t *pe
 
 void xLUstruct_t<Ftype>::marshallBatchedTRSMLData(int k_st, int k_end, int_t *perm_c_supno)
 {
-    // First gather up all the pointer and meta data on the host 
+    // First gather up all the pointer and meta data on the host
     LUMarshallData& mdata = A_gpu.marshall_data;
     mdata.batchsize = k_end - k_st;
 
     MarshallTRSMLFunc func(
-        k_st, mdata.dev_diag_ptrs, mdata.dev_diag_ld_array, mdata.dev_diag_dim_array, 
+        k_st, mdata.dev_diag_ptrs, mdata.dev_diag_ld_array, mdata.dev_diag_dim_array,
         mdata.dev_panel_ptrs, mdata.dev_panel_ld_array, mdata.dev_panel_dim_array, dA_gpu
     );
 
@@ -2058,7 +2938,7 @@ void xLUstruct_t<Ftype>::marshallBatchedTRSMLData(int k_st, int k_end, int_t *pe
 	// 	int ksupc = SuperSize(k);
 
 	// 	if (mycol == kcol(k))
-	// 	{			
+	// 	{
     //         xlpanel_t<Ftype> &lpanel = lPanelVec[g2lCol(k)];
     //         if(!lpanel.isEmpty())
     //         {
@@ -2075,7 +2955,7 @@ void xLUstruct_t<Ftype>::marshallBatchedTRSMLData(int k_st, int k_end, int_t *pe
     //             panel_ptrs[mdata.batchsize] = lPanelStPtr;
     //             panel_ld_batch[mdata.batchsize] = lpanel.LDA();
     //             panel_dim_batch[mdata.batchsize] = len;
-                
+
     //             // Hackathon change: using the original diagonal block instead of the bcast buffer
     //             // diag_ptrs[mdata.batchsize] = A_gpu.dFBufs[buffer_offset];
     //             // diag_ld_batch[mdata.batchsize] = ksupc;
@@ -2086,13 +2966,13 @@ void xLUstruct_t<Ftype>::marshallBatchedTRSMLData(int k_st, int k_end, int_t *pe
 
     //             mdata.batchsize++;
     //         }
-	// 	}     
+	// 	}
     // }
-    
+
     // mdata.setMaxDiag();
     // mdata.setMaxPanel();
 
-    // // Then copy the marshalled data over to the GPU 
+    // // Then copy the marshalled data over to the GPU
     // cudaMemcpy(mdata.dev_diag_ptrs, diag_ptrs, mdata.batchsize * sizeof(Ftype*), cudaMemcpyHostToDevice);
     // cudaMemcpy(mdata.dev_diag_ld_array, diag_ld_batch, mdata.batchsize * sizeof(int), cudaMemcpyHostToDevice);
     // cudaMemcpy(mdata.dev_diag_dim_array, diag_dim_batch, mdata.batchsize * sizeof(int), cudaMemcpyHostToDevice);
@@ -2107,10 +2987,10 @@ void xLUstruct_t<Ftype>::initSCUMarshallData(int k_st, int k_end, int_t *perm_c_
     sc_mdata.batchsize = k_end - k_st;
 
     MarshallInitSCUFunc func(
-        k_st, sc_mdata.dev_ist, sc_mdata.dev_iend, sc_mdata.dev_maxGemmRows, sc_mdata.dev_maxGemmCols, 
+        k_st, sc_mdata.dev_ist, sc_mdata.dev_iend, sc_mdata.dev_maxGemmRows, sc_mdata.dev_maxGemmCols,
         sc_mdata.dev_gpu_lpanels, sc_mdata.dev_gpu_upanels, dA_gpu
     );
-    
+
     thrust::for_each(
         thrust::system::cuda::par, thrust::counting_iterator<int>(0),
         thrust::counting_iterator<int>(sc_mdata.batchsize), func
@@ -2125,15 +3005,15 @@ void xLUstruct_t<Ftype>::initSCUMarshallData(int k_st, int k_end, int_t *perm_c_
 
     //     // Wajih: TODO: figure out what this offset does
     //     int offset = 0;
-    //     if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0) 
+    //     if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
     //     {
     //         sc_mdata.upanels[buffer_offset] = getKUpanel(k, offset);
     //         sc_mdata.lpanels[buffer_offset] = getKLpanel(k, offset);
 
-    //         // Set gemm loop parameters for the panels 
+    //         // Set gemm loop parameters for the panels
     //         upanel_t& upanel = sc_mdata.upanels[buffer_offset];
     //         lpanel_t& lpanel = sc_mdata.lpanels[buffer_offset];
-            
+
     //         sc_mdata.host_gpu_upanels[buffer_offset] = upanel.gpuPanel;
     //         sc_mdata.host_gpu_lpanels[buffer_offset] = lpanel.gpuPanel;
 
@@ -2145,7 +3025,7 @@ void xLUstruct_t<Ftype>::initSCUMarshallData(int k_st, int k_end, int_t *perm_c_
 
     //             int_t nlb = lpanel.nblocks();
     //             int_t nub = upanel.nblocks();
-                
+
     //             sc_mdata.ist[buffer_offset] = st_lb;
     //             sc_mdata.iend[buffer_offset] = sc_mdata.ist[buffer_offset];
 
@@ -2180,8 +3060,8 @@ int xLUstruct_t<Ftype>::marshallSCUBatchedDataOuter(int k_st, int k_end, int_t *
     // Temporarily use the m array for the done flags
     int *done_flags = sc_mdata.dev_m_array;
     MarshallSCUOuterFunc func(
-        k_st, sc_mdata.dev_ist, sc_mdata.dev_iend, sc_mdata.dev_jst, sc_mdata.dev_jend, 
-        sc_mdata.dev_maxGemmRows, done_flags, dA_gpu 
+        k_st, sc_mdata.dev_ist, sc_mdata.dev_iend, sc_mdata.dev_jst, sc_mdata.dev_jend,
+        sc_mdata.dev_maxGemmRows, done_flags, dA_gpu
     );
 
     thrust::for_each(
@@ -2207,7 +3087,7 @@ int xLUstruct_t<Ftype>::marshallSCUBatchedDataOuter(int k_st, int k_end, int_t *
     //         continue;
 
     //     int& iEnd = sc_mdata.iend[buffer_index];
-    //     // Not done if even one operation still has work to do 
+    //     // Not done if even one operation still has work to do
     //     if(iEnd < lpanel.nblocks())
     //     {
     //         done_i = 0;
@@ -2229,21 +3109,21 @@ int xLUstruct_t<Ftype>::marshallSCUBatchedDataInner(int k_st, int k_end, int_t *
     sc_mdata.batchsize = knum;
 
     MarshallSCUInnerFunc func(
-        k_st, sc_mdata.dev_ist, sc_mdata.dev_iend, sc_mdata.dev_jst, sc_mdata.dev_jend, sc_mdata.dev_maxGemmCols, 
-        sc_mdata.dev_A_ptrs, sc_mdata.dev_lda_array, sc_mdata.dev_B_ptrs, sc_mdata.dev_ldb_array, sc_mdata.dev_C_ptrs, 
+        k_st, sc_mdata.dev_ist, sc_mdata.dev_iend, sc_mdata.dev_jst, sc_mdata.dev_jend, sc_mdata.dev_maxGemmCols,
+        sc_mdata.dev_A_ptrs, sc_mdata.dev_lda_array, sc_mdata.dev_B_ptrs, sc_mdata.dev_ldb_array, sc_mdata.dev_C_ptrs,
         sc_mdata.dev_ldc_array, sc_mdata.dev_m_array, sc_mdata.dev_n_array, sc_mdata.dev_k_array, dA_gpu
     );
-    
+
     thrust::counting_iterator<int> start(0), end(knum);
     thrust::for_each(thrust::system::cuda::par, start, end, func);
 
-    // Set the max dims in the marshalled data 
+    // Set the max dims in the marshalled data
     sc_mdata.max_m = thrust::reduce(thrust::system::cuda::par, sc_mdata.dev_m_array, sc_mdata.dev_m_array + knum, 0, thrust::maximum<int>());
     sc_mdata.max_n = thrust::reduce(thrust::system::cuda::par, sc_mdata.dev_n_array, sc_mdata.dev_n_array + knum, 0, thrust::maximum<int>());
     sc_mdata.max_k = thrust::reduce(thrust::system::cuda::par, sc_mdata.dev_k_array, sc_mdata.dev_k_array + knum, 0, thrust::maximum<int>());
     sc_mdata.max_ilen = thrust::transform_reduce(thrust::system::cuda::par, start, end, element_diff<int>(sc_mdata.dev_ist, sc_mdata.dev_iend), 0, thrust::maximum<int>());
     sc_mdata.max_jlen = thrust::transform_reduce(thrust::system::cuda::par, start, end, element_diff<int>(sc_mdata.dev_jst, sc_mdata.dev_jend), 0, thrust::maximum<int>());
-    
+
     printf("SCU %d -> %d: %d %d %d %d %d\n", k_st, k_end, sc_mdata.max_m, sc_mdata.max_n, sc_mdata.max_k, sc_mdata.max_ilen, sc_mdata.max_jlen);
 
     return thrust::all_of(
@@ -2252,22 +3132,22 @@ int xLUstruct_t<Ftype>::marshallSCUBatchedDataInner(int k_st, int k_end, int_t *
     );
     // int done_j = 1;
     // for(int k0 = k_st; k0 < k_end; k0++)
-    // {   
+    // {
     //     int k = perm_c_supno[k0];
     //     int buffer_index = k0 - k_st;
     //     lpanel_t& lpanel = sc_mdata.lpanels[buffer_index];
     //     upanel_t& upanel = sc_mdata.upanels[buffer_index];
-        
+
     //     if(lpanel.isEmpty() || upanel.isEmpty())
     //         continue;
 
     //     int iSt = sc_mdata.ist[buffer_index];
-    //     int iEnd = sc_mdata.iend[buffer_index]; 
+    //     int iEnd = sc_mdata.iend[buffer_index];
 
     //     int& jSt = sc_mdata.jst[buffer_index];
     //     int& jEnd = sc_mdata.jend[buffer_index];
 
-    //     // Not done if even one operation still has work to do 
+    //     // Not done if even one operation still has work to do
     //     if(jEnd < upanel.nblocks())
     //     {
     //         jSt = jEnd;
@@ -2276,11 +3156,11 @@ int xLUstruct_t<Ftype>::marshallSCUBatchedDataInner(int k_st, int k_end, int_t *
     //         assert(jEnd > jSt);
     //         done_j = 0;
     //         // printf("k = %d, ist = %d, iend = %d, jst = %d, jend = %d\n", k, iSt, iEnd, jSt, jEnd);
-            
+
     //         sc_mdata.host_m_array[buffer_index] = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
     //         sc_mdata.host_n_array[buffer_index] = upanel.stCol(jEnd) - upanel.stCol(jSt);
     //         sc_mdata.host_k_array[buffer_index] = supersize(k);
-        
+
     //         sc_mdata.host_A_ptrs[buffer_index] = lpanel.blkPtrGPU(iSt);
     //         sc_mdata.host_B_ptrs[buffer_index] = upanel.blkPtrGPU(jSt);
     //         sc_mdata.host_C_ptrs[buffer_index] = A_gpu.gpuGemmBuffs[buffer_index];
@@ -2303,11 +3183,11 @@ int xLUstruct_t<Ftype>::marshallSCUBatchedDataInner(int k_st, int k_end, int_t *
     //         sc_mdata.host_ldb_array[buffer_index] = 1;
     //         sc_mdata.host_ldc_array[buffer_index] = 1;
     //     }
-    // } 
+    // }
 
     // if(done_j == 0)
-    // {   
-    //     // Upload the buffers to the gpu 
+    // {
+    //     // Upload the buffers to the gpu
     //     sc_mdata.setMaxDims();
     //     sc_mdata.copyToGPU();
     // }

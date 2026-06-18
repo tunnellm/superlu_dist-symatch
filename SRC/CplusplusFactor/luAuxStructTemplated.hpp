@@ -260,11 +260,23 @@ inline doublecomplex& operator*=(doublecomplex& a, const doublecomplex& b) {
     return a;
 }
 
+__host__ __device__
+inline doublecomplex operator*(const doublecomplex& a, const doublecomplex& b) {
+    return {a.r * b.r - a.i * b.i, a.r * b.i + a.i * b.r};
+}
+
 // External Operator Overload for '-='
 __host__ __device__
 inline doublecomplex& operator-=(doublecomplex& a, const doublecomplex& b) {
     a.r -= b.r;
     a.i -= b.i;
+    return a;
+}
+
+__host__ __device__
+inline doublecomplex& operator+=(doublecomplex& a, const doublecomplex& b) {
+    a.r += b.r;
+    a.i += b.i;
     return a;
 }
 
@@ -323,4 +335,3 @@ inline void setDiagToThreshold(doublecomplex* diagptr, double thresh) {
     
     *diagptr = z;
 }
-

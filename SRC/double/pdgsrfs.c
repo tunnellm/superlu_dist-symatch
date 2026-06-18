@@ -480,8 +480,14 @@ if (!grid3d->zscp.Iam){
 #endif
 	    if ( berr[j] > eps && berr[j] * 2 <= lstres && count < ITMAX ) {
 	    // if ( berr[j] > eps && count < ITMAX ) {
-		/* Compute new dx. */
-        if (get_new3dsolve()){
+        /* Compute new dx. */
+        const char *gpu3d_version_env = getenv("GPU3DVERSION");
+        int gpu3d_version = gpu3d_version_env ? atoi(gpu3d_version_env) : 1;
+        int use_symldl_solve = options->SymFact == YES && gpu3d_version == 2;
+        if (use_symldl_solve) {
+            pdgstrs3d_symldl (options, n, LUstruct,ScalePermstruct, trf3Dpartition, grid3d, dx,
+            m_loc, fst_row, m_loc, 1,SOLVEstruct, stat, info);
+        } else if (get_new3dsolve()){
             pdgstrs3d_newsolve (options, n, LUstruct,ScalePermstruct, trf3Dpartition, grid3d, dx,
             m_loc, fst_row, m_loc, 1,SOLVEstruct, stat, info);
         }else{
@@ -512,4 +518,3 @@ if (!grid3d->zscp.Iam){
 #endif
 
 } /* PDGSRFS3D */
-

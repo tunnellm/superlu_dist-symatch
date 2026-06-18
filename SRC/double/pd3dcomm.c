@@ -900,6 +900,7 @@ int_t dzeroSetLU(int_t nnodes, int_t* nodeList, dLUstruct_t *LUstruct,
       		 gridinfo3d_t* grid3d)
 {
     dLocalLU_t *Llu = LUstruct->Llu;
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
     int_t** Ufstnz_br_ptr = Llu->Ufstnz_br_ptr;
     double** Unzval_br_ptr = Llu->Unzval_br_ptr;
 
@@ -912,16 +913,26 @@ int_t dzeroSetLU(int_t nnodes, int_t* nodeList, dLUstruct_t *LUstruct,
 
     int_t myrow = MYROW (iam, grid);
     int_t mycol = MYCOL (iam, grid);
+    int sym_v2_l_only = trf3Dpart != NULL &&
+        trf3Dpart->symV2PanelRoot != NULL &&
+        trf3Dpart->symV2DiagRoot != NULL &&
+        trf3Dpart->symV2PanelLocalIndex != NULL &&
+        trf3Dpart->symV2RowLocalIndex != NULL;
 
     /*first setting the L blocks to zero*/
     for (int_t node = 0; node < nnodes; ++node)   /* for each block column ... */
 	{
 
 	    int_t jb = nodeList[node];
-	    int_t pc = PCOL( jb, grid );
+	    int_t pc = sym_v2_l_only ? trf3Dpart->symV2PanelRoot[jb]
+                                     : PCOL( jb, grid );
 	    if (mycol == pc)
 		{
-		    int_t ljb = LBj( jb, grid ); /* Local block number */
+		    int_t ljb = sym_v2_l_only
+                                    ? trf3Dpart->symV2PanelLocalIndex[jb]
+                                    : LBj( jb, grid ); /* Local block number */
+		    if (ljb < 0)
+			continue;
 		    int_t  *lsub;
 		    double* lnzval;
 		    lsub = Lrowind_bc_ptr[ljb];
@@ -935,6 +946,9 @@ int_t dzeroSetLU(int_t nnodes, int_t* nodeList, dLUstruct_t *LUstruct,
 			}
 		}
 	}
+
+    if (sym_v2_l_only)
+	return 0;
 
     for (int_t node = 0; node < nnodes; ++node)   /* for each block column ... */
 	{

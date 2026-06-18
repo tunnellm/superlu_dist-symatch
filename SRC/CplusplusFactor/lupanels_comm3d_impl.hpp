@@ -11,6 +11,7 @@ int_t xLUstruct_t<Ftype>::ancestorReduction3d(int_t ilvl, int_t *myNodeCount,
 {
     int_t maxLvl = log2i(grid3d->zscp.Np) + 1;
     int_t myGrid = grid3d->zscp.Iam;
+    bool sym_v2_l_only = useSymV2Solve();
 
     int_t sender, receiver;
     if ((myGrid % (1 << (ilvl + 1))) == 0)
@@ -42,14 +43,16 @@ int_t xLUstruct_t<Ftype>::ancestorReduction3d(int_t ilvl, int_t *myNodeCount,
             if (myGrid == sender)
             {
                 zSendLPanel(k0, receiver);
-                zSendUPanel(k0, receiver);
+                if (!sym_v2_l_only)
+                    zSendUPanel(k0, receiver);
             }
             else
             {
                 Ftype alpha = one<Ftype>(); Ftype beta = one<Ftype>(); 
 
                 zRecvLPanel(k0, sender, alpha, beta);
-                zRecvUPanel(k0, sender, alpha, beta);
+                if (!sym_v2_l_only)
+                    zRecvUPanel(k0, sender, alpha, beta);
             }
         }
         // return 0;
@@ -61,10 +64,13 @@ int_t xLUstruct_t<Ftype>::ancestorReduction3d(int_t ilvl, int_t *myNodeCount,
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zSendLPanel(int_t k0, int_t receiverGrid)
 {
-    
-	if (mycol == kcol(k0))
+    int_t panel_col = useSymV2Solve() ? symV2PanelRoot(k0) : kcol(k0);
+
+	if (mycol == panel_col)
 	{
-		int_t lk = g2lCol(k0);
+		int_t lk = useSymV2Solve() ? symV2PanelIndex(k0) : g2lCol(k0);
+        if (lk < 0)
+            return 0;
         if (!lPanelVec[lk].isEmpty())
 		{
             MPI_Send(lPanelVec[lk].blkPtr(0), lPanelVec[lk].nzvalSize(), 
@@ -78,9 +84,13 @@ int_t xLUstruct_t<Ftype>::zSendLPanel(int_t k0, int_t receiverGrid)
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zRecvLPanel(int_t k0, int_t senderGrid, Ftype alpha, Ftype beta)
 {
-    if (mycol == kcol(k0))
+    int_t panel_col = useSymV2Solve() ? symV2PanelRoot(k0) : kcol(k0);
+
+    if (mycol == panel_col)
 	{
-		int_t lk = g2lCol(k0);
+		int_t lk = useSymV2Solve() ? symV2PanelIndex(k0) : g2lCol(k0);
+        if (lk < 0)
+            return 0;
         if (!lPanelVec[lk].isEmpty())
 		{
             
@@ -133,5 +143,4 @@ int_t xLUstruct_t<Ftype>::zRecvUPanel(int_t k0, int_t senderGrid, Ftype alpha, F
 	}
 	return 0;
 }
-
 

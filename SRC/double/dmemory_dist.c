@@ -78,6 +78,10 @@ int_t dQuerySpace_dist(int_t n, dLUstruct_t *LUstruct, gridinfo_t *grid,
     int iam, mycol, myrow;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
     dLocalLU_t *Llu = LUstruct->Llu;
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
+    int sym_v2_l_only = trf3Dpart != NULL &&
+        trf3Dpart->symV2PanelLocalIndex != NULL &&
+        trf3Dpart->symV2LocalPanelGids != NULL;
 
     iam = grid->iam;
     myrow = MYROW( iam, grid );
@@ -89,9 +93,11 @@ int_t dQuerySpace_dist(int_t n, dLUstruct_t *LUstruct, gridinfo_t *grid,
     mem_usage->for_lu = 0.;
 
     /* For L factor */
-    nb = CEILING( nsupers, grid->npcol ); /* Number of local column blocks */
+    nb = sym_v2_l_only ? trf3Dpart->symV2LocalPanelCount
+                       : CEILING( nsupers, grid->npcol );
     for (k = 0; k < nb; ++k) {
-	gb = k * grid->npcol + mycol; /* Global block number. */
+	gb = sym_v2_l_only ? trf3Dpart->symV2LocalPanelGids[k]
+	                   : k * grid->npcol + mycol;
 	if ( gb < nsupers ) {
 	    index = Llu->Lrowind_bc_ptr[k];
 	    if ( index ) {
@@ -103,14 +109,16 @@ int_t dQuerySpace_dist(int_t n, dLUstruct_t *LUstruct, gridinfo_t *grid,
     }
 
     /* For U factor */
-    nb = CEILING( nsupers, grid->nprow ); /* Number of local row blocks */
-    for (k = 0; k < nb; ++k) {
-	gb = k * grid->nprow + myrow; /* Global block number. */
-	if ( gb < nsupers ) {
-	    index = Llu->Ufstnz_br_ptr[k];
-	    if ( index ) {
-		mem_usage->for_lu += (float)(index[2] * iword);
-		mem_usage->for_lu += (float)(index[1] * dword);
+    if (!sym_v2_l_only && Llu->Ufstnz_br_ptr != NULL) {
+	nb = CEILING( nsupers, grid->nprow ); /* Number of local row blocks */
+	for (k = 0; k < nb; ++k) {
+	    gb = k * grid->nprow + myrow; /* Global block number. */
+	    if ( gb < nsupers ) {
+		index = Llu->Ufstnz_br_ptr[k];
+		if ( index ) {
+		    mem_usage->for_lu += (float)(index[2] * iword);
+		    mem_usage->for_lu += (float)(index[1] * dword);
+		}
 	    }
 	}
     }
@@ -179,6 +187,7 @@ double dgetLUMem(int_t nodeId, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d)
     double memlu = 0.0;
     gridinfo_t* grid = &(grid3d->grid2d);
     dLocalLU_t *Llu = LUstruct->Llu;
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
     int_t* xsup = LUstruct->Glu_persist->xsup;
     int_t** Lrowind_bc_ptr = Llu->Lrowind_bc_ptr;
     double** Lnzval_bc_ptr = Llu->Lnzval_bc_ptr;
@@ -188,15 +197,20 @@ double dgetLUMem(int_t nodeId, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d)
 
     int_t myrow = MYROW (iam, grid);
     int_t mycol = MYCOL (iam, grid);
+    int sym_v2_l_only = trf3Dpart != NULL &&
+        trf3Dpart->symV2PanelRoot != NULL &&
+        trf3Dpart->symV2PanelLocalIndex != NULL;
 
-    int_t pc = PCOL( nodeId, grid );
+    int_t pc = sym_v2_l_only ? trf3Dpart->symV2PanelRoot[nodeId]
+                             : PCOL( nodeId, grid );
     if (mycol == pc)
     {
-        int_t ljb = LBj( nodeId, grid ); /* Local block number */
+        int_t ljb = sym_v2_l_only ? trf3Dpart->symV2PanelLocalIndex[nodeId]
+                                  : LBj( nodeId, grid ); /* Local block number */
         int_t  *lsub;
         double* lnzval;
-        lsub = Lrowind_bc_ptr[ljb];
-        lnzval = Lnzval_bc_ptr[ljb];
+        lsub = (ljb >= 0) ? Lrowind_bc_ptr[ljb] : NULL;
+        lnzval = (ljb >= 0) ? Lnzval_bc_ptr[ljb] : NULL;
 
         if (lsub != NULL)
         {
@@ -209,7 +223,7 @@ double dgetLUMem(int_t nodeId, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d)
     }
 
     int_t pr = PROW( nodeId, grid );
-    if (myrow == pr)
+    if (!sym_v2_l_only && Ufstnz_br_ptr != NULL && myrow == pr)
     {
         int_t lib = LBi( nodeId, grid ); /* Local block number */
         int_t  *usub;
@@ -283,4 +297,3 @@ void d3D_printMemUse( dtrf3Dpartition_t*  trf3Dpartition,  dLUstruct_t *LUstruct
         printf("| LU-LU(repli) \t| %.2g  \t| %.2g  \t|\n", (avgNzLU) / nProcs, avgzLU / nProcs );
     }
 }
-

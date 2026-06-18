@@ -43,6 +43,39 @@ extern "C"
     int dCopyLUGPU2Host(dLUgpu_Handle LuH, dLUstruct_t *LUstruct);
 
     int pdgstrf3d_LUv1(dLUgpu_Handle LUHand);
+    int pdgstrf3d_LUv2(dLUgpu_Handle LUHand);
+
+    typedef void *dSymLDLSolveGPU_Handle;
+    dSymLDLSolveGPU_Handle dSymLDLSolveGPUCreate(int_t nsupers, int_t maxsup,
+                                                 int_t max_panel_rows, int nrhs,
+                                                 gridinfo3d_t *grid3d);
+    void dSymLDLSolveGPUDestroy(dSymLDLSolveGPU_Handle handle);
+    int dSymLDLSolveGPUSetPanel(dSymLDLSolveGPU_Handle handle, int_t k,
+                                const double *lusup, int_t count);
+    int dSymLDLSolveGPUSetPanelSchedule(dSymLDLSolveGPU_Handle handle, int_t k,
+                                        const int *row_to_send_pos,
+                                        int_t row_count);
+    int dSymLDLSolveGPUGemm(dSymLDLSolveGPU_Handle handle, int_t k,
+                            int_t a_offset, char transa, char transb,
+                            int_t m, int_t n, int_t kdim,
+                            double alpha, int_t lda, const double *b,
+                            int_t ldb, double beta, double *c, int_t ldc);
+    int dSymLDLSolveGPUForwardPanel(dSymLDLSolveGPU_Handle handle, int_t k,
+                                    int_t ksupc, int nrhs, int_t nsupr,
+                                    int_t nblocks, const int_t *block_luptr,
+                                    const int_t *block_nbrow,
+                                    const int_t *block_row_start,
+                                    const double *xk, int total_send,
+                                    double *send_vals);
+    int dSymLDLSolveGPUBackwardPanel(dSymLDLSolveGPU_Handle handle, int_t k,
+                                     int_t ksupc, int nrhs, int_t nsupr,
+                                     int_t nblocks, const int_t *block_luptr,
+                                     const int_t *block_nbrow,
+                                     int_t row_count,
+                                     const double *row_values,
+                                     double *delta_send);
+    void dSymLDLSolveGPUTakeTimers(dSymLDLSolveGPU_Handle handle,
+                                   double *h2d, double *compute, double *d2h);
 
     // Forward declaration of structs 
     // Forward declarations

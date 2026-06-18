@@ -1,6 +1,8 @@
 #pragma once
 #include <vector>
 #include <iostream>
+#include <cstdlib>
+#include <cstdio>
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
 #ifdef HAVE_CUDA
@@ -315,6 +317,7 @@ public:
 
 #ifdef HAVE_CUDA
     xupanelGPU_t<Ftype> copyToGPU();
+    int_t ensureGPUValueStorage();
     // TODO: implement with baseptr
     xupanelGPU_t<Ftype> copyToGPU(void *basePtr);
     int copyBackToGPU();
@@ -370,10 +373,13 @@ struct xLUstruct_t
     int64_t symFactWorkSize;
     int symFactTagUb;
     int symGPU3DContract = 0;
+    int symGPU3DVersion = 1;
     double symContractValidateTol = 1.0e8;
     int64_t symContract1Accepted = 0;
     int64_t symContract1Fallbacks = 0;
     double symContract1MaxResid = 0.0;
+    std::vector<Ftype *> symV2DiagBlocks;
+    std::vector<Ftype *> symV2DiagBlocksGPU;
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     enum SymGPU3DTimingId
     {
@@ -484,6 +490,14 @@ struct xLUstruct_t
 #ifdef HAVE_CUDA
     std::vector<double *> symL2USendBufsGPU;
     std::vector<int_t *> symL2USendMapsGPU;
+    std::vector<double *> symV2PartnerLSendBufsGPU;
+    std::vector<int_t *> symL2LSendMapsGPU;
+    std::vector<std::vector<int_t> > symL2LSendMeta;
+    std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
+    std::vector<int> symV2PartnerLSendSizes;
+    std::vector<int> symV2PartnerLRecvSizes;
+    std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
+    std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
     std::vector<Ftype *> symDiagPrefetchBufs;
@@ -509,6 +523,8 @@ struct xLUstruct_t
     // buffers for communication
     int_t maxLvalCount = 0;
     int_t maxLidxCount = 0;
+    int_t maxSymPartnerLvalCount = 0;
+    int_t maxSymPartnerLidxCount = 0;
     int_t maxUvalCount = 0;
     int_t maxUidxCount = 0;
     std::vector<Ftype *> diagFactBufs; /* stores diagonal blocks,
@@ -516,8 +532,10 @@ struct xLUstruct_t
                     Sherry: where are they free'd ?? */
     std::vector<Ftype *> LvalRecvBufs;
     std::vector<Ftype *> UvalRecvBufs;
+    std::vector<Ftype *> symPartnerLvalRecvBufs;
     std::vector<int_t *> LidxRecvBufs;
     std::vector<int_t *> UidxRecvBufs;
+    std::vector<int_t *> symPartnerLidxRecvBufs;
 
     // send and recv count for 2d comm
     std::vector<int_t> LvalSendCounts;
@@ -539,9 +557,29 @@ struct xLUstruct_t
     int_t krow(int_t k) { return k % Pr; }
     int_t kcol(int_t k) { return k % Pc; }
     int_t procIJ(int_t i, int_t j) { return PNUM(krow(i), kcol(j), grid); }
+    int_t symV2PanelRoot(int_t k);
+    int_t symV2DiagRoot(int_t k);
+    int_t symV2DiagProc(int_t k);
+    int_t symV2PanelIndex(int_t k);
+    int_t symV2RowIndex(int_t k);
+    int_t symV2PanelCount();
+    int_t symV2RowCount();
+    int_t symV2PanelGid(int_t local_index);
+    int_t symV2RowGid(int_t local_index);
     int_t supersize(int_t k) { return xsup[k + 1] - xsup[k]; }
     int_t g2lRow(int_t k) { return k / Pr; }
     int_t g2lCol(int_t k) { return k / Pc; }
+    bool useSymV2Solve() const
+    {
+        return options != NULL && options->SymFact == YES &&
+               symGPU3DVersion == 2;
+    }
+    bool needsUPanelStorage() const
+    {
+        return !useSymV2Solve();
+    }
+    bool symV2ScheduleActive() const;
+    int_t symV2ForestLevelCount() const;
 
     anc25d_t anc25d;
     // For GPU acceleration
@@ -578,60 +616,103 @@ struct xLUstruct_t
 
     ~xLUstruct_t()
     {
+#define XLU_V2_DTOR_TRACE(msg_) do { \
+        const char *xlu_trace_env_ = std::getenv("GPU3DV2_TRACE"); \
+        if (xlu_trace_env_ != NULL && xlu_trace_env_[0] != '\0' && \
+            xlu_trace_env_[0] != '0') { \
+            std::fprintf(stderr, "[sym-v2-trace] rank %d: destructor %s\n", \
+                         (grid3d != NULL) ? grid3d->iam : -1, (msg_)); \
+            std::fflush(stderr); \
+        } \
+    } while (0)
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (options != NULL && options->SymFact == YES)
             printSymGPU3DTiming();
 #endif
 
+        XLU_V2_DTOR_TRACE("begin");
+
         /* Yang: Deallocate the lPanelVec[i] and uPanelVec[i] here instead of using destructors ~lpanel_t or ~upanel_t,
         as xlpanel_t/upanel_t is used for holding temporary communication buffers as well. Note that lPanelVec[i].val is not deallocated here as it's pointing to the L data in the C code*/
 
-        for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
-            if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+        XLU_V2_DTOR_TRACE("before lPanelVec free");
+        for (int_t i = 0; i < symV2PanelCount(); ++i)
+            if (symV2PanelGid(i) < nsupers &&
+                isNodeInMyGrid[symV2PanelGid(i)] == 1)
             {
                 if (lPanelVec[i].index)
                     SUPERLU_FREE(lPanelVec[i].index);
                 // SUPERLU_FREE(lPanelVec[i].val);
             }
+        XLU_V2_DTOR_TRACE("after lPanelVec free");
 
-        for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
-            if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
-            {
-                if (uPanelVec[i].index)
-                    SUPERLU_FREE(uPanelVec[i].index);
-                if (uPanelVec[i].val)
-                    SUPERLU_FREE(uPanelVec[i].val);
-            }
+        XLU_V2_DTOR_TRACE("before uPanelVec free");
+        if (uPanelVec != NULL)
+            for (int_t i = 0; i < symV2RowCount(); ++i)
+                if (symV2RowGid(i) < nsupers &&
+                    isNodeInMyGrid[symV2RowGid(i)] == 1)
+                {
+                    if (uPanelVec[i].index)
+                        SUPERLU_FREE(uPanelVec[i].index);
+                    if (uPanelVec[i].val)
+                        SUPERLU_FREE(uPanelVec[i].val);
+                }
+        XLU_V2_DTOR_TRACE("after uPanelVec free");
 
         delete[] lPanelVec;
-        delete[] uPanelVec;
+        if (uPanelVec != NULL)
+            delete[] uPanelVec;
+        XLU_V2_DTOR_TRACE("after panel vector delete");
 
         /* free diagonal L and U blocks */
         // dfreeDiagFactBufsArr(maxLeafNodes, dFBufs);
+        XLU_V2_DTOR_TRACE("before freeDiagFactBufsArr");
         freeDiagFactBufsArr(numDiagBufs, dFBufs);
+        XLU_V2_DTOR_TRACE("after freeDiagFactBufsArr");
+        XLU_V2_DTOR_TRACE("before freeSymFactWorkspace");
         freeSymFactWorkspace();
+        XLU_V2_DTOR_TRACE("after freeSymFactWorkspace");
+        XLU_V2_DTOR_TRACE("before symV2DiagBlocks free");
+        for (size_t i = 0; i < symV2DiagBlocks.size(); ++i)
+            if (symV2DiagBlocks[i] != NULL)
+                SUPERLU_FREE(symV2DiagBlocks[i]);
+#ifdef HAVE_CUDA
+        for (size_t i = 0; i < symV2DiagBlocksGPU.size(); ++i)
+            if (symV2DiagBlocksGPU[i] != NULL)
+                cudaFree(symV2DiagBlocksGPU[i]);
+#endif
+        XLU_V2_DTOR_TRACE("after symV2DiagBlocks free");
 
+        XLU_V2_DTOR_TRACE("before CPU scratch free");
         SUPERLU_FREE(bigV);
         SUPERLU_FREE(indirect);
         SUPERLU_FREE(indirectRow);
         SUPERLU_FREE(indirectCol);
+        XLU_V2_DTOR_TRACE("after CPU scratch free");
 
         int i;
+        XLU_V2_DTOR_TRACE("before recv buffers free");
         for (i = 0; i < options->num_lookaheads; i++)
         {
             SUPERLU_FREE(LvalRecvBufs[i]);
             SUPERLU_FREE(UvalRecvBufs[i]);
+            SUPERLU_FREE(symPartnerLvalRecvBufs[i]);
             SUPERLU_FREE(LidxRecvBufs[i]);
             SUPERLU_FREE(UidxRecvBufs[i]);
+            SUPERLU_FREE(symPartnerLidxRecvBufs[i]);
         }
+        XLU_V2_DTOR_TRACE("after recv buffers free");
 
+        XLU_V2_DTOR_TRACE("before diagFactBufs free");
         for (i = 0; i < numDiagBufs; i++)
             SUPERLU_FREE(diagFactBufs[i]);
+        XLU_V2_DTOR_TRACE("after diagFactBufs free");
 
         /* Sherry added the following, which comes from batch setup */
         superlu_acc_offload = sp_ienv_dist(10, options); //get_acc_offload();
         if (superlu_acc_offload)
         {
+            XLU_V2_DTOR_TRACE("before GPU scratch free");
             // printf(".. free batch buffers\n");  fflush(stdout);
             SUPERLU_FREE(A_gpu.dFBufs);
             SUPERLU_FREE(A_gpu.gpuGemmBuffs);
@@ -649,9 +730,15 @@ struct xLUstruct_t
                 cublasDestroy(A_gpu.lookAheadLHandle[stream]);
                 cublasDestroy(A_gpu.lookAheadUHandle[stream]);
             }
+            if (A_gpu.symV2PanelLocalIndex != NULL)
+                cudaFree(A_gpu.symV2PanelLocalIndex);
+            XLU_V2_DTOR_TRACE("after GPU scratch free");
         }
 
+        XLU_V2_DTOR_TRACE("before isNodeInMyGrid free");
         SUPERLU_FREE(isNodeInMyGrid);
+        XLU_V2_DTOR_TRACE("end");
+#undef XLU_V2_DTOR_TRACE
 
     } /* end destructor xLUstruct_t */
 
@@ -659,6 +746,7 @@ struct xLUstruct_t
      *           Compute Functions
      */
     int_t pdgstrf3d();
+    int_t pdgstrf3dSymV2();
     int_t dSchurComplementUpdate(int_t k, xlpanel_t<Ftype> &lpanel, xupanel_t<Ftype> &upanel);
     int_t *computeIndirectMap(indirectMapType direction, int_t srcLen, int_t *srcVec,
                               int_t dstLen, int_t *dstVec);
@@ -675,6 +763,34 @@ struct xLUstruct_t
     int_t dSchurCompUpdateExcludeOne(
         int_t k, int_t ex, // suypernodes to be excluded
         xlpanel_t<Ftype> &lpanel, xupanel_t<Ftype> &upanel);
+    int_t dSymV2PartnerLBcastHost(int_t k, xlpanel_t<Ftype> &partner_panel,
+                                  int raw_values = 0);
+    int_t dSymSchurCompUpdatePartLL(
+        int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel);
+    int_t dSymSchurCompUpLimitedMemLL(
+        int_t lStart, int_t lEnd,
+        int_t jStart, int_t jEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel);
+    int_t dSymLookAheadUpdateLL(
+        int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel);
+    int_t dSymSchurCompUpdateExcludeOneLL(
+        int_t k, int_t ex, xlpanel_t<Ftype> &lpanel);
+    int_t dSymSchurCompUpdatePartWithLPartner(
+        int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel,
+        xlpanel_t<Ftype> &partner_panel);
+    int_t dSymSchurCompUpLimitedMemWithLPartner(
+        int_t lStart, int_t lEnd,
+        int_t partnerStart, int_t partnerEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel,
+        xlpanel_t<Ftype> &partner_panel);
+    int_t dSymLookAheadUpdateWithLPartner(
+        int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
+        xlpanel_t<Ftype> &partner_panel);
+    int_t dSymSchurCompUpdateExcludeOneWithLPartner(
+        int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
+        xlpanel_t<Ftype> &partner_panel);
 
     int_t dsparseTreeFactor(
         sForest_t *sforest,
@@ -784,10 +900,49 @@ struct xLUstruct_t
         int streamId,
         int_t k, int_t ex, // suypernodes to be excluded
         xlpanel_t<Ftype> &lpanel, xupanel_t<Ftype> &upanel);
+    int_t dSymSchurCompUpdatePartWithLPartnerGPU(
+        int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+        cublasHandle_t handle, cudaStream_t cuStream,
+        Ftype *gemmBuff);
+    int_t dSymSchurCompUpLimitedMemWithLPartnerGPU(
+        int_t lStart, int_t lEnd,
+        int_t partnerStart, int_t partnerEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+        cublasHandle_t handle, cudaStream_t cuStream,
+        Ftype *gemmBuff);
+    int_t dSymLookAheadUpdateWithLPartnerGPU(
+        int streamId,
+        int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
+        xlpanel_t<Ftype> &partner_panel);
+    int_t dSymSchurCompUpdateExcludeOneWithLPartnerGPU(
+        int streamId,
+        int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
+        xlpanel_t<Ftype> &partner_panel);
+    int_t dSymSchurCompUpdatePartLLGPU(
+        int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel,
+        cublasHandle_t handle, cudaStream_t cuStream,
+        Ftype *rawBlock, Ftype *gemmBuff);
+    int_t dSymSchurCompUpLimitedMemLLGPU(
+        int_t lStart, int_t lEnd,
+        int_t jStart, int_t jEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel,
+        cublasHandle_t handle, cudaStream_t cuStream,
+        Ftype *rawBlock, Ftype *gemmBuff);
+    int_t dSymLookAheadUpdateLLGPU(
+        int streamId,
+        int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel);
+    int_t dSymSchurCompUpdateExcludeOneLLGPU(
+        int streamId,
+        int_t k, int_t ex, xlpanel_t<Ftype> &lpanel);
 
     int_t dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
     int_t dPanelBcastGPU(int_t k, int_t offset);
     int_t dSymStartL2UGPU(int_t k, int_t stream_offset);
+    int_t dSymV2ComputePartnerScratchSize(LUStruct_type<Ftype> *LUstruct);
+    int_t dSymV2PartnerLBcastGPU(int_t k, int_t stream_offset,
+                                 xlpanel_t<Ftype> &partner_panel);
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);
@@ -802,6 +957,7 @@ struct xLUstruct_t
     // some more helper functions
     xupanel_t<Ftype> getKUpanel(int_t k, int_t offset);
     xlpanel_t<Ftype> getKLpanel(int_t k, int_t offset);
+    xlpanel_t<Ftype> getKPartnerLPanel(int_t k, int_t offset);
     int_t SyncLookAheadUpdate(int streamId);
 
     Ftype *gpuLvalBasePtr, *gpuUvalBasePtr;
@@ -818,3 +974,163 @@ struct xLUstruct_t
     int_t dDFactPSolveGPU(int_t k, int_t handle_offset, int buffer_offset, diagFactBufs_type<Ftype>** dFBufs);
 #endif
 };
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelRoot(int_t k)
+{
+    return kcol(k);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2DiagRoot(int_t k)
+{
+    return krow(k);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2DiagProc(int_t k)
+{
+    return PNUM(symV2DiagRoot(k), symV2PanelRoot(k), grid);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelIndex(int_t k)
+{
+    return g2lCol(k);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowIndex(int_t k)
+{
+    return g2lRow(k);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelCount()
+{
+    return CEILING(nsupers, Pc);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowCount()
+{
+    return CEILING(nsupers, Pr);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelGid(int_t local_index)
+{
+    return local_index * Pc + mycol;
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowGid(int_t local_index)
+{
+    return local_index * Pr + myrow;
+}
+
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2ScheduleActive() const
+{
+    return false;
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2ForestLevelCount() const
+{
+    return log2i(grid3d->zscp.Np) + 1;
+}
+
+template <>
+inline bool xLUstruct_t<double>::symV2ScheduleActive() const
+{
+    return useSymV2Solve() && trf3Dpartition != NULL &&
+           trf3Dpartition->symV2ScheduleEnabled;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2ForestLevelCount() const
+{
+    return symV2ScheduleActive() ? trf3Dpartition->maxLvl
+                                 : log2i(grid3d->zscp.Np) + 1;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelRoot(int_t k)
+{
+    if (useSymV2Solve())
+    {
+        if (trf3Dpartition == NULL ||
+            trf3Dpartition->symV2PanelRoot == NULL)
+            ABORT("SymFact V2 LDL owner metadata is not initialized.");
+        return trf3Dpartition->symV2PanelRoot[k];
+    }
+    return kcol(k);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2DiagRoot(int_t k)
+{
+    if (useSymV2Solve())
+    {
+        if (trf3Dpartition == NULL ||
+            trf3Dpartition->symV2DiagRoot == NULL)
+            ABORT("SymFact V2 LDL owner metadata is not initialized.");
+        return trf3Dpartition->symV2DiagRoot[k];
+    }
+    return krow(k);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelIndex(int_t k)
+{
+    if (useSymV2Solve())
+    {
+        if (trf3Dpartition == NULL ||
+            trf3Dpartition->symV2PanelLocalIndex == NULL)
+            ABORT("SymFact V2 LDL local panel metadata is not initialized.");
+        return trf3Dpartition->symV2PanelLocalIndex[k];
+    }
+    return g2lCol(k);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2RowIndex(int_t k)
+{
+    if (useSymV2Solve())
+    {
+        if (trf3Dpartition == NULL ||
+            trf3Dpartition->symV2RowLocalIndex == NULL)
+            ABORT("SymFact V2 LDL local row metadata is not initialized.");
+        return trf3Dpartition->symV2RowLocalIndex[k];
+    }
+    return g2lRow(k);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelCount()
+{
+    return useSymV2Solve() ? trf3Dpartition->symV2LocalPanelCount
+                           : CEILING(nsupers, Pc);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2RowCount()
+{
+    return useSymV2Solve() ? trf3Dpartition->symV2LocalRowCount
+                           : CEILING(nsupers, Pr);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelGid(int_t local_index)
+{
+    return useSymV2Solve() ? trf3Dpartition->symV2LocalPanelGids[local_index]
+                           : local_index * Pc + mycol;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2RowGid(int_t local_index)
+{
+    return useSymV2Solve() ? trf3Dpartition->symV2LocalRowGids[local_index]
+                           : local_index * Pr + myrow;
+}

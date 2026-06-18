@@ -59,7 +59,8 @@ extern "C"
 #endif
         }
 
-        LU_v1->packedU2skyline(LUstruct);
+        if (!LU_v1->useSymV2Solve())
+            LU_v1->packedU2skyline(LUstruct);
         tXferGpu2Host = SuperLU_timer_() - tXferGpu2Host;
         printf("Time to send data back= %g\n", tXferGpu2Host);
 

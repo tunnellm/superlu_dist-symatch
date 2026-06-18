@@ -740,6 +740,22 @@ dtrf3Dpartition_t* dinitTrf3DpartitionLUstructgrid0(int_t n, superlu_dist_option
     // trf3Dpartition->LUvsb = LUvsb;
     trf3Dpartition->supernode2treeMap = supernode2treeMap;
     trf3Dpartition->supernodeMask = supernodeMask;
+    trf3Dpartition->symV2DiagOwner = NULL;
+    trf3Dpartition->symV2PanelRoot = NULL;
+    trf3Dpartition->symV2DiagRoot = NULL;
+    trf3Dpartition->symV2PanelLocalIndex = NULL;
+    trf3Dpartition->symV2RowLocalIndex = NULL;
+    trf3Dpartition->symV2LocalPanelGids = NULL;
+    trf3Dpartition->symV2LocalRowGids = NULL;
+    trf3Dpartition->symV2LocalPanelCount = 0;
+    trf3Dpartition->symV2LocalRowCount = 0;
+    trf3Dpartition->symV2ScheduleEnabled = 0;
+    trf3Dpartition->symV2FactorLevelCount = 0;
+    trf3Dpartition->symV2FactorLevelPtr = NULL;
+    trf3Dpartition->symV2FactorNodes = NULL;
+    trf3Dpartition->symV2NodeLevel = NULL;
+    trf3Dpartition->symV2NodeOrder = NULL;
+    trf3Dpartition->symV2NodeIperm = NULL;
     trf3Dpartition->mxLeafNode = mxLeafNode;  // Sherry added these 3
     trf3Dpartition->diagDims = ldts;
     //trf3Dpartition->gemmCsizes = gemmCsizes;
@@ -924,6 +940,22 @@ dtrf3Dpartition_t* dinitTrf3Dpartition_allgrid(int_t n, superlu_dist_options_t *
     // trf3Dpartition->LUvsb = LUvsb;
     trf3Dpartition->supernode2treeMap = supernode2treeMap;
     trf3Dpartition->supernodeMask = supernodeMask;
+    trf3Dpartition->symV2DiagOwner = NULL;
+    trf3Dpartition->symV2PanelRoot = NULL;
+    trf3Dpartition->symV2DiagRoot = NULL;
+    trf3Dpartition->symV2PanelLocalIndex = NULL;
+    trf3Dpartition->symV2RowLocalIndex = NULL;
+    trf3Dpartition->symV2LocalPanelGids = NULL;
+    trf3Dpartition->symV2LocalRowGids = NULL;
+    trf3Dpartition->symV2LocalPanelCount = 0;
+    trf3Dpartition->symV2LocalRowCount = 0;
+    trf3Dpartition->symV2ScheduleEnabled = 0;
+    trf3Dpartition->symV2FactorLevelCount = 0;
+    trf3Dpartition->symV2FactorLevelPtr = NULL;
+    trf3Dpartition->symV2FactorNodes = NULL;
+    trf3Dpartition->symV2NodeLevel = NULL;
+    trf3Dpartition->symV2NodeOrder = NULL;
+    trf3Dpartition->symV2NodeIperm = NULL;
     trf3Dpartition->mxLeafNode = mxLeafNode;  // Sherry added these 3
     trf3Dpartition->diagDims = ldts;
     //trf3Dpartition->gemmCsizes = gemmCsizes;
@@ -1108,6 +1140,22 @@ dtrf3Dpartition_t* dinitTrf3Dpartition(int_t nsupers,
     trf3Dpartition->LUvsb = LUvsb;
     trf3Dpartition->supernode2treeMap = supernode2treeMap;
     trf3Dpartition->supernodeMask = supernodeMask;
+    trf3Dpartition->symV2DiagOwner = NULL;
+    trf3Dpartition->symV2PanelRoot = NULL;
+    trf3Dpartition->symV2DiagRoot = NULL;
+    trf3Dpartition->symV2PanelLocalIndex = NULL;
+    trf3Dpartition->symV2RowLocalIndex = NULL;
+    trf3Dpartition->symV2LocalPanelGids = NULL;
+    trf3Dpartition->symV2LocalRowGids = NULL;
+    trf3Dpartition->symV2LocalPanelCount = 0;
+    trf3Dpartition->symV2LocalRowCount = 0;
+    trf3Dpartition->symV2ScheduleEnabled = 0;
+    trf3Dpartition->symV2FactorLevelCount = 0;
+    trf3Dpartition->symV2FactorLevelPtr = NULL;
+    trf3Dpartition->symV2FactorNodes = NULL;
+    trf3Dpartition->symV2NodeLevel = NULL;
+    trf3Dpartition->symV2NodeOrder = NULL;
+    trf3Dpartition->symV2NodeIperm = NULL;
     trf3Dpartition->mxLeafNode = mxLeafNode;  // Sherry added these 3
     trf3Dpartition->diagDims = ldts;
     //trf3Dpartition->gemmCsizes = gemmCsizes;
@@ -1141,8 +1189,9 @@ void dDestroy_trf3Dpartition(dtrf3Dpartition_t *trf3Dpartition)
     SUPERLU_FREE(trf3Dpartition->treePerm); // double pointer pointing to sForests->nodeList
 
     int_t maxLvl = trf3Dpartition->maxLvl;
-    int_t numForests = (1 << maxLvl) - 1;
+    int_t numForests = (maxLvl > 0 && maxLvl < 30) ? ((1 << maxLvl) - 1) : 0;
     sForest_t** sForests = trf3Dpartition->sForests;
+    if (sForests != NULL) {
     for (i = 0; i < numForests; ++i) {
 	if ( sForests[i] ) {
 	    SUPERLU_FREE(sForests[i]->nodeList);
@@ -1151,16 +1200,31 @@ void dDestroy_trf3Dpartition(dtrf3Dpartition_t *trf3Dpartition)
 	    SUPERLU_FREE(sForests[i]); // Sherry added
 	}
     }
+    }
     SUPERLU_FREE(trf3Dpartition->sForests); // double pointer
     SUPERLU_FREE(trf3Dpartition->supernode2treeMap);
     SUPERLU_FREE(trf3Dpartition->supernodeMask);
     SUPERLU_FREE(trf3Dpartition->superGridMap);
+    SUPERLU_FREE(trf3Dpartition->symV2DiagOwner);
+    SUPERLU_FREE(trf3Dpartition->symV2PanelRoot);
+    SUPERLU_FREE(trf3Dpartition->symV2DiagRoot);
+    SUPERLU_FREE(trf3Dpartition->symV2PanelLocalIndex);
+    SUPERLU_FREE(trf3Dpartition->symV2RowLocalIndex);
+    SUPERLU_FREE(trf3Dpartition->symV2LocalPanelGids);
+    SUPERLU_FREE(trf3Dpartition->symV2LocalRowGids);
+    SUPERLU_FREE(trf3Dpartition->symV2FactorLevelPtr);
+    SUPERLU_FREE(trf3Dpartition->symV2FactorNodes);
+    SUPERLU_FREE(trf3Dpartition->symV2NodeLevel);
+    SUPERLU_FREE(trf3Dpartition->symV2NodeOrder);
+    SUPERLU_FREE(trf3Dpartition->symV2NodeIperm);
 
-    SUPERLU_FREE((trf3Dpartition->LUvsb)->Lsub_buf);
-    SUPERLU_FREE((trf3Dpartition->LUvsb)->Lval_buf);
-    SUPERLU_FREE((trf3Dpartition->LUvsb)->Usub_buf);
-    SUPERLU_FREE((trf3Dpartition->LUvsb)->Uval_buf);
-    SUPERLU_FREE(trf3Dpartition->LUvsb); // Sherry: check this ...
+    if (trf3Dpartition->LUvsb) {
+        SUPERLU_FREE((trf3Dpartition->LUvsb)->Lsub_buf);
+        SUPERLU_FREE((trf3Dpartition->LUvsb)->Lval_buf);
+        SUPERLU_FREE((trf3Dpartition->LUvsb)->Usub_buf);
+        SUPERLU_FREE((trf3Dpartition->LUvsb)->Uval_buf);
+        SUPERLU_FREE(trf3Dpartition->LUvsb); // Sherry: check this ...
+    }
 
     SUPERLU_FREE(trf3Dpartition);
     }
@@ -1246,5 +1310,3 @@ int_t estimate_bigu_size( int_t nsupers, int_t ldt, int_t**Ufstnz_br_ptr,
     return ldt * max_ncols;
 } /* old estimate_bigu_size. New one is in util.c */
 #endif /**** end old ones ****/
-
-

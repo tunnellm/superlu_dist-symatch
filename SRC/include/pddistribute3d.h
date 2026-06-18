@@ -40,7 +40,18 @@ void dbcastPermutedSparseA(SuperMatrix *A,
                           Glu_freeable_t *Glu_freeable, 
                           dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
 
-void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
+void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
+                          gridinfo3d_t *grid3d);
+void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
+                            Glu_freeable_t *Glu_freeable,
+                            gridinfo3d_t *grid3d,
+                            superlu_dist_options_t *options);
+float dSymV2Distribute3d(superlu_dist_options_t *options, int_t n,
+                         SuperMatrix *A,
+                         dScalePermstruct_t *ScalePermstruct,
+                         Glu_freeable_t *Glu_freeable,
+                         dLUstruct_t *LUstruct,
+                         gridinfo3d_t *grid3d);
 
 
 int compareInt_t(void *a, void *b);

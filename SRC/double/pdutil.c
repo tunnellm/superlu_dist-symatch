@@ -24,6 +24,7 @@ at the top-level directory.
  */
 
 #include <math.h>
+#include <string.h>
 #include "superlu_ddefs.h"
 #ifdef GPU_ACC
 #include "gpu_api_utils.h"
@@ -454,6 +455,7 @@ void dLUstructInit(const int_t n, dLUstruct_t *LUstruct)
     if ( !(LUstruct->Llu = (dLocalLU_t *)
 	   SUPERLU_MALLOC(sizeof(dLocalLU_t))) )
 	ABORT("Malloc fails for LocalLU_t.");
+    memset(LUstruct->Llu, 0, sizeof(dLocalLU_t));
     LUstruct->Llu->inv = 0;
     LUstruct->dt = 'd';
     LUstruct->trf3Dpart = NULL;
@@ -485,6 +487,7 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     int_t i, nb, nsupers;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
     dLocalLU_t *Llu = LUstruct->Llu;
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
 
 #if ( DEBUGlevel>=1 )
     int iam;
@@ -495,6 +498,17 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     dDestroy_Tree(n, grid, LUstruct);
 
     nsupers = Glu_persist->supno[n-1] + 1;
+    int sym_v2_l_only = trf3Dpart != NULL &&
+        trf3Dpart->symV2PanelLocalIndex != NULL &&
+        trf3Dpart->symV2RowLocalIndex != NULL &&
+        trf3Dpart->symV2LocalPanelGids != NULL &&
+        trf3Dpart->symV2LocalRowGids != NULL;
+    int_t local_panel_count = sym_v2_l_only
+        ? trf3Dpart->symV2LocalPanelCount
+        : CEILING(nsupers, grid->npcol);
+    int_t local_row_count = sym_v2_l_only
+        ? trf3Dpart->symV2LocalRowCount
+        : CEILING(nsupers, grid->nprow);
 
     /* Following are free'd in distribution routines */
     // nb = CEILING(nsupers, grid->npcol);
@@ -516,8 +530,8 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     SUPERLU_FREE (Llu->Lnzval_bc_offset);
 
     /* Following are free'd in distribution routines */
-    nb = CEILING(nsupers, grid->nprow);
-    for (i = 0; i < nb; ++i)
+    nb = local_row_count;
+    for (i = 0; Llu->Ufstnz_br_ptr && i < nb; ++i)
     	if ( Llu->Ufstnz_br_ptr[i] ) {
     	    SUPERLU_FREE (Llu->Ufstnz_br_ptr[i]);
     	    SUPERLU_FREE (Llu->Unzval_br_ptr[i]);
@@ -532,16 +546,19 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     /* The following can be freed after factorization. */
     SUPERLU_FREE(Llu->ToRecv);
     SUPERLU_FREE(Llu->ToSendD);
-    SUPERLU_FREE(Llu->ToSendR[0]);
+    if (Llu->ToSendR)
+        SUPERLU_FREE(Llu->ToSendR[0]);
     SUPERLU_FREE(Llu->ToSendR);
 
     /* The following can be freed only after iterative refinement. */
     SUPERLU_FREE(Llu->ilsum);
     SUPERLU_FREE(Llu->fmod);
-    SUPERLU_FREE((Llu->fsendx_plist)[0]);
+    if (Llu->fsendx_plist)
+        SUPERLU_FREE((Llu->fsendx_plist)[0]);
     SUPERLU_FREE(Llu->fsendx_plist);
     SUPERLU_FREE(Llu->bmod);
-    SUPERLU_FREE((Llu->bsendx_plist)[0]);
+    if (Llu->bsendx_plist)
+        SUPERLU_FREE((Llu->bsendx_plist)[0]);
     SUPERLU_FREE(Llu->bsendx_plist);
     SUPERLU_FREE(Llu->mod_bit);
 
@@ -574,8 +591,8 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     SUPERLU_FREE(Llu->Unnz);
 
     /* Following are free'd in distribution routines */
-    nb = CEILING(nsupers, grid->npcol);
-    for (i = 0; i < nb; ++i)
+    nb = local_panel_count;
+    for (i = 0; Llu->Urbs && i < nb; ++i)
     	if ( Llu->Urbs[i] ) {
     	    SUPERLU_FREE(Llu->Ucb_indptr[i]);
     	    SUPERLU_FREE(Llu->Ucb_valptr[i]);
@@ -594,37 +611,37 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
 
 #ifdef GPU_ACC
 if (get_acc_solve()){
-    checkGPU (gpuFree (Llu->d_xsup));
-    checkGPU (gpuFree (Llu->d_bcols_masked));
-    checkGPU (gpuFree (Llu->d_LRtree_ptr));
-    checkGPU (gpuFree (Llu->d_LBtree_ptr));
-    checkGPU (gpuFree (Llu->d_URtree_ptr));
-    checkGPU (gpuFree (Llu->d_UBtree_ptr));
-    checkGPU (gpuFree (Llu->d_ilsum));
-    checkGPU (gpuFree (Llu->d_Lrowind_bc_dat));
-    checkGPU (gpuFree (Llu->d_Lrowind_bc_offset));
-    checkGPU (gpuFree (Llu->d_Lnzval_bc_dat));
-    checkGPU (gpuFree (Llu->d_Lnzval_bc_offset));
-    checkGPU (gpuFree (Llu->d_Linv_bc_dat));
-    checkGPU (gpuFree (Llu->d_Uinv_bc_dat));
-    checkGPU (gpuFree (Llu->d_Linv_bc_offset));
-    checkGPU (gpuFree (Llu->d_Uinv_bc_offset));
-    checkGPU (gpuFree (Llu->d_Lindval_loc_bc_dat));
-    checkGPU (gpuFree (Llu->d_Lindval_loc_bc_offset));
+    if (Llu->d_xsup) checkGPU (gpuFree (Llu->d_xsup));
+    if (Llu->d_bcols_masked) checkGPU (gpuFree (Llu->d_bcols_masked));
+    if (Llu->d_LRtree_ptr) checkGPU (gpuFree (Llu->d_LRtree_ptr));
+    if (Llu->d_LBtree_ptr) checkGPU (gpuFree (Llu->d_LBtree_ptr));
+    if (Llu->d_URtree_ptr) checkGPU (gpuFree (Llu->d_URtree_ptr));
+    if (Llu->d_UBtree_ptr) checkGPU (gpuFree (Llu->d_UBtree_ptr));
+    if (Llu->d_ilsum) checkGPU (gpuFree (Llu->d_ilsum));
+    if (Llu->d_Lrowind_bc_dat) checkGPU (gpuFree (Llu->d_Lrowind_bc_dat));
+    if (Llu->d_Lrowind_bc_offset) checkGPU (gpuFree (Llu->d_Lrowind_bc_offset));
+    if (Llu->d_Lnzval_bc_dat) checkGPU (gpuFree (Llu->d_Lnzval_bc_dat));
+    if (Llu->d_Lnzval_bc_offset) checkGPU (gpuFree (Llu->d_Lnzval_bc_offset));
+    if (Llu->d_Linv_bc_dat) checkGPU (gpuFree (Llu->d_Linv_bc_dat));
+    if (Llu->d_Uinv_bc_dat) checkGPU (gpuFree (Llu->d_Uinv_bc_dat));
+    if (Llu->d_Linv_bc_offset) checkGPU (gpuFree (Llu->d_Linv_bc_offset));
+    if (Llu->d_Uinv_bc_offset) checkGPU (gpuFree (Llu->d_Uinv_bc_offset));
+    if (Llu->d_Lindval_loc_bc_dat) checkGPU (gpuFree (Llu->d_Lindval_loc_bc_dat));
+    if (Llu->d_Lindval_loc_bc_offset) checkGPU (gpuFree (Llu->d_Lindval_loc_bc_offset));
 
-    checkGPU (gpuFree (Llu->d_Ucolind_bc_dat));
-    checkGPU (gpuFree (Llu->d_Ucolind_bc_offset));
-    checkGPU (gpuFree (Llu->d_Uind_br_dat));
-    checkGPU (gpuFree (Llu->d_Uind_br_offset));
-    checkGPU (gpuFree (Llu->d_Unzval_bc_dat));
-    checkGPU (gpuFree (Llu->d_Unzval_bc_offset));
-    checkGPU (gpuFree (Llu->d_Uindval_loc_bc_dat));
-    checkGPU (gpuFree (Llu->d_Uindval_loc_bc_offset));
+    if (Llu->d_Ucolind_bc_dat) checkGPU (gpuFree (Llu->d_Ucolind_bc_dat));
+    if (Llu->d_Ucolind_bc_offset) checkGPU (gpuFree (Llu->d_Ucolind_bc_offset));
+    if (Llu->d_Uind_br_dat) checkGPU (gpuFree (Llu->d_Uind_br_dat));
+    if (Llu->d_Uind_br_offset) checkGPU (gpuFree (Llu->d_Uind_br_offset));
+    if (Llu->d_Unzval_bc_dat) checkGPU (gpuFree (Llu->d_Unzval_bc_dat));
+    if (Llu->d_Unzval_bc_offset) checkGPU (gpuFree (Llu->d_Unzval_bc_offset));
+    if (Llu->d_Uindval_loc_bc_dat) checkGPU (gpuFree (Llu->d_Uindval_loc_bc_dat));
+    if (Llu->d_Uindval_loc_bc_offset) checkGPU (gpuFree (Llu->d_Uindval_loc_bc_offset));
 #ifdef U_BLOCK_PER_ROW_ROWDATA
-    checkGPU (gpuFree (Llu->d_Ucolind_br_dat));
-    checkGPU (gpuFree (Llu->d_Ucolind_br_offset));
-    checkGPU (gpuFree (Llu->d_Unzval_br_new_dat));
-    checkGPU (gpuFree (Llu->d_Unzval_br_new_offset));
+    if (Llu->d_Ucolind_br_dat) checkGPU (gpuFree (Llu->d_Ucolind_br_dat));
+    if (Llu->d_Ucolind_br_offset) checkGPU (gpuFree (Llu->d_Ucolind_br_offset));
+    if (Llu->d_Unzval_br_new_dat) checkGPU (gpuFree (Llu->d_Unzval_br_new_dat));
+    if (Llu->d_Unzval_br_new_offset) checkGPU (gpuFree (Llu->d_Unzval_br_new_offset));
 #endif
 }
 
@@ -813,6 +830,126 @@ pdgstrs_init(int_t n, int_t m_loc, int_t nrhs, int_t fst_row,
 
     return 0;
 } /* PDGSTRS_INIT */
+
+static int
+pdgstrs_symv2_global_rank(gridinfo3d_t *grid3d, int rank2d, int z)
+{
+    return (grid3d->rankorder == 1)
+               ? rank2d * grid3d->npdep + z
+               : z * (grid3d->nprow * grid3d->npcol) + rank2d;
+}
+
+static int_t
+pdgstrs_init_symv2(int_t n, int_t m_loc, int_t nrhs, int_t fst_row,
+	     int_t perm_r[], int_t perm_c[], gridinfo3d_t *grid3d,
+	     Glu_persist_t *Glu_persist, dtrf3Dpartition_t *trf3Dpartition,
+	     dSOLVEstruct_t *SOLVEstruct)
+{
+    gridinfo_t *grid = &(grid3d->grid2d);
+    int *SendCnt, *SendCnt_nrhs, *RecvCnt, *RecvCnt_nrhs;
+    int *sdispls, *sdispls_nrhs, *rdispls, *rdispls_nrhs;
+    int *itemp, *ptr_to_ibuf, *ptr_to_dbuf;
+    int_t *row_to_proc;
+    int_t i, gbi, k, l, knsupc, nsupers, *xsup, *supno;
+    int_t irow;
+    int iam, p, q, procs;
+    pxgstrs_comm_t *gstrs_comm;
+
+    if (trf3Dpartition == NULL ||
+        trf3Dpartition->symV2DiagOwner == NULL)
+        ABORT("SymFact V2 solve initialization requires LDL-native owner tables.");
+
+    procs = grid3d->nprow * grid3d->npcol * grid3d->npdep;
+    iam = grid3d->iam;
+    gstrs_comm = SOLVEstruct->gstrs_comm;
+    xsup = Glu_persist->xsup;
+    supno = Glu_persist->supno;
+    nsupers = Glu_persist->supno[n - 1] + 1;
+    row_to_proc = SOLVEstruct->row_to_proc;
+
+    if (!(itemp = SUPERLU_MALLOC(8 * procs * sizeof(int))))
+        ABORT("Malloc fails for SymV2 B_to_X_itemp[].");
+    SendCnt = itemp;
+    SendCnt_nrhs = itemp + procs;
+    RecvCnt = itemp + 2 * procs;
+    RecvCnt_nrhs = itemp + 3 * procs;
+    sdispls = itemp + 4 * procs;
+    sdispls_nrhs = itemp + 5 * procs;
+    rdispls = itemp + 6 * procs;
+    rdispls_nrhs = itemp + 7 * procs;
+
+    for (p = 0; p < procs; ++p) SendCnt[p] = 0;
+    if (grid3d->zscp.Iam == 0) {
+        for (i = 0, l = fst_row; i < m_loc; ++i, ++l) {
+            irow = perm_c[perm_r[l]];
+            gbi = BlockNum(irow);
+            p = trf3Dpartition->symV2DiagOwner[gbi];
+            ++SendCnt[p];
+        }
+    }
+
+    MPI_Alltoall(SendCnt, 1, MPI_INT, RecvCnt, 1, MPI_INT,
+                 grid3d->comm);
+    sdispls[0] = rdispls[0] = 0;
+    for (p = 1; p < procs; ++p) {
+        sdispls[p] = sdispls[p - 1] + SendCnt[p - 1];
+        rdispls[p] = rdispls[p - 1] + RecvCnt[p - 1];
+    }
+    for (p = 0; p < procs; ++p) {
+        SendCnt_nrhs[p] = SendCnt[p] * nrhs;
+        sdispls_nrhs[p] = sdispls[p] * nrhs;
+        RecvCnt_nrhs[p] = RecvCnt[p] * nrhs;
+        rdispls_nrhs[p] = rdispls[p] * nrhs;
+    }
+    gstrs_comm->B_to_X_SendCnt = SendCnt;
+
+    if (!(itemp = SUPERLU_MALLOC(8 * procs * sizeof(int))))
+        ABORT("Malloc fails for SymV2 X_to_B_itemp[].");
+    SendCnt = itemp;
+    SendCnt_nrhs = itemp + procs;
+    RecvCnt = itemp + 2 * procs;
+    RecvCnt_nrhs = itemp + 3 * procs;
+    sdispls = itemp + 4 * procs;
+    sdispls_nrhs = itemp + 5 * procs;
+    rdispls = itemp + 6 * procs;
+    rdispls_nrhs = itemp + 7 * procs;
+
+    for (p = 0; p < procs; ++p) SendCnt[p] = 0;
+    for (k = 0; k < nsupers; ++k) {
+        p = trf3Dpartition->symV2DiagOwner[k];
+        if (iam != p)
+            continue;
+        knsupc = SuperSize(k);
+        irow = FstBlockC(k);
+        for (i = 0; i < knsupc; ++i) {
+            q = row_to_proc[irow++];
+            ++SendCnt[q];
+        }
+    }
+
+    MPI_Alltoall(SendCnt, 1, MPI_INT, RecvCnt, 1, MPI_INT,
+                 grid3d->comm);
+    sdispls[0] = rdispls[0] = 0;
+    sdispls_nrhs[0] = rdispls_nrhs[0] = 0;
+    SendCnt_nrhs[0] = SendCnt[0] * nrhs;
+    RecvCnt_nrhs[0] = RecvCnt[0] * nrhs;
+    for (p = 1; p < procs; ++p) {
+        sdispls[p] = sdispls[p - 1] + SendCnt[p - 1];
+        rdispls[p] = rdispls[p - 1] + RecvCnt[p - 1];
+        sdispls_nrhs[p] = sdispls[p] * nrhs;
+        rdispls_nrhs[p] = rdispls[p] * nrhs;
+        SendCnt_nrhs[p] = SendCnt[p] * nrhs;
+        RecvCnt_nrhs[p] = RecvCnt[p] * nrhs;
+    }
+    gstrs_comm->X_to_B_SendCnt = SendCnt;
+
+    if (!(ptr_to_ibuf = SUPERLU_MALLOC(2 * procs * sizeof(int))))
+        ABORT("Malloc fails for SymV2 ptr_to_ibuf[].");
+    gstrs_comm->ptr_to_ibuf = ptr_to_ibuf;
+    gstrs_comm->ptr_to_dbuf = ptr_to_ibuf + procs;
+
+    return 0;
+} /* PDGSTRS_INIT_SYMV2 */
 
 
 
@@ -1115,13 +1252,20 @@ int_t
 pdgstrs_delete_device_lsum_x(dSOLVEstruct_t *SOLVEstruct)
 {
 #if ( defined(GPU_ACC) )
-    checkGPU (gpuFree (SOLVEstruct->d_x));
-    checkGPU (gpuFree (SOLVEstruct->d_lsum));
-    checkGPU (gpuFree (SOLVEstruct->d_lsum_save));
-    checkGPU (gpuFree (SOLVEstruct->d_fmod));
-    checkGPU (gpuFree (SOLVEstruct->d_fmod_save));
-    checkGPU (gpuFree (SOLVEstruct->d_bmod));
-    checkGPU (gpuFree (SOLVEstruct->d_bmod_save));
+    if (SOLVEstruct->d_x) checkGPU (gpuFree (SOLVEstruct->d_x));
+    if (SOLVEstruct->d_lsum) checkGPU (gpuFree (SOLVEstruct->d_lsum));
+    if (SOLVEstruct->d_lsum_save) checkGPU (gpuFree (SOLVEstruct->d_lsum_save));
+    if (SOLVEstruct->d_fmod) checkGPU (gpuFree (SOLVEstruct->d_fmod));
+    if (SOLVEstruct->d_fmod_save) checkGPU (gpuFree (SOLVEstruct->d_fmod_save));
+    if (SOLVEstruct->d_bmod) checkGPU (gpuFree (SOLVEstruct->d_bmod));
+    if (SOLVEstruct->d_bmod_save) checkGPU (gpuFree (SOLVEstruct->d_bmod_save));
+    SOLVEstruct->d_x = NULL;
+    SOLVEstruct->d_lsum = NULL;
+    SOLVEstruct->d_lsum_save = NULL;
+    SOLVEstruct->d_fmod = NULL;
+    SOLVEstruct->d_fmod_save = NULL;
+    SOLVEstruct->d_bmod = NULL;
+    SOLVEstruct->d_bmod_save = NULL;
 
 
 /* nvshmem related*/
@@ -1238,29 +1382,125 @@ int dSolveInit(superlu_dist_options_t *options, SuperMatrix *A,
            SUPERLU_MALLOC(sizeof(pdgsmv_comm_t))) )
         ABORT("Malloc fails for gsmv_comm[]");
     SOLVEstruct->A_colind_gsmv = NULL;
+    SOLVEstruct->symldl_v2_solve_meta = NULL;
+#if ( defined(GPU_ACC) )
+    SOLVEstruct->d_lsum = NULL;
+    SOLVEstruct->d_lsum_save = NULL;
+    SOLVEstruct->d_x = NULL;
+    SOLVEstruct->d_fmod = NULL;
+    SOLVEstruct->d_fmod_save = NULL;
+    SOLVEstruct->d_bmod = NULL;
+    SOLVEstruct->d_bmod_save = NULL;
+#endif
 
     options->SolveInitialized = YES;
     return 0;
 } /* dSolveInit */
+
+/*! \brief Initialize only the solve state needed by the SymFact GPU3D V2 LDL solve. */
+int dSymV2SolveInit(superlu_dist_options_t *options, SuperMatrix *A,
+	       int_t perm_r[], int_t perm_c[], int_t nrhs,
+	       dLUstruct_t *LUstruct, dtrf3Dpartition_t *trf3Dpartition,
+	       gridinfo3d_t *grid3d,
+	       dSOLVEstruct_t *SOLVEstruct)
+{
+    gridinfo_t *grid = &(grid3d->grid2d);
+    int_t *row_to_proc, *inv_perm_c, *itemp;
+    NRformat_loc *Astore;
+    int_t        i, fst_row, m_loc, p;
+    int          procs2d;
+
+    Astore = (NRformat_loc *) A->Store;
+    fst_row = Astore->fst_row;
+    m_loc = Astore->m_loc;
+    procs2d = grid->nprow * grid->npcol;
+
+    if ( !(row_to_proc = intMalloc_dist(A->nrow)) )
+	ABORT("Malloc fails for row_to_proc[].");
+    SOLVEstruct->row_to_proc = row_to_proc;
+    if ( !(inv_perm_c = intMalloc_dist(A->ncol)) )
+        ABORT("Malloc fails for inv_perm_c[].");
+    if (SLU_IS_SYMATCH_ROWPERM(options->RowPerm) && options->Algo3d==YES ) {
+	for (i = 0; i < A->ncol; ++i) inv_perm_c[perm_c[perm_r[i]]] = i;
+    } else {
+	for (i = 0; i < A->ncol; ++i) inv_perm_c[perm_c[i]] = i;
+    }
+    SOLVEstruct->inv_perm_c = inv_perm_c;
+
+    if ( !(itemp = intMalloc_dist(procs2d+1)) )
+        ABORT("Malloc fails for itemp[]");
+    MPI_Allgather(&fst_row, 1, mpi_int_t, itemp, 1, mpi_int_t,
+		  grid->comm);
+    itemp[procs2d] = A->nrow;
+    for (p = 0; p < procs2d; ++p) {
+        int global_layer0_rank = pdgstrs_symv2_global_rank(grid3d, (int)p, 0);
+        for (i = itemp[p] ; i < itemp[p+1]; ++i)
+            row_to_proc[i] = global_layer0_rank;
+    }
+    SUPERLU_FREE(itemp);
+
+    if (trf3Dpartition == NULL ||
+        trf3Dpartition->symV2DiagOwner == NULL)
+        ABORT("dSymV2SolveInit requires SymFact V2 owner tables.");
+
+    SOLVEstruct->num_diag_procs = 0;
+    SOLVEstruct->diag_procs = NULL;
+    SOLVEstruct->diag_len = NULL;
+
+    if ( !(SOLVEstruct->gstrs_comm = (pxgstrs_comm_t *)
+	   SUPERLU_MALLOC(sizeof(pxgstrs_comm_t))) )
+        ABORT("Malloc fails for gstrs_comm[].");
+    pdgstrs_init_symv2(A->ncol, m_loc, nrhs, fst_row, perm_r, perm_c,
+                       grid3d, LUstruct->Glu_persist, trf3Dpartition,
+                       SOLVEstruct);
+
+    SOLVEstruct->gsmv_comm = NULL;
+    SOLVEstruct->A_colind_gsmv = NULL;
+    SOLVEstruct->symldl_v2_solve_meta = NULL;
+#if ( defined(GPU_ACC) )
+    SOLVEstruct->d_lsum = NULL;
+    SOLVEstruct->d_lsum_save = NULL;
+    SOLVEstruct->d_x = NULL;
+    SOLVEstruct->d_fmod = NULL;
+    SOLVEstruct->d_fmod_save = NULL;
+    SOLVEstruct->d_bmod = NULL;
+    SOLVEstruct->d_bmod_save = NULL;
+#endif
+
+    options->SolveInitialized = YES;
+    return 0;
+} /* dSymV2SolveInit */
 
 /*! \brief Release the resources used for the solution phase.
  */
 void dSolveFinalize(superlu_dist_options_t *options, dSOLVEstruct_t *SOLVEstruct)
 {
     if ( options->SolveInitialized ) {
-        pxgstrs_finalize(SOLVEstruct->gstrs_comm);
+        pdgstrs3d_symldl_finalize(SOLVEstruct);
+        if ( SOLVEstruct->gstrs_comm ) {
+            pxgstrs_finalize(SOLVEstruct->gstrs_comm);
+            SOLVEstruct->gstrs_comm = NULL;
+        }
 
-        if ( options->RefineInitialized ) {
+        if ( options->RefineInitialized && SOLVEstruct->gsmv_comm ) {
             pdgsmv_finalize(SOLVEstruct->gsmv_comm);
 	    options->RefineInitialized = NO;
         }
+        if ( options->RefineInitialized )
+            options->RefineInitialized = NO;
         SUPERLU_FREE(SOLVEstruct->gsmv_comm);
+        SOLVEstruct->gsmv_comm = NULL;
         SUPERLU_FREE(SOLVEstruct->row_to_proc);
+        SOLVEstruct->row_to_proc = NULL;
         SUPERLU_FREE(SOLVEstruct->inv_perm_c);
+        SOLVEstruct->inv_perm_c = NULL;
         SUPERLU_FREE(SOLVEstruct->diag_procs);
+        SOLVEstruct->diag_procs = NULL;
         SUPERLU_FREE(SOLVEstruct->diag_len);
+        SOLVEstruct->diag_len = NULL;
         if ( SOLVEstruct->A_colind_gsmv )
 	    SUPERLU_FREE(SOLVEstruct->A_colind_gsmv);
+        SOLVEstruct->A_colind_gsmv = NULL;
         options->SolveInitialized = NO;
     }
 } /* dSolveFinalize */
@@ -1366,6 +1606,7 @@ dDestroy_Tree(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     int i, nb, nsupers;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
     dLocalLU_t *Llu = LUstruct->Llu;
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
 #if ( DEBUGlevel>=1 )
     int iam;
     MPI_Comm_rank( MPI_COMM_WORLD, &iam );
@@ -1373,14 +1614,20 @@ dDestroy_Tree(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
 #endif
 
     nsupers = Glu_persist->supno[n-1] + 1;
+    int sym_v2_l_only = trf3Dpart != NULL &&
+        trf3Dpart->symV2PanelLocalIndex != NULL &&
+        trf3Dpart->symV2RowLocalIndex != NULL &&
+        trf3Dpart->symV2LocalPanelGids != NULL &&
+        trf3Dpart->symV2LocalRowGids != NULL;
 
-    nb = CEILING(nsupers, grid->npcol);
+    nb = sym_v2_l_only ? trf3Dpart->symV2LocalPanelCount
+                       : CEILING(nsupers, grid->npcol);
     for (i=0;i<nb;++i){
-        if(Llu->LBtree_ptr[i].empty_==NO){
+        if(Llu->LBtree_ptr && Llu->LBtree_ptr[i].empty_==NO){
 			// BcTree_Destroy(Llu->LBtree_ptr[i],LUstruct->dt);
             C_BcTree_Nullify(&Llu->LBtree_ptr[i]);
 	}
-        if(Llu->UBtree_ptr[i].empty_==NO){
+        if(Llu->UBtree_ptr && Llu->UBtree_ptr[i].empty_==NO){
 			// BcTree_Destroy(Llu->UBtree_ptr[i],LUstruct->dt);
             C_BcTree_Nullify(&Llu->UBtree_ptr[i]);
 	}
@@ -1388,13 +1635,14 @@ dDestroy_Tree(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     SUPERLU_FREE(Llu->LBtree_ptr);
     SUPERLU_FREE(Llu->UBtree_ptr);
 
-    nb = CEILING(nsupers, grid->nprow);
+    nb = sym_v2_l_only ? trf3Dpart->symV2LocalRowCount
+                       : CEILING(nsupers, grid->nprow);
     for (i=0;i<nb;++i){
-        if(Llu->LRtree_ptr[i].empty_==NO){
+        if(Llu->LRtree_ptr && Llu->LRtree_ptr[i].empty_==NO){
 			// RdTree_Destroy(Llu->LRtree_ptr[i],LUstruct->dt);
             C_RdTree_Nullify(&Llu->LRtree_ptr[i]);
 	}
-        if(Llu->URtree_ptr[i].empty_==NO){
+        if(Llu->URtree_ptr && Llu->URtree_ptr[i].empty_==NO){
 			// RdTree_Destroy(Llu->URtree_ptr[i],LUstruct->dt);
             C_RdTree_Nullify(&Llu->URtree_ptr[i]);
 	}

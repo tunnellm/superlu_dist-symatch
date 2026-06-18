@@ -357,6 +357,22 @@ typedef struct
     int* supernodeMask;
     dLUValSubBuf_t  *LUvsb;
     SupernodeToGridMap_t* superGridMap;
+    int *symV2DiagOwner;  /* global rank owning the inverse diagonal block for each supernode */
+    int *symV2PanelRoot;  /* 2D process-column root for L-panel broadcasts */
+    int *symV2DiagRoot;   /* 2D process-row root for diagonal broadcasts */
+    int_t *symV2PanelLocalIndex; /* compact local L-panel index for each supernode, or -1 */
+    int_t *symV2RowLocalIndex;   /* compact local row/diagonal index for each supernode, or -1 */
+    int_t *symV2LocalPanelGids;  /* global supernodes whose L panels live on this process column */
+    int_t *symV2LocalRowGids;    /* global supernodes whose rows/diagonal live on this process row */
+    int_t symV2LocalPanelCount;
+    int_t symV2LocalRowCount;
+    int symV2ScheduleEnabled;    /* V2 uses an LDL-native forest, not the LU forest split. */
+    int_t symV2FactorLevelCount;
+    int_t *symV2FactorLevelPtr;  /* LDL topo-level offsets into symV2FactorNodes */
+    int_t *symV2FactorNodes;     /* leaf-to-root nodes for the LDL-native forest */
+    int_t *symV2NodeLevel;       /* leaf-to-root level per supernode */
+    int_t *symV2NodeOrder;       /* position in symV2FactorNodes per supernode */
+    int_t *symV2NodeIperm;       /* inverse map for LDL-native forest metadata */
     int maxLvl; // YL: store this to avoid the use of grid3d
 
     /* Sherry added the following 3 for variable size batch. 2/17/23 */
@@ -411,7 +427,8 @@ typedef struct {
     int_t *xrow_to_proc; /* used by PDSLin */
     NRformat_loc3d* A3d; /* Point to 3D {A, B} gathered on 2D layer 0.
                             This needs to be peresistent between
-			    3D factorization and solve.  */
+				    3D factorization and solve.  */
+    void *symldl_v2_solve_meta; /* GPU3DVERSION=2 SymFact solve metadata. */
     #ifdef GPU_ACC
     double *d_lsum, *d_lsum_save;      /* used for device lsum*/
     double *d_x;         /* used for device solution vector*/
@@ -627,6 +644,8 @@ extern void  pdgssvx(superlu_dist_options_t *, SuperMatrix *,
 extern void  pdCompute_Diag_Inv(superlu_dist_options_t *, int_t, dLUstruct_t *,gridinfo_t *, SuperLUStat_t *, int *);
 extern int  dSolveInit(superlu_dist_options_t *, SuperMatrix *, int_t [], int_t [],
 		       int_t, dLUstruct_t *, gridinfo_t *, dSOLVEstruct_t *);
+extern int  dSymV2SolveInit(superlu_dist_options_t *, SuperMatrix *, int_t [], int_t [],
+		       int_t, dLUstruct_t *, dtrf3Dpartition_t *, gridinfo3d_t *, dSOLVEstruct_t *);
 extern void dSolveFinalize(superlu_dist_options_t *, dSOLVEstruct_t *);
 extern void dDestroy_A3d_gathered_on_2d(dSOLVEstruct_t *, gridinfo3d_t *);
 extern int_t pdgstrs_init(int_t, int_t, int_t, int_t,
@@ -955,6 +974,16 @@ pdgstrs3d_newsolve (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUst
            dtrf3Dpartition_t*  trf3Dpartition, gridinfo3d_t *grid3d, double *B,
            int_t m_loc, int_t fst_row, int_t ldb, int nrhs,
            dSOLVEstruct_t * SOLVEstruct, SuperLUStat_t * stat, int *info);
+
+extern void
+pdgstrs3d_symldl (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
+           dScalePermstruct_t * ScalePermstruct,
+           dtrf3Dpartition_t*  trf3Dpartition, gridinfo3d_t *grid3d, double *B,
+           int_t m_loc, int_t fst_row, int_t ldb, int nrhs,
+           dSOLVEstruct_t * SOLVEstruct, SuperLUStat_t * stat, int *info);
+
+extern void
+pdgstrs3d_symldl_finalize(dSOLVEstruct_t *SOLVEstruct);
 
 extern int_t pdgsTrBackSolve3d(superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
                         dScalePermstruct_t * ScalePermstruct,
@@ -1307,7 +1336,12 @@ extern void dbcastPermutedSparseA(SuperMatrix *A,
                           Glu_freeable_t *Glu_freeable,
                           dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
 
-extern void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
+extern void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
+                                 gridinfo3d_t *grid3d);
+extern void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
+                                   Glu_freeable_t *Glu_freeable,
+                                   gridinfo3d_t *grid3d,
+                                   superlu_dist_options_t *options);
 
 
     /* from xtrf3Dpartition.h */
@@ -1674,6 +1708,11 @@ dReDistribute_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
                 double *a[]);
 extern float
 pddistribute3d_Yang(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
+	     dScalePermstruct_t *ScalePermstruct,
+	     Glu_freeable_t *Glu_freeable, dLUstruct_t *LUstruct,
+	     gridinfo3d_t *grid3d);
+extern float
+dSymV2Distribute3d(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 	     dScalePermstruct_t *ScalePermstruct,
 	     Glu_freeable_t *Glu_freeable, dLUstruct_t *LUstruct,
 	     gridinfo3d_t *grid3d);

@@ -358,8 +358,11 @@ struct LUstructGPU_t
     
     double* LvalRecvBufs[MAX_CUDA_STREAMS];
     double* UvalRecvBufs[MAX_CUDA_STREAMS];
+    double* symPartnerLvalRecvBufs[MAX_CUDA_STREAMS];
+    double* symPartnerLStageBufs[MAX_CUDA_STREAMS];
     int_t* LidxRecvBufs[MAX_CUDA_STREAMS];
     int_t* UidxRecvBufs[MAX_CUDA_STREAMS];
+    int_t* symPartnerLidxRecvBufs[MAX_CUDA_STREAMS];
 
     cusolverDnHandle_t cuSolveHandles[MAX_CUDA_STREAMS];
     double* diagFactWork[MAX_CUDA_STREAMS];

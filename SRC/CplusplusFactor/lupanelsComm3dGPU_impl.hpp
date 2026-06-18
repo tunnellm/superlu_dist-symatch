@@ -12,6 +12,8 @@ int_t xLUstruct_t<Ftype>::ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
 {
     int_t maxLvl = log2i(grid3d->zscp.Np) + 1;
     int_t myGrid = grid3d->zscp.Iam;
+    bool sym_v2_l_only =
+        (options != NULL && options->SymFact == YES && symGPU3DVersion == 2);
 
 #if (DEBUGlevel >= 1)
     printf(".maxLvl %d\n", maxLvl); fflush(stdout);
@@ -48,14 +50,16 @@ int_t xLUstruct_t<Ftype>::ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
             if (myGrid == sender)
             {
                 zSendLPanelGPU(k0, receiver);
-                zSendUPanelGPU(k0, receiver);
+                if (!sym_v2_l_only)
+                    zSendUPanelGPU(k0, receiver);
             }
             else
             {
                 Ftype alpha = one<Ftype>(); Ftype beta = one<Ftype>(); 
 
                 zRecvLPanelGPU(k0, sender, alpha, beta);
-                zRecvUPanelGPU(k0, sender, alpha, beta);
+                if (!sym_v2_l_only)
+                    zRecvUPanelGPU(k0, sender, alpha, beta);
             }
         }
         cudaStreamSynchronize(A_gpu.cuStreams[0]) ;
@@ -73,10 +77,13 @@ int_t xLUstruct_t<Ftype>::ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zSendLPanelGPU(int_t k0, int_t receiverGrid)
 {
-    
-	if (mycol == kcol(k0))
+    int_t panel_col = useSymV2Solve() ? symV2PanelRoot(k0) : kcol(k0);
+
+	if (mycol == panel_col)
 	{
-		int_t lk = g2lCol(k0);
+		int_t lk = useSymV2Solve() ? symV2PanelIndex(k0) : g2lCol(k0);
+        if (lk < 0)
+            return 0;
         if (!lPanelVec[lk].isEmpty())
 		{
             superlu_gpu_mpi_send(lPanelVec[lk].blkPtrGPU(0), LvalRecvBufs[0],
@@ -91,9 +98,13 @@ int_t xLUstruct_t<Ftype>::zSendLPanelGPU(int_t k0, int_t receiverGrid)
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zRecvLPanelGPU(int_t k0, int_t senderGrid, Ftype alpha, Ftype beta)
 {
-    if (mycol == kcol(k0))
+    int_t panel_col = useSymV2Solve() ? symV2PanelRoot(k0) : kcol(k0);
+
+    if (mycol == panel_col)
 	{
-		int_t lk = g2lCol(k0);
+		int_t lk = useSymV2Solve() ? symV2PanelIndex(k0) : g2lCol(k0);
+        if (lk < 0)
+            return 0;
         if (!lPanelVec[lk].isEmpty())
 		{
             

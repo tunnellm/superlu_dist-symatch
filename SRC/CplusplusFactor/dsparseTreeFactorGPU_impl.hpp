@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdio>
 #include <cinttypes>
+#include <cstdlib>
 #include "superlu_ddefs.h"
 #include "lupanels.hpp"
 #include "xlupanels.hpp"
@@ -11,6 +12,23 @@
 #include "batch_block_copy.h"
 #include "gpu_mpi_utils.hpp"
 
+static inline bool sym_v2_schedule_trace_enabled()
+{
+    const char *env = std::getenv("GPU3DV2_TRACE_EXCHANGE");
+    return env != NULL && env[0] != '\0' && env[0] != '0';
+}
+
+#define SYM_V2_TRACE_SCHED(grid3d_, k_, fmt_, ...)                            \
+    do                                                                        \
+    {                                                                         \
+        if (sym_v2_schedule_trace_enabled())                                  \
+        {                                                                     \
+            std::printf("[sym-v2-sched] rank %d k %d: " fmt_ "\n",           \
+                        (grid3d_ != NULL) ? (grid3d_)->iam : -1,              \
+                        static_cast<int>(k_), ##__VA_ARGS__);                 \
+            std::fflush(stdout);                                              \
+        }                                                                     \
+    } while (0)
 
 int getBufferOffset(int k0, int k1, int winSize, int winParity, int halfWin)
 {
@@ -407,7 +425,88 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
     double t0 = SuperLU_timer_();
     if (options->SymFact == YES)
     {
-        dSymFinishL2U(k);
+        if (symGPU3DVersion == 2)
+        {
+            int_t sym_panel_root = symV2PanelRoot(k);
+            SYM_V2_TRACE_SCHED(grid3d, k,
+                               "panel bcast true-sym entry Lidx=%d offset=%d",
+                               static_cast<int>(LidxSendCounts[k]),
+                               static_cast<int>(offset));
+            xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
+
+            bool sym_ll_local_2d = (Pr == 1 && Pc == 1);
+            if (!sym_ll_local_2d)
+            {
+                xlpanel_t<Ftype> partner_lpanel = getKPartnerLPanel(k, offset);
+                dSymV2PartnerLBcastGPU(k, offset, partner_lpanel);
+                SYM_V2_TRACE_SCHED(grid3d, k, "after partner exchange");
+            }
+
+            if (LidxSendCounts[k] > 0)
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double sym_panel_bcast_t = SuperLU_timer_();
+                symStatAdd(SYM_GPU3D_S_PANEL_BCASTS);
+                long long l_bytes =
+                    static_cast<long long>(LidxSendCounts[k]) *
+                    static_cast<long long>(sizeof(int_t)) +
+                    static_cast<long long>(LvalSendCounts[k]) *
+                    static_cast<long long>(sizeof(Ftype));
+                symStatAdd(SYM_GPU3D_S_PANEL_BCAST_BYTES, l_bytes);
+#endif
+                if (grid3d->rscp.Np > 1)
+                {
+                    SYM_V2_TRACE_SCHED(grid3d, k, "before L panel rscp bcast");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                    double sym_panel_mpi_t = SuperLU_timer_();
+                    symStatAdd(SYM_GPU3D_S_PANEL_BCAST_MPI_BYTES, l_bytes);
+#endif
+                    superlu_gpu_mpi_bcast(k_lpanel.gpuPanel.index,
+                                          k_lpanel.index, sizeof(int_t),
+                                          static_cast<int>(LidxSendCounts[k]),
+                                          mpi_int_t, sym_panel_root,
+                                          grid3d->rscp.comm);
+                    superlu_gpu_mpi_bcast(k_lpanel.gpuPanel.val,
+                                          k_lpanel.val, sizeof(Ftype),
+                                          static_cast<int>(LvalSendCounts[k]),
+                                          get_mpi_type<Ftype>(), sym_panel_root,
+                                          grid3d->rscp.comm);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                    symTimingAdd(SYM_GPU3D_T_PANEL_BCAST_MPI,
+                                 SuperLU_timer_() - sym_panel_mpi_t);
+#endif
+                    if (superlu_cuda_aware_mpi())
+                    {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                        double sym_panel_index_t = SuperLU_timer_();
+                        symStatAdd(SYM_GPU3D_S_PANEL_INDEX_D2H_BYTES,
+                                   static_cast<long long>(LidxSendCounts[k]) *
+                                   static_cast<long long>(sizeof(int_t)));
+#endif
+                        gpuErrchk(cudaMemcpy(k_lpanel.index,
+                                             k_lpanel.gpuPanel.index,
+                                             sizeof(int_t) *
+                                                 static_cast<size_t>(LidxSendCounts[k]),
+                                             cudaMemcpyDeviceToHost));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                        symTimingAdd(SYM_GPU3D_T_PANEL_INDEX_D2H,
+                                     SuperLU_timer_() - sym_panel_index_t);
+#endif
+                    }
+                    SYM_V2_TRACE_SCHED(grid3d, k, "after L panel rscp bcast");
+                }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAdd(SYM_GPU3D_T_PANEL_BCAST,
+                             SuperLU_timer_() - sym_panel_bcast_t);
+#endif
+            }
+
+            SCT->tPanelBcast += (SuperLU_timer_() - t0);
+            return 0;
+        }
+
+        if (symGPU3DVersion != 2)
+            dSymFinishL2U(k);
 
         xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
         xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
@@ -507,6 +606,7 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             }
 #endif
         }
+
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         symTimingAdd(SYM_GPU3D_T_PANEL_BCAST,
                      SuperLU_timer_() - sym_panel_bcast_t);
@@ -589,6 +689,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 
     /*main loop over all the levels*/
     int_t numLA = SUPERLU_MIN(A_gpu.numCudaStreams, getNumLookAhead(options));
+    if (numLA < 1)
+        ABORT("GPU factorization requires at least one CUDA stream.");
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     if (sym_timing_enabled)
         symStatMax(SYM_GPU3D_S_SCHED_MAX_NUM_LA,
@@ -669,7 +771,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 
     // TODO: its really the panels that needs to be doubled
     //  everything else can remain as it is
-    int_t winSize = SUPERLU_MIN(numLA / 2, eTreeTopLims[1]);
+    int_t halfWin = (numLA > 1) ? (numLA / 2) : 0;
+    int_t winSize = (halfWin > 0) ? SUPERLU_MIN(halfWin, eTreeTopLims[1]) : 1;
 
     // printf(". lookahead winSize %d\n", winSize);
 #if ( PRNTlevel >= 1 )    
@@ -700,7 +803,6 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 
     int_t k1 = 0;
     int_t winParity = 0;
-    int_t halfWin = numLA / 2;
     while (k1 < nnodes)
     {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -720,12 +822,27 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         {
             int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
-            xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
             int_t k_parent = gEtreeInfo->setree[k];
             /* L o o k   A h e a d   P a n e l   U p d a t e */
-            if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            if (symGPU3DVersion == 2)
             {
+                if (Pr == 1 && Pc == 1 && LidxSendCounts[k] > 0)
+                {
+                    dSymLookAheadUpdateLLGPU(offset, k, k_parent,
+                                             k_lpanel);
+                }
+                else if (LidxSendCounts[k] > 0)
+                {
+                    xlpanel_t<Ftype> partner_lpanel = getKPartnerLPanel(k, offset);
+                    dSymLookAheadUpdateWithLPartnerGPU(offset, k, k_parent,
+                                                       k_lpanel,
+                                                       partner_lpanel);
+                }
+            }
+            else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            {
+                xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 if (sym_timing_enabled)
                     symStatAdd(SYM_GPU3D_S_LOOKAHEAD_UPDATES);
@@ -792,7 +909,6 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         {
             int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
-            xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
             int_t k_parent = gEtreeInfo->setree[k];
             /* Look Ahead Panel Solve */
@@ -820,8 +936,26 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             }
 
             /*proceed with remaining SchurComplement update */
-            if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            if (symGPU3DVersion == 2)
             {
+                if (Pr == 1 && Pc == 1 && LidxSendCounts[k] > 0)
+                {
+                    dSymSchurCompUpdateExcludeOneLLGPU(offset, k,
+                                                       k_parent,
+                                                       k_lpanel);
+                }
+                else if (LidxSendCounts[k] > 0)
+                {
+                    xlpanel_t<Ftype> partner_lpanel = getKPartnerLPanel(k, offset);
+                    dSymSchurCompUpdateExcludeOneWithLPartnerGPU(offset, k,
+                                                                 k_parent,
+                                                                 k_lpanel,
+                                                                 partner_lpanel);
+                }
+            }
+            else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            {
+                xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 if (sym_timing_enabled)
                     symStatAdd(SYM_GPU3D_S_EXCLUDE_UPDATES);
@@ -883,7 +1017,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             //     offset+= halfWin;
             int_t offset = getBufferOffset(k0, k1, oldWinSize, winParity, halfWin);
             // printf("Syncing stream %d on offset %d\n", k0, offset);
-            if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
+                (symGPU3DVersion != 2 &&
+                 UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0))
                 gpuErrchk(cudaStreamSynchronize(A_gpu.cuStreams[offset]));
         }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <iostream>
 #include <cassert>
 #include "superlu_defs.h"
@@ -22,6 +23,9 @@
 #ifdef HAVE_CUDA
 template <>
 int_t xLUstruct_t<double>::dSymStartL2UGPU(int_t k, int_t stream_offset);
+template <>
+int_t xLUstruct_t<double>::dSymV2PartnerLBcastGPU(int_t k, int_t stream_offset,
+                                                  xlpanel_t<double> &partner_panel);
 #endif
 
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
@@ -97,6 +101,38 @@ static inline int xlu_gpu3d_contract()
     if (end == env || *end != '\0' || value < 0 || value > 3)
         ABORT("GPU3DCONTRACT must be one of 0, 1, 2, or 3.");
     return (int)value;
+}
+
+static inline int xlu_gpu3d_version()
+{
+    const char *env = std::getenv("GPU3DVERSION");
+    if (env == NULL || env[0] == '\0')
+        return 0;
+
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 2)
+        ABORT("GPU3DVERSION must be one of 0, 1, or 2.");
+    return (int)value;
+}
+
+static inline int xlu_env_bool(const char *name)
+{
+    const char *env = std::getenv(name);
+    if (env == NULL || env[0] == '\0')
+        return 0;
+    if (std::strcmp(env, "1") == 0 || std::strcmp(env, "true") == 0 ||
+        std::strcmp(env, "TRUE") == 0 || std::strcmp(env, "yes") == 0 ||
+        std::strcmp(env, "YES") == 0 || std::strcmp(env, "on") == 0 ||
+        std::strcmp(env, "ON") == 0)
+        return 1;
+    if (std::strcmp(env, "0") == 0 || std::strcmp(env, "false") == 0 ||
+        std::strcmp(env, "FALSE") == 0 || std::strcmp(env, "no") == 0 ||
+        std::strcmp(env, "NO") == 0 || std::strcmp(env, "off") == 0 ||
+        std::strcmp(env, "OFF") == 0)
+        return 0;
+    ABORT("Invalid boolean environment value.");
+    return 0;
 }
 
 static inline double xlu_env_double(const char *name, double fallback)
@@ -182,7 +218,7 @@ static inline double xlu_sym_inverse_scaled_residual(const double *a, int lda,
 template <typename Ftype>
 void xLUstruct_t<Ftype>::printSymGPU3DTiming()
 {
-    static const char *labels[SYM_GPU3D_T_COUNT] = {
+    static const char *labels_v1[SYM_GPU3D_T_COUNT] = {
         "l2u_start",
         "diag_d2h",
         "diag_d2h_copy",
@@ -217,7 +253,42 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "initial_panel_bcast",
         "factor_tree_wall"
     };
-    static const char *stat_labels[SYM_GPU3D_S_COUNT] = {
+    static const char *labels_v2[SYM_GPU3D_T_COUNT] = {
+        "partner_l_start",
+        "diag_d2h",
+        "diag_d2h_copy",
+        "diag_d2h_wait",
+        "diag_prefetch_issue",
+        "diag_prefetch_wait",
+        "cpu_sytrf",
+        "gpu_sytri",
+        "gpu_sytri_validate",
+        "cpu_sytri",
+        "diag_pack",
+        "diag_bcast",
+        "inv_h2d",
+        "ldiag_d2d",
+        "lpanel_transform",
+        "partner_l_finish",
+        "panel_bcast",
+        "panel_bcast_mpi",
+        "panel_index_d2h",
+        "panel_bcast_singleton",
+        "schur_update",
+        "schur_sync",
+        "lookahead_update",
+        "lookahead_sync",
+        "exclude_update",
+        "sched_lookahead_dispatch",
+        "sched_prefetch_ready",
+        "sched_factor_dispatch",
+        "sched_bcast_advance",
+        "sched_final_sync",
+        "initial_factor_dispatch",
+        "initial_panel_bcast",
+        "factor_tree_wall"
+    };
+    static const char *stat_labels_v1[SYM_GPU3D_S_COUNT] = {
         "factor_trees",
         "factor_nodes",
         "initial_factor_nodes",
@@ -243,6 +314,32 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "sched_max_window",
         "sched_max_num_la"
     };
+    static const char *stat_labels_v2[SYM_GPU3D_S_COUNT] = {
+        "factor_trees",
+        "factor_nodes",
+        "initial_factor_nodes",
+        "parent_factor_nodes",
+        "lookahead_updates",
+        "exclude_updates",
+        "panel_bcasts",
+        "panel_bcast_bytes",
+        "panel_bcast_mpi_bytes",
+        "panel_index_d2h_bytes",
+        "partner_l_local_bytes",
+        "partner_l_send_bytes",
+        "partner_l_recv_bytes",
+        "partner_l_host_staging_bytes",
+        "partner_l_cuda_aware_send_bytes",
+        "diag_d2h_bytes",
+        "diag_prefetch_hits",
+        "diag_prefetch_misses",
+        "diag_prefetch_issues",
+        "sched_windows",
+        "sched_window_nodes",
+        "sched_ready_bcasts",
+        "sched_max_window",
+        "sched_max_num_la"
+    };
 
     int mpi_initialized = 0;
     int mpi_finalized = 0;
@@ -257,13 +354,23 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
     long long sum_stat[SYM_GPU3D_S_COUNT] = {};
     long long min_stat[SYM_GPU3D_S_COUNT] = {};
     long long max_stat[SYM_GPU3D_S_COUNT] = {};
+    struct { double val; int rank; } local_max_time[SYM_GPU3D_T_COUNT];
+    struct { double val; int rank; } global_max_time[SYM_GPU3D_T_COUNT];
     int nranks = 1;
+
+    for (int i = 0; i < SYM_GPU3D_T_COUNT; ++i)
+    {
+        local_max_time[i].val = symGPU3DTime[i];
+        local_max_time[i].rank = grid3d->iam;
+    }
 
     MPI_Comm_size(grid3d->comm, &nranks);
     MPI_Reduce(symGPU3DTime, sum_time, SYM_GPU3D_T_COUNT, MPI_DOUBLE,
                MPI_SUM, 0, grid3d->comm);
     MPI_Reduce(symGPU3DTime, max_time, SYM_GPU3D_T_COUNT, MPI_DOUBLE,
                MPI_MAX, 0, grid3d->comm);
+    MPI_Reduce(local_max_time, global_max_time, SYM_GPU3D_T_COUNT,
+               MPI_DOUBLE_INT, MPI_MAXLOC, 0, grid3d->comm);
     MPI_Reduce(symGPU3DCount, sum_count, SYM_GPU3D_T_COUNT,
                MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
     MPI_Reduce(symGPU3DStat, sum_stat, SYM_GPU3D_S_COUNT,
@@ -276,14 +383,19 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
     if (grid3d->iam != 0)
         return;
 
+    const char **labels = useSymV2Solve() ? labels_v2 : labels_v1;
+    const char **stat_labels =
+        useSymV2Solve() ? stat_labels_v2 : stat_labels_v1;
     printf("** SymFact GPU3D timing debug (SLU_ENABLE_SYM_GPU3D_TIMING) **\n");
-    printf("   %-22s %12s %12s %12s\n", "phase", "sum(s)", "max_rank(s)", "calls");
+    printf("   %-22s %12s %12s %9s %12s\n",
+           "phase", "sum(s)", "max_rank(s)", "rank", "calls");
     for (int i = 0; i < SYM_GPU3D_T_COUNT; ++i)
     {
         if (sum_count[i] == 0 && sum_time[i] == 0.0 && max_time[i] == 0.0)
             continue;
-        printf("   %-22s %12.6f %12.6f %12lld\n",
-               labels[i], sum_time[i], max_time[i], sum_count[i]);
+        printf("   %-22s %12.6f %12.6f %9d %12lld\n",
+               labels[i], sum_time[i], max_time[i],
+               global_max_time[i].rank, sum_count[i]);
     }
     printf("** SymFact GPU3D rank stats (SLU_ENABLE_SYM_GPU3D_TIMING) **\n");
     printf("   %-28s %16s %16s %16s %16s\n",
@@ -350,6 +462,8 @@ int xLUstruct_t<Ftype>::freeDiagFactBufsArr(int_t num_bufs, diagFactBufs_type<Ft
 template <typename Ftype>
 xupanel_t<Ftype> xLUstruct_t<Ftype>::getKUpanel(int_t k, int_t offset)
 {
+    if (!needsUPanelStorage())
+        ABORT("SymFact GPU3DVERSION=2 does not materialize U panels.");
     return (
         myrow == krow(k) ? 
         uPanelVec[g2lRow(k)] : 
@@ -361,12 +475,22 @@ xupanel_t<Ftype> xLUstruct_t<Ftype>::getKUpanel(int_t k, int_t offset)
 template <typename Ftype>
 xlpanel_t<Ftype> xLUstruct_t<Ftype>::getKLpanel(int_t k, int_t offset)
 { 
+    int_t panel_root = symV2PanelRoot(k);
     return (
-        mycol == kcol(k) ? 
-        lPanelVec[g2lCol(k)] : 
+        mycol == panel_root ?
+        lPanelVec[symV2PanelIndex(k)] :
         xlpanel_t<Ftype>(LidxRecvBufs[offset], LvalRecvBufs[offset],
             A_gpu.LidxRecvBufs[offset], A_gpu.LvalRecvBufs[offset])
     );
+}
+
+template <typename Ftype>
+xlpanel_t<Ftype> xLUstruct_t<Ftype>::getKPartnerLPanel(int_t k, int_t offset)
+{
+    return xlpanel_t<Ftype>(symPartnerLidxRecvBufs[offset],
+        symPartnerLvalRecvBufs[offset],
+        A_gpu.symPartnerLidxRecvBufs[offset],
+        A_gpu.symPartnerLvalRecvBufs[offset]);
 }
 #endif
 
@@ -380,6 +504,95 @@ Ftype* getBigV(int_t ldt, int_t num_threads)
     if (!(bigV = (Ftype*) SUPERLU_MALLOC (bigv_bytes)))
         ABORT ("Malloc failed for dgemm buffV");
     return bigV;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2ComputePartnerScratchSize(
+    LUStruct_type<Ftype> *LUstruct)
+{
+    (void)LUstruct;
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
+    LUStruct_type<double> *LUstruct)
+{
+    if (options->SymFact != YES || symGPU3DVersion != 2 || Pr <= 1)
+        return 0;
+
+    size_t partner_count_size = xlu_checked_product(
+        static_cast<size_t>(nsupers), static_cast<size_t>(Pc),
+        "SymFact V2 partner-L count table");
+    if (partner_count_size >
+        static_cast<size_t>(std::numeric_limits<int>::max()))
+        ABORT("SymFact V2 partner-L count table is too large for MPI.");
+
+    std::vector<long long> local_partner_val(partner_count_size, 0);
+    std::vector<long long> global_partner_val(partner_count_size, 0);
+    std::vector<long long> local_partner_meta(partner_count_size, 0);
+    std::vector<long long> global_partner_meta(partner_count_size, 0);
+    (void) LUstruct;
+
+    for (int_t i = 0; i < symV2PanelCount(); ++i)
+    {
+        int_t k0 = symV2PanelGid(i);
+        if (k0 >= nsupers || isNodeInMyGrid[k0] != 1)
+            continue;
+
+        int_t lk = symV2PanelIndex(k0);
+        if (lk < 0)
+            continue;
+        xlpanel_t<double> &lpanel = lPanelVec[lk];
+        if (lpanel.isEmpty())
+            continue;
+
+        int_t knsupc = SuperSize(k0);
+        int_t first_block = lpanel.haveDiag() ? 1 : 0;
+        for (int_t lb = first_block; lb < lpanel.nblocks(); ++lb)
+        {
+            int_t ik = lpanel.gid(lb);
+            int ikcol = symV2PanelRoot(ik);
+            int_t len = lpanel.nbrow(lb);
+            if (len <= 0)
+                continue;
+            size_t pos = static_cast<size_t>(k0) *
+                             static_cast<size_t>(Pc) +
+                         static_cast<size_t>(ikcol);
+            local_partner_val[pos] +=
+                static_cast<long long>(len) *
+                static_cast<long long>(knsupc);
+            local_partner_meta[pos] += static_cast<long long>(len) + 2;
+        }
+    }
+
+    MPI_Allreduce(local_partner_val.data(), global_partner_val.data(),
+                  static_cast<int>(partner_count_size), MPI_LONG_LONG,
+                  MPI_SUM, grid->comm);
+    MPI_Allreduce(local_partner_meta.data(), global_partner_meta.data(),
+                  static_cast<int>(partner_count_size), MPI_LONG_LONG,
+                  MPI_SUM, grid->comm);
+
+    long long max_partner_val =
+        *std::max_element(global_partner_val.begin(),
+                          global_partner_val.end());
+    long long max_partner_meta =
+        *std::max_element(global_partner_meta.begin(),
+                          global_partner_meta.end());
+    long long max_partner_idx = (max_partner_meta > 0)
+                                    ? max_partner_meta + LPANEL_HEADER_SIZE + 1
+                                    : 0;
+    if (max_partner_val >
+            static_cast<long long>(std::numeric_limits<int_t>::max()) ||
+        max_partner_idx >
+            static_cast<long long>(std::numeric_limits<int_t>::max()))
+        ABORT("SymFact V2 partner-L scratch size exceeds int_t range.");
+
+    maxSymPartnerLvalCount =
+        std::max(maxLvalCount, static_cast<int_t>(max_partner_val));
+    maxSymPartnerLidxCount =
+        std::max(maxLidxCount, static_cast<int_t>(max_partner_idx));
+    return 0;
 }
 
 /* Constructor */
@@ -401,27 +614,57 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 	                             thresh(thresh_), info(info_), anc25d(grid3d_in)
 {
     xlu_sym_gpu3d_trace(grid3d, "enter xLUstruct_t constructor");
-    maxLvl = log2i(grid3d->zscp.Np) + 1;
-    isNodeInMyGrid = getIsNodeInMyGrid(nsupers, maxLvl, trf3Dpartition->myNodeCount, trf3Dpartition->treePerm);
-    superlu_acc_offload = sp_ienv_dist(10, options); // get_acc_offload();
-    xlu_sym_gpu3d_trace(grid3d, "constructor after isNodeInMyGrid");
-
-#if (DEBUGlevel >= 1)
-    CHECK_MALLOC(grid3d_in->iam, "Enter xLUstruct_t constructor");
-#endif
     grid = &(grid3d->grid2d);
     iam = grid->iam;
     Pc = grid->npcol;
     Pr = grid->nprow;
     myrow = MYROW(iam, grid);
     mycol = MYCOL(iam, grid);
+    symGPU3DVersion = (options->SymFact == YES) ? xlu_gpu3d_version() : 0;
+    maxLvl = symV2ForestLevelCount();
+    if (symV2ScheduleActive())
+    {
+        isNodeInMyGrid = int32Calloc_dist((int) nsupers);
+        if (isNodeInMyGrid == NULL)
+            ABORT("Calloc fails for SymFact V2 local node mask.");
+        for (int_t k = 0; k < nsupers; ++k)
+        {
+            if (trf3Dpartition->superGridMap != NULL &&
+                trf3Dpartition->superGridMap[k] != NOT_IN_GRID)
+                isNodeInMyGrid[k] = 1;
+        }
+    }
+    else
+    {
+        isNodeInMyGrid = getIsNodeInMyGrid(nsupers, maxLvl,
+                                           trf3Dpartition->myNodeCount,
+                                           trf3Dpartition->treePerm);
+    }
+    superlu_acc_offload = sp_ienv_dist(10, options); // get_acc_offload();
+    xlu_sym_gpu3d_trace(grid3d, "constructor after isNodeInMyGrid");
+
+#if (DEBUGlevel >= 1)
+    CHECK_MALLOC(grid3d_in->iam, "Enter xLUstruct_t constructor");
+#endif
     if (options->SymFact == YES)
     {
-        if (options->CommL != YES)
-            ABORT("LUv1 SymFact requires CommL=YES to reconstruct U panels.");
         symFactTagUb = set_tag_ub();
         if (symFactTagUb <= 0)
-            ABORT("Invalid MPI tag upper bound for LUv1 SymFact L2U communication.");
+            ABORT("Invalid MPI tag upper bound for SymFact communication.");
+        if (symGPU3DVersion != 2)
+        {
+            if (options->CommL != YES)
+                ABORT("LUv1 SymFact requires CommL=YES to reconstruct U panels.");
+        }
+        else
+        {
+            if (options->batchCount > 0)
+                ABORT("SymFact GPU3DVERSION=2 does not support batchCount>0 until LDL-native batch sizing is implemented.");
+            symV2DiagBlocks.assign(nsupers, NULL);
+#ifdef HAVE_CUDA
+            symV2DiagBlocksGPU.assign(nsupers, NULL);
+#endif
+        }
     }
     xsup = LUstruct->Glu_persist->xsup;
     int_t **Lrowind_bc_ptr = LUstruct->Llu->Lrowind_bc_ptr;
@@ -429,30 +672,42 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     Ftype **Lnzval_bc_ptr = LUstruct->Llu->Lnzval_bc_ptr;
     Ftype **Unzval_br_ptr = LUstruct->Llu->Unzval_br_ptr;
 
-    lPanelVec = new xlpanel_t<Ftype>[CEILING(nsupers, Pc)];
-    uPanelVec = new xupanel_t<Ftype>[CEILING(nsupers, Pr)];
+    int_t localPanelCount = symV2PanelCount();
+    int_t localRowCount = symV2RowCount();
+    int_t panelVecCount = SUPERLU_MAX((int_t)1, localPanelCount);
+    int_t rowVecCount = SUPERLU_MAX((int_t)1, localRowCount);
+    bool sym_v2_mode = (options->SymFact == YES && symGPU3DVersion == 2);
+    bool need_u_panel_storage = needsUPanelStorage();
+    lPanelVec = new xlpanel_t<Ftype>[panelVecCount];
+    uPanelVec = need_u_panel_storage ? new xupanel_t<Ftype>[rowVecCount] : NULL;
     xlu_sym_gpu3d_trace(grid3d, "constructor after panel vector allocation");
     // create the lvectors
     maxLvalCount = 0;
     maxLidxCount = 0;
+    maxSymPartnerLvalCount = 0;
+    maxSymPartnerLidxCount = 0;
     maxUvalCount = 0;
     maxUidxCount = 0;
 
-    std::vector<int_t> localLvalSendCounts(CEILING(nsupers, Pc), 0);
-    std::vector<int_t> localUvalSendCounts(CEILING(nsupers, Pr), 0);
-    std::vector<int_t> localLidxSendCounts(CEILING(nsupers, Pc), 0);
-    std::vector<int_t> localUidxSendCounts(CEILING(nsupers, Pr), 0);
-
-    for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
+    std::vector<int_t> localLvalSendCounts(panelVecCount, 0);
+    std::vector<int_t> localUvalSendCounts(rowVecCount, 0);
+    std::vector<int_t> localLidxSendCounts(panelVecCount, 0);
+    std::vector<int_t> localUidxSendCounts(rowVecCount, 0);
+    for (int_t i = 0; i < localPanelCount; ++i)
     {
-        int_t k0 = i * Pc + mycol;
-        if (Lrowind_bc_ptr[i] != NULL && isNodeInMyGrid[k0] == 1)
+        int_t k0 = symV2PanelGid(i);
+        int_t *lsub = NULL;
+        Ftype *lval = NULL;
+        int_t src_lk = sym_v2_mode ? i : LBj(k0, grid);
+        lsub = Lrowind_bc_ptr[src_lk];
+        lval = Lnzval_bc_ptr[src_lk];
+        if (lsub != NULL && isNodeInMyGrid[k0] == 1)
         {
             int_t isDiagIncluded = 0;
 
-            if (myrow == krow(k0))
+            if (myrow == symV2DiagRoot(k0))
                 isDiagIncluded = 1;
-            xlpanel_t<Ftype> lpanel(k0, Lrowind_bc_ptr[i], Lnzval_bc_ptr[i], xsup, isDiagIncluded);
+            xlpanel_t<Ftype> lpanel(k0, lsub, lval, xsup, isDiagIncluded);
             lPanelVec[i] = lpanel;
             maxLvalCount = std::max(lPanelVec[i].nzvalSize(), maxLvalCount);
             maxLidxCount = std::max(lPanelVec[i].indexSize(), maxLidxCount);
@@ -462,11 +717,13 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     }
 
     // create the vectors
-    for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
+    for (int_t i = 0; i < localRowCount; ++i)
     {
-        if (Ufstnz_br_ptr[i] != NULL && isNodeInMyGrid[i * Pr + myrow] == 1)
+        int_t globalId = symV2RowGid(i);
+        if (need_u_panel_storage &&
+            Ufstnz_br_ptr != NULL && Unzval_br_ptr != NULL &&
+            Ufstnz_br_ptr[i] != NULL && isNodeInMyGrid[globalId] == 1)
         {
-            int_t globalId = i * Pr + myrow;
             xupanel_t<Ftype> upanel(globalId, Ufstnz_br_ptr[i], Unzval_br_ptr[i], xsup);
             uPanelVec[i] = upanel;
             maxUvalCount = std::max(uPanelVec[i].nzvalSize(), maxUvalCount);
@@ -483,28 +740,51 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     LidxSendCounts.resize(nsupers);
     UidxSendCounts.resize(nsupers);
 
-    std::vector<int_t> recvBuf(std::max(CEILING(nsupers, Pr), CEILING(nsupers, Pc)), 0);
+    std::vector<int_t> recvBuf(std::max(rowVecCount, panelVecCount), 0);
 
-    for (int pr = 0; pr < Pr; pr++)
+    if (!sym_v2_mode)
     {
-        int npr = CEILING(nsupers, Pr);
-        std::copy(localUvalSendCounts.begin(), localUvalSendCounts.end(), recvBuf.begin());
-        // Send the value counts ;
-        MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
-        for (int i = 0; i * Pr + pr < nsupers; i++)
+        for (int pr = 0; pr < Pr; pr++)
         {
-            UvalSendCounts[i * Pr + pr] = recvBuf[i];
-        }
+            int npr = CEILING(nsupers, Pr);
+            std::copy(localUvalSendCounts.begin(), localUvalSendCounts.end(), recvBuf.begin());
+            // Send the value counts ;
+            MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
+            for (int i = 0; i * Pr + pr < nsupers; i++)
+            {
+                UvalSendCounts[i * Pr + pr] = recvBuf[i];
+            }
 
-        std::copy(localUidxSendCounts.begin(), localUidxSendCounts.end(), recvBuf.begin());
-        // send the index count
-        MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
-        for (int i = 0; i * Pr + pr < nsupers; i++)
-        {
-            UidxSendCounts[i * Pr + pr] = recvBuf[i];
+            std::copy(localUidxSendCounts.begin(), localUidxSendCounts.end(), recvBuf.begin());
+            // send the index count
+            MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
+            for (int i = 0; i * Pr + pr < nsupers; i++)
+            {
+                UidxSendCounts[i * Pr + pr] = recvBuf[i];
+            }
         }
     }
 
+    if (sym_v2_mode)
+    {
+        std::vector<int_t> localLvalBySuper(nsupers, 0);
+        std::vector<int_t> localLidxBySuper(nsupers, 0);
+        for (int_t i = 0; i < localPanelCount; ++i)
+        {
+            int_t k0 = symV2PanelGid(i);
+            if (!lPanelVec[i].isEmpty())
+            {
+                localLvalBySuper[k0] = lPanelVec[i].nzvalSize();
+                localLidxBySuper[k0] = lPanelVec[i].indexSize();
+            }
+        }
+        MPI_Allreduce(localLvalBySuper.data(), LvalSendCounts.data(),
+                      nsupers, mpi_int_t, MPI_SUM, grid3d->rscp.comm);
+        MPI_Allreduce(localLidxBySuper.data(), LidxSendCounts.data(),
+                      nsupers, mpi_int_t, MPI_SUM, grid3d->rscp.comm);
+    }
+    else
+    {
     for (int pc = 0; pc < Pc; pc++)
     {
         int npc = CEILING(nsupers, Pc);
@@ -524,18 +804,24 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             LidxSendCounts[i * Pc + pc] = recvBuf[i];
         }
     }
+    }
 
-    maxUvalCount = *std::max_element(UvalSendCounts.begin(), UvalSendCounts.end());
-    maxUidxCount = *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
+    maxUvalCount = sym_v2_mode ? 0 : *std::max_element(UvalSendCounts.begin(), UvalSendCounts.end());
+    maxUidxCount = sym_v2_mode ? 0 : *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
     maxLvalCount = *std::max_element(LvalSendCounts.begin(), LvalSendCounts.end());
     maxLidxCount = *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end());
+    maxSymPartnerLvalCount = maxLvalCount;
+    maxSymPartnerLidxCount = maxLidxCount;
+    dSymV2ComputePartnerScratchSize(LUstruct);
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
-    std::printf("[sym-gpu3d-trace] rank %d: constructor counts nsupers=%lld Pr=%lld Pc=%lld numLA=%d maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld\n",
+    std::printf("[sym-gpu3d-trace] rank %d: constructor counts nsupers=%lld Pr=%lld Pc=%lld numLA=%d maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld maxSymPartnerLval=%lld maxSymPartnerLidx=%lld\n",
                 (grid3d != NULL) ? grid3d->iam : -1,
                 (long long)nsupers, (long long)Pr, (long long)Pc,
                 options->num_lookaheads,
                 (long long)maxLvalCount, (long long)maxUvalCount,
-                (long long)maxLidxCount, (long long)maxUidxCount);
+                (long long)maxLidxCount, (long long)maxUidxCount,
+                (long long)maxSymPartnerLvalCount,
+                (long long)maxSymPartnerLidxCount);
     std::fflush(stdout);
 #endif
 
@@ -560,31 +846,50 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     // allocating communication buffers
     LvalRecvBufs.resize(options->num_lookaheads);
     UvalRecvBufs.resize(options->num_lookaheads);
+    symPartnerLvalRecvBufs.resize(options->num_lookaheads);
     LidxRecvBufs.resize(options->num_lookaheads);
     UidxRecvBufs.resize(options->num_lookaheads);
+    symPartnerLidxRecvBufs.resize(options->num_lookaheads);
     // bcastLval.resize(options->num_lookaheads);
     // bcastUval.resize(options->num_lookaheads);
     // bcastLidx.resize(options->num_lookaheads);
     // bcastUidx.resize(options->num_lookaheads);
 
+    int_t u_recv_val_count = sym_v2_mode ? 0 : maxUvalCount;
+    int_t u_recv_idx_count = sym_v2_mode ? 0 : maxUidxCount;
+
     for (int i = 0; i < options->num_lookaheads; i++)
     {
         size_t lval_bytes = xlu_checked_alloc_bytes(maxLvalCount, sizeof(Ftype),
                                                     "L value receive buffer");
-        size_t uval_bytes = xlu_checked_alloc_bytes(maxUvalCount, sizeof(Ftype),
+        size_t uval_bytes = xlu_checked_alloc_bytes(u_recv_val_count, sizeof(Ftype),
                                                     "U value receive buffer");
+        size_t sym_partner_lval_bytes =
+            xlu_checked_alloc_bytes(maxSymPartnerLvalCount, sizeof(Ftype),
+                                    "SymFact V2 partner-L value receive buffer");
         size_t lidx_bytes = xlu_checked_alloc_bytes(maxLidxCount, sizeof(int_t),
                                                     "L index receive buffer");
-        size_t uidx_bytes = xlu_checked_alloc_bytes(maxUidxCount, sizeof(int_t),
+        size_t uidx_bytes = xlu_checked_alloc_bytes(u_recv_idx_count, sizeof(int_t),
                                                     "U index receive buffer");
-        LvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(lval_bytes);
-        UvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(uval_bytes);
-        LidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(lidx_bytes);
-        UidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(uidx_bytes);
+        size_t sym_partner_lidx_bytes =
+            xlu_checked_alloc_bytes(maxSymPartnerLidxCount, sizeof(int_t),
+                                    "SymFact V2 partner-L index receive buffer");
+        LvalRecvBufs[i] = lval_bytes ? (Ftype *)SUPERLU_MALLOC(lval_bytes) : NULL;
+        UvalRecvBufs[i] = uval_bytes ? (Ftype *)SUPERLU_MALLOC(uval_bytes) : NULL;
+        symPartnerLvalRecvBufs[i] =
+            sym_partner_lval_bytes ? (Ftype *)SUPERLU_MALLOC(sym_partner_lval_bytes) : NULL;
+        LidxRecvBufs[i] = lidx_bytes ? (int_t *)SUPERLU_MALLOC(lidx_bytes) : NULL;
+        UidxRecvBufs[i] = uidx_bytes ? (int_t *)SUPERLU_MALLOC(uidx_bytes) : NULL;
+        symPartnerLidxRecvBufs[i] =
+            sym_partner_lidx_bytes ? (int_t *)SUPERLU_MALLOC(sym_partner_lidx_bytes) : NULL;
         if ((lval_bytes != 0 && LvalRecvBufs[i] == NULL) ||
             (uval_bytes != 0 && UvalRecvBufs[i] == NULL) ||
+            (sym_partner_lval_bytes != 0 &&
+             symPartnerLvalRecvBufs[i] == NULL) ||
             (lidx_bytes != 0 && LidxRecvBufs[i] == NULL) ||
-            (uidx_bytes != 0 && UidxRecvBufs[i] == NULL))
+            (uidx_bytes != 0 && UidxRecvBufs[i] == NULL) ||
+            (sym_partner_lidx_bytes != 0 &&
+             symPartnerLidxRecvBufs[i] == NULL))
             ABORT("Malloc fails for panel receive buffers.");
 
         //TODO: check if setup correctly
@@ -607,10 +912,21 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     // bcastDiagRow.resize(numDiagBufs);
     // bcastDiagCol.resize(numDiagBufs);
 
+    int_t diagBufDim = ldt;
+    if (sym_v2_mode && useSymV2Solve())
+    {
+        diagBufDim = 1;
+        for (int_t k = 0; k < nsupers; ++k)
+        {
+            if (isNodeInMyGrid[k] == 1 && symV2PanelRoot(k) == mycol)
+                diagBufDim = SUPERLU_MAX(diagBufDim, SuperSize(k));
+        }
+    }
+
     for (int i = 0; i < numDiagBufs; i++) /* Sherry?? these strcutures not used */
     {
         diagFactBufs[i] = (Ftype *)SUPERLU_MALLOC(
-            xlu_checked_square_alloc_bytes(ldt, sizeof(Ftype), "diagonal factor buffer"));
+            xlu_checked_square_alloc_bytes(diagBufDim, sizeof(Ftype), "diagonal factor buffer"));
         if (diagFactBufs[i] == NULL)
             ABORT("Malloc fails for diagonal factor buffer.");
         // bcastStruct bcDiagRow(grid3d->rscp.comm, MPI_DOUBLE, SYNC);
@@ -621,16 +937,22 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     xlu_sym_gpu3d_trace(grid3d, "constructor after diagonal buffer allocation");
 
     int mxLeafNode = 0;
-    int_t *myTreeIdxs = trf3Dpartition->myTreeIdxs;
-    // int_t *myZeroTrIdxs = trf3Dpartition->myZeroTrIdxs;
-    sForest_t **sForests = trf3Dpartition->sForests;
-    for (int ilvl = 0; ilvl < maxLvl; ++ilvl)
+    if (sym_v2_mode && symV2ScheduleActive())
     {
-        if (sForests[myTreeIdxs[ilvl]] && sForests[myTreeIdxs[ilvl]]->topoInfo.eTreeTopLims[1] > mxLeafNode)
-            mxLeafNode = sForests[myTreeIdxs[ilvl]]->topoInfo.eTreeTopLims[1];
+        mxLeafNode = trf3Dpartition->mxLeafNode;
+    }
+    else
+    {
+        int_t *myTreeIdxs = trf3Dpartition->myTreeIdxs;
+        sForest_t **sForests = trf3Dpartition->sForests;
+        for (int ilvl = 0; ilvl < maxLvl; ++ilvl)
+        {
+            if (sForests[myTreeIdxs[ilvl]] && sForests[myTreeIdxs[ilvl]]->topoInfo.eTreeTopLims[1] > mxLeafNode)
+                mxLeafNode = sForests[myTreeIdxs[ilvl]]->topoInfo.eTreeTopLims[1];
+        }
     }
     //Yang: how is dFBufs being used in the c++ factorization code? Shall we call dinitDiagFactBufsArrMod instead to save memory? 
-    dFBufs = initDiagFactBufsArr(numDiagBufs, ldt);
+    dFBufs = initDiagFactBufsArr(numDiagBufs, diagBufDim);
     maxLeafNodes = mxLeafNode;
     xlu_sym_gpu3d_trace(grid3d, "constructor after dFBufs allocation");
 
@@ -703,6 +1025,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
     symContract1Accepted = 0;
     symContract1Fallbacks = 0;
     symContract1MaxResid = 0.0;
+    bool need_l2u_workspace = !useSymV2Solve();
 
     if (ldt < 0 || maxLvalCount < 0)
         ABORT("Negative SymFact workspace size.");
@@ -734,11 +1057,14 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
     if (symFactIPIV == NULL)
         ABORT("Malloc fails for SymFact IPIV[].");
 
-    size_t order_count = xlu_checked_product(2, ipiv_count, "SymFact L2U order");
-    symL2UOrders = (int *)SUPERLU_MALLOC(
-        xlu_checked_product(order_count, sizeof(int), "SymFact L2U order"));
-    if (symL2UOrders == NULL)
-        ABORT("Malloc fails for SymFact L2U order workspace.");
+    if (need_l2u_workspace)
+    {
+        size_t order_count = xlu_checked_product(2, ipiv_count, "SymFact L2U order");
+        symL2UOrders = (int *)SUPERLU_MALLOC(
+            xlu_checked_product(order_count, sizeof(int), "SymFact L2U order"));
+        if (symL2UOrders == NULL)
+            ABORT("Malloc fails for SymFact L2U order workspace.");
+    }
     xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after CPU workspace allocation");
 
 #ifdef HAVE_CUDA
@@ -747,33 +1073,43 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
         std::printf("[sym-gpu3d-trace] rank %d: initSymFactWorkspace GPU setup local_cols=%lld local_rows=%lld Pc=%lld Pr=%lld contract=%d\n",
                     (grid3d != NULL) ? grid3d->iam : -1,
-                    (long long)CEILING(nsupers, Pc),
-                    (long long)CEILING(nsupers, Pr),
+                    (long long)symV2PanelCount(),
+                    (long long)symV2RowCount(),
                     (long long)Pc, (long long)Pr, symGPU3DContract);
         std::fflush(stdout);
 #endif
-        int_t local_cols = CEILING(nsupers, Pc);
+        int_t local_cols = symV2PanelCount();
         size_t l2u_slots = xlu_checked_product(static_cast<size_t>(local_cols),
                                                static_cast<size_t>(Pc),
                                                "SymFact GPU L2U buffers");
-        symL2USendBufsGPU.assign(l2u_slots, NULL);
-        symL2USendMapsGPU.assign(l2u_slots, NULL);
-        symL2ULocalMapsGPU.assign(CEILING(nsupers, Pr), NULL);
+        if (need_l2u_workspace)
+        {
+            symL2USendBufsGPU.assign(l2u_slots, NULL);
+            symL2USendMapsGPU.assign(l2u_slots, NULL);
+            symL2ULocalMapsGPU.assign(CEILING(nsupers, Pr), NULL);
+        }
+        symV2PartnerLSendBufsGPU.assign(l2u_slots, NULL);
+        symL2LSendMapsGPU.assign(l2u_slots, NULL);
+        symL2LSendMeta.assign(l2u_slots, std::vector<int_t>());
+        symV2PartnerLHostSendBufs.assign(l2u_slots, std::vector<double>());
+        symV2PartnerLSendSizes.assign(l2u_slots, 0);
         symPanelReadyEventIds.assign(nsupers, -1);
         symDiagPrefetchEventIds.assign(nsupers, -1);
 
         dLocalLU_t *Llu = LUstructPtr->Llu;
-        if (Pr == 1 && Pc == 1)
+        if (need_l2u_workspace)
         {
-            int_t local_rows = CEILING(nsupers, Pr);
+            int_t local_rows = symV2RowCount();
             for (int_t lk = 0; lk < local_rows; ++lk)
             {
-                int_t k = myrow + lk * Pr;
+                int_t k = symV2RowGid(lk);
                 if (k >= nsupers || isNodeInMyGrid[k] != 1)
+                    continue;
+                if (mycol != kcol(k))
                     continue;
 
                 xupanel_t<double> &upanel = uPanelVec[g2lRow(k)];
-                xlpanel_t<double> &lpanel = lPanelVec[g2lCol(k)];
+                xlpanel_t<double> &lpanel = lPanelVec[symV2PanelIndex(k)];
                 int_t *usub = Llu->Ufstnz_br_ptr[lk];
                 if (upanel.isEmpty() || lpanel.isEmpty() || usub == NULL)
                     continue;
@@ -784,6 +1120,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t usub_ptr = BR_HEADER;
                 int_t dst_col = 0;
                 int_t nub = usub[0];
+                bool map_ok = true;
 
                 for (int_t ub = 0; ub < nub; ++ub)
                 {
@@ -791,7 +1128,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     int_t gsupc = SuperSize(jb);
                     int_t lblock = lpanel.find(jb);
                     if (lblock == GLOBAL_BLOCK_NOT_FOUND)
-                        ABORT("SymFact local GPU L2U map cannot find an L block.");
+                    {
+                        map_ok = false;
+                        break;
+                    }
 
                     int_t *lrows = lpanel.rowList(lblock);
                     int_t n_lrows = lpanel.nbrow(lblock);
@@ -811,7 +1151,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             }
                         }
                         if (src_row == GLOBAL_BLOCK_NOT_FOUND)
-                            ABORT("SymFact local GPU L2U map cannot find an L row.");
+                        {
+                            map_ok = false;
+                            break;
+                        }
 
                         for (int_t row = 0; row < ksupc; ++row)
                         {
@@ -822,9 +1165,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         }
                         ++dst_col;
                     }
+                    if (!map_ok)
+                        break;
                     usub_ptr += UB_DESCRIPTOR + gsupc;
                 }
 
+                if (!map_ok)
+                    continue;
                 if (dst_col != upanel.nzcols())
                     ABORT("SymFact local GPU L2U map has an invalid U column count.");
 
@@ -841,7 +1188,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
         for (int_t lk = 0; lk < local_cols; ++lk)
         {
-            if (Llu->Send_CommL == NULL || Llu->Send_CommL[lk].ComQuant == NULL)
+            bool have_comml_send =
+                (need_l2u_workspace &&
+                 Llu->Send_CommL != NULL &&
+                 Llu->Send_CommL[lk].ComQuant != NULL);
+            if (!have_comml_send && symGPU3DVersion != 2)
                 continue;
 
             int_t *lsub = Llu->Lrowind_bc_ptr[lk];
@@ -849,14 +1200,14 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             if (lsub == NULL || lloc == NULL || lsub[0] <= 0)
                 continue;
 
-            int_t jb = mycol + lk * Pc;
+            int_t jb = symV2PanelGid(lk);
             if (jb >= nsupers)
                 continue;
 
             int_t nb;
             int_t idx_i;
             int_t idx_v;
-            if (myrow == krow(jb))
+            if (myrow == symV2DiagRoot(jb))
             {
                 nb = lsub[0] - 1;
                 idx_i = nb + 2;
@@ -874,11 +1225,17 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             int_t knsupc = SuperSize(jb);
             int_t nsupr = lsub[1];
             std::vector<std::vector<int_t> > host_maps(Pc);
+            std::vector<std::vector<int_t> > host_l_maps(Pc);
+            std::vector<std::vector<int_t> > host_l_meta(Pc);
             for (int pc = 0; pc < Pc; ++pc)
             {
-                int size = Llu->Send_CommL[lk].ComQuant[pc].size;
+                int size = have_comml_send
+                               ? Llu->Send_CommL[lk].ComQuant[pc].size
+                               : 0;
                 if (size > 0)
+                {
                     host_maps[pc].reserve(size);
+                }
             }
 
             for (int_t lb = 0; lb < nb; ++lb)
@@ -886,7 +1243,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t luptr_tmp = lloc[lb + idx_v];
                 int_t lptr_tmp = lloc[lb + idx_i];
                 int_t ik = lsub[lptr_tmp];
-                int ikcol = PCOL(ik, grid);
+                int ikcol = (symGPU3DVersion == 2)
+                                ? symV2PanelRoot(ik)
+                                : PCOL(ik, grid);
                 int_t len = lsub[lptr_tmp + 1];
                 int_t fsupc = FstBlockC(ik);
 
@@ -896,37 +1255,367 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     row_order.push_back(std::make_pair(lsub[lptr_tmp + 2 + i] - fsupc, i));
                 std::sort(row_order.begin(), row_order.end());
 
-                std::vector<int_t> &map = host_maps[ikcol];
-                map.push_back(-(ik + 1));
-                for (int_t i = 0; i < len; ++i)
+                if (have_comml_send)
                 {
-                    int_t src_row = row_order[i].second;
+                    std::vector<int_t> &map = host_maps[ikcol];
+                    map.push_back(-(ik + 1));
+                    for (int_t i = 0; i < len; ++i)
+                    {
+                        int_t src_row = row_order[i].second;
+                        for (int_t j = 0; j < knsupc; ++j)
+                            map.push_back(luptr_tmp + src_row + j * nsupr);
+                    }
+                }
+
+                if (symGPU3DVersion == 2)
+                {
+                    std::vector<int_t> &l_map = host_l_maps[ikcol];
+                    std::vector<int_t> &l_meta = host_l_meta[ikcol];
+                    l_meta.push_back(ik);
+                    l_meta.push_back(len);
+                    l_map.reserve(l_map.size() +
+                                  static_cast<size_t>(len) *
+                                      static_cast<size_t>(knsupc));
                     for (int_t j = 0; j < knsupc; ++j)
-                        map.push_back(luptr_tmp + src_row + j * nsupr);
+                    {
+                        for (int_t i = 0; i < len; ++i)
+                        {
+                            int_t src_row = row_order[i].second;
+                            l_map.push_back(luptr_tmp + src_row + j * nsupr);
+                        }
+                    }
+                    for (int_t i = 0; i < len; ++i)
+                        l_meta.push_back(row_order[i].first);
                 }
             }
 
             for (int pc = 0; pc < Pc; ++pc)
             {
-                int size = Llu->Send_CommL[lk].ComQuant[pc].size;
-                if (size <= 0)
-                    continue;
-                if (host_maps[pc].size() != static_cast<size_t>(size))
-                    ABORT("SymFact GPU L2U send map size mismatch.");
-
                 size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
                               static_cast<size_t>(pc);
-                gpuErrchk(cudaMalloc((void **)&symL2USendBufsGPU[flat],
-                                     xlu_checked_product(static_cast<size_t>(size),
-                                                         sizeof(double),
-                                                         "SymFact GPU L2U send buffer")));
-                gpuErrchk(cudaMalloc((void **)&symL2USendMapsGPU[flat],
-                                     xlu_checked_product(static_cast<size_t>(size),
-                                                         sizeof(int_t),
-                                                         "SymFact GPU L2U send map")));
-                gpuErrchk(cudaMemcpy(symL2USendMapsGPU[flat], host_maps[pc].data(),
-                                     sizeof(int_t) * static_cast<size_t>(size),
-                                     cudaMemcpyHostToDevice));
+
+                int l2u_size = have_comml_send
+                                   ? Llu->Send_CommL[lk].ComQuant[pc].size
+                                   : 0;
+                if (l2u_size > 0)
+                {
+                    if (host_maps[pc].size() !=
+                        static_cast<size_t>(l2u_size))
+                        ABORT("SymFact GPU L2U send map size mismatch.");
+                    gpuErrchk(cudaMalloc(
+                        (void **)&symL2USendBufsGPU[flat],
+                        xlu_checked_product(static_cast<size_t>(l2u_size),
+                                            sizeof(double),
+                                            "SymFact GPU L2U send buffer")));
+                    gpuErrchk(cudaMalloc(
+                        (void **)&symL2USendMapsGPU[flat],
+                        xlu_checked_product(static_cast<size_t>(l2u_size),
+                                            sizeof(int_t),
+                                            "SymFact GPU L2U send map")));
+                    gpuErrchk(cudaMemcpy(
+                        symL2USendMapsGPU[flat], host_maps[pc].data(),
+                        sizeof(int_t) * static_cast<size_t>(l2u_size),
+                        cudaMemcpyHostToDevice));
+                }
+
+                if (symGPU3DVersion == 2 && !host_l_maps[pc].empty())
+                {
+                    if (host_l_maps[pc].size() >
+                        static_cast<size_t>(std::numeric_limits<int>::max()))
+                        ABORT("SymFact GPU L2L send map is too large for MPI.");
+
+                    symL2LSendMeta[flat].swap(host_l_meta[pc]);
+                    symV2PartnerLSendSizes[flat] =
+                        static_cast<int>(host_l_maps[pc].size());
+                    symV2PartnerLHostSendBufs[flat].resize(
+                        host_l_maps[pc].size());
+                    gpuErrchk(cudaMalloc(
+                        (void **)&symV2PartnerLSendBufsGPU[flat],
+                        xlu_checked_product(host_l_maps[pc].size(),
+                                            sizeof(double),
+                                            "SymFact V2 partner-L send buffer")));
+                    gpuErrchk(cudaMalloc(
+                        (void **)&symL2LSendMapsGPU[flat],
+                        xlu_checked_product(host_l_maps[pc].size(),
+                                            sizeof(int_t),
+                                            "SymFact GPU L2L send map")));
+                    gpuErrchk(cudaMemcpy(
+                        symL2LSendMapsGPU[flat], host_l_maps[pc].data(),
+                        sizeof(int_t) * host_l_maps[pc].size(),
+                        cudaMemcpyHostToDevice));
+                }
+            }
+        }
+        if (symGPU3DVersion == 2)
+        {
+            size_t table_count = xlu_checked_product(
+                xlu_checked_product(static_cast<size_t>(nsupers),
+                                    static_cast<size_t>(Pc),
+                                    "SymFact V2 partner-L receive count table"),
+                static_cast<size_t>(Pr),
+                "SymFact V2 partner-L receive count table");
+            if (table_count >
+                static_cast<size_t>(std::numeric_limits<int>::max()))
+                ABORT("SymFact V2 partner-L receive count table is too large for MPI.");
+
+            std::vector<int> local_recv_sizes(table_count, 0);
+            std::vector<int> global_recv_sizes(table_count, 0);
+
+            for (int_t lk = 0; lk < local_cols; ++lk)
+            {
+                int_t k0 = symV2PanelGid(lk);
+                if (k0 >= nsupers)
+                    continue;
+
+                for (int pc = 0; pc < Pc; ++pc)
+                {
+                    size_t flat = static_cast<size_t>(lk) *
+                                      static_cast<size_t>(Pc) +
+                                  static_cast<size_t>(pc);
+                    int size = (flat < symV2PartnerLSendSizes.size())
+                                   ? symV2PartnerLSendSizes[flat]
+                                   : 0;
+                    size_t pos =
+                        (static_cast<size_t>(k0) * static_cast<size_t>(Pc) +
+                         static_cast<size_t>(pc)) *
+                            static_cast<size_t>(Pr) +
+                        static_cast<size_t>(myrow);
+                    local_recv_sizes[pos] = size;
+                }
+            }
+
+            MPI_Allreduce(local_recv_sizes.data(), global_recv_sizes.data(),
+                          static_cast<int>(table_count), MPI_INT, MPI_SUM,
+                          grid->comm);
+
+            std::vector<int_t> local_meta_payload;
+            for (int_t lk = 0; lk < local_cols; ++lk)
+            {
+                int_t k0 = symV2PanelGid(lk);
+                if (k0 >= nsupers)
+                    continue;
+
+                for (int pc = 0; pc < Pc; ++pc)
+                {
+                    size_t flat = static_cast<size_t>(lk) *
+                                      static_cast<size_t>(Pc) +
+                                  static_cast<size_t>(pc);
+                    if (flat >= symL2LSendMeta.size() ||
+                        symL2LSendMeta[flat].empty())
+                        continue;
+                    if (symL2LSendMeta[flat].size() >
+                        static_cast<size_t>(std::numeric_limits<int_t>::max()))
+                        ABORT("SymFact V2 partner-L metadata is too large.");
+
+                    local_meta_payload.push_back(pc);
+                    local_meta_payload.push_back(k0);
+                    local_meta_payload.push_back(
+                        static_cast<int_t>(symL2LSendMeta[flat].size()));
+                    local_meta_payload.insert(local_meta_payload.end(),
+                                              symL2LSendMeta[flat].begin(),
+                                              symL2LSendMeta[flat].end());
+                }
+            }
+            if (local_meta_payload.size() >
+                static_cast<size_t>(std::numeric_limits<int>::max()))
+                ABORT("SymFact V2 partner-L metadata payload is too large for MPI.");
+
+            int comm_size = 0;
+            MPI_Comm_size(grid->comm, &comm_size);
+            int local_meta_count = static_cast<int>(local_meta_payload.size());
+            std::vector<int> meta_counts(comm_size, 0);
+            MPI_Allgather(&local_meta_count, 1, MPI_INT, meta_counts.data(),
+                          1, MPI_INT, grid->comm);
+
+            std::vector<int> meta_displs(comm_size, 0);
+            long long total_meta_count = 0;
+            for (int r = 0; r < comm_size; ++r)
+            {
+                if (meta_counts[r] < 0)
+                    ABORT("SymFact V2 partner-L metadata count is invalid.");
+                if (total_meta_count >
+                    static_cast<long long>(std::numeric_limits<int>::max()))
+                    ABORT("SymFact V2 partner-L metadata payload is too large for MPI.");
+                meta_displs[r] = static_cast<int>(total_meta_count);
+                total_meta_count += meta_counts[r];
+            }
+            if (total_meta_count >
+                static_cast<long long>(std::numeric_limits<int>::max()))
+                ABORT("SymFact V2 partner-L metadata payload is too large for MPI.");
+
+            std::vector<int_t> all_meta_payload(
+                static_cast<size_t>(total_meta_count));
+            MPI_Allgatherv(local_meta_payload.empty()
+                               ? NULL
+                               : local_meta_payload.data(),
+                           local_meta_count, mpi_int_t,
+                           all_meta_payload.empty()
+                               ? NULL
+                               : all_meta_payload.data(),
+                           meta_counts.data(), meta_displs.data(), mpi_int_t,
+                           grid->comm);
+
+            struct SymV2CachedPartnerBlock
+            {
+                int_t gid;
+                std::vector<int_t> cols;
+            };
+            std::vector<std::vector<SymV2CachedPartnerBlock> >
+                cached_partner_blocks(nsupers);
+            size_t compact_count = xlu_checked_product(
+                static_cast<size_t>(nsupers), static_cast<size_t>(Pr),
+                "SymFact V2 partner-L compact receive count table");
+            std::vector<std::vector<SymV2CachedPartnerBlock> >
+                cached_partner_recv_blocks(compact_count);
+
+            for (int r = 0; r < comm_size; ++r)
+            {
+                size_t meta_pos = static_cast<size_t>(meta_displs[r]);
+                size_t rank_end = meta_pos + static_cast<size_t>(meta_counts[r]);
+                int source_pr = MYROW(r, grid);
+                while (meta_pos < rank_end)
+                {
+                    if (meta_pos + 3 > rank_end)
+                        ABORT("SymFact V2 partner-L metadata payload is truncated.");
+                    int_t target_pc = all_meta_payload[meta_pos++];
+                    int_t k0 = all_meta_payload[meta_pos++];
+                    int_t meta_len = all_meta_payload[meta_pos++];
+                    if (target_pc < 0 || target_pc >= Pc || k0 < 0 ||
+                        k0 >= nsupers || meta_len < 0 ||
+                        meta_pos + static_cast<size_t>(meta_len) > rank_end)
+                        ABORT("SymFact V2 partner-L metadata payload is invalid.");
+
+                    size_t block_pos = meta_pos;
+                    size_t block_end =
+                        meta_pos + static_cast<size_t>(meta_len);
+                    if (target_pc == mycol)
+                    {
+                        while (block_pos < block_end)
+                        {
+                            if (block_pos + 2 > block_end)
+                                ABORT("SymFact V2 partner-L metadata block is truncated.");
+                            SymV2CachedPartnerBlock block;
+                            block.gid = all_meta_payload[block_pos++];
+                            int_t len = all_meta_payload[block_pos++];
+                            if (len < 0 ||
+                                block_pos + static_cast<size_t>(len) >
+                                    block_end)
+                                ABORT("SymFact V2 partner-L metadata block has invalid length.");
+                            block.cols.assign(
+                                all_meta_payload.begin() + block_pos,
+                                all_meta_payload.begin() + block_pos + len);
+                            block_pos += static_cast<size_t>(len);
+                            cached_partner_blocks[k0].push_back(block);
+                            size_t recv_pos = static_cast<size_t>(k0) *
+                                                  static_cast<size_t>(Pr) +
+                                              static_cast<size_t>(source_pr);
+                            cached_partner_recv_blocks[recv_pos].push_back(block);
+                        }
+                    }
+                    meta_pos = block_end;
+                }
+            }
+
+            symV2PartnerLRecvSizes.assign(compact_count, 0);
+            symV2PartnerLRecvIndex.assign(nsupers, std::vector<int_t>());
+            symV2PartnerLRecvMap.assign(compact_count, std::vector<int_t>());
+            for (int_t k0 = 0; k0 < nsupers; ++k0)
+            {
+                for (int pr = 0; pr < Pr; ++pr)
+                {
+                    size_t src_pos =
+                        (static_cast<size_t>(k0) * static_cast<size_t>(Pc) +
+                         static_cast<size_t>(mycol)) *
+                            static_cast<size_t>(Pr) +
+                        static_cast<size_t>(pr);
+                    size_t dst_pos = static_cast<size_t>(k0) *
+                                         static_cast<size_t>(Pr) +
+                                     static_cast<size_t>(pr);
+                    symV2PartnerLRecvSizes[dst_pos] =
+                        global_recv_sizes[src_pos];
+                }
+
+                std::vector<SymV2CachedPartnerBlock> &blocks =
+                    cached_partner_blocks[k0];
+                if (blocks.empty())
+                    continue;
+                std::sort(blocks.begin(), blocks.end(),
+                          [](const SymV2CachedPartnerBlock &a,
+                             const SymV2CachedPartnerBlock &b)
+                          {
+                              return a.gid < b.gid;
+                          });
+
+                int_t partner_nblocks = static_cast<int_t>(blocks.size());
+                int_t partner_nrows = 0;
+                for (size_t ib = 0; ib < blocks.size(); ++ib)
+                    partner_nrows += static_cast<int_t>(blocks[ib].cols.size());
+                int_t partner_index_size =
+                    LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1 +
+                    partner_nrows;
+                if (partner_index_size > maxSymPartnerLidxCount)
+                    ABORT("SymFact V2 partner-L cached index exceeds receive buffer.");
+                if (static_cast<int64_t>(partner_nrows) *
+                        static_cast<int64_t>(SuperSize(k0)) >
+                    static_cast<int64_t>(maxSymPartnerLvalCount))
+                    ABORT("SymFact V2 partner-L cached values exceed receive buffer.");
+
+                std::vector<int_t> &index = symV2PartnerLRecvIndex[k0];
+                index.assign(static_cast<size_t>(partner_index_size), 0);
+                index[0] = partner_nblocks;
+                index[1] = partner_nrows;
+                index[2] = 0;
+                index[3] = SuperSize(k0);
+                int_t gid_ptr = LPANEL_HEADER_SIZE;
+                int_t px_ptr = LPANEL_HEADER_SIZE + partner_nblocks;
+                int_t row_ptr = LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1;
+                index[px_ptr] = 0;
+                for (int_t ib = 0; ib < partner_nblocks; ++ib)
+                {
+                    index[gid_ptr + ib] = blocks[ib].gid;
+                    index[px_ptr + ib + 1] =
+                        index[px_ptr + ib] +
+                        static_cast<int_t>(blocks[ib].cols.size());
+                    for (size_t j = 0; j < blocks[ib].cols.size(); ++j)
+                        index[row_ptr++] = blocks[ib].cols[j];
+                }
+
+                for (int pr = 0; pr < Pr; ++pr)
+                {
+                    size_t recv_pos = static_cast<size_t>(k0) *
+                                          static_cast<size_t>(Pr) +
+                                      static_cast<size_t>(pr);
+                    std::vector<SymV2CachedPartnerBlock> &recv_blocks =
+                        cached_partner_recv_blocks[recv_pos];
+                    std::vector<int_t> &recv_map =
+                        symV2PartnerLRecvMap[recv_pos];
+                    long long expected_values = 0;
+                    for (size_t rb = 0; rb < recv_blocks.size(); ++rb)
+                    {
+                        int_t ib = GLOBAL_BLOCK_NOT_FOUND;
+                        for (int_t probe = 0; probe < partner_nblocks; ++probe)
+                        {
+                            if (blocks[probe].gid == recv_blocks[rb].gid)
+                            {
+                                ib = probe;
+                                break;
+                            }
+                        }
+                        if (ib == GLOBAL_BLOCK_NOT_FOUND)
+                            ABORT("SymFact V2 partner-L receive map cannot find a block.");
+                        int_t nrows =
+                            static_cast<int_t>(recv_blocks[rb].cols.size());
+                        recv_map.push_back(index[px_ptr + ib]);
+                        recv_map.push_back(nrows);
+                        expected_values +=
+                            static_cast<long long>(nrows) *
+                            static_cast<long long>(SuperSize(k0));
+                    }
+                    if (expected_values !=
+                        static_cast<long long>(
+                            symV2PartnerLRecvSizes[recv_pos]))
+                        ABORT("SymFact V2 partner-L receive map size mismatch.");
+                }
             }
         }
         xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after send GPU L2U map setup");
@@ -965,11 +1654,25 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     for (size_t i = 0; i < symL2USendMapsGPU.size(); ++i)
         if (symL2USendMapsGPU[i] != NULL)
             gpuErrchk(cudaFree(symL2USendMapsGPU[i]));
+    for (size_t i = 0; i < symV2PartnerLSendBufsGPU.size(); ++i)
+        if (symV2PartnerLSendBufsGPU[i] != NULL)
+            gpuErrchk(cudaFree(symV2PartnerLSendBufsGPU[i]));
+    for (size_t i = 0; i < symL2LSendMapsGPU.size(); ++i)
+        if (symL2LSendMapsGPU[i] != NULL)
+            gpuErrchk(cudaFree(symL2LSendMapsGPU[i]));
     for (size_t i = 0; i < symL2ULocalMapsGPU.size(); ++i)
         if (symL2ULocalMapsGPU[i] != NULL)
             gpuErrchk(cudaFree(symL2ULocalMapsGPU[i]));
     symL2USendBufsGPU.clear();
     symL2USendMapsGPU.clear();
+    symV2PartnerLSendBufsGPU.clear();
+    symL2LSendMapsGPU.clear();
+    symL2LSendMeta.clear();
+    symV2PartnerLHostSendBufs.clear();
+    symV2PartnerLSendSizes.clear();
+    symV2PartnerLRecvSizes.clear();
+    symV2PartnerLRecvIndex.clear();
+    symV2PartnerLRecvMap.clear();
     symL2ULocalMapsGPU.clear();
     symPanelReadyEventIds.clear();
     for (size_t i = 0; i < symDiagPrefetchBufs.size(); ++i)
@@ -1004,6 +1707,445 @@ inline int xLUstruct_t<double>::ensureSymFactWorkSize(int64_t minSize)
         xlu_checked_product(work_count, sizeof(double), "SymFact work"));
     if (symFactWork == NULL)
         ABORT("Malloc fails for SymFact work[].");
+
+    return 0;
+}
+
+template <typename Ftype>
+static int_t *xluSymCheckedIndirectMap(
+    xLUstruct_t<Ftype> *A,
+    typename xLUstruct_t<Ftype>::indirectMapType direction,
+    int_t srcLen, int_t *srcVec,
+    int_t dstLen, int_t *dstVec)
+{
+    if (dstVec == NULL)
+        return srcVec;
+
+    int_t thread_id;
+#ifdef _OPENMP
+    thread_id = omp_get_thread_num();
+#else
+    thread_id = 0;
+#endif
+    int_t *dstIdx = A->indirect + thread_id * A->ldt;
+    for (int_t i = 0; i < srcLen; ++i)
+        if (srcVec[i] >= 0 && srcVec[i] < A->ldt)
+            dstIdx[srcVec[i]] = GLOBAL_BLOCK_NOT_FOUND;
+
+    for (int_t i = 0; i < dstLen; ++i)
+        if (dstVec[i] >= 0 && dstVec[i] < A->ldt)
+            dstIdx[dstVec[i]] = i;
+
+    int_t *RCmap = (direction == xLUstruct_t<Ftype>::ROW_MAP)
+                       ? A->indirectRow
+                       : A->indirectCol;
+    RCmap += thread_id * A->ldt;
+    for (int_t i = 0; i < srcLen; ++i)
+        RCmap[i] = (srcVec[i] >= 0 && srcVec[i] < A->ldt)
+                       ? dstIdx[srcVec[i]]
+                       : GLOBAL_BLOCK_NOT_FOUND;
+
+    return RCmap;
+}
+
+template <typename Ftype>
+static int_t xluSymScatterLowerToL(
+    xLUstruct_t<Ftype> *A,
+    int_t m, int_t n,
+    int_t gi, int_t gj,
+    Ftype *Src, int_t ldsrc,
+    int_t *srcRowList, int_t *srcColList)
+{
+    if (gi < gj)
+        return 0;
+
+    int_t lj = A->useSymV2Solve() ? A->symV2PanelIndex(gj) : A->g2lCol(gj);
+    if (lj < 0)
+        return 0;
+    if (A->lPanelVec[lj].isEmpty())
+        return 0;
+    int_t li = A->lPanelVec[lj].find(gi);
+    if (li == GLOBAL_BLOCK_NOT_FOUND)
+        return 0;
+
+    Ftype *Dst = A->lPanelVec[lj].blkPtr(li);
+    int_t lddst = A->lPanelVec[lj].LDA();
+    int_t dstRowLen = A->lPanelVec[lj].nbrow(li);
+    int_t *dstRowList = A->lPanelVec[lj].rowList(li);
+    int_t dstColLen = A->supersize(gj);
+    int_t *dstColList = NULL;
+
+    int_t *rowS2D = xluSymCheckedIndirectMap(
+        A, xLUstruct_t<Ftype>::ROW_MAP, m, srcRowList,
+        dstRowLen, dstRowList);
+    int_t *colS2D = xluSymCheckedIndirectMap(
+        A, xLUstruct_t<Ftype>::COL_MAP, n, srcColList,
+        dstColLen, dstColList);
+
+    for (int_t j = 0; j < n; ++j)
+    {
+        int_t dj = (colS2D != NULL) ? colS2D[j] : j;
+        if (dj < 0 || dj >= dstColLen)
+            continue;
+        for (int_t i = 0; i < m; ++i)
+        {
+            int_t di = (rowS2D != NULL) ? rowS2D[i] : i;
+            if (di < 0 || di >= dstRowLen)
+                continue;
+            Dst[di + lddst * dj] -= Src[i + ldsrc * j];
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2PartnerLBcastHost(
+    int_t k, xlpanel_t<Ftype> &partner_panel, int raw_values)
+{
+    (void)raw_values;
+    ABORT("SymFact GPU3D V2 host partner-L exchange is implemented for double precision only.");
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastHost(
+    int_t k, xlpanel_t<double> &partner_panel, int raw_values)
+{
+    if (options->SymFact != YES || symGPU3DVersion != 2)
+        return 0;
+    if (k < 0 || k >= nsupers)
+        return 0;
+
+    int_t kcol_ = symV2PanelRoot(k);
+    int_t ksupc = SuperSize(k);
+    std::vector<std::vector<int_t> > send_meta(Pc);
+    std::vector<std::vector<double> > send_vals(Pc);
+
+    if (mycol == kcol_)
+    {
+        double *diag = NULL;
+        if (!raw_values)
+        {
+            if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers) ||
+                symV2DiagBlocks[k] == NULL)
+                ABORT("SymFact V2 host partner-L diagonal block is missing.");
+            diag = symV2DiagBlocks[k];
+        }
+
+        xlpanel_t<double> &lpanel = lPanelVec[symV2PanelIndex(k)];
+        if (!lpanel.isEmpty())
+        {
+            int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+            int_t nlb = lpanel.nblocks();
+            for (int_t lb = st_lb; lb < nlb; ++lb)
+            {
+                int_t ik = lpanel.gid(lb);
+                int_t len = lpanel.nbrow(lb);
+                if (len <= 0)
+                    continue;
+
+                std::vector<std::pair<int_t, int_t> > row_order;
+                row_order.reserve(static_cast<size_t>(len));
+                int_t *rows = lpanel.rowList(lb);
+                for (int_t i = 0; i < len; ++i)
+                    row_order.push_back(std::make_pair(rows[i], i));
+                std::sort(row_order.begin(), row_order.end());
+
+                int pc = symV2PanelRoot(ik);
+                if (pc < 0 || pc >= Pc)
+                    ABORT("SymFact V2 partner-L target process column is invalid.");
+                {
+                    std::vector<int_t> &meta = send_meta[pc];
+                    meta.push_back(ik);
+                    meta.push_back(len);
+                    for (int_t i = 0; i < len; ++i)
+                        meta.push_back(row_order[static_cast<size_t>(i)].first);
+
+                    std::vector<double> &vals = send_vals[pc];
+                    size_t old_size = vals.size();
+                    vals.resize(old_size +
+                                static_cast<size_t>(len) *
+                                    static_cast<size_t>(ksupc));
+                    double *dst = vals.data() + old_size;
+                    double *src = lpanel.blkPtr(lb);
+                    int_t lda = lpanel.LDA();
+                    for (int_t j = 0; j < ksupc; ++j)
+                    {
+                        for (int_t i = 0; i < len; ++i)
+                        {
+                            int_t src_row =
+                                row_order[static_cast<size_t>(i)].second;
+                            if (raw_values)
+                            {
+                                dst[i + j * len] = src[src_row + j * lda];
+                            }
+                            else
+                            {
+                                double sum = 0.0;
+                                for (int_t p = 0; p < ksupc; ++p)
+                                    sum += src[src_row + p * lda] *
+                                           diag[p + j * ksupc];
+                                dst[i + j * len] = sum;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<int_t> local_meta_payload;
+    for (int pc = 0; pc < Pc; ++pc)
+    {
+        if (send_meta[pc].empty())
+            continue;
+        local_meta_payload.push_back(pc);
+        local_meta_payload.push_back(
+            static_cast<int_t>(send_meta[pc].size()));
+        local_meta_payload.insert(local_meta_payload.end(),
+                                  send_meta[pc].begin(),
+                                  send_meta[pc].end());
+    }
+    if (local_meta_payload.size() >
+        static_cast<size_t>(std::numeric_limits<int>::max()))
+        ABORT("SymFact V2 host partner-L metadata is too large for MPI.");
+
+    int comm_size = 0;
+    MPI_Comm_size(grid->comm, &comm_size);
+    int local_meta_count =
+        static_cast<int>(local_meta_payload.size());
+    std::vector<int> meta_counts(comm_size, 0);
+    MPI_Allgather(&local_meta_count, 1, MPI_INT, meta_counts.data(),
+                  1, MPI_INT, grid->comm);
+
+    std::vector<int> meta_displs(comm_size, 0);
+    long long total_meta_count = 0;
+    for (int r = 0; r < comm_size; ++r)
+    {
+        if (meta_counts[r] < 0)
+            ABORT("SymFact V2 host partner-L metadata count is invalid.");
+        meta_displs[r] = static_cast<int>(total_meta_count);
+        total_meta_count += meta_counts[r];
+        if (total_meta_count >
+            static_cast<long long>(std::numeric_limits<int>::max()))
+            ABORT("SymFact V2 host partner-L metadata is too large for MPI.");
+    }
+
+    std::vector<int_t> all_meta_payload(
+        static_cast<size_t>(total_meta_count));
+    MPI_Allgatherv(local_meta_payload.empty()
+                       ? NULL
+                       : local_meta_payload.data(),
+                   local_meta_count, mpi_int_t,
+                   all_meta_payload.empty()
+                       ? NULL
+                       : all_meta_payload.data(),
+                   meta_counts.data(), meta_displs.data(), mpi_int_t,
+                   grid->comm);
+
+    struct SymV2HostPartnerBlock
+    {
+        int_t gid;
+        std::vector<int_t> rows;
+    };
+    struct SymV2HostRecvPiece
+    {
+        int cid;
+        int_t nrows;
+    };
+    std::vector<SymV2HostPartnerBlock> blocks;
+    std::vector<std::vector<SymV2HostRecvPiece> > recv_pieces(Pr);
+    std::vector<int> recv_sizes(Pr, 0);
+
+    for (int r = 0; r < comm_size; ++r)
+    {
+        if (MYCOL(r, grid) != kcol_)
+            continue;
+        int source_pr = MYROW(r, grid);
+        size_t meta_pos = static_cast<size_t>(meta_displs[r]);
+        size_t rank_end = meta_pos + static_cast<size_t>(meta_counts[r]);
+        while (meta_pos < rank_end)
+        {
+            if (meta_pos + 2 > rank_end)
+                ABORT("SymFact V2 host partner-L metadata is truncated.");
+            int_t target_pc = all_meta_payload[meta_pos++];
+            int_t meta_len = all_meta_payload[meta_pos++];
+            if (target_pc < 0 || target_pc >= Pc || meta_len < 0 ||
+                meta_pos + static_cast<size_t>(meta_len) > rank_end)
+                ABORT("SymFact V2 host partner-L metadata is invalid.");
+            size_t block_pos = meta_pos;
+            size_t block_end = meta_pos + static_cast<size_t>(meta_len);
+            if (target_pc == mycol)
+            {
+                while (block_pos < block_end)
+                {
+                    if (block_pos + 2 > block_end)
+                        ABORT("SymFact V2 host partner-L block metadata is truncated.");
+                    SymV2HostPartnerBlock block;
+                    block.gid = all_meta_payload[block_pos++];
+                    int_t len = all_meta_payload[block_pos++];
+                    if (len < 0 ||
+                        block_pos + static_cast<size_t>(len) > block_end)
+                        ABORT("SymFact V2 host partner-L block metadata has invalid length.");
+                    block.rows.assign(all_meta_payload.begin() + block_pos,
+                                      all_meta_payload.begin() + block_pos + len);
+                    block_pos += static_cast<size_t>(len);
+
+                    int cid = GLOBAL_BLOCK_NOT_FOUND;
+                    for (size_t probe = 0; probe < blocks.size(); ++probe)
+                    {
+                        if (blocks[probe].gid == block.gid)
+                        {
+                            cid = static_cast<int>(probe);
+                            break;
+                        }
+                    }
+                    if (cid != GLOBAL_BLOCK_NOT_FOUND)
+                        ABORT("SymFact V2 host partner-L encountered duplicate block metadata.");
+                    cid = static_cast<int>(blocks.size());
+                    blocks.push_back(block);
+                    recv_pieces[source_pr].push_back({cid, len});
+                    recv_sizes[source_pr] += static_cast<int>(len * ksupc);
+                }
+            }
+            meta_pos = block_end;
+        }
+    }
+
+    std::vector<int> order(blocks.size());
+    for (size_t i = 0; i < order.size(); ++i)
+        order[i] = static_cast<int>(i);
+    std::sort(order.begin(), order.end(),
+              [&blocks](int a, int b)
+              {
+                  return blocks[static_cast<size_t>(a)].gid <
+                         blocks[static_cast<size_t>(b)].gid;
+              });
+
+    std::vector<int_t> block_starts(blocks.size(), 0);
+    int_t partner_nrows = 0;
+    for (size_t oi = 0; oi < order.size(); ++oi)
+    {
+        int cid = order[oi];
+        block_starts[static_cast<size_t>(cid)] = partner_nrows;
+        partner_nrows += static_cast<int_t>(
+            blocks[static_cast<size_t>(cid)].rows.size());
+    }
+
+    int_t partner_nblocks = static_cast<int_t>(blocks.size());
+    int_t partner_index_size =
+        LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1 + partner_nrows;
+    if (partner_index_size > maxSymPartnerLidxCount ||
+        static_cast<int64_t>(partner_nrows) *
+                static_cast<int64_t>(ksupc) >
+            static_cast<int64_t>(maxSymPartnerLvalCount))
+        ABORT("SymFact V2 host partner-L panel exceeds receive buffer.");
+
+    if (partner_nblocks > 0 && partner_panel.isEmpty())
+        ABORT("SymFact V2 host partner-L receive buffer is missing.");
+
+    if (!partner_panel.isEmpty())
+    {
+        partner_panel.index[0] = partner_nblocks;
+        partner_panel.index[1] = partner_nrows;
+        partner_panel.index[2] = 0;
+        partner_panel.index[3] = ksupc;
+        int_t gid_ptr = LPANEL_HEADER_SIZE;
+        int_t px_ptr = LPANEL_HEADER_SIZE + partner_nblocks;
+        int_t row_ptr = LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1;
+        partner_panel.index[px_ptr] = 0;
+        for (int_t ib = 0; ib < partner_nblocks; ++ib)
+        {
+            int cid = order[static_cast<size_t>(ib)];
+            const SymV2HostPartnerBlock &block =
+                blocks[static_cast<size_t>(cid)];
+            partner_panel.index[gid_ptr + ib] = block.gid;
+            partner_panel.index[px_ptr + ib + 1] =
+                partner_panel.index[px_ptr + ib] +
+                static_cast<int_t>(block.rows.size());
+            for (size_t j = 0; j < block.rows.size(); ++j)
+                partner_panel.index[row_ptr++] = block.rows[j];
+        }
+        if (partner_nrows > 0)
+            std::memset(partner_panel.val, 0,
+                        sizeof(double) *
+                            static_cast<size_t>(partner_nrows) *
+                            static_cast<size_t>(ksupc));
+    }
+
+    std::vector<MPI_Request> recv_reqs;
+    std::vector<MPI_Request> send_reqs;
+    std::vector<std::vector<double> > recv_buffers(Pr);
+    int tag_ub = symFactTagUb;
+    for (int pr = 0; pr < Pr; ++pr)
+    {
+        if (recv_sizes[pr] <= 0)
+            continue;
+        recv_buffers[pr].resize(static_cast<size_t>(recv_sizes[pr]));
+        MPI_Request req;
+        MPI_Irecv(recv_buffers[pr].data(), recv_sizes[pr], MPI_DOUBLE,
+                  PNUM(pr, kcol_, grid), SLU_MPI_TAG(5, k),
+                  grid->comm, &req);
+        recv_reqs.push_back(req);
+    }
+
+    if (mycol == kcol_)
+    {
+        for (int pc = 0; pc < Pc; ++pc)
+        {
+            int size = static_cast<int>(send_vals[pc].size());
+            if (size <= 0)
+                continue;
+            for (int pr = 0; pr < Pr; ++pr)
+            {
+                MPI_Request req;
+                MPI_Isend(send_vals[pc].data(), size, MPI_DOUBLE,
+                          PNUM(pr, pc, grid), SLU_MPI_TAG(5, k),
+                          grid->comm, &req);
+                send_reqs.push_back(req);
+            }
+        }
+    }
+
+    if (!recv_reqs.empty())
+        MPI_Waitall(static_cast<int>(recv_reqs.size()), recv_reqs.data(),
+                    MPI_STATUSES_IGNORE);
+
+    if (!partner_panel.isEmpty() && partner_nrows > 0)
+    {
+        for (int pr = 0; pr < Pr; ++pr)
+        {
+            size_t pos = 0;
+            for (size_t p = 0; p < recv_pieces[pr].size(); ++p)
+            {
+                int cid = recv_pieces[pr][p].cid;
+                int_t nrows = recv_pieces[pr][p].nrows;
+                int_t dst_offset =
+                    block_starts[static_cast<size_t>(cid)];
+                size_t need =
+                    static_cast<size_t>(nrows) *
+                    static_cast<size_t>(ksupc);
+                if (pos + need > recv_buffers[pr].size())
+                    ABORT("SymFact V2 host partner-L receive buffer is truncated.");
+                for (int_t j = 0; j < ksupc; ++j)
+                    std::memcpy(&partner_panel.val[dst_offset +
+                                                   j * partner_panel.LDA()],
+                                &recv_buffers[pr][pos +
+                                                   static_cast<size_t>(j) *
+                                                       static_cast<size_t>(nrows)],
+                                sizeof(double) *
+                                    static_cast<size_t>(nrows));
+                pos += need;
+            }
+            if (pos != recv_buffers[pr].size())
+                ABORT("SymFact V2 host partner-L receive buffer has extra data.");
+        }
+    }
+
+    if (!send_reqs.empty())
+        MPI_Waitall(static_cast<int>(send_reqs.size()), send_reqs.data(),
+                    MPI_STATUSES_IGNORE);
 
     return 0;
 }
@@ -1127,6 +2269,8 @@ int_t xLUstruct_t<Ftype>::packedU2skyline(LUStruct_type<Ftype> *LUstruct)
 
     int_t **Ufstnz_br_ptr = LUstruct->Llu->Ufstnz_br_ptr;
     Ftype **Unzval_br_ptr = LUstruct->Llu->Unzval_br_ptr;
+    if (Ufstnz_br_ptr == NULL || Unzval_br_ptr == NULL)
+        return 0;
 
     for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
     {
@@ -1253,6 +2397,351 @@ int_t xLUstruct_t<Ftype>::dSchurCompUpdateExcludeOne(
 }
 
 template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartLL(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel)
+{
+    if (iSt >= iEnd || jSt >= jEnd || lpanel.isEmpty())
+        return 0;
+    if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers) ||
+        symV2DiagBlocks[k] == NULL)
+        ABORT("SymFact V2 host LL update diagonal block is missing.");
+
+    int_t gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
+    int_t gemm_n = lpanel.stRow(jEnd) - lpanel.stRow(jSt);
+    int_t gemm_k = supersize(k);
+    if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
+        return 0;
+
+    int64_t raw_count = static_cast<int64_t>(gemm_n) *
+                        static_cast<int64_t>(gemm_k);
+    int64_t gemm_count = static_cast<int64_t>(gemm_m) *
+                         static_cast<int64_t>(gemm_n);
+    ensureSymFactWorkSize(raw_count + gemm_count);
+    Ftype *rawBlock = symFactWork;
+    Ftype *gemmBuff = symFactWork + raw_count;
+    Ftype *diag = symV2DiagBlocks[k];
+
+    for (int_t jb = jSt; jb < jEnd; ++jb)
+    {
+        int_t row_offset = lpanel.stRow(jb) - lpanel.stRow(jSt);
+        Ftype *src = lpanel.blkPtr(jb);
+        int_t nbrow = lpanel.nbrow(jb);
+        for (int_t j = 0; j < gemm_k; ++j)
+        {
+            for (int_t i = 0; i < nbrow; ++i)
+            {
+                Ftype sum = zeroT<Ftype>();
+                for (int_t p = 0; p < gemm_k; ++p)
+                    sum += src[i + p * lpanel.LDA()] *
+                           diag[p + j * gemm_k];
+                rawBlock[row_offset + i + j * gemm_n] = sum;
+            }
+        }
+    }
+
+    Ftype alpha = one<Ftype>();
+    Ftype beta = zeroT<Ftype>();
+    superlu_gemm<Ftype>("N", "T",
+                        gemm_m, gemm_n, gemm_k, alpha,
+                        lpanel.blkPtr(iSt), lpanel.LDA(),
+                        rawBlock, gemm_n, beta,
+                        gemmBuff, gemm_m);
+
+    for (int_t ii = iSt; ii < iEnd; ++ii)
+    {
+        int_t row_off = lpanel.stRow(ii) - lpanel.stRow(iSt);
+        for (int_t jj = jSt; jj < jEnd; ++jj)
+        {
+            if (lpanel.gid(ii) < lpanel.gid(jj))
+                continue;
+            int_t col_off = lpanel.stRow(jj) - lpanel.stRow(jSt);
+            xluSymScatterLowerToL(this,
+                                  lpanel.nbrow(ii), lpanel.nbrow(jj),
+                                  lpanel.gid(ii), lpanel.gid(jj),
+                                  &gemmBuff[row_off + col_off * gemm_m],
+                                  gemm_m,
+                                  lpanel.rowList(ii), lpanel.rowList(jj));
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLL(
+    int_t lStart, int_t lEnd,
+    int_t jStart, int_t jEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel)
+{
+    if (lStart >= lEnd || jStart >= jEnd || lpanel.isEmpty())
+        return 0;
+
+    int_t max_gemm_rows = SUPERLU_MAX((int_t)1, ldt);
+    for (int_t jSt = jStart; jSt < jEnd; ++jSt)
+    {
+        int_t jNext = jSt + 1;
+        int_t iEnd = lStart;
+        while (iEnd < lEnd)
+        {
+            int_t iSt = iEnd;
+            iEnd = lpanel.getEndBlock(iSt, max_gemm_rows);
+            if (iEnd > lEnd)
+                iEnd = lEnd;
+            if (iEnd <= iSt)
+                iEnd = iSt + 1;
+            dSymSchurCompUpdatePartLL(iSt, iEnd, jSt, jNext,
+                                      k, lpanel);
+        }
+    }
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateLL(
+    int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel)
+{
+    if (lpanel.isEmpty())
+        return 0;
+
+    int_t laLoc = lpanel.find(laIdx);
+    if (laLoc == GLOBAL_BLOCK_NOT_FOUND)
+        return 0;
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t laGid = lpanel.gid(laLoc);
+    for (int_t ii = st_lb; ii < nlb; ++ii)
+    {
+        if (ii == laLoc || lpanel.gid(ii) >= laGid)
+            dSymSchurCompUpdatePartLL(ii, ii + 1,
+                                      laLoc, laLoc + 1,
+                                      k, lpanel);
+        else
+            dSymSchurCompUpdatePartLL(laLoc, laLoc + 1,
+                                      ii, ii + 1,
+                                      k, lpanel);
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneLL(
+    int_t k, int_t ex, xlpanel_t<Ftype> &lpanel)
+{
+    if (lpanel.isEmpty())
+        return 0;
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t exLoc = lpanel.find(ex);
+    if (exLoc == GLOBAL_BLOCK_NOT_FOUND)
+    {
+        dSymSchurCompUpLimitedMemLL(st_lb, nlb, st_lb, nlb,
+                                    k, lpanel);
+    }
+    else
+    {
+        dSymSchurCompUpLimitedMemLL(st_lb, exLoc, st_lb, exLoc,
+                                    k, lpanel);
+        dSymSchurCompUpLimitedMemLL(exLoc + 1, nlb, st_lb, exLoc,
+                                    k, lpanel);
+        dSymSchurCompUpLimitedMemLL(exLoc + 1, nlb, exLoc + 1, nlb,
+                                    k, lpanel);
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartner(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel,
+    xlpanel_t<Ftype> &partner_panel)
+{
+    if (iSt >= iEnd || jSt >= jEnd ||
+        lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    int_t gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
+    int_t gemm_k = supersize(k);
+    if (gemm_m <= 0 || gemm_k <= 0)
+        return 0;
+
+    for (int_t jj = jSt; jj < jEnd; ++jj)
+    {
+        int_t gemm_n = partner_panel.nbrow(jj);
+        if (gemm_n <= 0)
+            continue;
+
+        int64_t gemm_count = static_cast<int64_t>(gemm_m) *
+                             static_cast<int64_t>(gemm_n);
+        ensureSymFactWorkSize(gemm_count);
+        Ftype *gemmBuff = symFactWork;
+
+        Ftype alpha = one<Ftype>();
+        Ftype beta = zeroT<Ftype>();
+        superlu_gemm<Ftype>("N", "T",
+                            gemm_m, gemm_n, gemm_k, alpha,
+                            lpanel.blkPtr(iSt), lpanel.LDA(),
+                            partner_panel.blkPtr(jj),
+                            partner_panel.LDA(), beta,
+                            gemmBuff, gemm_m);
+
+        for (int_t ii = iSt; ii < iEnd; ++ii)
+        {
+            if (lpanel.gid(ii) < partner_panel.gid(jj))
+                continue;
+            int_t row_off = lpanel.stRow(ii) - lpanel.stRow(iSt);
+            xluSymScatterLowerToL(this,
+                                  lpanel.nbrow(ii),
+                                  partner_panel.nbrow(jj),
+                                  lpanel.gid(ii),
+                                  partner_panel.gid(jj),
+                                  &gemmBuff[row_off],
+                                  gemm_m,
+                                  lpanel.rowList(ii),
+                                  partner_panel.rowList(jj));
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartner(
+    int_t lStart, int_t lEnd,
+    int_t partnerStart, int_t partnerEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel,
+    xlpanel_t<Ftype> &partner_panel)
+{
+    if (lStart >= lEnd || partnerStart >= partnerEnd ||
+        lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    int_t nlb = lpanel.nblocks();
+    int_t nub = partner_panel.nblocks();
+    lStart = SUPERLU_MAX((int_t)0, lStart);
+    partnerStart = SUPERLU_MAX((int_t)0, partnerStart);
+    lEnd = SUPERLU_MIN(lEnd, nlb);
+    partnerEnd = SUPERLU_MIN(partnerEnd, nub);
+    if (lStart >= lEnd || partnerStart >= partnerEnd)
+        return 0;
+
+    int_t max_gemm_rows = SUPERLU_MAX((int_t)1, ldt);
+    for (int_t jSt = partnerStart; jSt < partnerEnd; ++jSt)
+    {
+        int_t iEnd = lStart;
+        while (iEnd < lEnd)
+        {
+            int_t iSt = iEnd;
+            iEnd = lpanel.getEndBlock(iSt, max_gemm_rows);
+            if (iEnd > lEnd)
+                iEnd = lEnd;
+            if (iEnd <= iSt)
+                iEnd = iSt + 1;
+            dSymSchurCompUpdatePartWithLPartner(iSt, iEnd,
+                                                jSt, jSt + 1,
+                                                k, lpanel,
+                                                partner_panel);
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLPartner(
+    int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
+    xlpanel_t<Ftype> &partner_panel)
+{
+    if (lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t nub = partner_panel.nblocks();
+    int_t laILoc = lpanel.find(laIdx);
+    int_t laJLoc = partner_panel.find(laIdx);
+
+    if (laJLoc != GLOBAL_BLOCK_NOT_FOUND)
+        dSymSchurCompUpLimitedMemWithLPartner(st_lb, nlb,
+                                              laJLoc, laJLoc + 1,
+                                              k, lpanel, partner_panel);
+
+    if (laILoc != GLOBAL_BLOCK_NOT_FOUND)
+    {
+        if (laJLoc == GLOBAL_BLOCK_NOT_FOUND)
+        {
+            dSymSchurCompUpLimitedMemWithLPartner(laILoc, laILoc + 1,
+                                                  0, nub,
+                                                  k, lpanel,
+                                                  partner_panel);
+        }
+        else
+        {
+            dSymSchurCompUpLimitedMemWithLPartner(laILoc, laILoc + 1,
+                                                  0, laJLoc,
+                                                  k, lpanel,
+                                                  partner_panel);
+            dSymSchurCompUpLimitedMemWithLPartner(laILoc, laILoc + 1,
+                                                  laJLoc + 1, nub,
+                                                  k, lpanel,
+                                                  partner_panel);
+        }
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLPartner(
+    int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
+    xlpanel_t<Ftype> &partner_panel)
+{
+    if (lpanel.isEmpty() || partner_panel.isEmpty())
+        return 0;
+
+    int_t st_lb = lpanel.haveDiag() ? 1 : 0;
+    int_t nlb = lpanel.nblocks();
+    int_t nub = partner_panel.nblocks();
+    int_t exILoc = lpanel.find(ex);
+    int_t exJLoc = partner_panel.find(ex);
+
+    auto update_i_range = [&](int_t ist, int_t iend)
+    {
+        if (ist >= iend)
+            return;
+        if (exJLoc == GLOBAL_BLOCK_NOT_FOUND)
+        {
+            dSymSchurCompUpLimitedMemWithLPartner(ist, iend, 0, nub,
+                                                  k, lpanel, partner_panel);
+        }
+        else
+        {
+            dSymSchurCompUpLimitedMemWithLPartner(ist, iend, 0, exJLoc,
+                                                  k, lpanel, partner_panel);
+            dSymSchurCompUpLimitedMemWithLPartner(ist, iend,
+                                                  exJLoc + 1, nub,
+                                                  k, lpanel, partner_panel);
+        }
+    };
+
+    if (exILoc == GLOBAL_BLOCK_NOT_FOUND)
+    {
+        update_i_range(st_lb, nlb);
+    }
+    else
+    {
+        update_i_range(st_lb, exILoc);
+        update_i_range(exILoc + 1, nlb);
+    }
+
+    return 0;
+}
+
+template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dDiagFactorPanelSolve(int_t k, int_t offset, diagFactBufs_type<Ftype>**dFBufs)
 {
     if (options->SymFact == YES)
@@ -1323,7 +2812,7 @@ inline int_t xLUstruct_t<double>::dSymStartDiagPrefetch(int_t k,
     if (!(Pr == 1 && Pc == 1 &&
           grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1))
         return 0;
-    if (k < 0 || k >= nsupers || iam != procIJ(k, k))
+    if (k < 0 || k >= nsupers || iam != symV2DiagProc(k))
         return 0;
     if (stream_offset < 0 ||
         stream_offset >= static_cast<int_t>(symDiagPrefetchBufs.size()) ||
@@ -1340,9 +2829,11 @@ inline int_t xLUstruct_t<double>::dSymStartDiagPrefetch(int_t k,
         symDiagPrefetchNodes[stream_offset] != k)
         return 0;
 
-    xlpanel_t<double> &lpanel = lPanelVec[g2lCol(k)];
+    xlpanel_t<double> &lpanel = lPanelVec[symV2PanelIndex(k)];
     if (lpanel.isEmpty() || !lpanel.haveDiag())
         return 0;
+    if (lpanel.gid(0) != k || lpanel.nbrow(0) != SuperSize(k))
+        ABORT("SymFact V2 diagonal prefetch saw an invalid L-panel diagonal block.");
 
     int_t ksupc = SuperSize(k);
     cudaStream_t stream = A_gpu.lookAheadLStream[stream_offset];
@@ -1430,7 +2921,7 @@ inline int_t xLUstruct_t<double>::dSymFinishL2U(int_t k)
             uPanelVec[g2lRow(k)].loadFromSkyline(k, Llu->Ufstnz_br_ptr[lk],
                                                  Llu->Unzval_br_ptr[lk], xsup);
 #ifdef HAVE_CUDA
-            if (superlu_acc_offload)
+            if (superlu_acc_offload && symGPU3DVersion != 2)
                 uPanelVec[g2lRow(k)].copyBackToGPU();
 #endif
         }
@@ -1448,9 +2939,13 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     symStatAdd(SYM_GPU3D_S_FACTOR_NODES);
 #endif
-    dSymStartL2U(k, handle_offset);
+    if (symGPU3DVersion != 2)
+        dSymStartL2U(k, handle_offset);
 
     int_t ksupc = SuperSize(k);
+    int_t sym_panel_root = symV2PanelRoot(k);
+    int_t sym_diag_root = symV2DiagRoot(k);
+    int_t sym_diag_proc = symV2DiagProc(k);
     double *invDiag = dFBufs[buffer_offset]->BlockUFactor;
     double *origDiag = dFBufs[buffer_offset]->BlockLFactor;
     int contract = symGPU3DContract;
@@ -1461,9 +2956,26 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
 #ifndef SLU_HAVE_LAPACK
     ABORT("LUv1 SymFact requires LAPACK dsytrf/dsytri support.");
 #else
-    if (iam == procIJ(k, k))
+    if (iam == sym_diag_proc)
     {
-        xlpanel_t<double> &lpanel = lPanelVec[g2lCol(k)];
+        xlpanel_t<double> &lpanel = lPanelVec[symV2PanelIndex(k)];
+        if (lpanel.isEmpty() || !lpanel.haveDiag() ||
+            lpanel.gid(0) != k || lpanel.nbrow(0) != ksupc)
+        {
+            std::fprintf(stderr,
+                         "SymFact V2 invalid diag panel rank=%d k=%lld have=%lld gid0=%lld nb0=%lld ksupc=%lld myrow=%lld mycol=%lld diagRoot=%lld panelRoot=%lld\n",
+                         (grid3d != NULL) ? grid3d->iam : -1,
+                         (long long)k,
+                         (long long)(lpanel.isEmpty() ? -1 : lpanel.haveDiag()),
+                         (long long)(lpanel.isEmpty() ? -1 : lpanel.gid(0)),
+                         (long long)(lpanel.isEmpty() ? -1 : lpanel.nbrow(0)),
+                         (long long)ksupc,
+                         (long long)myrow,
+                         (long long)mycol,
+                         (long long)sym_diag_root,
+                         (long long)sym_panel_root);
+            ABORT("SymFact V2 diagonal owner has an invalid L-panel diagonal block.");
+        }
         double *diag = lpanel.blkPtr(0);
         int_t panelLdd = lpanel.LDA();
         int_t ldd = panelLdd;
@@ -1547,6 +3059,49 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
 
         if (work == NULL || ipiv == NULL)
             ABORT("LUv1 SymFact workspace is not allocated.");
+
+        if (symGPU3DVersion == 2)
+        {
+            if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers))
+                ABORT("SymFact V2 diagonal block vector has invalid size.");
+            if (symV2DiagBlocks[k] == NULL)
+            {
+                symV2DiagBlocks[k] = (double *)SUPERLU_MALLOC(
+                    xlu_checked_square_alloc_bytes(ksupc, sizeof(double),
+                                                   "SymFact V2 diagonal block"));
+                if (symV2DiagBlocks[k] == NULL)
+                    ABORT("Malloc fails for SymFact V2 diagonal block.");
+            }
+            for (int_t j = 0; j < ksupc; ++j)
+                memcpy(&symV2DiagBlocks[k][j * ksupc], &diag[j * ldd],
+                       ksupc * sizeof(double));
+            for (int_t j = 0; j < ksupc; ++j)
+                for (int_t i = 0; i < j; ++i)
+                    symV2DiagBlocks[k][i + j * ksupc] =
+                        symV2DiagBlocks[k][j + i * ksupc];
+#ifdef HAVE_CUDA
+            if (superlu_acc_offload)
+            {
+                if (symV2DiagBlocksGPU.size() != static_cast<size_t>(nsupers))
+                    ABORT("SymFact V2 device diagonal block vector has invalid size.");
+                if (symV2DiagBlocksGPU[k] == NULL)
+                {
+                    gpuErrchk(cudaMalloc((void **)&symV2DiagBlocksGPU[k],
+                                         xlu_checked_square_alloc_bytes(
+                                             ksupc, sizeof(double),
+                                             "SymFact V2 device diagonal block")));
+                }
+                int stream_id = handle_offset;
+                if (stream_id < 0 || stream_id >= A_gpu.numCudaStreams)
+                    stream_id = 0;
+                gpuErrchk(cudaMemcpyAsync(symV2DiagBlocksGPU[k],
+                                          symV2DiagBlocks[k],
+                                          ksupc * ksupc * sizeof(double),
+                                          cudaMemcpyHostToDevice,
+                                          A_gpu.cuStreams[stream_id]));
+            }
+#endif
+        }
 
         if (contract == 2)
             for (int_t j = 0; j < ksupc; ++j)
@@ -1809,11 +3364,49 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
         }
     }
 
+    if (symGPU3DVersion == 2 && mycol == sym_panel_root)
+    {
+        if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers))
+            ABORT("SymFact V2 diagonal block vector has invalid size.");
+        if (symV2DiagBlocks[k] == NULL)
+        {
+            symV2DiagBlocks[k] = (double *)SUPERLU_MALLOC(
+                xlu_checked_square_alloc_bytes(ksupc, sizeof(double),
+                                               "SymFact V2 diagonal block"));
+            if (symV2DiagBlocks[k] == NULL)
+                ABORT("Malloc fails for SymFact V2 diagonal block.");
+        }
+        MPI_Bcast((void *)symV2DiagBlocks[k], ksupc * ksupc, MPI_DOUBLE,
+                  sym_diag_root, (grid->cscp).comm);
+#ifdef HAVE_CUDA
+        if (superlu_acc_offload)
+        {
+            if (symV2DiagBlocksGPU.size() != static_cast<size_t>(nsupers))
+                ABORT("SymFact V2 device diagonal block vector has invalid size.");
+            if (symV2DiagBlocksGPU[k] == NULL)
+            {
+                gpuErrchk(cudaMalloc((void **)&symV2DiagBlocksGPU[k],
+                                     xlu_checked_square_alloc_bytes(
+                                         ksupc, sizeof(double),
+                                         "SymFact V2 device diagonal block")));
+            }
+            int stream_id = buffer_offset;
+            if (stream_id < 0 || stream_id >= A_gpu.numCudaStreams)
+                stream_id = 0;
+            gpuErrchk(cudaMemcpyAsync(symV2DiagBlocksGPU[k],
+                                      symV2DiagBlocks[k],
+                                      ksupc * ksupc * sizeof(double),
+                                      cudaMemcpyHostToDevice,
+                                      A_gpu.cuStreams[stream_id]));
+        }
+#endif
+    }
+
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double sym_bcast_t = SuperLU_timer_();
 #endif
 #ifdef HAVE_CUDA
-    if (superlu_acc_offload && mycol == kcol(k) && superlu_cuda_aware_mpi())
+    if (superlu_acc_offload && mycol == sym_panel_root && superlu_cuda_aware_mpi())
     {
         int stream_id = handle_offset;
         if (stream_id < 0 || stream_id >= A_gpu.numCudaStreams)
@@ -1821,7 +3414,7 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
         cudaStream_t cuStream = A_gpu.cuStreams[stream_id];
         double *dInvDiag = A_gpu.dFBufs[buffer_offset];
 
-        if (iam == procIJ(k, k))
+        if (iam == sym_diag_proc)
         {
             gpuErrchk(cudaMemcpyAsync(dInvDiag, invDiag,
                                       ksupc * ksupc * sizeof(double),
@@ -1830,23 +3423,23 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
         }
         superlu_gpu_mpi_bcast(dInvDiag, invDiag, sizeof(double),
                               static_cast<int>(ksupc * ksupc), MPI_DOUBLE,
-                              krow(k), (grid->cscp).comm);
+                              sym_diag_root, (grid->cscp).comm);
         invDiagOnDevice = true;
     }
     else
 #endif
     {
-        if (mycol == kcol(k))
+        if (mycol == sym_panel_root)
             MPI_Bcast((void *)invDiag, ksupc * ksupc, MPI_DOUBLE,
-                      krow(k), (grid->cscp).comm);
+                      sym_diag_root, (grid->cscp).comm);
     }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     symTimingAdd(SYM_GPU3D_T_DIAG_BCAST, SuperLU_timer_() - sym_bcast_t);
 #endif
 
-    if (mycol == kcol(k))
+    if (mycol == sym_panel_root)
     {
-        xlpanel_t<double> &lpanel = lPanelVec[g2lCol(k)];
+        xlpanel_t<double> &lpanel = lPanelVec[symV2PanelIndex(k)];
         if (lpanel.isEmpty())
             return 0;
 #ifdef HAVE_CUDA
@@ -1895,6 +3488,12 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
                                           ksupc, dInvDiag, ksupc,
                                           A_gpu.lookAheadLGemmBuffer[handle_offset],
                                           lpanel.nzrows());
+            if (symGPU3DVersion == 2)
+            {
+                gpuErrchk(cudaMemcpyAsync(dInvDiag, symV2DiagBlocks[k],
+                                          ksupc * ksupc * sizeof(double),
+                                          cudaMemcpyHostToDevice, cuStream));
+            }
             gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[handle_offset],
                                       cuStream));
             if (Pr == 1 && Pc == 1 &&
@@ -1916,6 +3515,15 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double sym_lpanel_t = SuperLU_timer_();
 #endif
+        if (lpanel.haveDiag())
+        {
+            if (lpanel.gid(0) != k || lpanel.nbrow(0) != ksupc)
+                ABORT("SymFact V2 L-panel diagonal block is not first.");
+            for (int_t j = 0; j < ksupc; ++j)
+                memcpy(&lpanel.blkPtr(0)[j * lpanel.LDA()],
+                       &invDiag[j * ksupc],
+                       ksupc * sizeof(double));
+        }
         ensureSymFactWorkSize((int64_t)lpanel.nzrows() * (int64_t)ksupc);
         lpanel.panelSolveSymmetric(ksupc, invDiag, ksupc, symFactWork,
                                    lpanel.nzrows());
@@ -1934,16 +3542,62 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dPanelBcast(int_t k, int_t offset)
 {
     if (options->SymFact == YES)
-        dSymFinishL2U(k);
+    {
+        if (symGPU3DVersion != 2)
+            dSymFinishL2U(k);
+    }
 
     /*=======   Panel Broadcast             ======*/
-    xupanel_t<Ftype> k_upanel(UidxRecvBufs[offset], UvalRecvBufs[offset]);
+    xupanel_t<Ftype> k_upanel;
     xlpanel_t<Ftype> k_lpanel(LidxRecvBufs[offset], LvalRecvBufs[offset]);
+    int_t sym_panel_root = (symGPU3DVersion == 2)
+                               ? symV2PanelRoot(k)
+                               : kcol(k);
+
+    if (mycol == sym_panel_root)
+        k_lpanel = lPanelVec[symV2PanelIndex(k)];
+
+    if (symGPU3DVersion == 2)
+    {
+        if (Pr > 1)
+        {
+            xlpanel_t<Ftype> partner_lpanel(
+                symPartnerLidxRecvBufs[offset],
+                symPartnerLvalRecvBufs[offset]);
+            dSymV2PartnerLBcastHost(k, partner_lpanel);
+        }
+
+        if (LidxSendCounts[k] > 0)
+        {
+            MPI_Bcast(k_lpanel.index, LidxSendCounts[k], mpi_int_t,
+                      sym_panel_root, grid3d->rscp.comm);
+            MPI_Bcast(k_lpanel.val, LvalSendCounts[k],
+                      get_mpi_type<Ftype>(), sym_panel_root,
+                      grid3d->rscp.comm);
+        }
+        if (Pr == 1 && Pc > 1 && LidxSendCounts[k] > 0)
+        {
+            int_t ksupc = SuperSize(k);
+            if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers))
+                ABORT("SymFact V2 diagonal block vector has invalid size.");
+            if (symV2DiagBlocks[k] == NULL)
+            {
+                symV2DiagBlocks[k] = (Ftype *)SUPERLU_MALLOC(
+                    xlu_checked_square_alloc_bytes(ksupc, sizeof(Ftype),
+                                                   "SymFact V2 diagonal block broadcast"));
+                if (symV2DiagBlocks[k] == NULL)
+                    ABORT("Malloc fails for SymFact V2 diagonal block broadcast.");
+            }
+            MPI_Bcast(symV2DiagBlocks[k], ksupc * ksupc,
+                      get_mpi_type<Ftype>(), sym_panel_root,
+                      grid3d->rscp.comm);
+        }
+        return 0;
+    }
+
+    k_upanel = xupanel_t<Ftype>(UidxRecvBufs[offset], UvalRecvBufs[offset]);
     if (myrow == krow(k))
         k_upanel = uPanelVec[g2lRow(k)];
-
-    if (mycol == kcol(k))
-        k_lpanel = lPanelVec[g2lCol(k)];
 
     if (UidxSendCounts[k] > 0)
     {
@@ -1953,8 +3607,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcast(int_t k, int_t offset)
 
     if (LidxSendCounts[k] > 0)
     {
-        MPI_Bcast(k_lpanel.index, LidxSendCounts[k], mpi_int_t, kcol(k), grid3d->rscp.comm);
-        MPI_Bcast(k_lpanel.val, LvalSendCounts[k], MPI_DOUBLE, kcol(k), grid3d->rscp.comm);
+        MPI_Bcast(k_lpanel.index, LidxSendCounts[k], mpi_int_t, sym_panel_root, grid3d->rscp.comm);
+        MPI_Bcast(k_lpanel.val, LvalSendCounts[k], MPI_DOUBLE, sym_panel_root, grid3d->rscp.comm);
     }
     return 0;
 }

@@ -30,6 +30,68 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
 
     /*main loop over all the levels*/
     int_t numLA = getNumLookAhead(options);
+    bool sym_v2_mode = useSymV2Solve();
+
+    if (sym_v2_mode)
+    {
+        const int_t offset = 0;
+        auto process_sym_v2_node = [&](int_t k)
+        {
+            dDiagFactorPanelSolve(k, offset, dFBufs);
+            dPanelBcast(k, offset);
+
+            if (LidxSendCounts[k] <= 0)
+                return;
+
+            xlpanel_t<Ftype> k_lpanel(LidxRecvBufs[offset],
+                                       LvalRecvBufs[offset]);
+            if (mycol == symV2PanelRoot(k))
+            {
+                int_t lk = symV2PanelIndex(k);
+                if (lk >= 0)
+                    k_lpanel = lPanelVec[lk];
+            }
+            if (k_lpanel.isEmpty())
+                return;
+
+            int_t st_lb = k_lpanel.haveDiag() ? 1 : 0;
+            int_t nlb = k_lpanel.nblocks();
+            if (st_lb >= nlb)
+                return;
+
+            if (Pr == 1)
+            {
+                dSymSchurCompUpLimitedMemLL(st_lb, nlb,
+                                            st_lb, nlb,
+                                            k, k_lpanel);
+            }
+            else
+            {
+                xlpanel_t<Ftype> partner_lpanel(
+                    symPartnerLidxRecvBufs[offset],
+                    symPartnerLvalRecvBufs[offset]);
+                if (partner_lpanel.isEmpty())
+                    return;
+
+                dSymSchurCompUpLimitedMemWithLPartner(
+                    st_lb, nlb, 0, partner_lpanel.nblocks(),
+                    k, k_lpanel, partner_lpanel);
+            }
+        };
+
+        for (int_t topoLvl = 0; topoLvl < maxTopoLevel; ++topoLvl)
+        {
+            int_t k_st = eTreeTopLims[topoLvl];
+            int_t k_end = eTreeTopLims[topoLvl + 1];
+            for (int_t k0 = k_st; k0 < k_end; ++k0)
+                process_sym_v2_node(perm_c_supno[k0]);
+        }
+
+#if (DEBUGlevel >= 1)
+        CHECK_MALLOC(grid3d->iam, "Exit dsparseTreeFactor_ASYNC()");
+#endif
+        return 0;
+    }
 
     int_t* donePanelBcast = intMalloc_dist(nnodes);
     int_t* donePanelSolve = intMalloc_dist(nnodes);
@@ -92,16 +154,49 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
                 offset+= halfWin;   // 
             
             /*=======   SchurComplement Update ======*/
-            xupanel_t<Ftype> k_upanel(UidxRecvBufs[offset], UvalRecvBufs[offset]) ;
+            xupanel_t<Ftype> k_upanel;
             xlpanel_t<Ftype> k_lpanel(LidxRecvBufs[offset], LvalRecvBufs[offset]);
-            if (myrow == krow(k))
-                k_upanel= uPanelVec[g2lRow(k)];
-            if (mycol == kcol(k))
+            xlpanel_t<Ftype> partner_lpanel;
+            if (!sym_v2_mode)
+            {
+                k_upanel = xupanel_t<Ftype>(UidxRecvBufs[offset],
+                                            UvalRecvBufs[offset]);
+                if (myrow == krow(k))
+                    k_upanel= uPanelVec[g2lRow(k)];
+            }
+            if (sym_v2_mode)
+            {
+                if (mycol == symV2PanelRoot(k))
+                {
+                    int_t lk = symV2PanelIndex(k);
+                    if (lk >= 0)
+                        k_lpanel = lPanelVec[lk];
+                }
+            }
+            else if (mycol == kcol(k))
+            {
                 k_lpanel = lPanelVec[g2lCol(k)];
+            }
+            if (sym_v2_mode && !(Pr == 1 && Pc == 1))
+                partner_lpanel =
+                    xlpanel_t<Ftype>(symPartnerLidxRecvBufs[offset],
+                                      symPartnerLvalRecvBufs[offset]);
 
             int_t k_parent = gEtreeInfo->setree[k];
             /* Look Ahead Panel Update */
-            if(UidxSendCounts[k]>0 && LidxSendCounts[k]>0)
+            if (sym_v2_mode)
+            {
+                if (LidxSendCounts[k] > 0)
+                {
+                    if (Pr == 1 && Pc == 1)
+                        dSymLookAheadUpdateLL(k, k_parent, k_lpanel);
+                    else
+                        dSymLookAheadUpdateWithLPartner(k, k_parent,
+                                                        k_lpanel,
+                                                        partner_lpanel);
+                }
+            }
+            else if(UidxSendCounts[k]>0 && LidxSendCounts[k]>0)
                 lookAheadUpdate(k,k_parent, k_lpanel,k_upanel);
             
             /* Look Ahead Panel Solve */
@@ -121,7 +216,19 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
             }
             
             /*proceed with remaining SchurComplement update */
-            if(UidxSendCounts[k]>0 && LidxSendCounts[k]>0)
+            if (sym_v2_mode)
+            {
+                if (LidxSendCounts[k] > 0)
+                {
+                    if (Pr == 1 && Pc == 1)
+                        dSymSchurCompUpdateExcludeOneLL(k, k_parent,
+                                                        k_lpanel);
+                    else
+                        dSymSchurCompUpdateExcludeOneWithLPartner(
+                            k, k_parent, k_lpanel, partner_lpanel);
+                }
+            }
+            else if(UidxSendCounts[k]>0 && LidxSendCounts[k]>0)
                     dSchurCompUpdateExcludeOne(k,k_parent, k_lpanel,k_upanel);
             
         }
