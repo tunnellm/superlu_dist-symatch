@@ -580,6 +580,30 @@ struct xLUstruct_t
     }
     bool symV2ScheduleActive() const;
     int_t symV2ForestLevelCount() const;
+    template <typename PtrT>
+    static void superluFreeIfAllocated(PtrT *&ptr)
+    {
+        if (ptr != NULL)
+        {
+            SUPERLU_FREE(ptr);
+            ptr = NULL;
+        }
+    }
+    void freeRecvBuffers(bool include_u_buffers)
+    {
+        int nlook = (options != NULL) ? options->num_lookaheads : 0;
+        for (int i = 0; i < nlook; i++)
+        {
+            superluFreeIfAllocated(LvalRecvBufs[i]);
+            if (include_u_buffers)
+                superluFreeIfAllocated(UvalRecvBufs[i]);
+            superluFreeIfAllocated(symPartnerLvalRecvBufs[i]);
+            superluFreeIfAllocated(LidxRecvBufs[i]);
+            if (include_u_buffers)
+                superluFreeIfAllocated(UidxRecvBufs[i]);
+            superluFreeIfAllocated(symPartnerLidxRecvBufs[i]);
+        }
+    }
 
     anc25d_t anc25d;
     // For GPU acceleration
@@ -692,15 +716,7 @@ struct xLUstruct_t
 
         int i;
         XLU_V2_DTOR_TRACE("before recv buffers free");
-        for (i = 0; i < options->num_lookaheads; i++)
-        {
-            SUPERLU_FREE(LvalRecvBufs[i]);
-            SUPERLU_FREE(UvalRecvBufs[i]);
-            SUPERLU_FREE(symPartnerLvalRecvBufs[i]);
-            SUPERLU_FREE(LidxRecvBufs[i]);
-            SUPERLU_FREE(UidxRecvBufs[i]);
-            SUPERLU_FREE(symPartnerLidxRecvBufs[i]);
-        }
+        freeRecvBuffers(needsUPanelStorage());
         XLU_V2_DTOR_TRACE("after recv buffers free");
 
         XLU_V2_DTOR_TRACE("before diagFactBufs free");

@@ -85,6 +85,10 @@ extern "C"
         int_t *lusup_count;
         int **d_row_to_send_pos;
         int_t *row_to_send_count;
+        int_t **d_block_luptr;
+        int_t **d_block_nbrow;
+        int_t **d_block_row_start;
+        int_t *block_count;
         double *d_b;
         double *d_c;
         double *d_send_vals;
@@ -133,6 +137,54 @@ extern "C"
             row_values[(row_start + r) * nrhs + rhs_id];
     }
 
+    __global__ void symldl_forward_panel_kernel(
+        const double *lusup, int_t nsupr, int_t ksupc, int nrhs,
+        const int_t *block_luptr, const int_t *block_nbrow,
+        const int_t *block_row_start, int_t nblocks,
+        const int *row_to_send_pos, const double *xk, double *send_vals)
+    {
+        int_t block = static_cast<int_t>(blockIdx.x);
+        int rhs = static_cast<int>(blockIdx.y);
+        if (block >= nblocks || rhs >= nrhs)
+            return;
+
+        int_t nbrow = block_nbrow[block];
+        int_t row_start = block_row_start[block];
+        int_t luptr = block_luptr[block];
+        for (int_t r = threadIdx.x; r < nbrow; r += blockDim.x) {
+            double sum = 0.0;
+            const double *a = lusup + luptr + r;
+            const double *x = xk + static_cast<int_t>(rhs) * ksupc;
+            for (int_t c = 0; c < ksupc; ++c)
+                sum += a[c * nsupr] * x[c];
+            int pos = row_to_send_pos[row_start + r];
+            send_vals[static_cast<int_t>(pos) * nrhs + rhs] = -sum;
+        }
+    }
+
+    __global__ void symldl_backward_panel_kernel(
+        const double *lusup, int_t nsupr, int_t ksupc, int nrhs,
+        const int_t *block_luptr, const int_t *block_nbrow,
+        const int_t *block_row_start, int_t nblocks,
+        const double *row_values, double *delta)
+    {
+        int_t block = static_cast<int_t>(blockIdx.x);
+        int rhs = static_cast<int>(blockIdx.y);
+        if (block >= nblocks || rhs >= nrhs)
+            return;
+
+        int_t row_start = block_row_start[block];
+        int_t nbrow = block_nbrow[block];
+        int_t luptr = block_luptr[block];
+        for (int_t c = threadIdx.x; c < ksupc; c += blockDim.x) {
+            double sum = 0.0;
+            const double *a = lusup + luptr + c * nsupr;
+            for (int_t r = 0; r < nbrow; ++r)
+                sum += a[r] * row_values[(row_start + r) * nrhs + rhs];
+            atomicAdd(&delta[c + static_cast<int_t>(rhs) * ksupc], -sum);
+        }
+    }
+
     static int symldl_gpu_count_to_int(int_t value)
     {
         int out = static_cast<int>(value);
@@ -178,6 +230,10 @@ extern "C"
         state->lusup_count = new int_t[static_cast<size_t>(nsupers)];
         state->d_row_to_send_pos = new int *[static_cast<size_t>(nsupers)];
         state->row_to_send_count = new int_t[static_cast<size_t>(nsupers)];
+        state->d_block_luptr = new int_t *[static_cast<size_t>(nsupers)];
+        state->d_block_nbrow = new int_t *[static_cast<size_t>(nsupers)];
+        state->d_block_row_start = new int_t *[static_cast<size_t>(nsupers)];
+        state->block_count = new int_t[static_cast<size_t>(nsupers)];
         state->d_b = NULL;
         state->d_c = NULL;
         state->d_send_vals = NULL;
@@ -200,6 +256,10 @@ extern "C"
             state->lusup_count[k] = 0;
             state->d_row_to_send_pos[k] = NULL;
             state->row_to_send_count[k] = 0;
+            state->d_block_luptr[k] = NULL;
+            state->d_block_nbrow[k] = NULL;
+            state->d_block_row_start[k] = NULL;
+            state->block_count[k] = 0;
         }
 
         gpuErrchk(cudaStreamCreate(&state->stream));
@@ -230,6 +290,12 @@ extern "C"
                 gpuErrchk(cudaFree(state->d_lusup[k]));
             if (state->d_row_to_send_pos[k] != NULL)
                 gpuErrchk(cudaFree(state->d_row_to_send_pos[k]));
+            if (state->d_block_luptr[k] != NULL)
+                gpuErrchk(cudaFree(state->d_block_luptr[k]));
+            if (state->d_block_nbrow[k] != NULL)
+                gpuErrchk(cudaFree(state->d_block_nbrow[k]));
+            if (state->d_block_row_start[k] != NULL)
+                gpuErrchk(cudaFree(state->d_block_row_start[k]));
         }
         if (state->d_b != NULL)
             gpuErrchk(cudaFree(state->d_b));
@@ -250,6 +316,10 @@ extern "C"
         delete [] state->lusup_count;
         delete [] state->d_row_to_send_pos;
         delete [] state->row_to_send_count;
+        delete [] state->d_block_luptr;
+        delete [] state->d_block_nbrow;
+        delete [] state->d_block_row_start;
+        delete [] state->block_count;
         delete state;
     }
 
@@ -276,23 +346,53 @@ extern "C"
 
     int dSymLDLSolveGPUSetPanelSchedule(dSymLDLSolveGPU_Handle handle, int_t k,
                                         const int *row_to_send_pos,
-                                        int_t row_count)
+                                        int_t row_count, int_t nblocks,
+                                        const int_t *block_luptr,
+                                        const int_t *block_nbrow,
+                                        const int_t *block_row_start)
     {
         dSymLDLSolveGPUState *state =
             reinterpret_cast<dSymLDLSolveGPUState *>(handle);
         if (state == NULL || k < 0 || k >= state->nsupers)
             return -1;
-        if (row_count <= 0 || row_to_send_pos == NULL)
+        if (row_count <= 0 || row_to_send_pos == NULL ||
+            nblocks < 0 || (nblocks > 0 &&
+             (block_luptr == NULL || block_nbrow == NULL ||
+              block_row_start == NULL)))
+            return -2;
+        if (nblocks == 0)
             return 0;
 
         if (state->d_row_to_send_pos[k] != NULL)
             gpuErrchk(cudaFree(state->d_row_to_send_pos[k]));
+        if (state->d_block_luptr[k] != NULL)
+            gpuErrchk(cudaFree(state->d_block_luptr[k]));
+        if (state->d_block_nbrow[k] != NULL)
+            gpuErrchk(cudaFree(state->d_block_nbrow[k]));
+        if (state->d_block_row_start[k] != NULL)
+            gpuErrchk(cudaFree(state->d_block_row_start[k]));
         gpuErrchk(cudaMalloc(reinterpret_cast<void **>(&state->d_row_to_send_pos[k]),
                              static_cast<size_t>(row_count) * sizeof(int)));
         gpuErrchk(cudaMemcpy(state->d_row_to_send_pos[k], row_to_send_pos,
                              static_cast<size_t>(row_count) * sizeof(int),
                              cudaMemcpyHostToDevice));
+        gpuErrchk(cudaMalloc(reinterpret_cast<void **>(&state->d_block_luptr[k]),
+                             static_cast<size_t>(nblocks) * sizeof(int_t)));
+        gpuErrchk(cudaMalloc(reinterpret_cast<void **>(&state->d_block_nbrow[k]),
+                             static_cast<size_t>(nblocks) * sizeof(int_t)));
+        gpuErrchk(cudaMalloc(reinterpret_cast<void **>(&state->d_block_row_start[k]),
+                             static_cast<size_t>(nblocks) * sizeof(int_t)));
+        gpuErrchk(cudaMemcpy(state->d_block_luptr[k], block_luptr,
+                             static_cast<size_t>(nblocks) * sizeof(int_t),
+                             cudaMemcpyHostToDevice));
+        gpuErrchk(cudaMemcpy(state->d_block_nbrow[k], block_nbrow,
+                             static_cast<size_t>(nblocks) * sizeof(int_t),
+                             cudaMemcpyHostToDevice));
+        gpuErrchk(cudaMemcpy(state->d_block_row_start[k], block_row_start,
+                             static_cast<size_t>(nblocks) * sizeof(int_t),
+                             cudaMemcpyHostToDevice));
         state->row_to_send_count[k] = row_count;
+        state->block_count[k] = nblocks;
         return 0;
     }
 
@@ -354,6 +454,7 @@ extern "C"
                                       cudaMemcpyDeviceToHost, state->stream));
         gpuErrchk(cudaStreamSynchronize(state->stream));
         state->t_d2h += SuperLU_timer_() - t;
+
         return 0;
     }
 
@@ -372,9 +473,13 @@ extern "C"
         if (nblocks == 0 || total_send == 0)
             return 0;
         if (state->d_lusup[k] == NULL || state->d_row_to_send_pos[k] == NULL ||
-            block_luptr == NULL || block_nbrow == NULL ||
-            block_row_start == NULL || xk == NULL || send_vals == NULL)
+            state->d_block_luptr[k] == NULL ||
+            state->d_block_nbrow[k] == NULL ||
+            state->d_block_row_start[k] == NULL ||
+            xk == NULL || send_vals == NULL)
             return -2;
+        if (state->block_count[k] != nblocks)
+            return -3;
 
         int ksupc = symldl_gpu_count_to_int(ksupc_in);
         int nrhs = symldl_gpu_count_to_int(nrhs_in);
@@ -394,28 +499,14 @@ extern "C"
         state->t_h2d += SuperLU_timer_() - t;
 
         t = SuperLU_timer_();
-        const double alpha = 1.0;
-        const double beta = 0.0;
         const int threads = 256;
-        for (int_t block = 0; block < nblocks; ++block)
-        {
-            int_t nbrow_in = block_nbrow[block];
-            int nbrow = symldl_gpu_count_to_int(nbrow_in);
-            int_t out_count = nbrow_in * static_cast<int_t>(nrhs);
-            symldl_gpu_ensure_buffer(&state->d_c, &state->d_c_cap, out_count);
-            const double *a_dev = state->d_lusup[k] + block_luptr[block];
-            gpublasCheckErrors(cublasDgemm(state->handle, CUBLAS_OP_N,
-                                           CUBLAS_OP_N, nbrow, nrhs, ksupc,
-                                           &alpha, a_dev, nsupr,
-                                           state->d_b, ksupc, &beta,
-                                           state->d_c, nbrow));
-            int grid = static_cast<int>((out_count + threads - 1) / threads);
-            symldl_scatter_forward_send_kernel<<<grid, threads, 0,
-                state->stream>>>(state->d_c, state->d_send_vals,
-                                 state->d_row_to_send_pos[k],
-                                 block_row_start[block], nbrow_in, nrhs);
-            gpuErrchk(cudaGetLastError());
-        }
+        dim3 grid(symldl_gpu_count_to_int(nblocks), nrhs);
+        symldl_forward_panel_kernel<<<grid, threads, 0, state->stream>>>(
+            state->d_lusup[k], nsupr, ksupc, nrhs,
+            state->d_block_luptr[k], state->d_block_nbrow[k],
+            state->d_block_row_start[k], nblocks,
+            state->d_row_to_send_pos[k], state->d_b, state->d_send_vals);
+        gpuErrchk(cudaGetLastError());
         gpuErrchk(cudaStreamSynchronize(state->stream));
         state->t_compute += SuperLU_timer_() - t;
 
@@ -425,6 +516,10 @@ extern "C"
                                   cudaMemcpyDeviceToHost, state->stream));
         gpuErrchk(cudaStreamSynchronize(state->stream));
         state->t_d2h += SuperLU_timer_() - t;
+
+        (void) block_luptr;
+        (void) block_nbrow;
+        (void) block_row_start;
         return 0;
     }
 
@@ -442,9 +537,13 @@ extern "C"
             return -1;
         if (nblocks == 0 || row_count == 0)
             return 0;
-        if (state->d_lusup[k] == NULL || block_luptr == NULL ||
-            block_nbrow == NULL || row_values == NULL || delta_send == NULL)
+        if (state->d_lusup[k] == NULL || state->d_block_luptr[k] == NULL ||
+            state->d_block_nbrow[k] == NULL ||
+            state->d_block_row_start[k] == NULL ||
+            row_values == NULL || delta_send == NULL)
             return -2;
+        if (state->block_count[k] != nblocks)
+            return -3;
 
         int ksupc = symldl_gpu_count_to_int(ksupc_in);
         int nrhs = symldl_gpu_count_to_int(nrhs_in);
@@ -470,31 +569,19 @@ extern "C"
                                   static_cast<size_t>(delta_count) *
                                       sizeof(double),
                                   state->stream));
-        const double alpha = -1.0;
-        const double beta = 1.0;
         const int threads = 256;
-        int_t row_start = 0;
-        for (int_t block = 0; block < nblocks; ++block)
-        {
-            int_t nbrow_in = block_nbrow[block];
-            int nbrow = symldl_gpu_count_to_int(nbrow_in);
-            int_t rhs_count = nbrow_in * static_cast<int_t>(nrhs);
-            symldl_gpu_ensure_buffer(&state->d_b, &state->d_b_cap, rhs_count);
-            int grid = static_cast<int>((rhs_count + threads - 1) / threads);
-            symldl_pack_backward_rows_kernel<<<grid, threads, 0,
-                state->stream>>>(state->d_row_values, state->d_b, row_start,
-                                 nbrow_in, nrhs);
-            gpuErrchk(cudaGetLastError());
-            const double *a_dev = state->d_lusup[k] + block_luptr[block];
-            gpublasCheckErrors(cublasDgemm(state->handle, CUBLAS_OP_T,
-                                           CUBLAS_OP_N, ksupc, nrhs, nbrow,
-                                           &alpha, a_dev, nsupr,
-                                           state->d_b, nbrow, &beta,
-                                           state->d_delta, ksupc));
-            row_start += nbrow_in;
-        }
+        dim3 grid(symldl_gpu_count_to_int(nblocks), nrhs);
+        symldl_backward_panel_kernel<<<grid, threads, 0, state->stream>>>(
+            state->d_lusup[k], nsupr, ksupc, nrhs,
+            state->d_block_luptr[k], state->d_block_nbrow[k],
+            state->d_block_row_start[k], nblocks, state->d_row_values,
+            state->d_delta);
+        gpuErrchk(cudaGetLastError());
         gpuErrchk(cudaStreamSynchronize(state->stream));
         state->t_compute += SuperLU_timer_() - t;
+
+        (void) block_luptr;
+        (void) block_nbrow;
 
         t = SuperLU_timer_();
         gpuErrchk(cudaMemcpyAsync(delta_send, state->d_delta,

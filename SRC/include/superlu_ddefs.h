@@ -983,6 +983,11 @@ pdgstrs3d_symldl (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstru
            dSOLVEstruct_t * SOLVEstruct, SuperLUStat_t * stat, int *info);
 
 extern void
+pdgstrs3d_symldl_init_meta(superlu_dist_options_t *options, int_t n, int nrhs,
+           dLUstruct_t *LUstruct, dtrf3Dpartition_t *trf3Dpartition,
+           gridinfo3d_t *grid3d, dSOLVEstruct_t *SOLVEstruct);
+
+extern void
 pdgstrs3d_symldl_finalize(dSOLVEstruct_t *SOLVEstruct);
 
 extern int_t pdgsTrBackSolve3d(superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,

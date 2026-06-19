@@ -54,7 +54,10 @@ extern "C"
                                 const double *lusup, int_t count);
     int dSymLDLSolveGPUSetPanelSchedule(dSymLDLSolveGPU_Handle handle, int_t k,
                                         const int *row_to_send_pos,
-                                        int_t row_count);
+                                        int_t row_count, int_t nblocks,
+                                        const int_t *block_luptr,
+                                        const int_t *block_nbrow,
+                                        const int_t *block_row_start);
     int dSymLDLSolveGPUGemm(dSymLDLSolveGPU_Handle handle, int_t k,
                             int_t a_offset, char transa, char transb,
                             int_t m, int_t n, int_t kdim,

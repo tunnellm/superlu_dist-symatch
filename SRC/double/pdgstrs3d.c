@@ -8616,6 +8616,20 @@ pdgstrs3d_symldl_note_gpu_panel(pdgstrs3d_symldl_solve_meta_t *meta,
     meta->gpu_panel_calls += 1.0;
 }
 
+static void
+pdgstrs3d_symldl_note_cpu_direct_panel(pdgstrs3d_symldl_solve_meta_t *meta,
+                                       double ops, double calls)
+{
+    if (meta == NULL || calls == 0.0)
+        return;
+    meta->cpu_blas_ops += ops;
+    meta->cpu_blas_calls += calls;
+    if (pdgstrs3d_symldl_gpu_solve_allowed(meta)) {
+        meta->below_threshold_ops += ops;
+        meta->below_threshold_calls += calls;
+    }
+}
+
 static int
 pdgstrs3d_symldl_gpu_solve_allowed(pdgstrs3d_symldl_solve_meta_t *meta)
 {
@@ -8768,6 +8782,100 @@ pdgstrs3d_symldl_try_gpu_backward_panel(pdgstrs3d_symldl_solve_meta_t *meta,
 #endif
 }
 
+static int
+pdgstrs3d_symldl_use_direct_cpu_panel(pdgstrs3d_symldl_solve_meta_t *meta,
+                                      double ops, int nrhs)
+{
+    if (nrhs == 1)
+        return 1;
+    return ops < pdgstrs3d_symldl_gpu_solve_min_ops(meta);
+}
+
+static void
+pdgstrs3d_symldl_cpu_forward_panel_direct(
+    pdgstrs3d_symldl_panel_meta_t *kmeta,
+    pdgstrs3d_symldl_comm_meta_t *cmeta, int_t ksupc, int nrhs,
+    const double *xk, double *send_vals)
+{
+    double *lusup = kmeta->lusup;
+    int_t nsupr = kmeta->nsupr;
+
+    if (nrhs == 1) {
+        for (int_t block = 0; block < kmeta->nblocks; ++block) {
+            int_t nbrow = kmeta->block_nbrow[block];
+            int_t row_start = kmeta->block_row_start[block];
+            int_t luptr = kmeta->block_luptr[block];
+            for (int_t r = 0; r < nbrow; ++r) {
+                double sum = 0.0;
+                double *a = &lusup[luptr + r];
+                for (int_t c = 0; c < ksupc; ++c)
+                    sum += a[c * nsupr] * xk[c];
+                send_vals[cmeta->row_to_send_pos[row_start + r]] = -sum;
+            }
+        }
+        return;
+    }
+
+    for (int_t block = 0; block < kmeta->nblocks; ++block) {
+        int_t nbrow = kmeta->block_nbrow[block];
+        int_t row_start = kmeta->block_row_start[block];
+        int_t luptr = kmeta->block_luptr[block];
+        for (int_t r = 0; r < nbrow; ++r) {
+            int pos = cmeta->row_to_send_pos[row_start + r];
+            double *a = &lusup[luptr + r];
+            for (int rhs = 0; rhs < nrhs; ++rhs) {
+                double sum = 0.0;
+                const double *xr = &xk[(int_t) rhs * ksupc];
+                for (int_t c = 0; c < ksupc; ++c)
+                    sum += a[c * nsupr] * xr[c];
+                send_vals[(int_t) pos * nrhs + rhs] = -sum;
+            }
+        }
+    }
+}
+
+static void
+pdgstrs3d_symldl_cpu_backward_panel_direct(
+    pdgstrs3d_symldl_panel_meta_t *kmeta, int_t ksupc, int nrhs,
+    const double *row_values, double *delta_send)
+{
+    double *lusup = kmeta->lusup;
+    int_t nsupr = kmeta->nsupr;
+
+    if (nrhs == 1) {
+        for (int_t block = 0; block < kmeta->nblocks; ++block) {
+            int_t nbrow = kmeta->block_nbrow[block];
+            int_t row_start = kmeta->block_row_start[block];
+            int_t luptr = kmeta->block_luptr[block];
+            for (int_t c = 0; c < ksupc; ++c) {
+                double sum = 0.0;
+                double *a = &lusup[luptr + c * nsupr];
+                for (int_t r = 0; r < nbrow; ++r)
+                    sum += a[r] * row_values[row_start + r];
+                delta_send[c] -= sum;
+            }
+        }
+        return;
+    }
+
+    for (int_t block = 0; block < kmeta->nblocks; ++block) {
+        int_t nbrow = kmeta->block_nbrow[block];
+        int_t row_start = kmeta->block_row_start[block];
+        int_t luptr = kmeta->block_luptr[block];
+        for (int rhs = 0; rhs < nrhs; ++rhs) {
+            const double *rows = &row_values[(int_t) row_start * nrhs + rhs];
+            double *delta = &delta_send[(int_t) rhs * ksupc];
+            for (int_t c = 0; c < ksupc; ++c) {
+                double sum = 0.0;
+                double *a = &lusup[luptr + c * nsupr];
+                for (int_t r = 0; r < nbrow; ++r)
+                    sum += a[r] * rows[(int_t) r * nrhs];
+                delta[c] -= sum;
+            }
+        }
+    }
+}
+
 static double
 pdgstrs3d_symldl_panel_solve_ops(pdgstrs3d_symldl_panel_meta_t *kmeta,
                                  int_t ksupc, int nrhs)
@@ -8910,21 +9018,6 @@ pdgstrs3d_symldl_level_schedule_free(pdgstrs3d_symldl_level_schedule_t *schedule
     memset(schedule, 0, sizeof(*schedule));
 }
 
-static void
-pdgstrs3d_symldl_level_schedule_serial(pdgstrs3d_symldl_level_schedule_t *schedule,
-                                       int_t nsupers, int_t *solve_order)
-{
-    schedule->nlevels = nsupers;
-    if (!(schedule->level_ptr = intMalloc_dist(nsupers + 1)) ||
-        !(schedule->nodes = intMalloc_dist(nsupers)))
-        ABORT("Malloc fails for SymLDL solve level schedule.");
-
-    for (int_t k = 0; k <= nsupers; ++k)
-        schedule->level_ptr[k] = k;
-    for (int_t k = 0; k < nsupers; ++k)
-        schedule->nodes[k] = solve_order[k];
-}
-
 static pdgstrs3d_symldl_level_schedule_t
 pdgstrs3d_symldl_level_schedule_create(
     int_t nsupers, int_t *solve_order,
@@ -8941,6 +9034,8 @@ pdgstrs3d_symldl_level_schedule_create(
     int_t *edge_ptr = NULL;
     int_t *edge_next = NULL;
     int_t *edge_succ = NULL;
+    int_t *indegree = NULL;
+    int_t *topo_queue = NULL;
     int_t *levels = NULL;
     double *local_cost = NULL;
     double *global_cost = NULL;
@@ -8950,6 +9045,11 @@ pdgstrs3d_symldl_level_schedule_create(
     int total_pair_count = 0;
     int valid_schedule = 1;
     int global_valid_schedule = 1;
+    int invalid_kind = 0;
+    int_t invalid_pred = -1;
+    int_t invalid_succ = -1;
+    int_t invalid_pred_pos = -1;
+    int_t invalid_succ_pos = -1;
     int_t *xsup = Glu_persist->xsup;
     int_t local_edges_count = 0;
     int_t local_edges_fill = 0;
@@ -9029,6 +9129,8 @@ pdgstrs3d_symldl_level_schedule_create(
     if (!(order_pos = intMalloc_dist(nsupers)) ||
         !(edge_counts = intCalloc_dist(nsupers)) ||
         !(edge_ptr = intMalloc_dist(nsupers + 1)) ||
+        !(indegree = intCalloc_dist(nsupers)) ||
+        !(topo_queue = intMalloc_dist(nsupers)) ||
         !(levels = intCalloc_dist(nsupers)) ||
         !(entries = (pdgstrs3d_symldl_sched_entry_t *) SUPERLU_MALLOC(
               pdgstrs3d_checked_product((size_t) nsupers, sizeof(*entries),
@@ -9036,25 +9138,87 @@ pdgstrs3d_symldl_level_schedule_create(
         ABORT("Malloc fails for SymLDL solve level metadata.");
 
     for (int_t pos = 0; pos < nsupers; ++pos)
-        order_pos[solve_order[pos]] = pos;
-
-    for (int_t e = 0; e < total_edges; ++e) {
-        int_t pred = edges[2 * e];
-        int_t succ = edges[2 * e + 1];
-        if (pred < 0 || pred >= nsupers || succ < 0 || succ >= nsupers) {
+        order_pos[pos] = -1;
+    for (int_t pos = 0; pos < nsupers; ++pos) {
+        int_t node = solve_order[pos];
+        if (node < 0 || node >= nsupers ||
+            (node >= 0 && node < nsupers && order_pos[node] >= 0)) {
+            if (!invalid_kind) {
+                invalid_kind = 3;
+                invalid_pred = node;
+                invalid_pred_pos = pos;
+            }
             valid_schedule = 0;
             continue;
         }
-        if (order_pos[succ] <= order_pos[pred])
-            valid_schedule = 0;
-        ++edge_counts[pred];
+        order_pos[node] = pos;
     }
     MPI_Allreduce(&valid_schedule, &global_valid_schedule, 1, MPI_INT,
                   MPI_MIN, grid3d->comm);
     if (!global_valid_schedule) {
-        pdgstrs3d_symldl_level_schedule_serial(&schedule, nsupers,
-                                               solve_order);
-        goto cleanup;
+        int global_rank = -1;
+        MPI_Comm_rank(grid3d->comm, &global_rank);
+        if (!valid_schedule) {
+            fprintf(stderr,
+                    "SymLDL solve forest order is invalid on rank %d: "
+                    "kind=%d node=%lld pos=%lld nsupers=%lld\n",
+                    global_rank, invalid_kind, (long long) invalid_pred,
+                    (long long) invalid_pred_pos, (long long) nsupers);
+            fflush(stderr);
+        }
+        ABORT("SymLDL solve forest order is invalid.");
+    }
+
+    valid_schedule = 1;
+    global_valid_schedule = 1;
+    invalid_kind = 0;
+    invalid_pred = -1;
+    invalid_succ = -1;
+    invalid_pred_pos = -1;
+    invalid_succ_pos = -1;
+    for (int_t e = 0; e < total_edges; ++e) {
+        int_t pred = edges[2 * e];
+        int_t succ = edges[2 * e + 1];
+        if (pred < 0 || pred >= nsupers || succ < 0 || succ >= nsupers) {
+            if (!invalid_kind) {
+                invalid_kind = 1;
+                invalid_pred = pred;
+                invalid_succ = succ;
+            }
+            valid_schedule = 0;
+            continue;
+        }
+        if (pred == succ) {
+            if (!invalid_kind) {
+                invalid_kind = 2;
+                invalid_pred = pred;
+                invalid_succ = succ;
+                invalid_pred_pos = order_pos[pred];
+                invalid_succ_pos = order_pos[succ];
+            }
+            valid_schedule = 0;
+            continue;
+        }
+        ++edge_counts[pred];
+        ++indegree[succ];
+    }
+    MPI_Allreduce(&valid_schedule, &global_valid_schedule, 1, MPI_INT,
+                  MPI_MIN, grid3d->comm);
+    if (!global_valid_schedule) {
+        int global_rank = -1;
+        MPI_Comm_rank(grid3d->comm, &global_rank);
+        if (!valid_schedule) {
+            fprintf(stderr,
+                    "SymLDL solve dependency graph is invalid on rank %d: "
+                    "kind=%d pred=%lld succ=%lld pred_pos=%lld succ_pos=%lld "
+                    "nsupers=%lld total_edges=%lld\n",
+                    global_rank, invalid_kind, (long long) invalid_pred,
+                    (long long) invalid_succ, (long long) invalid_pred_pos,
+                    (long long) invalid_succ_pos, (long long) nsupers,
+                    (long long) total_edges);
+            fflush(stderr);
+        }
+        ABORT("SymLDL solve dependency graph is invalid.");
     }
 
     edge_ptr[0] = 0;
@@ -9073,28 +9237,56 @@ pdgstrs3d_symldl_level_schedule_create(
     }
 
     int_t max_level = 0;
-    for (int_t oi = 0; oi < nsupers; ++oi) {
-        int_t k = solve_order[oi];
+    int_t queue_head = 0;
+    int_t queue_tail = 0;
+    for (int_t k = 0; k < nsupers; ++k)
+        if (indegree[k] == 0)
+            topo_queue[queue_tail++] = k;
+
+    while (queue_head < queue_tail) {
+        int_t k = topo_queue[queue_head++];
         max_level = SUPERLU_MAX(max_level, levels[k]);
         for (int_t p = edge_ptr[k]; p < edge_ptr[k + 1]; ++p) {
             int_t succ = edge_succ[p];
             levels[succ] = SUPERLU_MAX(levels[succ], levels[k] + 1);
+            --indegree[succ];
+            if (indegree[succ] == 0)
+                topo_queue[queue_tail++] = succ;
         }
     }
-    for (int_t k = 0; k < nsupers; ++k)
-        max_level = SUPERLU_MAX(max_level, levels[k]);
+    if (queue_tail != nsupers) {
+        int global_rank = -1;
+        int_t first_blocked = -1;
+        int_t first_indegree = -1;
+        MPI_Comm_rank(grid3d->comm, &global_rank);
+        for (int_t k = 0; k < nsupers; ++k) {
+            if (indegree[k] > 0) {
+                first_blocked = k;
+                first_indegree = indegree[k];
+                break;
+            }
+        }
+        fprintf(stderr,
+                "SymLDL solve dependency graph is cyclic on rank %d: "
+                "processed=%lld nsupers=%lld first_blocked=%lld "
+                "remaining_indegree=%lld total_edges=%lld\n",
+                global_rank, (long long) queue_tail, (long long) nsupers,
+                (long long) first_blocked, (long long) first_indegree,
+                (long long) total_edges);
+        fflush(stderr);
+        ABORT("SymLDL solve dependency graph is cyclic.");
+    }
 
     schedule.nlevels = max_level + 1;
     if (!(schedule.level_ptr = intCalloc_dist(schedule.nlevels + 1)) ||
         !(schedule.nodes = intMalloc_dist(nsupers)))
         ABORT("Malloc fails for SymLDL solve level schedule.");
 
-    for (int_t oi = 0; oi < nsupers; ++oi) {
-        int_t k = solve_order[oi];
-        entries[oi].node = k;
-        entries[oi].level = levels[k];
-        entries[oi].order = oi;
-        entries[oi].cost = global_cost[k];
+    for (int_t k = 0; k < nsupers; ++k) {
+        entries[k].node = k;
+        entries[k].level = levels[k];
+        entries[k].order = order_pos[k];
+        entries[k].cost = global_cost[k];
         ++schedule.level_ptr[levels[k] + 1];
     }
     for (int_t level = 0; level < schedule.nlevels; ++level)
@@ -9106,6 +9298,8 @@ pdgstrs3d_symldl_level_schedule_create(
 
 cleanup:
     if (entries) SUPERLU_FREE(entries);
+    if (topo_queue) SUPERLU_FREE(topo_queue);
+    if (indegree) SUPERLU_FREE(indegree);
     if (edge_next) SUPERLU_FREE(edge_next);
     if (edge_succ) SUPERLU_FREE(edge_succ);
     if (levels) SUPERLU_FREE(levels);
@@ -9774,7 +9968,11 @@ pdgstrs3d_symldl_gpu_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
             if (cmeta->row_to_send_pos != NULL &&
                 dSymLDLSolveGPUSetPanelSchedule(handle, k,
                                                 cmeta->row_to_send_pos,
-                                                kmeta->row_count) != 0)
+                                                kmeta->row_count,
+                                                kmeta->nblocks,
+                                                kmeta->block_luptr,
+                                                kmeta->block_nbrow,
+                                                kmeta->block_row_start) != 0)
                 ABORT("Failed to copy SymLDL solve panel schedule to GPU.");
         }
     }
@@ -9941,6 +10139,30 @@ pdgstrs3d_symldl_solve_meta_get(dSOLVEstruct_t *SOLVEstruct, int_t n,
     meta->reused = 0;
     SOLVEstruct->symldl_v2_solve_meta = meta;
     return meta;
+}
+
+void
+pdgstrs3d_symldl_init_meta(superlu_dist_options_t *options, int_t n, int nrhs,
+                           dLUstruct_t *LUstruct,
+                           dtrf3Dpartition_t *trf3Dpartition,
+                           gridinfo3d_t *grid3d,
+                           dSOLVEstruct_t *SOLVEstruct)
+{
+    if (options == NULL || LUstruct == NULL || LUstruct->Glu_persist == NULL ||
+        LUstruct->Llu == NULL || trf3Dpartition == NULL ||
+        grid3d == NULL || SOLVEstruct == NULL)
+        ABORT("SymLDL solve metadata initialization received invalid arguments.");
+
+    Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+    int_t nsupers = Glu_persist->supno[n - 1] + 1;
+    int *supernodeMask = trf3Dpartition->supernodeMask;
+    int global_nprocs;
+
+    MPI_Comm_size(grid3d->comm, &global_nprocs);
+    (void) pdgstrs3d_symldl_solve_meta_get(
+        SOLVEstruct, n, nsupers, nrhs, LUstruct, trf3Dpartition,
+        supernodeMask, &grid3d->grid2d, grid3d, global_nprocs,
+        sp_ienv_dist(10, options), sp_ienv_dist(7, options));
 }
 
 static void
@@ -10239,13 +10461,14 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                                                 "3D SymLDL solve x workspace");
 
     ttmp = SuperLU_timer_();
-    solve_meta = pdgstrs3d_symldl_solve_meta_get(SOLVEstruct, n, nsupers,
-                                                 nrhs, LUstruct,
-                                                 trf3Dpartition, supernodeMask,
-                                                 grid, grid3d,
-                                                 global_nprocs,
-                                                 superlu_acc_offload,
-                                                 superlu_n_gemm);
+    solve_meta = (pdgstrs3d_symldl_solve_meta_t *)
+        SOLVEstruct->symldl_v2_solve_meta;
+    if (!pdgstrs3d_symldl_solve_meta_valid(
+            solve_meta, n, nsupers, nrhs, Glu_persist, Llu, trf3Dpartition,
+            supernodeMask, grid3d, global_nprocs, superlu_acc_offload,
+            superlu_n_gemm))
+        ABORT("SymLDL solve requires prebuilt V2 solve metadata.");
+    solve_meta->reused = 1;
     pdgstrs3d_symldl_reset_offload_stats(solve_meta);
     diag_owner = solve_meta->diag_owner;
     solve_order = solve_meta->solve_order;
@@ -10407,17 +10630,50 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         symldl_timer.forward_xk += SuperLU_timer_() - ttmp;
 
         ttmp = SuperLU_timer_();
+        double forward_direct_ops = 0.0;
+        double forward_direct_calls = 0.0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 16) reduction(+:forward_direct_ops,forward_direct_calls)
+#endif
         for (int_t ci = 0; ci < nctx; ++ci) {
             pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
             pdgstrs3d_symldl_panel_meta_t *kmeta = ctx->kmeta;
             pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
             if (!ctx->active || !kmeta->has_panel || cmeta->total_send <= 0)
                 continue;
+            double panel_ops =
+                pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
+            if (pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) ||
+                !pdgstrs3d_symldl_use_direct_cpu_panel(
+                    solve_meta, panel_ops, nrhs))
+                continue;
+            pdgstrs3d_symldl_cpu_forward_panel_direct(
+                kmeta, cmeta, ctx->ksupc, nrhs, ctx->xk_buf,
+                ctx->send_vals);
+            forward_direct_ops += panel_ops;
+            forward_direct_calls += 1.0;
+        }
+        pdgstrs3d_symldl_note_cpu_direct_panel(
+            solve_meta, forward_direct_ops, forward_direct_calls);
+        stat->ops[SOLVE] += forward_direct_ops;
+
+        for (int_t ci = 0; ci < nctx; ++ci) {
+            pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
+            pdgstrs3d_symldl_panel_meta_t *kmeta = ctx->kmeta;
+            pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
+            if (!ctx->active || !kmeta->has_panel || cmeta->total_send <= 0)
+                continue;
+            double panel_ops =
+                pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
+            if (!pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) &&
+                pdgstrs3d_symldl_use_direct_cpu_panel(
+                    solve_meta, panel_ops, nrhs))
+                continue;
             if (pdgstrs3d_symldl_try_gpu_forward_panel(
                     solve_meta, ctx->k, kmeta, ctx->ksupc, nrhs,
                     ctx->xk_buf, cmeta->total_send, ctx->send_vals)) {
                 stat->ops[SOLVE] +=
-                    pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
+                    panel_ops;
                 continue;
             }
             double *lusup = kmeta->lusup;
@@ -10795,17 +11051,50 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         symldl_timer.backward_values += SuperLU_timer_() - ttmp;
 
         ttmp = SuperLU_timer_();
+        double backward_direct_ops = 0.0;
+        double backward_direct_calls = 0.0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 16) reduction(+:backward_direct_ops,backward_direct_calls)
+#endif
         for (int_t ci = 0; ci < nctx; ++ci) {
             pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
             pdgstrs3d_symldl_panel_meta_t *kmeta = ctx->kmeta;
             pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
             if (!ctx->active || !kmeta->has_panel || cmeta->total_send <= 0)
                 continue;
+            double panel_ops =
+                pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
+            if (pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) ||
+                !pdgstrs3d_symldl_use_direct_cpu_panel(
+                    solve_meta, panel_ops, nrhs))
+                continue;
+            pdgstrs3d_symldl_cpu_backward_panel_direct(
+                kmeta, ctx->ksupc, nrhs, ctx->row_values,
+                ctx->delta_send_buf);
+            backward_direct_ops += panel_ops;
+            backward_direct_calls += 1.0;
+        }
+        pdgstrs3d_symldl_note_cpu_direct_panel(
+            solve_meta, backward_direct_ops, backward_direct_calls);
+        stat->ops[SOLVE] += backward_direct_ops;
+
+        for (int_t ci = 0; ci < nctx; ++ci) {
+            pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
+            pdgstrs3d_symldl_panel_meta_t *kmeta = ctx->kmeta;
+            pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
+            if (!ctx->active || !kmeta->has_panel || cmeta->total_send <= 0)
+                continue;
+            double panel_ops =
+                pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
+            if (!pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) &&
+                pdgstrs3d_symldl_use_direct_cpu_panel(
+                    solve_meta, panel_ops, nrhs))
+                continue;
             if (pdgstrs3d_symldl_try_gpu_backward_panel(
                     solve_meta, ctx->k, kmeta, ctx->ksupc, nrhs,
                     ctx->row_values, ctx->delta_send_buf)) {
                 stat->ops[SOLVE] +=
-                    pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
+                    panel_ops;
                 continue;
             }
             double *lusup = kmeta->lusup;
