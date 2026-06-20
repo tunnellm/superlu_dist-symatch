@@ -251,10 +251,25 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "sched_final_sync",
         "initial_factor_dispatch",
         "initial_panel_bcast",
-        "factor_tree_wall"
+        "factor_tree_wall",
+        "gpu_setup_mem_estimate",
+        "gpu_setup_l_h2d",
+        "gpu_setup_alloc",
+        "partner_l_pack",
+        "partner_l_d2h",
+        "partner_l_recv_wait",
+        "partner_l_send_wait",
+        "partner_l_unpack",
+        "partner_l_start",
+        "partner_l_post_send",
+        "partner_l_finish_wait",
+        "partner_l_h2d_unpack",
+        "schur_gemm",
+        "schur_scatter",
+        "stream_sync"
     };
     static const char *labels_v2[SYM_GPU3D_T_COUNT] = {
-        "partner_l_start",
+        "l2u_start",
         "diag_d2h",
         "diag_d2h_copy",
         "diag_d2h_wait",
@@ -269,7 +284,7 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "inv_h2d",
         "ldiag_d2d",
         "lpanel_transform",
-        "partner_l_finish",
+        "l2u_finish",
         "panel_bcast",
         "panel_bcast_mpi",
         "panel_index_d2h",
@@ -286,7 +301,22 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "sched_final_sync",
         "initial_factor_dispatch",
         "initial_panel_bcast",
-        "factor_tree_wall"
+        "factor_tree_wall",
+        "gpu_setup_mem_estimate",
+        "gpu_setup_l_h2d",
+        "gpu_setup_alloc",
+        "partner_l_pack",
+        "partner_l_d2h",
+        "partner_l_recv_wait",
+        "partner_l_send_wait",
+        "partner_l_unpack",
+        "partner_l_start",
+        "partner_l_post_send",
+        "partner_l_finish_wait",
+        "partner_l_h2d_unpack",
+        "schur_gemm",
+        "schur_scatter",
+        "stream_sync"
     };
     static const char *stat_labels_v1[SYM_GPU3D_S_COUNT] = {
         "factor_trees",
@@ -386,7 +416,7 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
     const char **labels = useSymV2Solve() ? labels_v2 : labels_v1;
     const char **stat_labels =
         useSymV2Solve() ? stat_labels_v2 : stat_labels_v1;
-    printf("** SymFact GPU3D timing debug (SLU_ENABLE_SYM_GPU3D_TIMING) **\n");
+    printf("** SymFact GPU3D timing debug (GPU3DV2_FACTOR_TIMING=1) **\n");
     printf("   %-22s %12s %12s %9s %12s\n",
            "phase", "sum(s)", "max_rank(s)", "rank", "calls");
     for (int i = 0; i < SYM_GPU3D_T_COUNT; ++i)
@@ -397,7 +427,7 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
                labels[i], sum_time[i], max_time[i],
                global_max_time[i].rank, sum_count[i]);
     }
-    printf("** SymFact GPU3D rank stats (SLU_ENABLE_SYM_GPU3D_TIMING) **\n");
+    printf("** SymFact GPU3D rank stats (GPU3DV2_FACTOR_TIMING=1) **\n");
     printf("   %-28s %16s %16s %16s %16s\n",
            "stat", "sum", "avg_rank", "min_rank", "max_rank");
     for (int i = 0; i < SYM_GPU3D_S_COUNT; ++i)
@@ -1092,9 +1122,17 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symL2LSendMapsGPU.assign(l2u_slots, NULL);
         symL2LSendMeta.assign(l2u_slots, std::vector<int_t>());
         symV2PartnerLHostSendBufs.assign(l2u_slots, std::vector<double>());
+        symV2PartnerLHostSendPinnedBufs.assign(l2u_slots, NULL);
+        symV2PartnerLHostSendPinnedSizes.assign(l2u_slots, 0);
+        symV2PartnerLHostRecvPinnedBufs.assign(options->num_lookaheads, NULL);
+        symV2PartnerLHostRecvPinnedSizes.assign(options->num_lookaheads, 0);
         symV2PartnerLSendSizes.assign(l2u_slots, 0);
+        symV2PartnerExchangeStates.assign(options->num_lookaheads,
+                                          SymV2PartnerExchangeState());
         symPanelReadyEventIds.assign(nsupers, -1);
         symDiagPrefetchEventIds.assign(nsupers, -1);
+        bool sym_v2_host_staging =
+            (symGPU3DVersion == 2 && !superlu_cuda_aware_mpi());
 
         dLocalLU_t *Llu = LUstructPtr->Llu;
         if (need_l2u_workspace)
@@ -1327,8 +1365,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     symL2LSendMeta[flat].swap(host_l_meta[pc]);
                     symV2PartnerLSendSizes[flat] =
                         static_cast<int>(host_l_maps[pc].size());
-                    symV2PartnerLHostSendBufs[flat].resize(
-                        host_l_maps[pc].size());
+                    if (sym_v2_host_staging)
+                    {
+                        symV2PartnerLHostSendBufs[flat].resize(
+                            host_l_maps[pc].size());
+                        symV2PartnerLHostSendPinnedSizes[flat] =
+                            0;
+                    }
                     gpuErrchk(cudaMalloc(
                         (void **)&symV2PartnerLSendBufsGPU[flat],
                         xlu_checked_product(host_l_maps[pc].size(),
@@ -1657,6 +1700,12 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     for (size_t i = 0; i < symV2PartnerLSendBufsGPU.size(); ++i)
         if (symV2PartnerLSendBufsGPU[i] != NULL)
             gpuErrchk(cudaFree(symV2PartnerLSendBufsGPU[i]));
+    for (size_t i = 0; i < symV2PartnerLHostSendPinnedBufs.size(); ++i)
+        if (symV2PartnerLHostSendPinnedBufs[i] != NULL)
+            gpuErrchk(cudaFreeHost(symV2PartnerLHostSendPinnedBufs[i]));
+    for (size_t i = 0; i < symV2PartnerLHostRecvPinnedBufs.size(); ++i)
+        if (symV2PartnerLHostRecvPinnedBufs[i] != NULL)
+            gpuErrchk(cudaFreeHost(symV2PartnerLHostRecvPinnedBufs[i]));
     for (size_t i = 0; i < symL2LSendMapsGPU.size(); ++i)
         if (symL2LSendMapsGPU[i] != NULL)
             gpuErrchk(cudaFree(symL2LSendMapsGPU[i]));
@@ -1666,9 +1715,13 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symL2USendBufsGPU.clear();
     symL2USendMapsGPU.clear();
     symV2PartnerLSendBufsGPU.clear();
+    symV2PartnerLHostSendBufs.clear();
+    symV2PartnerLHostSendPinnedBufs.clear();
+    symV2PartnerLHostSendPinnedSizes.clear();
+    symV2PartnerLHostRecvPinnedBufs.clear();
+    symV2PartnerLHostRecvPinnedSizes.clear();
     symL2LSendMapsGPU.clear();
     symL2LSendMeta.clear();
-    symV2PartnerLHostSendBufs.clear();
     symV2PartnerLSendSizes.clear();
     symV2PartnerLRecvSizes.clear();
     symV2PartnerLRecvIndex.clear();

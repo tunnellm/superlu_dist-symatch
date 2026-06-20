@@ -64,6 +64,43 @@ extern "C"
         return 0;
     }
 
+    void dSymLDLFactorGPUSynchronize(dLUgpu_Handle LuH)
+    {
+#ifdef HAVE_CUDA
+        xLUstruct_t<double> *LU_v2 = reinterpret_cast<xLUstruct_t<double> *>(LuH);
+        if (LU_v2 == NULL || !LU_v2->superlu_acc_offload)
+            return;
+        for (int stream = 0; stream < LU_v2->A_gpu.numCudaStreams; ++stream)
+            cudaStreamSynchronize(LU_v2->A_gpu.cuStreams[stream]);
+#else
+        (void) LuH;
+#endif
+    }
+
+    int dSymLDLFactorGPUCopyPanelToHost(dLUgpu_Handle LuH, int_t k)
+    {
+#ifdef HAVE_CUDA
+        xLUstruct_t<double> *LU_v2 = reinterpret_cast<xLUstruct_t<double> *>(LuH);
+        if (LU_v2 == NULL || k < 0 || k >= LU_v2->nsupers)
+            return -1;
+        if (!LU_v2->useSymV2Solve())
+            return -2;
+        int_t local = LU_v2->symV2PanelIndex(k);
+        if (local < 0 || local >= LU_v2->symV2PanelCount())
+            return -3;
+        if (LU_v2->lPanelVec[local].isEmpty())
+            return 0;
+        if (LU_v2->lPanelVec[local].gpuPanel.val == NULL)
+            return -4;
+        LU_v2->lPanelVec[local].copyFromGPU();
+        return 0;
+#else
+        (void) LuH;
+        (void) k;
+        return -1;
+#endif
+    }
+
     int pdgstrf3d_LUv1(dLUgpu_Handle LUHand) // pdgstrf3d_Upacked 
     {
         xLUstruct_t<double> *LU_v1 = reinterpret_cast<xLUstruct_t<double> *>(LUHand);
@@ -83,6 +120,7 @@ extern "C"
         int nrhs;
         double **d_lusup;
         int_t *lusup_count;
+        int *owns_lusup;
         int **d_row_to_send_pos;
         int_t *row_to_send_count;
         int_t **d_block_luptr;
@@ -228,6 +266,7 @@ extern "C"
         state->nrhs = nrhs;
         state->d_lusup = new double *[static_cast<size_t>(nsupers)];
         state->lusup_count = new int_t[static_cast<size_t>(nsupers)];
+        state->owns_lusup = new int[static_cast<size_t>(nsupers)];
         state->d_row_to_send_pos = new int *[static_cast<size_t>(nsupers)];
         state->row_to_send_count = new int_t[static_cast<size_t>(nsupers)];
         state->d_block_luptr = new int_t *[static_cast<size_t>(nsupers)];
@@ -254,6 +293,7 @@ extern "C"
         {
             state->d_lusup[k] = NULL;
             state->lusup_count[k] = 0;
+            state->owns_lusup[k] = 0;
             state->d_row_to_send_pos[k] = NULL;
             state->row_to_send_count[k] = 0;
             state->d_block_luptr[k] = NULL;
@@ -286,7 +326,7 @@ extern "C"
 
         for (int_t k = 0; k < state->nsupers; ++k)
         {
-            if (state->d_lusup[k] != NULL)
+            if (state->d_lusup[k] != NULL && state->owns_lusup[k])
                 gpuErrchk(cudaFree(state->d_lusup[k]));
             if (state->d_row_to_send_pos[k] != NULL)
                 gpuErrchk(cudaFree(state->d_row_to_send_pos[k]));
@@ -314,6 +354,7 @@ extern "C"
 
         delete [] state->d_lusup;
         delete [] state->lusup_count;
+        delete [] state->owns_lusup;
         delete [] state->d_row_to_send_pos;
         delete [] state->row_to_send_count;
         delete [] state->d_block_luptr;
@@ -333,7 +374,7 @@ extern "C"
         if (count <= 0 || lusup == NULL)
             return 0;
 
-        if (state->d_lusup[k] != NULL)
+        if (state->d_lusup[k] != NULL && state->owns_lusup[k])
             gpuErrchk(cudaFree(state->d_lusup[k]));
         gpuErrchk(cudaMalloc(reinterpret_cast<void **>(&state->d_lusup[k]),
                              static_cast<size_t>(count) * sizeof(double)));
@@ -341,6 +382,40 @@ extern "C"
                              static_cast<size_t>(count) * sizeof(double),
                              cudaMemcpyHostToDevice));
         state->lusup_count[k] = count;
+        state->owns_lusup[k] = 1;
+        return 0;
+    }
+
+    int dSymLDLSolveGPUAttachFactorPanel(dSymLDLSolveGPU_Handle handle,
+                                         dLUgpu_Handle factor_handle,
+                                         int_t k)
+    {
+        dSymLDLSolveGPUState *state =
+            reinterpret_cast<dSymLDLSolveGPUState *>(handle);
+        xLUstruct_t<double> *LU_v2 =
+            reinterpret_cast<xLUstruct_t<double> *>(factor_handle);
+        if (state == NULL || LU_v2 == NULL || k < 0 || k >= state->nsupers ||
+            k >= LU_v2->nsupers)
+            return -1;
+        if (!LU_v2->useSymV2Solve())
+            return -2;
+
+        int_t local = LU_v2->symV2PanelIndex(k);
+        if (local < 0 || local >= LU_v2->symV2PanelCount())
+            return -3;
+        if (LU_v2->lPanelVec[local].isEmpty())
+            return 0;
+
+        double *d_lusup = LU_v2->lPanelVec[local].gpuPanel.val;
+        int_t count = LU_v2->lPanelVec[local].nzvalSize();
+        if (d_lusup == NULL || count <= 0)
+            return -4;
+
+        if (state->d_lusup[k] != NULL && state->owns_lusup[k])
+            gpuErrchk(cudaFree(state->d_lusup[k]));
+        state->d_lusup[k] = d_lusup;
+        state->lusup_count[k] = count;
+        state->owns_lusup[k] = 0;
         return 0;
     }
 

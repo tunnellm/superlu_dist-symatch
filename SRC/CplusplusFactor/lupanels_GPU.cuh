@@ -15,6 +15,15 @@
 #include "lu_common.hpp"
 // #include "lupanels.hpp" 
 
+#ifndef SLU_ENABLE_SYM_GPU3D_TIMING
+#define SLU_ENABLE_SYM_GPU3D_TIMING
+#endif
+#ifndef SLU_SYM_GPU3D_TIMING_ALWAYS
+#ifndef SLU_SYM_GPU3D_TIMING_RUNTIME_GATED
+#define SLU_SYM_GPU3D_TIMING_RUNTIME_GATED
+#endif
+#endif
+
 #ifdef __CUDACC__
 #define DEVICE_CALLABLE __device__
 #define CUDA_CALLABLE __host__ __device__

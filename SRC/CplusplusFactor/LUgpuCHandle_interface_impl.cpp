@@ -67,6 +67,18 @@ extern "C"
         return 0;
     }
 
+    void dSymLDLFactorGPUSynchronize(dLUgpu_Handle LuH)
+    {
+        (void) LuH;
+    }
+
+    int dSymLDLFactorGPUCopyPanelToHost(dLUgpu_Handle LuH, int_t k)
+    {
+        (void) LuH;
+        (void) k;
+        return -1;
+    }
+
     int pdgstrf3d_LUv1(dLUgpu_Handle LUHand)
     {
         // perform the factorization

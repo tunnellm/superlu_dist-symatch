@@ -429,6 +429,7 @@ typedef struct {
                             This needs to be peresistent between
 				    3D factorization and solve.  */
     void *symldl_v2_solve_meta; /* GPU3DVERSION=2 SymFact solve metadata. */
+    void *symldl_v2_factor_handle; /* GPU3DVERSION=2 SymFact factor GPU state. */
     #ifdef GPU_ACC
     double *d_lsum, *d_lsum_save;      /* used for device lsum*/
     double *d_x;         /* used for device solution vector*/

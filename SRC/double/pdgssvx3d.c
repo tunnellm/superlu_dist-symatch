@@ -1399,11 +1399,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				  }
 		      }
 
-			  #if ( DEBUGlevel>=1 )
-		      PrintInt32("indicator_2x2", n, options->indicator_2x2);
-			  #endif
-
-			  #ifdef DBG_MATCHING
+				  #ifdef DBG_MATCHING
 			  outfile = fopen("debug-output", "a");
 			  int indicator_pass = 1;
 			  for (i = 0; i < n; ++i)
@@ -1847,14 +1843,32 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "before dCopyLUGPU2Host");
 	dSymV2Trace(grid3d, "before dCopyLUGPU2Host");
 	double gpu3d_copy_time = SuperLU_timer_();
-				dCopyLUGPU2Host(dLUgpu, LUstruct);
+				int retain_sym_v2_factor =
+					(use_sym_v2_solve && nrhs > 0 && *info == 0);
+				if (retain_sym_v2_factor)
+				{
+					SOLVEstruct->symldl_v2_factor_handle = (void *) dLUgpu;
+					if (getenv("GPU3DV2_TRACE")) {
+						fprintf(stderr,
+							"[sym-v2-trace] rank %d: staged factor handle %p on SOLVEstruct\n",
+							grid3d->iam,
+							SOLVEstruct->symldl_v2_factor_handle);
+						fflush(stderr);
+					}
+					dLUgpu = NULL;
+				}
+				else
+				{
+					dCopyLUGPU2Host(dLUgpu, LUstruct);
+				}
 	gpu3d_copy_time = SuperLU_timer_() - gpu3d_copy_time;
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "after dCopyLUGPU2Host");
 	dSymV2Trace(grid3d, "after dCopyLUGPU2Host");
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "before dDestroyLUgpuHandle");
 	dSymV2Trace(grid3d, "before dDestroyLUgpuHandle");
 	double gpu3d_destroy_time = SuperLU_timer_();
-				dDestroyLUgpuHandle(dLUgpu);
+				if (dLUgpu != NULL)
+					dDestroyLUgpuHandle(dLUgpu);
 	gpu3d_destroy_time = SuperLU_timer_() - gpu3d_destroy_time;
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "after dDestroyLUgpuHandle");
 	dSymV2Trace(grid3d, "after dDestroyLUgpuHandle");
@@ -1893,10 +1907,10 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				printf("  factor call            %.6f / %.6f / %d  (LDLt native)\n",
 				       max_times[1], sum_times[1] * inv_nranks,
 				       global_max_times[1].rank);
-				printf("  copy factors GPU to host %.6f / %.6f / %d\n",
+				printf("  copy factors GPU to host %.6f / %.6f / %d  (skipped when retained)\n",
 				       max_times[2], sum_times[2] * inv_nranks,
 				       global_max_times[2].rank);
-				printf("  destroy handle         %.6f / %.6f / %d\n",
+				printf("  destroy handle         %.6f / %.6f / %d  (deferred when retained)\n",
 				       max_times[3], sum_times[3] * inv_nranks,
 				       global_max_times[3].rank);
 				fflush(stdout);
@@ -2269,7 +2283,19 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			/* Need to reset the solve's communication pattern,
 			because perm_r[] and/or perm_c[] is changed.    */
 			if ( options->SolveInitialized == YES ) { /* Initialized before */
+				void *sym_v2_factor_handle =
+					use_sym_v2_solve ? SOLVEstruct->symldl_v2_factor_handle : NULL;
+				if (use_sym_v2_solve && getenv("GPU3DV2_TRACE")) {
+					fprintf(stderr,
+						"[sym-v2-trace] rank %d: preserving factor handle %p across solve reset\n",
+						grid3d->iam, sym_v2_factor_handle);
+					fflush(stderr);
+				}
+				if (use_sym_v2_solve)
+					SOLVEstruct->symldl_v2_factor_handle = NULL;
 				dSolveFinalize(options, SOLVEstruct); /* Clean up structure */
+				if (use_sym_v2_solve)
+					SOLVEstruct->symldl_v2_factor_handle = sym_v2_factor_handle;
 				pdgstrs_delete_device_lsum_x(SOLVEstruct);
 				options->SolveInitialized = NO;   /* Reset the solve state */
 			}
@@ -2546,8 +2572,17 @@ if (get_acc_solve()){
 			factorization with Fact == DOFACT or SamePattern is asked for. */
 			{
 				if (use_symldl_solve && !options->IterRefine)
+				{
+					if (getenv("GPU3DV2_TRACE")) {
+						fprintf(stderr,
+							"[sym-v2-trace] rank %d: before dSymV2SolveInit factor handle %p\n",
+							grid3d->iam,
+							SOLVEstruct->symldl_v2_factor_handle);
+						fflush(stderr);
+					}
 					dSymV2SolveInit(options, A, perm_r, perm_c, nrhs,
 							LUstruct, trf3Dpartition, grid3d, SOLVEstruct);
+				}
 				else
 					dSolveInit(options, A, perm_r, perm_c, nrhs, LUstruct,
 							grid, SOLVEstruct);
@@ -2634,6 +2669,7 @@ if (get_acc_solve()){
 					SOLVEstruct1->gsmv_comm = SOLVEstruct->gsmv_comm;
 					SOLVEstruct1->A_colind_gsmv = SOLVEstruct->A_colind_gsmv;
 					SOLVEstruct1->symldl_v2_solve_meta = NULL;
+					SOLVEstruct1->symldl_v2_factor_handle = NULL;
 
 					/* Initialize the *gstrs_comm for 1 RHS. */
 					if (!(SOLVEstruct1->gstrs_comm = (pxgstrs_comm_t *)
@@ -2806,6 +2842,7 @@ if (get_acc_solve()){
 					SOLVEstruct1->gsmv_comm = SOLVEstruct->gsmv_comm;
 					SOLVEstruct1->A_colind_gsmv = SOLVEstruct->A_colind_gsmv;
 					SOLVEstruct1->symldl_v2_solve_meta = NULL;
+					SOLVEstruct1->symldl_v2_factor_handle = NULL;
 
 					/* Initialize the *gstrs_comm for 1 RHS. */
 					if (!(SOLVEstruct1->gstrs_comm = (pxgstrs_comm_t *)

@@ -44,6 +44,13 @@ static inline bool superlu_cuda_aware_mpi()
         return cached != 0;
     }
 
+    const int mpich_gpu =
+        superlu_env_truthy(std::getenv("MPICH_GPU_SUPPORT_ENABLED"));
+    if (mpich_gpu >= 0) {
+        cached = mpich_gpu;
+        return cached != 0;
+    }
+
 #if defined(SUPERLU_HAVE_MPI_EXT_HEADER) && defined(OMPI_HAVE_MPI_EXT_CUDA) && OMPI_HAVE_MPI_EXT_CUDA
     cached = MPIX_Query_cuda_support() != 0;
 #else

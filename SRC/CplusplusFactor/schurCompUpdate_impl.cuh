@@ -1134,15 +1134,29 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartLLGPU(
     Ftype alpha = one<Ftype>();
     Ftype beta = zeroT<Ftype>();
     cublasSetStream(handle, cuStream);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    double sym_gemm_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
+#endif
     myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                         gemm_m, gemm_n, gemm_k, &alpha,
                         lpanel.blkPtrGPU(iSt), lpanel.LDA(),
                         rawBlock, gemm_n, &beta,
                         gemmBuff, gemm_m);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    if (symGPU3DTimingEnabled())
+        symTimingAdd(SYM_GPU3D_T_SCHUR_GEMM,
+                     SuperLU_timer_() - sym_gemm_t);
+    double sym_scatter_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
+#endif
 
     scatterSymLowerRangeGPU_driver<Ftype>(
         iSt, iEnd, jSt, jEnd, gemmBuff, gemm_m,
         A_gpu.maxSuperSize, ldt, lpanel.gpuPanel, dA_gpu, cuStream);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    if (symGPU3DTimingEnabled())
+        symTimingAdd(SYM_GPU3D_T_SCHUR_SCATTER,
+                     SuperLU_timer_() - sym_scatter_t);
+#endif
 
     return 0;
 }
@@ -1303,18 +1317,32 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartnerGPU(
         Ftype alpha = one<Ftype>();
         Ftype beta = zeroT<Ftype>();
         cublasSetStream(handle, cuStream);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double sym_gemm_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
+#endif
         myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                             gemm_m, gemm_n, gemm_k, &alpha,
                             lpanel.blkPtrGPU(iSt), lpanel.LDA(),
                             partner_panel.blkPtrGPU(jj),
                             partner_panel.LDA(), &beta,
                             gemmBuff, gemm_m);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        if (symGPU3DTimingEnabled())
+            symTimingAdd(SYM_GPU3D_T_SCHUR_GEMM,
+                         SuperLU_timer_() - sym_gemm_t);
+        double sym_scatter_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
+#endif
 
         scatterSymLowerTwoLRangeGPU_driver<Ftype>(
             iSt, iEnd, jj, jj + 1, gemmBuff, gemm_m,
             A_gpu.maxSuperSize, ldt, lpanel.gpuPanel,
             partner_panel.gpuPanel,
             dA_gpu, cuStream);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        if (symGPU3DTimingEnabled())
+            symTimingAdd(SYM_GPU3D_T_SCHUR_SCATTER,
+                         SuperLU_timer_() - sym_scatter_t);
+#endif
     }
 
     return 0;
@@ -1682,6 +1710,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     }
 
     tRegion[0] = SuperLU_timer_() - tRegion[0];
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    if (sym_v2_mode)
+        symTimingAdd(SYM_GPU3D_T_GPU_SETUP_MEM_ESTIMATE, tRegion[0]);
+#endif
 #if ( PRNTlevel>=1 )
     // print the time taken to estimate memory on GPU
     if (grid3d->iam == 0)
@@ -1846,6 +1878,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after copy panels to GPU");
 #endif
     tRegion[1] = SuperLU_timer_() - tRegion[1];
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    if (sym_v2_mode)
+        symTimingAdd(SYM_GPU3D_T_GPU_SETUP_L_H2D, tRegion[1]);
+#endif
 
     if (sym_v2_mode)
     {
@@ -2062,6 +2098,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     gpuErrchk(cudaGetLastError());
 
     tcuMalloc = SuperLU_timer_() - tcuMalloc;
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    if (sym_v2_mode)
+        symTimingAdd(SYM_GPU3D_T_GPU_SETUP_ALLOC, tcuMalloc);
+#endif
 #if ( PRNTlevel>=1 )
     printf("Time to allocate GPU memory: %g\n", tcuMalloc);
     printf("\t.. sum_diag_size %zu\t sum_gemmC_size %zu\n", sum_diag_size, sum_gemmC_size);

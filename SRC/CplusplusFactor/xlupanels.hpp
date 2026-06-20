@@ -16,6 +16,15 @@
 // class lpanelGPU_t;
 // class upanelGPU_t;
 #define GLOBAL_BLOCK_NOT_FOUND -1
+
+#ifndef SLU_ENABLE_SYM_GPU3D_TIMING
+#define SLU_ENABLE_SYM_GPU3D_TIMING
+#endif
+#ifndef SLU_SYM_GPU3D_TIMING_ALWAYS
+#ifndef SLU_SYM_GPU3D_TIMING_RUNTIME_GATED
+#define SLU_SYM_GPU3D_TIMING_RUNTIME_GATED
+#endif
+#endif
 // it can be templatized for Ftype and complex Ftype
 
 
@@ -416,6 +425,21 @@ struct xLUstruct_t
         SYM_GPU3D_T_INITIAL_FACTOR_DISPATCH,
         SYM_GPU3D_T_INITIAL_PANEL_BCAST,
         SYM_GPU3D_T_FACTOR_TREE_WALL,
+        SYM_GPU3D_T_GPU_SETUP_MEM_ESTIMATE,
+        SYM_GPU3D_T_GPU_SETUP_L_H2D,
+        SYM_GPU3D_T_GPU_SETUP_ALLOC,
+        SYM_GPU3D_T_PARTNER_L_PACK,
+        SYM_GPU3D_T_PARTNER_L_D2H,
+        SYM_GPU3D_T_PARTNER_L_RECV_WAIT,
+        SYM_GPU3D_T_PARTNER_L_SEND_WAIT,
+        SYM_GPU3D_T_PARTNER_L_UNPACK,
+        SYM_GPU3D_T_PARTNER_L_START,
+        SYM_GPU3D_T_PARTNER_L_POST_SEND,
+        SYM_GPU3D_T_PARTNER_L_FINISH_WAIT,
+        SYM_GPU3D_T_PARTNER_L_H2D_UNPACK,
+        SYM_GPU3D_T_SCHUR_GEMM,
+        SYM_GPU3D_T_SCHUR_SCATTER,
+        SYM_GPU3D_T_STREAM_SYNC,
         SYM_GPU3D_T_COUNT
     };
 
@@ -452,19 +476,35 @@ struct xLUstruct_t
     long long symGPU3DCount[SYM_GPU3D_T_COUNT] = {};
     long long symGPU3DStat[SYM_GPU3D_S_COUNT] = {};
 
+    bool symGPU3DTimingEnabled() const
+    {
+#ifdef SLU_SYM_GPU3D_TIMING_RUNTIME_GATED
+        const char *env = std::getenv("GPU3DV2_FACTOR_TIMING");
+        return env != NULL && env[0] != '\0' && env[0] != '0';
+#else
+        return true;
+#endif
+    }
+
     void symTimingAdd(SymGPU3DTimingId id, double elapsed)
     {
+        if (!symGPU3DTimingEnabled())
+            return;
         symGPU3DTime[id] += elapsed;
         symGPU3DCount[id] += 1;
     }
 
     void symStatAdd(SymGPU3DStatId id, long long value = 1)
     {
+        if (!symGPU3DTimingEnabled())
+            return;
         symGPU3DStat[id] += value;
     }
 
     void symStatMax(SymGPU3DStatId id, long long value)
     {
+        if (!symGPU3DTimingEnabled())
+            return;
         if (value > symGPU3DStat[id])
             symGPU3DStat[id] = value;
     }
@@ -476,11 +516,13 @@ struct xLUstruct_t
         double start;
 
         SymTimingScope(xLUstruct_t<Ftype> *owner_, SymGPU3DTimingId id_)
-            : owner(owner_), id(id_), start(SuperLU_timer_()) {}
+            : owner(owner_), id(id_),
+              start(owner_ != NULL && owner_->symGPU3DTimingEnabled()
+                        ? SuperLU_timer_() : 0.0) {}
 
         ~SymTimingScope()
         {
-            if (owner != NULL)
+            if (owner != NULL && start != 0.0)
                 owner->symTimingAdd(id, SuperLU_timer_() - start);
         }
     };
@@ -494,10 +536,48 @@ struct xLUstruct_t
     std::vector<int_t *> symL2LSendMapsGPU;
     std::vector<std::vector<int_t> > symL2LSendMeta;
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
+    std::vector<double *> symV2PartnerLHostSendPinnedBufs;
+    std::vector<size_t> symV2PartnerLHostSendPinnedSizes;
+    std::vector<double *> symV2PartnerLHostRecvPinnedBufs;
+    std::vector<size_t> symV2PartnerLHostRecvPinnedSizes;
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<int> symV2PartnerLRecvSizes;
     std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
     std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
+    std::vector<int> symV2PartnerWorkSendSizes;
+    std::vector<int> symV2PartnerWorkRecvSizes;
+    std::vector<int> symV2PartnerWorkRecvOffsets;
+    std::vector<MPI_Request> symV2PartnerWorkRecvReqs;
+    std::vector<MPI_Request> symV2PartnerWorkSendReqs;
+    std::vector<std::vector<double> > symV2PartnerWorkRecvBuffers;
+    struct SymV2PartnerExchangeState
+    {
+        int_t k;
+        int_t ready_k;
+        int stream_offset;
+        int active;
+        int cuda_aware;
+        int source_col;
+        int sends_posted;
+        int d2h_event_valid;
+        int recv_total;
+        int_t kcol;
+        int_t ksupc;
+        std::vector<int> send_sizes;
+        std::vector<int> recv_sizes;
+        std::vector<int> recv_offsets;
+        std::vector<MPI_Request> recv_reqs;
+        std::vector<MPI_Request> send_reqs;
+        cudaEvent_t d2h_done;
+
+        SymV2PartnerExchangeState()
+            : k(-1), ready_k(-1), stream_offset(-1), active(0), cuda_aware(0),
+              source_col(0), sends_posted(0), d2h_event_valid(0),
+              recv_total(0), kcol(-1), ksupc(0), d2h_done(NULL)
+        {
+        }
+    };
+    std::vector<SymV2PartnerExchangeState> symV2PartnerExchangeStates;
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
     std::vector<Ftype *> symDiagPrefetchBufs;
@@ -650,7 +730,8 @@ struct xLUstruct_t
         } \
     } while (0)
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        if (options != NULL && options->SymFact == YES)
+        if (options != NULL && options->SymFact == YES &&
+            symGPU3DTimingEnabled())
             printSymGPU3DTiming();
 #endif
 
@@ -736,6 +817,9 @@ struct xLUstruct_t
             for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
             {
                 cudaEventDestroy(A_gpu.panelReadyEvents[stream]);
+                if (stream < (int)symV2PartnerExchangeStates.size() &&
+                    symV2PartnerExchangeStates[stream].d2h_done != NULL)
+                    cudaEventDestroy(symV2PartnerExchangeStates[stream].d2h_done);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 cudaEventDestroy(A_gpu.diagD2HStartEvents[stream]);
                 cudaEventDestroy(A_gpu.diagD2HEndEvents[stream]);
@@ -957,6 +1041,11 @@ struct xLUstruct_t
     int_t dPanelBcastGPU(int_t k, int_t offset);
     int_t dSymStartL2UGPU(int_t k, int_t stream_offset);
     int_t dSymV2ComputePartnerScratchSize(LUStruct_type<Ftype> *LUstruct);
+    int_t dSymV2PartnerLStartGPU(int_t k, int_t stream_offset);
+    int_t dSymV2PartnerLProgressGPU(int_t stream_offset, int wait_for_d2h = 0);
+    int_t dSymV2PartnerLProgressAllGPU(int wait_for_d2h = 0);
+    int_t dSymV2PartnerLFinishGPU(int_t k, int_t stream_offset,
+                                  xlpanel_t<Ftype> &partner_panel);
     int_t dSymV2PartnerLBcastGPU(int_t k, int_t stream_offset,
                                  xlpanel_t<Ftype> &partner_panel);
 

@@ -8450,6 +8450,12 @@ typedef struct {
 } pdgstrs3d_symldl_level_schedule_t;
 
 typedef struct {
+    double *values;
+    unsigned char *valid;
+    int_t row_count;
+} pdgstrs3d_symldl_x_cache_t;
+
+typedef struct {
     double *x;
     double *xk_buf;
     double *diag_send_buf;
@@ -8506,8 +8512,10 @@ typedef struct {
     pdgstrs3d_symldl_tree_comm_t *tree_comms;
     pdgstrs3d_symldl_panel_meta_t *panel_meta;
     pdgstrs3d_symldl_comm_meta_t *comm_meta;
+    pdgstrs3d_symldl_x_cache_t *x_cache;
     pdgstrs3d_symldl_workspace_t work;
     void *gpu_state;
+    void *factor_gpu_handle;
     double cpu_blas_ops;
     double gpu_blas_ops;
     double gpu_panel_ops;
@@ -8516,6 +8524,16 @@ typedef struct {
     double gpu_blas_calls;
     double gpu_panel_calls;
     double below_threshold_calls;
+    double host_panel_copy_time;
+    double gpu_panel_import_time;
+    double gpu_schedule_upload_time;
+    double x_cache_fill_time;
+    double x_cache_replicated_bytes;
+    double x_cache_avoided_request_bytes;
+    double x_cache_hits;
+    double x_cache_misses;
+    double x_cache_panels;
+    int factor_gpu_synchronized;
     int reused;
 } pdgstrs3d_symldl_solve_meta_t;
 
@@ -8529,6 +8547,7 @@ typedef struct {
     double forward_apply;
     double diag_comm;
     double diag_compute;
+    double x_cache_fill;
     double backward_values;
     double backward_compute;
     double backward_delta;
@@ -8579,6 +8598,16 @@ pdgstrs3d_symldl_reset_offload_stats(pdgstrs3d_symldl_solve_meta_t *meta)
     meta->gpu_blas_calls = 0.0;
     meta->gpu_panel_calls = 0.0;
     meta->below_threshold_calls = 0.0;
+    meta->host_panel_copy_time = 0.0;
+    meta->gpu_panel_import_time = 0.0;
+    meta->gpu_schedule_upload_time = 0.0;
+    meta->x_cache_fill_time = 0.0;
+    meta->x_cache_replicated_bytes = 0.0;
+    meta->x_cache_avoided_request_bytes = 0.0;
+    meta->x_cache_hits = 0.0;
+    meta->x_cache_misses = 0.0;
+    meta->x_cache_panels = 0.0;
+    meta->factor_gpu_synchronized = 0;
 }
 
 static void
@@ -8786,8 +8815,7 @@ static int
 pdgstrs3d_symldl_use_direct_cpu_panel(pdgstrs3d_symldl_solve_meta_t *meta,
                                       double ops, int nrhs)
 {
-    if (nrhs == 1)
-        return 1;
+    (void) nrhs;
     return ops < pdgstrs3d_symldl_gpu_solve_min_ops(meta);
 }
 
@@ -9811,6 +9839,284 @@ pdgstrs3d_symldl_comm_meta_free(pdgstrs3d_symldl_comm_meta_t *meta,
     SUPERLU_FREE(meta);
 }
 
+static pdgstrs3d_symldl_x_cache_t *
+pdgstrs3d_symldl_x_cache_create(int_t nsupers,
+                                pdgstrs3d_symldl_panel_meta_t *panel_meta,
+                                int nrhs)
+{
+    pdgstrs3d_symldl_x_cache_t *cache;
+
+    if (!(cache = (pdgstrs3d_symldl_x_cache_t *)
+              SUPERLU_MALLOC(pdgstrs3d_checked_product((size_t) nsupers,
+                              sizeof(pdgstrs3d_symldl_x_cache_t),
+                              "SymLDL replicated X cache"))))
+        ABORT("Malloc fails for SymLDL replicated X cache.");
+    memset(cache, 0, pdgstrs3d_checked_alloc_bytes(
+           nsupers, sizeof(pdgstrs3d_symldl_x_cache_t),
+           "SymLDL replicated X cache"));
+
+    for (int_t k = 0; k < nsupers; ++k) {
+        int_t row_count = panel_meta[k].has_panel ? panel_meta[k].row_count : 0;
+        if (row_count <= 0)
+            continue;
+        int_t value_count = pdgstrs3d_checked_workspace_count(
+            row_count, nrhs, 0, 0, "SymLDL replicated X cache values");
+        cache[k].row_count = row_count;
+        if (!(cache[k].values = doubleMalloc_dist(value_count)) ||
+            !(cache[k].valid = (unsigned char *) SUPERLU_MALLOC(
+                  pdgstrs3d_checked_alloc_bytes(
+                      row_count, sizeof(unsigned char),
+                      "SymLDL replicated X cache valid flags"))))
+            ABORT("Malloc fails for SymLDL replicated X cache entries.");
+    }
+
+    return cache;
+}
+
+static void
+pdgstrs3d_symldl_x_cache_free(pdgstrs3d_symldl_x_cache_t *cache,
+                              int_t nsupers)
+{
+    if (cache == NULL)
+        return;
+    for (int_t k = 0; k < nsupers; ++k) {
+        if (cache[k].valid) SUPERLU_FREE(cache[k].valid);
+        if (cache[k].values) SUPERLU_FREE(cache[k].values);
+    }
+    SUPERLU_FREE(cache);
+}
+
+static int
+pdgstrs3d_symldl_node_in_tree(pdgstrs3d_symldl_solve_meta_t *meta,
+                              int_t k, int tree)
+{
+    dtrf3Dpartition_t *trf3Dpartition =
+        meta != NULL ? meta->trf3Dpartition : NULL;
+    if (trf3Dpartition == NULL || trf3Dpartition->supernode2treeMap == NULL)
+        ABORT("SymLDL replicated X cache requires supernode tree metadata.");
+    return trf3Dpartition->supernode2treeMap[k] == tree;
+}
+
+static double
+pdgstrs3d_symldl_x_cache_fill(pdgstrs3d_symldl_solve_meta_t *meta,
+                              double *x, int nrhs, int_t *ilsum,
+                              gridinfo3d_t *grid3d,
+                              pdgstrs3d_symldl_node_ctx_t *ctxs,
+                              int_t nctx)
+{
+    dtrf3Dpartition_t *trf3Dpartition = meta->trf3Dpartition;
+    Glu_persist_t *Glu_persist = meta->Glu_persist;
+    int_t *xsup = Glu_persist->xsup;
+    int_t *supno = Glu_persist->supno;
+    double start = SuperLU_timer_();
+    double replicated_bytes = 0.0;
+    double avoided_bytes = 0.0;
+    double hits = 0.0;
+    double misses = 0.0;
+    double panels = 0.0;
+    double dummy = 0.0;
+
+    for (int_t ci = 0; ci < nctx; ++ci) {
+        pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
+        pdgstrs3d_symldl_panel_meta_t *kmeta;
+        pdgstrs3d_symldl_x_cache_t *cache;
+        if (!ctx->active)
+            continue;
+        kmeta = ctx->kmeta;
+        cache = &meta->x_cache[ctx->k];
+        if (!kmeta->has_panel || kmeta->row_count <= 0 ||
+            cache->valid == NULL)
+            continue;
+        memset(cache->valid, 0,
+               pdgstrs3d_checked_alloc_bytes(
+                   cache->row_count, sizeof(unsigned char),
+                   "SymLDL replicated X cache valid flags"));
+    }
+
+    for (int tree = 0; tree < meta->numForests; ++tree) {
+        pdgstrs3d_symldl_tree_comm_t *tree_comm = &meta->tree_comms[tree];
+        int nprocs;
+        int *send_counts = NULL;
+        int *recv_counts = NULL;
+        int *send_displs = NULL;
+        int *recv_displs = NULL;
+        int *send_cursor = NULL;
+        int *recv_cursor = NULL;
+        double *send_buf = NULL;
+        double *recv_buf = NULL;
+        int total_send = 0;
+        int total_recv = 0;
+
+        if (!tree_comm->active)
+            continue;
+        nprocs = tree_comm->nprocs;
+        if (!(send_counts = (int *) SUPERLU_MALLOC(
+                  pdgstrs3d_checked_product((size_t) nprocs, sizeof(int),
+                                            "SymLDL X cache send counts"))) ||
+            !(recv_counts = (int *) SUPERLU_MALLOC(
+                  pdgstrs3d_checked_product((size_t) nprocs, sizeof(int),
+                                            "SymLDL X cache recv counts"))) ||
+            !(send_displs = (int *) SUPERLU_MALLOC(
+                  pdgstrs3d_checked_product((size_t) nprocs, sizeof(int),
+                                            "SymLDL X cache send displs"))) ||
+            !(recv_displs = (int *) SUPERLU_MALLOC(
+                  pdgstrs3d_checked_product((size_t) nprocs, sizeof(int),
+                                            "SymLDL X cache recv displs"))) ||
+            !(send_cursor = (int *) SUPERLU_MALLOC(
+                  pdgstrs3d_checked_product((size_t) nprocs, sizeof(int),
+                                            "SymLDL X cache send cursor"))) ||
+            !(recv_cursor = (int *) SUPERLU_MALLOC(
+                  pdgstrs3d_checked_product((size_t) nprocs, sizeof(int),
+                                            "SymLDL X cache recv cursor"))))
+            ABORT("Malloc fails for SymLDL X cache communication counts.");
+        for (int p = 0; p < nprocs; ++p) {
+            send_counts[p] = 0;
+            recv_counts[p] = 0;
+        }
+
+        for (int_t ci = 0; ci < nctx; ++ci) {
+            pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
+            pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
+            int_t k = ctx->k;
+            if (!ctx->active)
+                continue;
+            if (!cmeta->active ||
+                !pdgstrs3d_symldl_node_in_tree(meta, k, tree))
+                continue;
+            for (int p = 0; p < nprocs; ++p) {
+                send_counts[p] += cmeta->recv_val_counts[p];
+                recv_counts[p] += cmeta->send_val_counts[p];
+            }
+        }
+
+        pdgstrs3d_symldl_counts_to_displs(nprocs, send_counts, send_displs,
+                                          &total_send);
+        pdgstrs3d_symldl_counts_to_displs(nprocs, recv_counts, recv_displs,
+                                          &total_recv);
+        if (total_send > 0 && !(send_buf = doubleMalloc_dist(total_send)))
+            ABORT("Malloc fails for SymLDL X cache send buffer.");
+        if (total_recv > 0 && !(recv_buf = doubleMalloc_dist(total_recv)))
+            ABORT("Malloc fails for SymLDL X cache recv buffer.");
+        for (int p = 0; p < nprocs; ++p) {
+            send_cursor[p] = 0;
+            recv_cursor[p] = 0;
+        }
+
+        for (int_t ci = 0; ci < nctx; ++ci) {
+            pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
+            pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
+            int_t k = ctx->k;
+            if (!ctx->active)
+                continue;
+            if (!cmeta->active ||
+                !pdgstrs3d_symldl_node_in_tree(meta, k, tree))
+                continue;
+            for (int p = 0; p < nprocs; ++p) {
+                int row_base = cmeta->recv_displs[p];
+                int val_base = send_displs[p] + send_cursor[p];
+                for (int j = 0; j < cmeta->recv_counts[p]; ++j) {
+                    int_t grow = cmeta->recv_rows[row_base + j];
+                    int_t gsup = BlockNum(grow);
+                    int_t rel = grow - FstBlockC(gsup);
+                    int_t gsupsz = SuperSize(gsup);
+                    int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, gsup);
+                    double *xg = &x[X_BLK(lk)];
+                    for (int rhs = 0; rhs < nrhs; ++rhs)
+                        send_buf[val_base + j * nrhs + rhs] =
+                            xg[rel + (int_t) rhs * gsupsz];
+                }
+                send_cursor[p] += cmeta->recv_val_counts[p];
+            }
+        }
+
+        MPI_Alltoallv(total_send ? send_buf : &dummy, send_counts,
+                      send_displs, MPI_DOUBLE,
+                      total_recv ? recv_buf : &dummy, recv_counts,
+                      recv_displs, MPI_DOUBLE, tree_comm->comm);
+
+        for (int_t ci = 0; ci < nctx; ++ci) {
+            pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
+            pdgstrs3d_symldl_panel_meta_t *kmeta = ctx->kmeta;
+            pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
+            int_t k = ctx->k;
+            pdgstrs3d_symldl_x_cache_t *cache = &meta->x_cache[k];
+            if (!ctx->active)
+                continue;
+            if (!cmeta->active ||
+                !pdgstrs3d_symldl_node_in_tree(meta, k, tree) ||
+                !kmeta->has_panel || kmeta->row_count <= 0)
+                continue;
+            if (cache->values == NULL || cache->valid == NULL ||
+                cache->row_count != kmeta->row_count)
+                ABORT("SymLDL X cache metadata is inconsistent.");
+            for (int p = 0; p < nprocs; ++p) {
+                int row_base = cmeta->send_displs[p];
+                int val_base = recv_displs[p] + recv_cursor[p];
+                for (int j = 0; j < cmeta->send_counts[p]; ++j) {
+                    int seq = cmeta->send_seq[row_base + j];
+                    for (int rhs = 0; rhs < nrhs; ++rhs)
+                        cache->values[(int_t) seq * nrhs + rhs] =
+                            recv_buf[val_base + j * nrhs + rhs];
+                    cache->valid[seq] = 1;
+                }
+                recv_cursor[p] += cmeta->send_val_counts[p];
+            }
+        }
+
+        replicated_bytes += (double) total_send * (double) sizeof(double);
+        avoided_bytes += (double) total_recv * (double) sizeof(double);
+
+        if (send_buf) SUPERLU_FREE(send_buf);
+        if (recv_buf) SUPERLU_FREE(recv_buf);
+        SUPERLU_FREE(recv_cursor);
+        SUPERLU_FREE(send_cursor);
+        SUPERLU_FREE(recv_displs);
+        SUPERLU_FREE(send_displs);
+        SUPERLU_FREE(recv_counts);
+        SUPERLU_FREE(send_counts);
+    }
+
+    for (int_t ci = 0; ci < nctx; ++ci) {
+        pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
+        pdgstrs3d_symldl_panel_meta_t *kmeta = ctx->kmeta;
+        pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
+        int_t k = ctx->k;
+        pdgstrs3d_symldl_x_cache_t *cache = &meta->x_cache[k];
+        if (!ctx->active)
+            continue;
+        if (!kmeta->has_panel || kmeta->row_count <= 0 ||
+            !cmeta->active || cmeta->total_send <= 0)
+            continue;
+        ++panels;
+        for (int_t row = 0; row < kmeta->row_count; ++row) {
+            if (cache->valid[row]) {
+                hits += (double) nrhs;
+            } else {
+                misses += (double) nrhs;
+                fprintf(stderr,
+                        "SymLDL X cache missing row on rank %d: "
+                        "panel=%lld local_row=%lld global_row=%lld\n",
+                        grid3d->iam, (long long) k, (long long) row,
+                        (long long) kmeta->rows[row]);
+                fflush(stderr);
+            }
+        }
+    }
+    if (misses != 0.0)
+        ABORT("SymLDL X cache coverage is incomplete.");
+
+    double elapsed = SuperLU_timer_() - start;
+    meta->x_cache_fill_time += elapsed;
+    meta->x_cache_replicated_bytes += replicated_bytes;
+    meta->x_cache_avoided_request_bytes += avoided_bytes;
+    meta->x_cache_hits += hits;
+    meta->x_cache_misses += misses;
+    meta->x_cache_panels += panels;
+    (void) xsup;
+    (void) supno;
+    return elapsed;
+}
+
 static int_t
 pdgstrs3d_symldl_panel_meta_max_block_rows(pdgstrs3d_symldl_panel_meta_t *meta,
                                            int_t nsupers)
@@ -9913,6 +10219,82 @@ pdgstrs3d_symldl_workspace_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
                                         "3D SymLDL solve x workspace");
 }
 
+static int
+pdgstrs3d_symldl_panel_needs_host_values(
+    pdgstrs3d_symldl_solve_meta_t *meta,
+    pdgstrs3d_symldl_panel_meta_t *kmeta, int_t ksupc, int nrhs)
+{
+    if (kmeta == NULL || !kmeta->has_panel)
+        return 0;
+    if (kmeta->has_diag &&
+        !pdgstrs3d_symldl_should_gpu_ops(
+            meta, pdgstrs3d_symldl_diag_solve_ops(kmeta, ksupc, nrhs)))
+        return 1;
+    if (kmeta->row_count > 0 &&
+        !pdgstrs3d_symldl_should_gpu_ops(
+            meta, pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs)))
+        return 1;
+    return 0;
+}
+
+static int_t
+pdgstrs3d_symldl_super_size_from_meta(
+    pdgstrs3d_symldl_solve_meta_t *meta, int_t k)
+{
+    int_t *meta_xsup = (meta != NULL && meta->Glu_persist != NULL)
+                           ? meta->Glu_persist->xsup : NULL;
+    if (meta_xsup == NULL || k < 0 || k >= meta->nsupers)
+        ABORT("SymLDL solve missing supernode size metadata.");
+    return meta_xsup[k + 1] - meta_xsup[k];
+}
+
+static void
+pdgstrs3d_symldl_sync_factor_gpu(pdgstrs3d_symldl_solve_meta_t *meta)
+{
+    if (meta == NULL || meta->factor_gpu_handle == NULL ||
+        meta->factor_gpu_synchronized)
+        return;
+    dSymLDLFactorGPUSynchronize((dLUgpu_Handle) meta->factor_gpu_handle);
+    meta->factor_gpu_synchronized = 1;
+}
+
+static void
+pdgstrs3d_symldl_prepare_host_factor_panels(
+    pdgstrs3d_symldl_solve_meta_t *meta, int nrhs)
+{
+    if (meta == NULL || meta->panel_meta == NULL)
+        return;
+
+    int need_any_host_panel = 0;
+    for (int_t k = 0; k < meta->nsupers; ++k) {
+        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
+        int_t ksupc = pdgstrs3d_symldl_super_size_from_meta(meta, k);
+        if (pdgstrs3d_symldl_panel_needs_host_values(
+                meta, kmeta, ksupc, nrhs)) {
+            need_any_host_panel = 1;
+            break;
+        }
+    }
+    if (!need_any_host_panel)
+        return;
+    if (meta->factor_gpu_handle == NULL)
+        ABORT("SymLDL V2 solve requires retained factor GPU state for CPU-scheduled panel work.");
+
+    pdgstrs3d_symldl_sync_factor_gpu(meta);
+    double t = SuperLU_timer_();
+    for (int_t k = 0; k < meta->nsupers; ++k) {
+        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
+        int_t ksupc = pdgstrs3d_symldl_super_size_from_meta(meta, k);
+        if (!pdgstrs3d_symldl_panel_needs_host_values(
+                meta, kmeta, ksupc, nrhs))
+            continue;
+        if (dSymLDLFactorGPUCopyPanelToHost(
+                (dLUgpu_Handle) meta->factor_gpu_handle, k) != 0)
+            ABORT("Failed to copy CPU-scheduled SymLDL panel from factor GPU state.");
+    }
+    meta->host_panel_copy_time += SuperLU_timer_() - t;
+}
+
 static void
 pdgstrs3d_symldl_gpu_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
                              int_t maxsup, int nrhs, gridinfo3d_t *grid3d)
@@ -9941,6 +10323,9 @@ pdgstrs3d_symldl_gpu_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
     }
     if (!has_gpu_work)
         return;
+    if (meta->factor_gpu_handle == NULL)
+        ABORT("SymLDL V2 GPU solve requires retained factor GPU state.");
+    pdgstrs3d_symldl_sync_factor_gpu(meta);
 
     dSymLDLSolveGPU_Handle handle =
         dSymLDLSolveGPUCreate(meta->nsupers, maxsup,
@@ -9960,20 +10345,25 @@ pdgstrs3d_symldl_gpu_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
             pdgstrs3d_symldl_diag_solve_ops(kmeta, ksupc, nrhs));
         if (!use_panel_gpu && !use_diag_gpu)
             continue;
-        if (dSymLDLSolveGPUSetPanel(handle, k, kmeta->lusup,
-                                    kmeta->lusup_count) != 0)
-            ABORT("Failed to copy SymLDL L panel to GPU solve state.");
+        double t_panel = SuperLU_timer_();
+        if (dSymLDLSolveGPUAttachFactorPanel(
+                handle, (dLUgpu_Handle) meta->factor_gpu_handle, k) != 0)
+            ABORT("Failed to attach SymLDL factor GPU panel to solve state.");
+        meta->gpu_panel_import_time += SuperLU_timer_() - t_panel;
         if (use_panel_gpu && kmeta->row_count > 0 && meta->comm_meta != NULL) {
             pdgstrs3d_symldl_comm_meta_t *cmeta = &meta->comm_meta[k];
-            if (cmeta->row_to_send_pos != NULL &&
-                dSymLDLSolveGPUSetPanelSchedule(handle, k,
-                                                cmeta->row_to_send_pos,
-                                                kmeta->row_count,
-                                                kmeta->nblocks,
-                                                kmeta->block_luptr,
-                                                kmeta->block_nbrow,
-                                                kmeta->block_row_start) != 0)
-                ABORT("Failed to copy SymLDL solve panel schedule to GPU.");
+            if (cmeta->row_to_send_pos != NULL) {
+                double t_sched = SuperLU_timer_();
+                if (dSymLDLSolveGPUSetPanelSchedule(handle, k,
+                                                    cmeta->row_to_send_pos,
+                                                    kmeta->row_count,
+                                                    kmeta->nblocks,
+                                                    kmeta->block_luptr,
+                                                    kmeta->block_nbrow,
+                                                    kmeta->block_row_start) != 0)
+                    ABORT("Failed to copy SymLDL solve panel schedule to GPU.");
+                meta->gpu_schedule_upload_time += SuperLU_timer_() - t_sched;
+            }
         }
     }
     meta->gpu_state = (void *) handle;
@@ -10016,8 +10406,11 @@ pdgstrs3d_symldl_solve_meta_destroy(pdgstrs3d_symldl_solve_meta_t *meta)
     if (meta->gpu_state)
         dSymLDLSolveGPUDestroy((dSymLDLSolveGPU_Handle) meta->gpu_state);
 #endif
+    if (meta->factor_gpu_handle)
+        dDestroyLUgpuHandle((dLUgpu_Handle) meta->factor_gpu_handle);
     pdgstrs3d_symldl_workspace_free(&meta->work);
     pdgstrs3d_symldl_level_schedule_free(&meta->solve_schedule);
+    pdgstrs3d_symldl_x_cache_free(meta->x_cache, meta->nsupers);
     pdgstrs3d_symldl_comm_meta_free(meta->comm_meta, meta->nsupers);
     pdgstrs3d_symldl_panel_meta_free(meta->panel_meta, meta->nsupers);
     pdgstrs3d_symldl_tree_comms_free_count(meta->tree_comms,
@@ -10031,10 +10424,18 @@ void
 pdgstrs3d_symldl_finalize(dSOLVEstruct_t *SOLVEstruct)
 {
     if (SOLVEstruct == NULL || SOLVEstruct->symldl_v2_solve_meta == NULL)
+    {
+        if (SOLVEstruct != NULL && SOLVEstruct->symldl_v2_factor_handle != NULL) {
+            dDestroyLUgpuHandle(
+                (dLUgpu_Handle) SOLVEstruct->symldl_v2_factor_handle);
+            SOLVEstruct->symldl_v2_factor_handle = NULL;
+        }
         return;
+    }
     pdgstrs3d_symldl_solve_meta_destroy(
         (pdgstrs3d_symldl_solve_meta_t *) SOLVEstruct->symldl_v2_solve_meta);
     SOLVEstruct->symldl_v2_solve_meta = NULL;
+    SOLVEstruct->symldl_v2_factor_handle = NULL;
 }
 
 static int
@@ -10085,11 +10486,20 @@ pdgstrs3d_symldl_solve_meta_get(dSOLVEstruct_t *SOLVEstruct, int_t n,
                                           global_nprocs,
                                           superlu_acc_offload,
                                           superlu_n_gemm)) {
+        if (SOLVEstruct->symldl_v2_factor_handle != NULL) {
+            if (meta->factor_gpu_handle != NULL)
+                ABORT("SymLDL solve metadata already owns a factor GPU handle.");
+            meta->factor_gpu_handle = SOLVEstruct->symldl_v2_factor_handle;
+            SOLVEstruct->symldl_v2_factor_handle = NULL;
+        }
         meta->reused = 1;
         return meta;
     }
 
+    void *pending_factor_gpu_handle = SOLVEstruct->symldl_v2_factor_handle;
+    SOLVEstruct->symldl_v2_factor_handle = NULL;
     pdgstrs3d_symldl_finalize(SOLVEstruct);
+    SOLVEstruct->symldl_v2_factor_handle = pending_factor_gpu_handle;
     if (!(meta = (pdgstrs3d_symldl_solve_meta_t *)
               SUPERLU_MALLOC(sizeof(pdgstrs3d_symldl_solve_meta_t))))
         ABORT("Malloc fails for SymLDL solve metadata.");
@@ -10103,6 +10513,14 @@ pdgstrs3d_symldl_solve_meta_get(dSOLVEstruct_t *SOLVEstruct, int_t n,
     meta->znp = grid3d->zscp.Np;
     meta->superlu_acc_offload = superlu_acc_offload;
     meta->superlu_n_gemm = superlu_n_gemm;
+    if (getenv("GPU3DV2_TRACE")) {
+        fprintf(stderr,
+                "[sym-v2-trace] rank %d: metadata taking factor handle %p\n",
+                grid3d->iam, SOLVEstruct->symldl_v2_factor_handle);
+        fflush(stderr);
+    }
+    meta->factor_gpu_handle = SOLVEstruct->symldl_v2_factor_handle;
+    SOLVEstruct->symldl_v2_factor_handle = NULL;
     meta->Glu_persist = Glu_persist;
     meta->Llu = Llu;
     meta->trf3Dpartition = trf3Dpartition;
@@ -10136,6 +10554,8 @@ pdgstrs3d_symldl_solve_meta_get(dSOLVEstruct_t *SOLVEstruct, int_t n,
                                                         grid3d,
                                                         global_nprocs, nrhs,
                                                         meta->diag_owner);
+    meta->x_cache = pdgstrs3d_symldl_x_cache_create(nsupers,
+                                                    meta->panel_meta, nrhs);
     meta->reused = 0;
     SOLVEstruct->symldl_v2_solve_meta = meta;
     return meta;
@@ -10338,7 +10758,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
                              pdgstrs3d_symldl_solve_meta_t *meta,
                              gridinfo3d_t *grid3d)
 {
-    enum { SYMLDL_TIMER_COUNT = 24 };
+    enum { SYMLDL_TIMER_COUNT = 33 };
     double local[SYMLDL_TIMER_COUNT];
     double maxv[SYMLDL_TIMER_COUNT];
     double sumv[SYMLDL_TIMER_COUNT];
@@ -10355,21 +10775,30 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
     local[6] = timer->forward_apply;
     local[7] = timer->diag_comm;
     local[8] = timer->diag_compute;
-    local[9] = timer->backward_values;
-    local[10] = timer->backward_compute;
-    local[11] = timer->backward_delta;
-    local[12] = timer->x_to_b;
-    local[13] = timer->gpu_h2d;
-    local[14] = timer->gpu_compute;
-    local[15] = timer->gpu_d2h;
-    local[16] = meta != NULL ? meta->cpu_blas_ops : 0.0;
-    local[17] = meta != NULL ? meta->gpu_blas_ops : 0.0;
-    local[18] = meta != NULL ? meta->gpu_panel_ops : 0.0;
-    local[19] = meta != NULL ? meta->below_threshold_ops : 0.0;
-    local[20] = meta != NULL ? meta->cpu_blas_calls : 0.0;
-    local[21] = meta != NULL ? meta->gpu_blas_calls : 0.0;
-    local[22] = meta != NULL ? meta->gpu_panel_calls : 0.0;
-    local[23] = meta != NULL ? meta->below_threshold_calls : 0.0;
+    local[9] = timer->x_cache_fill;
+    local[10] = timer->backward_values;
+    local[11] = timer->backward_compute;
+    local[12] = timer->backward_delta;
+    local[13] = timer->x_to_b;
+    local[14] = timer->gpu_h2d;
+    local[15] = timer->gpu_compute;
+    local[16] = timer->gpu_d2h;
+    local[17] = meta != NULL ? meta->cpu_blas_ops : 0.0;
+    local[18] = meta != NULL ? meta->gpu_blas_ops : 0.0;
+    local[19] = meta != NULL ? meta->gpu_panel_ops : 0.0;
+    local[20] = meta != NULL ? meta->below_threshold_ops : 0.0;
+    local[21] = meta != NULL ? meta->cpu_blas_calls : 0.0;
+    local[22] = meta != NULL ? meta->gpu_blas_calls : 0.0;
+    local[23] = meta != NULL ? meta->gpu_panel_calls : 0.0;
+    local[24] = meta != NULL ? meta->below_threshold_calls : 0.0;
+    local[25] = meta != NULL ? meta->host_panel_copy_time : 0.0;
+    local[26] = meta != NULL ? meta->gpu_panel_import_time : 0.0;
+    local[27] = meta != NULL ? meta->gpu_schedule_upload_time : 0.0;
+    local[28] = meta != NULL ? meta->x_cache_replicated_bytes : 0.0;
+    local[29] = meta != NULL ? meta->x_cache_avoided_request_bytes : 0.0;
+    local[30] = meta != NULL ? meta->x_cache_hits : 0.0;
+    local[31] = meta != NULL ? meta->x_cache_misses : 0.0;
+    local[32] = meta != NULL ? meta->x_cache_panels : 0.0;
 
     MPI_Comm_rank(grid3d->comm, &rank);
     MPI_Comm_size(grid3d->comm, &nprocs);
@@ -10388,12 +10817,15 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
         static const char *names[SYMLDL_TIMER_COUNT] = {
             "metadata", "workspace", "B_to_X", "forward_xk",
             "forward_compute", "forward_values", "forward_apply",
-            "diag_comm", "diag_compute", "backward_values",
+            "diag_comm", "diag_compute", "x_cache_fill", "backward_values",
             "backward_compute", "backward_delta", "X_to_B",
             "gpu_h2d", "gpu_compute", "gpu_d2h",
             "cpu_blas_ops", "gpu_blas_ops", "gpu_panel_ops",
             "below_thresh_ops", "cpu_blas_calls", "gpu_blas_calls",
-            "gpu_panel_calls", "below_thresh_calls"
+            "gpu_panel_calls", "below_thresh_calls",
+            "host_panel_copy", "gpu_panel_attach", "gpu_schedule_h2d",
+            "x_cache_bytes", "x_cache_avoided", "x_cache_hits",
+            "x_cache_misses", "x_cache_panels"
         };
         printf("SymFact GPU3D V2 solve timing (max_rank / avg_rank / max_rank_id):\n");
         for (int i = 0; i < SYMLDL_TIMER_COUNT; ++i)
@@ -10481,6 +10913,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     ttmp = SuperLU_timer_();
     pdgstrs3d_symldl_workspace_prepare(solve_meta, x_count, maxsup, nrhs,
                                        global_nprocs);
+    pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta, nrhs);
     pdgstrs3d_symldl_gpu_prepare(solve_meta, maxsup, nrhs, grid3d);
     workspace = &solve_meta->work;
     x = workspace->x;
@@ -10845,7 +11278,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     }
     (void) tx;
 
-    /* Backward solve with L^T. Pull only row values needed by each local L panel. */
+    /* Backward solve with L^T using per-tree replicated row values. */
     tx = SuperLU_timer_();
     for (int_t level = solve_schedule->nlevels; level > 0; --level) {
         int_t level_begin = solve_schedule->level_ptr[level - 1];
@@ -10854,14 +11287,8 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         int_t max_level_reqs = 1;
         int_t level_delta_count = 0;
         int_t level_delta_recv_count = 0;
-        int_t level_row_values_count = 0;
-        int_t level_request_values_count = 0;
-        int_t level_recv_request_values_count = 0;
         int_t delta_offset = 0;
         int_t delta_recv_offset = 0;
-        int_t row_values_offset = 0;
-        int_t request_values_offset = 0;
-        int_t recv_request_values_offset = 0;
         pdgstrs3d_symldl_node_ctx_t *ctxs =
             pdgstrs3d_symldl_workspace_prepare_level_contexts(
                 workspace, nctx, "Malloc fails for SymLDL backward level contexts.");
@@ -10907,28 +11334,12 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                     "SymLDL backward delta receive buffer");
             }
 
-            if (cmeta->total_send > 0) {
-                int_t row_value_count = pdgstrs3d_checked_workspace_count(
-                    cmeta->total_send, nrhs, 0, 0,
-                    "SymLDL backward row values");
-                level_row_values_count = pdgstrs3d_symldl_count_sum(
-                    level_row_values_count, row_value_count,
-                    "SymLDL backward row values");
-            }
-            if (cmeta->total_recv_vals > 0)
-                level_request_values_count = pdgstrs3d_symldl_count_sum(
-                    level_request_values_count, cmeta->total_recv_vals,
-                    "SymLDL backward request values");
-            if (cmeta->total_send_vals > 0)
-                level_recv_request_values_count =
-                    pdgstrs3d_symldl_count_sum(
-                        level_recv_request_values_count,
-                        cmeta->total_send_vals,
-                        "SymLDL backward received values");
-
-            max_level_reqs += 2 * cmeta->nprocs +
-                              cmeta->xk_receiver_count + 1;
+            max_level_reqs += cmeta->xk_receiver_count + 1;
         }
+
+        ttmp = SuperLU_timer_();
+        symldl_timer.x_cache_fill += pdgstrs3d_symldl_x_cache_fill(
+            solve_meta, x, nrhs, ilsum, grid3d, ctxs, nctx);
 
         pdgstrs3d_symldl_grow_double_buffer(
             &workspace->delta_send_buf, &workspace->delta_send_cap,
@@ -10942,19 +11353,6 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
             &workspace->delta_recv_buf, &workspace->delta_recv_cap,
             SUPERLU_MAX(level_delta_recv_count, (int_t) 1),
             "Malloc fails for SymLDL backward delta receive buffer.");
-        pdgstrs3d_symldl_grow_double_buffer(
-            &workspace->row_values_buf, &workspace->row_values_cap,
-            SUPERLU_MAX(level_row_values_count, (int_t) 1),
-            "Malloc fails for SymLDL backward row values.");
-        pdgstrs3d_symldl_grow_double_buffer(
-            &workspace->request_values_buf, &workspace->request_values_cap,
-            SUPERLU_MAX(level_request_values_count, (int_t) 1),
-            "Malloc fails for SymLDL backward request values.");
-        pdgstrs3d_symldl_grow_double_buffer(
-            &workspace->recv_request_values_buf,
-            &workspace->recv_request_values_cap,
-            SUPERLU_MAX(level_recv_request_values_count, (int_t) 1),
-            "Malloc fails for SymLDL backward received values.");
         pdgstrs3d_symldl_grow_request_buffer(
             &workspace->comm_reqs, &workspace->comm_reqs_cap,
             max_level_reqs, "Malloc fails for SymLDL backward level requests.");
@@ -10969,6 +11367,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         for (int_t ci = 0; ci < nctx; ++ci) {
             pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
             pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
+            pdgstrs3d_symldl_panel_meta_t *kmeta = ctx->kmeta;
 
             if (!ctx->active)
                 continue;
@@ -10985,70 +11384,15 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                     &workspace->delta_recv_buf[delta_recv_offset];
                 delta_recv_offset += recv_count;
             }
-            if (cmeta->total_send > 0) {
-                ctx->row_values =
-                    &workspace->row_values_buf[row_values_offset];
-                row_values_offset += cmeta->total_send_vals;
-            }
-            if (cmeta->total_recv_vals > 0) {
-                ctx->request_values =
-                    &workspace->request_values_buf[request_values_offset];
-                request_values_offset += cmeta->total_recv_vals;
-            }
-            if (cmeta->total_send_vals > 0) {
-                ctx->recv_request_values =
-                    &workspace->recv_request_values_buf[
-                        recv_request_values_offset];
-                recv_request_values_offset += cmeta->total_send_vals;
-            }
-
-            for (int row = 0; row < cmeta->total_recv; ++row) {
-                int_t grow = cmeta->recv_rows[row];
-                int_t gsup = BlockNum(grow);
-                int_t rel = grow - FstBlockC(gsup);
-                int_t gsupsz = SuperSize(gsup);
-                int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, gsup);
-                double *xg = &x[X_BLK(lk)];
-                for (int rhs = 0; rhs < nrhs; ++rhs)
-                    ctx->request_values[row * nrhs + rhs] =
-                        xg[rel + (int_t) rhs * gsupsz];
+            if (kmeta->has_panel && cmeta->total_send > 0) {
+                pdgstrs3d_symldl_x_cache_t *cache =
+                    &solve_meta->x_cache[ctx->k];
+                if (cache->values == NULL ||
+                    cache->row_count != kmeta->row_count)
+                    ABORT("SymLDL backward solve missing replicated X cache.");
+                ctx->row_values = cache->values;
             }
         }
-
-        ttmp = SuperLU_timer_();
-        int nreq_values = 0;
-        for (int_t ci = 0; ci < nctx; ++ci) {
-            pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
-            pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
-            if (!ctx->active)
-                continue;
-            pdgstrs3d_symldl_post_exchange_double(
-                ctx->request_values, cmeta->recv_val_counts,
-                cmeta->recv_val_displs, ctx->recv_request_values,
-                cmeta->send_val_counts, cmeta->send_val_displs,
-                cmeta->nprocs, ctx->solve_rank, BC_U,
-                ctx->solve_comm, comm_reqs, &nreq_values);
-        }
-        if (nreq_values > 0)
-            MPI_Waitall(nreq_values, comm_reqs, MPI_STATUSES_IGNORE);
-
-        for (int_t ci = 0; ci < nctx; ++ci) {
-            pdgstrs3d_symldl_node_ctx_t *ctx = &ctxs[ci];
-            pdgstrs3d_symldl_comm_meta_t *cmeta = ctx->cmeta;
-            if (!ctx->active || cmeta->total_send <= 0)
-                continue;
-            for (int p = 0; p < cmeta->nprocs; ++p) {
-                int row_base = cmeta->send_displs[p];
-                int val_base = cmeta->send_val_displs[p];
-                for (int j = 0; j < cmeta->send_counts[p]; ++j) {
-                    int seq = cmeta->send_seq[row_base + j];
-                    for (int rhs = 0; rhs < nrhs; ++rhs)
-                        ctx->row_values[seq * nrhs + rhs] =
-                            ctx->recv_request_values[val_base + j * nrhs + rhs];
-                }
-            }
-        }
-        symldl_timer.backward_values += SuperLU_timer_() - ttmp;
 
         ttmp = SuperLU_timer_();
         double backward_direct_ops = 0.0;

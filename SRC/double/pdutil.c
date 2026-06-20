@@ -1390,6 +1390,7 @@ int dSolveInit(superlu_dist_options_t *options, SuperMatrix *A,
         ABORT("Malloc fails for gsmv_comm[]");
     SOLVEstruct->A_colind_gsmv = NULL;
     SOLVEstruct->symldl_v2_solve_meta = NULL;
+    SOLVEstruct->symldl_v2_factor_handle = NULL;
 #if ( defined(GPU_ACC) )
     SOLVEstruct->d_lsum = NULL;
     SOLVEstruct->d_lsum_save = NULL;
@@ -1422,6 +1423,7 @@ int dSymV2SolveInit(superlu_dist_options_t *options, SuperMatrix *A,
     m_loc = Astore->m_loc;
     procs2d = grid->nprow * grid->npcol;
     SOLVEstruct->symldl_v2_solve_meta = NULL;
+    /* symldl_v2_factor_handle is staged by V2 factorization before this call. */
 
     if ( !(row_to_proc = intMalloc_dist(A->nrow)) )
 	ABORT("Malloc fails for row_to_proc[].");

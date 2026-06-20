@@ -41,6 +41,8 @@ extern "C"
     int dGatherFactoredLU3Dto2D(dLUgpu_Handle LuH);
 
     int dCopyLUGPU2Host(dLUgpu_Handle LuH, dLUstruct_t *LUstruct);
+    void dSymLDLFactorGPUSynchronize(dLUgpu_Handle LuH);
+    int dSymLDLFactorGPUCopyPanelToHost(dLUgpu_Handle LuH, int_t k);
 
     int pdgstrf3d_LUv1(dLUgpu_Handle LUHand);
     int pdgstrf3d_LUv2(dLUgpu_Handle LUHand);
@@ -52,6 +54,9 @@ extern "C"
     void dSymLDLSolveGPUDestroy(dSymLDLSolveGPU_Handle handle);
     int dSymLDLSolveGPUSetPanel(dSymLDLSolveGPU_Handle handle, int_t k,
                                 const double *lusup, int_t count);
+    int dSymLDLSolveGPUAttachFactorPanel(dSymLDLSolveGPU_Handle handle,
+                                         dLUgpu_Handle factor_handle,
+                                         int_t k);
     int dSymLDLSolveGPUSetPanelSchedule(dSymLDLSolveGPU_Handle handle, int_t k,
                                         const int *row_to_send_pos,
                                         int_t row_count, int_t nblocks,

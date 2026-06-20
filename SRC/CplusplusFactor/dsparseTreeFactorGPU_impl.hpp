@@ -18,6 +18,12 @@ static inline bool sym_v2_schedule_trace_enabled()
     return env != NULL && env[0] != '\0' && env[0] != '0';
 }
 
+static inline bool sym_v2_factor_trace_enabled()
+{
+    const char *env = std::getenv("GPU3DV2_TRACE");
+    return env != NULL && env[0] != '\0' && env[0] != '0';
+}
+
 #define SYM_V2_TRACE_SCHED(grid3d_, k_, fmt_, ...)                            \
     do                                                                        \
     {                                                                         \
@@ -27,6 +33,18 @@ static inline bool sym_v2_schedule_trace_enabled()
                         (grid3d_ != NULL) ? (grid3d_)->iam : -1,              \
                         static_cast<int>(k_), ##__VA_ARGS__);                 \
             std::fflush(stdout);                                              \
+        }                                                                     \
+    } while (0)
+
+#define SYM_V2_TRACE_FACTOR(grid3d_, fmt_, ...)                               \
+    do                                                                        \
+    {                                                                         \
+        if (sym_v2_factor_trace_enabled())                                    \
+        {                                                                     \
+            std::fprintf(stderr, "[sym-v2-factor] rank %d: " fmt_ "\n",       \
+                         (grid3d_ != NULL) ? (grid3d_)->iam : -1,             \
+                         ##__VA_ARGS__);                                      \
+            std::fflush(stderr);                                              \
         }                                                                     \
     } while (0)
 
@@ -435,7 +453,7 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
 
             bool sym_ll_local_2d = (Pr == 1 && Pc == 1);
-            if (!sym_ll_local_2d)
+            if (!sym_ll_local_2d && LidxSendCounts[k] > 0)
             {
                 xlpanel_t<Ftype> partner_lpanel = getKPartnerLPanel(k, offset);
                 dSymV2PartnerLBcastGPU(k, offset, partner_lpanel);
@@ -672,7 +690,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         return 1;
     }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-    bool sym_timing_enabled = (options != NULL && options->SymFact == YES);
+    bool sym_timing_enabled =
+        (options != NULL && options->SymFact == YES &&
+         symGPU3DTimingEnabled());
     double sym_factor_tree_t = 0.0;
     if (sym_timing_enabled)
     {
@@ -686,6 +706,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     int_t *myIperm = treeTopoInfo->myIperm;
     int_t maxTopoLevel = treeTopoInfo->numLvl;
     int_t *eTreeTopLims = treeTopoInfo->eTreeTopLims;
+    SYM_V2_TRACE_FACTOR(grid3d,
+                        "dsparseTreeFactorGPU entry nnodes=%d topoLevels=%d",
+                        static_cast<int>(nnodes),
+                        static_cast<int>(maxTopoLevel));
 
     /*main loop over all the levels*/
     int_t numLA = SUPERLU_MIN(A_gpu.numCudaStreams, getNumLookAhead(options));
@@ -701,8 +725,6 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     CHECK_MALLOC(grid3d->iam, "Enter dsparseTreeFactorGPU()");
 
     printf("Using New code V100 with GPU acceleration\n");
-    fflush(stdout);
-    printf(". lookahead numLA %d\n", numLA);
     fflush(stdout);
 #endif
     // start the pipeline.  Sherry: need to free these 3 arrays
@@ -731,6 +753,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     int_t topoLvl = 0;
     int_t k_st = eTreeTopLims[topoLvl];
     int_t k_end = eTreeTopLims[topoLvl + 1];
+    SYM_V2_TRACE_FACTOR(grid3d,
+                        "initial topo level range [%d,%d)",
+                        static_cast<int>(k_st), static_cast<int>(k_end));
     bool local_sym_singleton =
         (options->SymFact == YES && Pr == 1 && Pc == 1 &&
          grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1);
@@ -753,6 +778,14 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     {
         int_t k = perm_c_supno[k0];
         int_t offset = local_sym_singleton ? (k0 % numLA) : 0;
+        bool trace_node = sym_v2_factor_trace_enabled() &&
+                          (k0 == k_st || k0 + 1 == k_end ||
+                           ((k0 - k_st) % 1024) == 0);
+        if (trace_node)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "initial factor begin pos=%d k=%d offset=%d",
+                                static_cast<int>(k0), static_cast<int>(k),
+                                static_cast<int>(offset));
         if (local_sym_singleton)
             dSymStartDiagPrefetch(k, offset);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -762,6 +795,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         // dDiagFactorPanelSolveGPU(k, offset, dFBufs);
         dDFactPSolveGPU(k, offset, dFBufs);
         donePanelSolve[k0] = 1;
+        if (trace_node)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "initial factor end pos=%d k=%d",
+                                static_cast<int>(k0), static_cast<int>(k));
     }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     if (sym_timing_enabled)
@@ -774,12 +811,6 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     int_t halfWin = (numLA > 1) ? (numLA / 2) : 0;
     int_t winSize = (halfWin > 0) ? SUPERLU_MIN(halfWin, eTreeTopLims[1]) : 1;
 
-    // printf(". lookahead winSize %d\n", winSize);
-#if ( PRNTlevel >= 1 )    
-    printf(". lookahead winSize %" PRIdMAX "\n", static_cast<intmax_t>(winSize));
-    fflush(stdout);
-#endif
-
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double sym_initial_bcast_t = 0.0;
     if (sym_timing_enabled)
@@ -789,11 +820,18 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     {
         int_t k = perm_c_supno[k0];
         int_t offset = k0 % numLA;
+        SYM_V2_TRACE_FACTOR(grid3d,
+                            "initial panel bcast begin pos=%d k=%d offset=%d",
+                            static_cast<int>(k0), static_cast<int>(k),
+                            static_cast<int>(offset));
         if (!donePanelBcast[k0])
         {
             dPanelBcastGPU(k, offset);
             donePanelBcast[k0] = 1;
         }
+        SYM_V2_TRACE_FACTOR(grid3d,
+                            "initial panel bcast end pos=%d k=%d",
+                            static_cast<int>(k0), static_cast<int>(k));
     } /*for (int k0 = k_st; k0 < SUPERLU_MIN(k_end, k_st + numLA); ++k0)*/
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     if (sym_timing_enabled)
@@ -805,6 +843,15 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     int_t winParity = 0;
     while (k1 < nnodes)
     {
+        bool trace_window = sym_v2_factor_trace_enabled() &&
+                            (k1 == 0 || k1 + winSize >= nnodes ||
+                             (k1 % 4096) == 0);
+        if (trace_window)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window begin k1=%d winSize=%d parity=%d",
+                                static_cast<int>(k1),
+                                static_cast<int>(winSize),
+                                static_cast<int>(winParity));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double sym_sched_t = 0.0;
         int_t sched_window_end = SUPERLU_MIN(nnodes, k1 + winSize);
@@ -850,6 +897,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 lookAheadUpdateGPU(offset, k, k_parent, k_lpanel, k_upanel);
             }
         }
+        if (trace_window)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window lookahead dispatch end k1=%d",
+                                static_cast<int>(k1));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
             symTimingAdd(SYM_GPU3D_T_SCHED_LOOKAHEAD_DISPATCH,
@@ -862,6 +913,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
             SyncLookAheadUpdate(offset);
         }
+        if (trace_window)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window lookahead sync end k1=%d",
+                                static_cast<int>(k1));
 
         if (local_sym_singleton)
         {
@@ -963,6 +1018,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 dSchurCompUpdateExcludeOneGPU(offset, k, k_parent, k_lpanel, k_upanel);
             }
         }
+        if (trace_window)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window factor/update dispatch end k1=%d",
+                                static_cast<int>(k1));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
             symTimingAdd(SYM_GPU3D_T_SCHED_FACTOR_DISPATCH,
@@ -971,6 +1030,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 
         int_t k1_next = k1 + winSize;
         int_t oldWinSize = winSize;
+        int_t blocked_k0_next = -1;
+        int_t blocked_children_left = -1;
 	#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
             sym_sched_t = SuperLU_timer_();
@@ -995,10 +1056,40 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             }
             else
             {
+                blocked_k0_next = k0_next;
+                blocked_children_left = localNumChildrenLeft[k0_next];
                 winSize = k0_next - k1_next;
                 break;
             }
         }
+        if (winSize <= 0)
+        {
+            std::fprintf(stderr,
+                         "[sym-v2-factor] rank %d: scheduler made no progress k1=%d next=%d blocked=%d children_left=%d oldWinSize=%d\n",
+                         (grid3d != NULL) ? grid3d->iam : -1,
+                         static_cast<int>(k1),
+                         static_cast<int>(k1_next),
+                         static_cast<int>(blocked_k0_next),
+                         static_cast<int>(blocked_children_left),
+                         static_cast<int>(oldWinSize));
+            std::fflush(stderr);
+            ABORT("SymFact V2 scheduler made no progress.");
+        }
+        if (winSize != oldWinSize && sym_v2_factor_trace_enabled())
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window shrink k1=%d next=%d old=%d new=%d blocked=%d children_left=%d",
+                                static_cast<int>(k1),
+                                static_cast<int>(k1_next),
+                                static_cast<int>(oldWinSize),
+                                static_cast<int>(winSize),
+                                static_cast<int>(blocked_k0_next),
+                                static_cast<int>(blocked_children_left));
+        if (trace_window)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window bcast advance end k1=%d next=%d winSize=%d",
+                                static_cast<int>(k1),
+                                static_cast<int>(k1_next),
+                                static_cast<int>(winSize));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
             symTimingAdd(SYM_GPU3D_T_SCHED_BCAST_ADVANCE,
@@ -1020,8 +1111,23 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
                 (symGPU3DVersion != 2 &&
                  UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0))
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double sym_stream_sync_t =
+                    sym_timing_enabled ? SuperLU_timer_() : 0.0;
+#endif
                 gpuErrchk(cudaStreamSynchronize(A_gpu.cuStreams[offset]));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                if (sym_timing_enabled)
+                    symTimingAdd(SYM_GPU3D_T_STREAM_SYNC,
+                                 SuperLU_timer_() - sym_stream_sync_t);
+#endif
+            }
         }
+        if (trace_window)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window final sync end k1=%d",
+                                static_cast<int>(k1));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
             symTimingAdd(SYM_GPU3D_T_SCHED_FINAL_SYNC,
@@ -1030,6 +1136,11 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 
         k1 = k1_next;
         winParity++;
+        if (trace_window)
+            SYM_V2_TRACE_FACTOR(grid3d,
+                                "window end next k1=%d parity=%d",
+                                static_cast<int>(k1),
+                                static_cast<int>(winParity));
     }
 
 #if 0
