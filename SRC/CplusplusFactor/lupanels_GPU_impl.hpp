@@ -312,36 +312,6 @@ int_t xLUstruct_t<Ftype>::dSymStartL2UGPU(int_t k, int_t stream_offset)
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymV2PartnerLStartGPU(int_t k, int_t stream_offset)
-{
-    ABORT("SymFact GPU3D V2 true symmetric partner-L exchange is implemented for double precision only.");
-    return 0;
-}
-
-template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymV2PartnerLProgressGPU(int_t stream_offset,
-                                                    int wait_for_d2h)
-{
-    ABORT("SymFact GPU3D V2 true symmetric partner-L exchange is implemented for double precision only.");
-    return 0;
-}
-
-template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymV2PartnerLProgressAllGPU(int wait_for_d2h)
-{
-    ABORT("SymFact GPU3D V2 true symmetric partner-L exchange is implemented for double precision only.");
-    return 0;
-}
-
-template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymV2PartnerLFinishGPU(
-    int_t k, int_t stream_offset, xlpanel_t<Ftype> &partner_panel)
-{
-    ABORT("SymFact GPU3D V2 true symmetric partner-L exchange is implemented for double precision only.");
-    return 0;
-}
-
-template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2PartnerLBcastGPU(
     int_t k, int_t stream_offset, xlpanel_t<Ftype> &partner_panel)
 {
@@ -350,14 +320,15 @@ int_t xLUstruct_t<Ftype>::dSymV2PartnerLBcastGPU(
 }
 
 template <>
-inline int_t xLUstruct_t<double>::dSymV2PartnerLStartGPU(
-    int_t k, int_t stream_offset)
+inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastGPU(
+    int_t k, int_t stream_offset, xlpanel_t<double> &partner_panel)
 {
     if (options->SymFact != YES || symGPU3DVersion != 2)
         return 0;
     if (!superlu_acc_offload)
         ABORT("GPU3DVERSION=2 true symmetric mode requires GPU offload.");
     if (symV2PartnerLSendBufsGPU.empty() || symL2LSendMapsGPU.empty() ||
+        symV2PartnerLHostSendBufs.empty() ||
         symV2PartnerLSendSizes.empty() ||
         symV2PartnerLRecvSizes.empty() ||
         symV2PartnerLRecvIndex.empty() ||
@@ -365,129 +336,23 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLStartGPU(
         ABORT("SymFact GPU partner-L buffers are not allocated.");
     if (k < 0 || k >= nsupers)
         return 0;
-    if (LidxSendCounts[k] <= 0)
-        return 0;
-    if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
-        stream_offset = 0;
-    if (static_cast<size_t>(stream_offset) >= symV2PartnerExchangeStates.size())
-        ABORT("SymFact V2 true symmetric partner exchange state is missing.");
-
-    SymV2PartnerExchangeState &state =
-        symV2PartnerExchangeStates[stream_offset];
-    if (state.ready_k == k)
-        return 0;
-    if (state.active)
-    {
-        if (state.k == k)
-            return 0;
-        ABORT("SymFact V2 true symmetric partner exchange slot was reused before finish.");
-    }
-    if (state.d2h_done == NULL)
-        gpuErrchk(cudaEventCreateWithFlags(&state.d2h_done,
-                                           cudaEventDisableTiming));
 
     SYM_V2_TRACE_EXCHANGE(grid3d, k,
-                          "start partner exchange myrow=%d mycol=%d krow=%d kcol=%d Lidx=%d",
+                          "enter partner exchange myrow=%d mycol=%d krow=%d kcol=%d Lidx=%d",
                           static_cast<int>(myrow), static_cast<int>(mycol),
                           static_cast<int>(symV2DiagRoot(k)),
                           static_cast<int>(symV2PanelRoot(k)),
                           static_cast<int>(LidxSendCounts[k]));
 
-    double sym_start_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
+    if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
+        stream_offset = 0;
     cudaStream_t stream = A_gpu.cuStreams[stream_offset];
     int_t kcol_ = symV2PanelRoot(k);
     int_t ksupc = SuperSize(k);
     int tag_ub = symFactTagUb;
+
+    std::vector<int> send_sizes(Pc, 0);
     bool cuda_aware = superlu_cuda_aware_mpi();
-
-    state.k = k;
-    state.ready_k = -1;
-    state.stream_offset = stream_offset;
-    state.active = 1;
-    state.cuda_aware = cuda_aware ? 1 : 0;
-    state.source_col = (mycol == kcol_) ? 1 : 0;
-    state.sends_posted = 0;
-    state.d2h_event_valid = 0;
-    state.recv_total = 0;
-    state.kcol = kcol_;
-    state.ksupc = ksupc;
-    state.send_sizes.assign(Pc, 0);
-    state.recv_sizes.assign(Pr, 0);
-    state.recv_offsets.assign(Pr, 0);
-    state.recv_reqs.clear();
-    state.send_reqs.clear();
-
-    size_t recv_count_base =
-        static_cast<size_t>(k) * static_cast<size_t>(Pr);
-    if (recv_count_base + static_cast<size_t>(Pr) >
-            symV2PartnerLRecvSizes.size() ||
-        recv_count_base + static_cast<size_t>(Pr) >
-            symV2PartnerLRecvMap.size())
-        ABORT("SymFact V2 true symmetric partner-L receive sizes are missing.");
-    for (int pr = 0; pr < Pr; ++pr)
-    {
-        size_t pos = recv_count_base + static_cast<size_t>(pr);
-        state.recv_sizes[pr] = symV2PartnerLRecvSizes[pos];
-    }
-    for (int pr = 0; pr < Pr; ++pr)
-    {
-        int size = state.recv_sizes[pr];
-        if (size <= 0)
-            continue;
-        state.recv_offsets[pr] = state.recv_total;
-        state.recv_total += size;
-    }
-    if (state.recv_total > maxSymPartnerLvalCount)
-        ABORT("SymFact V2 true symmetric receive exceeds staging buffer.");
-    if (cuda_aware && state.recv_total > 0 &&
-        A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
-        ABORT("SymFact V2 true symmetric partner staging buffer is missing.");
-    if (!cuda_aware && state.recv_total > 0)
-    {
-        if (static_cast<size_t>(stream_offset) >=
-                symV2PartnerLHostRecvPinnedBufs.size() ||
-            static_cast<size_t>(stream_offset) >=
-                symV2PartnerLHostRecvPinnedSizes.size())
-            ABORT("SymFact V2 true symmetric pinned receive buffer state is missing.");
-        size_t recv_total = static_cast<size_t>(state.recv_total);
-        if (symV2PartnerLHostRecvPinnedBufs[stream_offset] == NULL ||
-            symV2PartnerLHostRecvPinnedSizes[stream_offset] < recv_total)
-        {
-            if (symV2PartnerLHostRecvPinnedBufs[stream_offset] != NULL)
-                gpuErrchk(cudaFreeHost(
-                    symV2PartnerLHostRecvPinnedBufs[stream_offset]));
-            gpuErrchk(cudaMallocHost(
-                (void **)&symV2PartnerLHostRecvPinnedBufs[stream_offset],
-                xlu_checked_product(recv_total, sizeof(double),
-                                    "SymFact V2 partner-L pinned receive buffer")));
-            symV2PartnerLHostRecvPinnedSizes[stream_offset] = recv_total;
-        }
-    }
-
-    state.recv_reqs.reserve(Pr);
-    for (int pr = 0; pr < Pr; ++pr)
-    {
-        int size = state.recv_sizes[pr];
-        int src = PNUM(pr, kcol_, grid);
-        if (size > 0)
-        {
-            MPI_Request req;
-            double *recv_ptr = NULL;
-            if (cuda_aware)
-            {
-                recv_ptr = A_gpu.symPartnerLStageBufs[stream_offset] +
-                           state.recv_offsets[pr];
-            }
-            else
-            {
-                recv_ptr = symV2PartnerLHostRecvPinnedBufs[stream_offset] +
-                           state.recv_offsets[pr];
-            }
-            MPI_Irecv(recv_ptr, size, MPI_DOUBLE, src,
-                      SLU_MPI_TAG(5, k), grid->comm, &req);
-            state.recv_reqs.push_back(req);
-        }
-    }
 
     if (mycol == kcol_)
     {
@@ -499,7 +364,6 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLStartGPU(
         int_t lk = symV2PanelIndex(k);
         xlpanel_t<double> &lpanel = lPanelVec[lk];
         bool packed_any = false;
-        double sym_pack_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
         for (int pc = 0; pc < Pc; ++pc)
         {
             size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
@@ -507,7 +371,7 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLStartGPU(
             if (flat >= symV2PartnerLSendSizes.size())
                 ABORT("SymFact V2 true symmetric partner-L send size is missing.");
             int size = symV2PartnerLSendSizes[flat];
-            state.send_sizes[pc] = size;
+            send_sizes[pc] = size;
             if (size <= 0)
                 continue;
             if (lpanel.isEmpty())
@@ -536,11 +400,6 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLStartGPU(
             gpuErrchk(cudaGetLastError());
             if (!cuda_aware)
             {
-                if (symGPU3DTimingEnabled())
-                    symTimingAdd(SYM_GPU3D_T_PARTNER_L_PACK,
-                                 SuperLU_timer_() - sym_pack_t);
-                double sym_d2h_t =
-                    symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
                 SYM_V2_TRACE_EXCHANGE(grid3d, k, "copy packed L data to host");
                 for (int pc = 0; pc < Pc; ++pc)
                 {
@@ -550,11 +409,9 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLStartGPU(
                     int size = symV2PartnerLSendSizes[flat];
                     if (size <= 0)
                         continue;
-                    if (flat >= symV2PartnerLHostSendBufs.size())
-                        ABORT("SymFact V2 true symmetric host send buffer state is missing.");
-                    size_t send_size = static_cast<size_t>(size);
-                    if (symV2PartnerLHostSendBufs[flat].size() < send_size)
-                        symV2PartnerLHostSendBufs[flat].resize(send_size);
+                    if (symV2PartnerLHostSendBufs[flat].size() <
+                        static_cast<size_t>(size))
+                        ABORT("SymFact V2 true symmetric partner-L host send buffer is too small.");
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     symStatAdd(SYM_GPU3D_S_L2U_HOST_STAGING_BYTES,
                                static_cast<long long>(size) *
@@ -566,189 +423,122 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLStartGPU(
                         sizeof(double) * static_cast<size_t>(size),
                         cudaMemcpyDeviceToHost, stream));
                 }
-                gpuErrchk(cudaEventRecord(state.d2h_done, stream));
-                state.d2h_event_valid = 1;
-                if (symGPU3DTimingEnabled())
-                    symTimingAdd(SYM_GPU3D_T_PARTNER_L_D2H,
-                                 SuperLU_timer_() - sym_d2h_t);
+            }
+            gpuErrchk(cudaStreamSynchronize(stream));
+        }
+    }
+
+    std::vector<MPI_Request> recv_reqs;
+    std::vector<MPI_Request> send_reqs;
+    std::vector<int> recv_sizes(Pr, 0);
+    int recv_total = 0;
+
+    size_t recv_count_base =
+        static_cast<size_t>(k) * static_cast<size_t>(Pr);
+    if (recv_count_base + static_cast<size_t>(Pr) >
+            symV2PartnerLRecvSizes.size() ||
+        recv_count_base + static_cast<size_t>(Pr) >
+            symV2PartnerLRecvMap.size())
+        ABORT("SymFact V2 true symmetric partner-L receive sizes are missing.");
+    for (int pr = 0; pr < Pr; ++pr)
+    {
+        size_t pos = recv_count_base + static_cast<size_t>(pr);
+        recv_sizes[pr] = symV2PartnerLRecvSizes[pos];
+    }
+
+    std::vector<int> recv_offsets(Pr, 0);
+    for (int pr = 0; pr < Pr; ++pr)
+    {
+        int size = recv_sizes[pr];
+        if (size <= 0)
+            continue;
+        recv_offsets[pr] = recv_total;
+        recv_total += size;
+    }
+    if (cuda_aware && recv_total > maxSymPartnerLvalCount)
+        ABORT("SymFact V2 true symmetric CUDA-aware receive exceeds staging buffer.");
+    if (cuda_aware && recv_total > 0 &&
+        A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
+        ABORT("SymFact V2 true symmetric partner staging buffer is missing.");
+
+    std::vector<std::vector<double> > recv_buffers(cuda_aware ? 0 : Pr);
+    recv_reqs.reserve(Pr);
+    for (int pr = 0; pr < Pr; ++pr)
+    {
+        int size = recv_sizes[pr];
+        int src = PNUM(pr, kcol_, grid);
+        if (size > 0)
+        {
+            MPI_Request req;
+            double *recv_ptr = NULL;
+            if (cuda_aware)
+            {
+                recv_ptr = A_gpu.symPartnerLStageBufs[stream_offset] +
+                           recv_offsets[pr];
             }
             else
             {
-                gpuErrchk(cudaEventRecord(state.d2h_done, stream));
-                state.d2h_event_valid = 1;
-                if (symGPU3DTimingEnabled())
-                    symTimingAdd(SYM_GPU3D_T_PARTNER_L_PACK,
-                                 SuperLU_timer_() - sym_pack_t);
+                recv_buffers[pr].resize(size);
+                recv_ptr = recv_buffers[pr].data();
             }
+            MPI_Irecv(recv_ptr, size, MPI_DOUBLE, src,
+                      SLU_MPI_TAG(5, k), grid->comm, &req);
+            recv_reqs.push_back(req);
         }
-        else
-        {
-            state.sends_posted = 1;
-        }
-    }
-    else
-    {
-        state.sends_posted = 1;
     }
 
-    SYM_V2_TRACE_EXCHANGE(grid3d, k,
-                          "started p2p recvs=%d recv_total=%d",
-                          static_cast<int>(state.recv_reqs.size()),
-                          state.recv_total);
-    if (symGPU3DTimingEnabled())
-        symTimingAdd(SYM_GPU3D_T_PARTNER_L_START,
-                     SuperLU_timer_() - sym_start_t);
-    return 0;
-}
-
-template <>
-inline int_t xLUstruct_t<double>::dSymV2PartnerLProgressGPU(
-    int_t stream_offset, int wait_for_d2h)
-{
-    if (options->SymFact != YES || symGPU3DVersion != 2)
-        return 0;
-    if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
-        stream_offset = 0;
-    if (static_cast<size_t>(stream_offset) >= symV2PartnerExchangeStates.size())
-        return 0;
-    SymV2PartnerExchangeState &state =
-        symV2PartnerExchangeStates[stream_offset];
-    if (!state.active || state.sends_posted)
-        return 0;
-    if (!state.source_col)
+    if (mycol == kcol_)
     {
-        state.sends_posted = 1;
-        return 0;
-    }
-    if (state.d2h_event_valid)
-    {
-        double sym_d2h_wait_t =
-            symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
-        cudaError_t event_status = cudaSuccess;
-        if (wait_for_d2h)
-            event_status = cudaEventSynchronize(state.d2h_done);
-        else
-            event_status = cudaEventQuery(state.d2h_done);
-        if (event_status == cudaErrorNotReady)
-            return 0;
-        gpuErrchk(event_status);
-        if (wait_for_d2h && symGPU3DTimingEnabled())
-            symTimingAdd(SYM_GPU3D_T_PARTNER_L_D2H,
-                         SuperLU_timer_() - sym_d2h_wait_t);
-    }
-
-    double sym_post_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
-    int_t send_lk = symV2PanelIndex(state.k);
-    int tag_ub = symFactTagUb;
-    state.send_reqs.reserve(static_cast<size_t>(Pr) * static_cast<size_t>(Pc));
-    for (int pc = 0; pc < Pc; ++pc)
-    {
-        int size = state.send_sizes[pc];
-        size_t flat = static_cast<size_t>(send_lk) * static_cast<size_t>(Pc) +
-                      static_cast<size_t>(pc);
-        double *sendbuf = symV2PartnerLSendBufsGPU[flat];
-        if (size > 0 && sendbuf == NULL)
-            ABORT("SymFact V2 true symmetric partner-L send buffer is missing.");
-        double *hostbuf = NULL;
-        if (size > 0 && !state.cuda_aware)
+        int_t send_lk = symV2PanelIndex(k);
+        send_reqs.reserve(static_cast<size_t>(Pr) * static_cast<size_t>(Pc));
+        for (int pc = 0; pc < Pc; ++pc)
         {
-            if (flat >= symV2PartnerLHostSendBufs.size() ||
-                symV2PartnerLHostSendBufs[flat].size() <
-                    static_cast<size_t>(size))
-                ABORT("SymFact V2 true symmetric host send buffer is missing or too small.");
-            hostbuf = symV2PartnerLHostSendBufs[flat].data();
-        }
-        for (int pr = 0; pr < Pr; ++pr)
-        {
-            int dest = PNUM(pr, pc, grid);
-            if (size > 0)
+            int size = send_sizes[pc];
+            size_t flat = static_cast<size_t>(send_lk) * static_cast<size_t>(Pc) +
+                          static_cast<size_t>(pc);
+            double *hostbuf =
+                (size > 0 && !cuda_aware)
+                    ? symV2PartnerLHostSendBufs[flat].data()
+                    : NULL;
+            double *sendbuf = symV2PartnerLSendBufsGPU[flat];
+            if (size > 0 && sendbuf == NULL)
+                ABORT("SymFact V2 true symmetric partner-L send buffer is missing.");
+            for (int pr = 0; pr < Pr; ++pr)
             {
-                MPI_Request req;
+                int dest = PNUM(pr, pc, grid);
+                if (size > 0)
+                {
+                    MPI_Request req;
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-                if (state.cuda_aware)
-                    symStatAdd(SYM_GPU3D_S_L2U_CUDA_AWARE_SEND_BYTES,
-                               static_cast<long long>(size) *
-                                   static_cast<long long>(sizeof(double)));
+                    if (cuda_aware)
+                        symStatAdd(SYM_GPU3D_S_L2U_CUDA_AWARE_SEND_BYTES,
+                                   static_cast<long long>(size) *
+                                       static_cast<long long>(sizeof(double)));
 #endif
-                MPI_Isend(state.cuda_aware ? sendbuf : hostbuf,
-                          size, MPI_DOUBLE, dest,
-                          SLU_MPI_TAG(5, state.k), grid->comm, &req);
-                state.send_reqs.push_back(req);
+                    MPI_Isend(cuda_aware ? sendbuf : hostbuf,
+                              size, MPI_DOUBLE, dest,
+                              SLU_MPI_TAG(5, k), grid->comm, &req);
+                    send_reqs.push_back(req);
+                }
             }
         }
     }
-    state.sends_posted = 1;
-    if (symGPU3DTimingEnabled())
-        symTimingAdd(SYM_GPU3D_T_PARTNER_L_POST_SEND,
-                     SuperLU_timer_() - sym_post_t);
-    SYM_V2_TRACE_EXCHANGE(grid3d, state.k,
-                          "posted p2p sends=%d recvs=%d recv_total=%d",
-                          static_cast<int>(state.send_reqs.size()),
-                          static_cast<int>(state.recv_reqs.size()),
-                          state.recv_total);
-    return 0;
-}
 
-template <>
-inline int_t xLUstruct_t<double>::dSymV2PartnerLProgressAllGPU(
-    int wait_for_d2h)
-{
-    if (options->SymFact != YES || symGPU3DVersion != 2)
-        return 0;
-    for (int stream = 0; stream < A_gpu.numCudaStreams; ++stream)
-        dSymV2PartnerLProgressGPU(stream, wait_for_d2h);
-    return 0;
-}
+    SYM_V2_TRACE_EXCHANGE(grid3d, k, "posted p2p data sends=%d recvs=%d recv_total=%d",
+                          static_cast<int>(send_reqs.size()),
+                          static_cast<int>(recv_reqs.size()), recv_total);
 
-template <>
-inline int_t xLUstruct_t<double>::dSymV2PartnerLFinishGPU(
-    int_t k, int_t stream_offset, xlpanel_t<double> &partner_panel)
-{
-    if (options->SymFact != YES || symGPU3DVersion != 2)
-        return 0;
-    if (k < 0 || k >= nsupers || LidxSendCounts[k] <= 0)
-        return 0;
-    if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
-        stream_offset = 0;
-    if (static_cast<size_t>(stream_offset) >= symV2PartnerExchangeStates.size())
-        ABORT("SymFact V2 true symmetric partner exchange state is missing.");
-    SymV2PartnerExchangeState &state =
-        symV2PartnerExchangeStates[stream_offset];
-    if (!state.active)
+    if (!recv_reqs.empty())
     {
-        if (state.ready_k == k)
-            return 0;
-        dSymV2PartnerLStartGPU(k, stream_offset);
-        if (!state.active)
-            return 0;
-    }
-    if (state.k != k)
-        ABORT("SymFact V2 true symmetric partner exchange finish received the wrong panel.");
-
-    dSymV2PartnerLProgressGPU(stream_offset, 1);
-
-    if (!state.recv_reqs.empty())
-    {
-        double sym_recv_wait_t =
-            symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
-        MPI_Waitall(static_cast<int>(state.recv_reqs.size()),
-                    state.recv_reqs.data(), MPI_STATUSES_IGNORE);
-        if (symGPU3DTimingEnabled())
-        {
-            double elapsed = SuperLU_timer_() - sym_recv_wait_t;
-            symTimingAdd(SYM_GPU3D_T_PARTNER_L_RECV_WAIT, elapsed);
-            symTimingAdd(SYM_GPU3D_T_PARTNER_L_FINISH_WAIT, elapsed);
-        }
+        MPI_Waitall(static_cast<int>(recv_reqs.size()), recv_reqs.data(),
+                    MPI_STATUSES_IGNORE);
         SYM_V2_TRACE_EXCHANGE(grid3d, k, "finished p2p receives");
     }
 
-    cudaStream_t stream = A_gpu.cuStreams[stream_offset];
-    int_t ksupc = state.ksupc;
-    double sym_unpack_t = symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
     if (static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
         ABORT("SymFact V2 true symmetric partner cached index is missing.");
     const std::vector<int_t> &cached_index = symV2PartnerLRecvIndex[k];
-    if (state.recv_total > 0 && cached_index.empty())
+    if (recv_total > 0 && cached_index.empty())
         ABORT("SymFact V2 true symmetric received partner data without a cached panel.");
 
     int_t partner_nblocks =
@@ -790,8 +580,6 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLFinishGPU(
         if (A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
             ABORT("SymFact V2 true symmetric partner staging buffer is missing.");
 
-        double sym_h2d_unpack_t =
-            symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
         gpuErrchk(cudaMemcpyAsync(partner_panel.gpuPanel.index,
                                   partner_panel.index,
                                   sizeof(int_t) *
@@ -804,27 +592,20 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLFinishGPU(
 
         for (int pr = 0; pr < Pr; ++pr)
         {
-            int count = state.recv_sizes[pr];
+            int count = recv_sizes[pr];
             if (count <= 0)
                 continue;
             const std::vector<int_t> &recv_map =
-                symV2PartnerLRecvMap[static_cast<size_t>(k) *
-                                          static_cast<size_t>(Pr) +
+                symV2PartnerLRecvMap[recv_count_base +
                                       static_cast<size_t>(pr)];
             double *stage = A_gpu.symPartnerLStageBufs[stream_offset];
-            if (state.cuda_aware)
+            if (cuda_aware)
             {
-                stage += state.recv_offsets[pr];
+                stage += recv_offsets[pr];
             }
             else
             {
-                if (static_cast<size_t>(stream_offset) >=
-                        symV2PartnerLHostRecvPinnedBufs.size() ||
-                    symV2PartnerLHostRecvPinnedBufs[stream_offset] == NULL)
-                    ABORT("SymFact V2 true symmetric pinned receive buffer is missing.");
-                double *recv_data =
-                    symV2PartnerLHostRecvPinnedBufs[stream_offset] +
-                    state.recv_offsets[pr];
+                double *recv_data = recv_buffers[pr].data();
                 gpuErrchk(cudaMemcpyAsync(
                     stage, recv_data,
                     sizeof(double) * static_cast<size_t>(count),
@@ -857,9 +638,13 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLFinishGPU(
             if (pos != end)
                 ABORT("SymFact V2 true symmetric partner buffer has extra data.");
         }
-        if (symGPU3DTimingEnabled())
-            symTimingAdd(SYM_GPU3D_T_PARTNER_L_H2D_UNPACK,
-                         SuperLU_timer_() - sym_h2d_unpack_t);
+    }
+
+    if (!send_reqs.empty())
+    {
+        MPI_Waitall(static_cast<int>(send_reqs.size()), send_reqs.data(),
+                    MPI_STATUSES_IGNORE);
+        SYM_V2_TRACE_EXCHANGE(grid3d, k, "finished p2p sends");
     }
 
     if (have_partner_panel)
@@ -874,42 +659,9 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLFinishGPU(
                                   cudaMemcpyHostToDevice, stream));
         gpuErrchk(cudaStreamSynchronize(stream));
     }
-    if (symGPU3DTimingEnabled() &&
-        (state.recv_total > 0 || !partner_panel.isEmpty()))
-        symTimingAdd(SYM_GPU3D_T_PARTNER_L_UNPACK,
-                     SuperLU_timer_() - sym_unpack_t);
 
-    if (!state.send_reqs.empty())
-    {
-        double sym_send_wait_t =
-            symGPU3DTimingEnabled() ? SuperLU_timer_() : 0.0;
-        MPI_Waitall(static_cast<int>(state.send_reqs.size()),
-                    state.send_reqs.data(),
-                    MPI_STATUSES_IGNORE);
-        if (symGPU3DTimingEnabled())
-            symTimingAdd(SYM_GPU3D_T_PARTNER_L_SEND_WAIT,
-                         SuperLU_timer_() - sym_send_wait_t);
-        SYM_V2_TRACE_EXCHANGE(grid3d, k, "finished p2p sends");
-    }
-
-    state.recv_reqs.clear();
-    state.send_reqs.clear();
-    state.active = 0;
-    state.k = -1;
-    state.ready_k = k;
-    state.stream_offset = -1;
-    state.sends_posted = 0;
-    state.d2h_event_valid = 0;
     SYM_V2_TRACE_EXCHANGE(grid3d, k, "leave partner exchange");
     return 0;
-}
-
-template <>
-inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastGPU(
-    int_t k, int_t stream_offset, xlpanel_t<double> &partner_panel)
-{
-    dSymV2PartnerLStartGPU(k, stream_offset);
-    return dSymV2PartnerLFinishGPU(k, stream_offset, partner_panel);
 }
 
 template <>
