@@ -561,6 +561,10 @@ struct xLUstruct_t
     std::vector<int_t *> symL2USendMapsGPU;
     std::vector<double *> symV2PartnerLSendBufsGPU;
     std::vector<int_t *> symL2LSendMapsGPU;
+    double *symV2PartnerLSendBufPoolGPU;
+    int_t *symL2LSendMapPoolGPU;
+    size_t symV2PartnerLSendBufPoolCount;
+    size_t symL2LSendMapPoolCount;
     std::vector<std::vector<int_t> > symL2LSendMeta;
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
     std::vector<int> symV2PartnerLSendSizes;
