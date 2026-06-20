@@ -354,6 +354,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     if (symV2PartnerLSendBufsGPU.empty() || symL2LSendMapsGPU.empty() ||
         symV2PartnerLHostSendBufs.empty() ||
         symV2PartnerLSendSizes.empty() ||
+        symV2PartnerLSendRowActive.empty() ||
         symV2PartnerLRecvSizes.empty() ||
         symV2PartnerLRecvIndex.empty() ||
         symV2PartnerLRecvMap.empty() ||
@@ -404,6 +405,22 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             send_sizes[pc] = size;
             if (size <= 0)
                 continue;
+            bool active_dest = false;
+            for (int pr = 0; pr < Pr; ++pr)
+            {
+                size_t active_pos =
+                    flat * static_cast<size_t>(Pr) +
+                    static_cast<size_t>(pr);
+                if (active_pos >= symV2PartnerLSendRowActive.size())
+                    ABORT("SymFact V2 true symmetric L-fragment send row mask is missing.");
+                if (symV2PartnerLSendRowActive[active_pos])
+                {
+                    active_dest = true;
+                    break;
+                }
+            }
+            if (!active_dest)
+                continue;
             if (lpanel.isEmpty())
                 ABORT("SymFact V2 true symmetric source L panel is missing.");
 
@@ -444,6 +461,22 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                   static_cast<size_t>(pc);
                     int size = symV2PartnerLSendSizes[flat];
                     if (size <= 0)
+                        continue;
+                    bool active_dest = false;
+                    for (int pr = 0; pr < Pr; ++pr)
+                    {
+                        size_t active_pos =
+                            flat * static_cast<size_t>(Pr) +
+                            static_cast<size_t>(pr);
+                        if (active_pos >= symV2PartnerLSendRowActive.size())
+                            ABORT("SymFact V2 true symmetric L-fragment send row mask is missing.");
+                        if (symV2PartnerLSendRowActive[active_pos])
+                        {
+                            active_dest = true;
+                            break;
+                        }
+                    }
+                    if (!active_dest)
                         continue;
                     if (symV2PartnerLHostSendBufs[flat].size() <
                         static_cast<size_t>(size))
@@ -546,6 +579,13 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 ABORT("SymFact V2 true symmetric L-fragment send buffer is missing.");
             for (int pr = 0; pr < Pr; ++pr)
             {
+                size_t active_pos =
+                    flat * static_cast<size_t>(Pr) +
+                    static_cast<size_t>(pr);
+                if (active_pos >= symV2PartnerLSendRowActive.size())
+                    ABORT("SymFact V2 true symmetric L-fragment send row mask is missing.");
+                if (!symV2PartnerLSendRowActive[active_pos])
+                    continue;
                 int dest = PNUM(pr, pc, grid);
                 MPI_Request req;
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING

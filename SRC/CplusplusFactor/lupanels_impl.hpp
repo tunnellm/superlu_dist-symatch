@@ -1227,6 +1227,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symL2LSendMeta.assign(l2u_slots, std::vector<int_t>());
         symV2PartnerLHostSendBufs.assign(l2u_slots, std::vector<double>());
         symV2PartnerLSendSizes.assign(l2u_slots, 0);
+        symV2PartnerLSendRowActive.assign(
+            xlu_checked_product(l2u_slots, static_cast<size_t>(Pr),
+                                "SymFact V2 partner-L send row activity"),
+            0);
         symPanelReadyEventIds.assign(nsupers, -1);
         symDiagPrefetchEventIds.assign(nsupers, -1);
         std::vector<size_t> symV2PartnerLMapOffsets(l2u_slots, 0);
@@ -1801,6 +1805,227 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     SYM_V2_SETUP_PARTNER_META_ALLGATHER,
                     SuperLU_timer_() - tPartnerMetaAllgather);
 
+            size_t compact_count = xlu_checked_product(
+                static_cast<size_t>(nsupers), static_cast<size_t>(Pr),
+                "SymFact V2 partner-L compact receive count table");
+            std::vector<unsigned char> local_receive_demand(compact_count, 0);
+            std::vector<std::vector<int_t> > row_blocks_by_panel(nsupers);
+
+            for (int r = 0; r < comm_size; ++r)
+            {
+                size_t meta_pos = static_cast<size_t>(meta_displs[r]);
+                size_t rank_end =
+                    meta_pos + static_cast<size_t>(meta_counts[r]);
+                int source_pr = MYROW(r, grid);
+                while (meta_pos < rank_end)
+                {
+                    if (meta_pos + 3 > rank_end)
+                        ABORT("SymFact V2 partner-L metadata payload is truncated.");
+                    int_t target_pc = all_meta_payload[meta_pos++];
+                    int_t k0 = all_meta_payload[meta_pos++];
+                    int_t meta_len = all_meta_payload[meta_pos++];
+                    if (target_pc < 0 || target_pc >= Pc || k0 < 0 ||
+                        k0 >= nsupers || meta_len < 0 ||
+                        meta_pos + static_cast<size_t>(meta_len) > rank_end)
+                        ABORT("SymFact V2 partner-L metadata payload is invalid.");
+
+                    size_t block_pos = meta_pos;
+                    size_t block_end =
+                        meta_pos + static_cast<size_t>(meta_len);
+                    if (source_pr == myrow)
+                    {
+                        std::vector<int_t> &row_blocks =
+                            row_blocks_by_panel[k0];
+                        while (block_pos < block_end)
+                        {
+                            if (block_pos + 2 > block_end)
+                                ABORT("SymFact V2 partner-L metadata block is truncated.");
+                            int_t gid = all_meta_payload[block_pos++];
+                            int_t len = all_meta_payload[block_pos++];
+                            if (len < 0 ||
+                                block_pos + static_cast<size_t>(len) >
+                                    block_end)
+                                ABORT("SymFact V2 partner-L metadata block has invalid length.");
+                            row_blocks.push_back(gid);
+                            block_pos += static_cast<size_t>(len);
+                        }
+                    }
+                    meta_pos += static_cast<size_t>(meta_len);
+                }
+            }
+
+            for (int_t k0 = 0; k0 < nsupers; ++k0)
+            {
+                std::vector<int_t> &row_blocks = row_blocks_by_panel[k0];
+                if (row_blocks.empty())
+                    continue;
+                std::sort(row_blocks.begin(), row_blocks.end());
+                row_blocks.erase(std::unique(row_blocks.begin(),
+                                             row_blocks.end()),
+                                 row_blocks.end());
+            }
+
+            for (int r = 0; r < comm_size; ++r)
+            {
+                size_t meta_pos = static_cast<size_t>(meta_displs[r]);
+                size_t rank_end =
+                    meta_pos + static_cast<size_t>(meta_counts[r]);
+                int source_pr = MYROW(r, grid);
+                while (meta_pos < rank_end)
+                {
+                    if (meta_pos + 3 > rank_end)
+                        ABORT("SymFact V2 partner-L metadata payload is truncated.");
+                    int_t target_pc = all_meta_payload[meta_pos++];
+                    int_t k0 = all_meta_payload[meta_pos++];
+                    int_t meta_len = all_meta_payload[meta_pos++];
+                    if (target_pc < 0 || target_pc >= Pc || k0 < 0 ||
+                        k0 >= nsupers || meta_len < 0 ||
+                        meta_pos + static_cast<size_t>(meta_len) > rank_end)
+                        ABORT("SymFact V2 partner-L metadata payload is invalid.");
+
+                    size_t block_pos = meta_pos;
+                    size_t block_end =
+                        meta_pos + static_cast<size_t>(meta_len);
+                    bool demand_chunk = false;
+                    if (target_pc == mycol)
+                    {
+                        const std::vector<int_t> &row_blocks =
+                            row_blocks_by_panel[k0];
+                        while (block_pos < block_end)
+                        {
+                            if (block_pos + 2 > block_end)
+                                ABORT("SymFact V2 partner-L metadata block is truncated.");
+                            int_t gj = all_meta_payload[block_pos++];
+                            int_t len = all_meta_payload[block_pos++];
+                            if (len < 0 ||
+                                block_pos + static_cast<size_t>(len) >
+                                    block_end)
+                                ABORT("SymFact V2 partner-L metadata block has invalid length.");
+                            if (!demand_chunk && !row_blocks.empty() &&
+                                symV2PanelRoot(gj) == mycol)
+                            {
+                                int_t lj = symV2PanelIndex(gj);
+                                if (lj >= 0)
+                                {
+                                    xlpanel_t<double> &dst_panel =
+                                        lPanelVec[lj];
+                                    if (!dst_panel.isEmpty())
+                                    {
+                                        std::vector<int_t>::const_iterator it =
+                                            std::lower_bound(row_blocks.begin(),
+                                                             row_blocks.end(),
+                                                             gj);
+                                        for (; it != row_blocks.end(); ++it)
+                                        {
+                                            if (dst_panel.find(*it) !=
+                                                GLOBAL_BLOCK_NOT_FOUND)
+                                            {
+                                                demand_chunk = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            block_pos += static_cast<size_t>(len);
+                        }
+                    }
+                    if (demand_chunk)
+                    {
+                        size_t demand_pos =
+                            static_cast<size_t>(k0) *
+                                static_cast<size_t>(Pr) +
+                            static_cast<size_t>(source_pr);
+                        local_receive_demand[demand_pos] = 1;
+                    }
+                    meta_pos = block_end;
+                }
+            }
+
+            std::vector<int_t> local_demand_payload;
+            for (int_t k0 = 0; k0 < nsupers; ++k0)
+            {
+                for (int pr = 0; pr < Pr; ++pr)
+                {
+                    size_t demand_pos =
+                        static_cast<size_t>(k0) *
+                            static_cast<size_t>(Pr) +
+                        static_cast<size_t>(pr);
+                    if (!local_receive_demand[demand_pos])
+                        continue;
+                    local_demand_payload.push_back(mycol);
+                    local_demand_payload.push_back(myrow);
+                    local_demand_payload.push_back(k0);
+                    local_demand_payload.push_back(pr);
+                }
+            }
+            if (local_demand_payload.size() >
+                static_cast<size_t>(std::numeric_limits<int>::max()))
+                ABORT("SymFact V2 partner-L demand payload is too large for MPI.");
+
+            int local_demand_count =
+                static_cast<int>(local_demand_payload.size());
+            std::vector<int> demand_counts(comm_size, 0);
+            MPI_Allgather(&local_demand_count, 1, MPI_INT,
+                          demand_counts.data(), 1, MPI_INT, grid->comm);
+
+            std::vector<int> demand_displs(comm_size, 0);
+            long long total_demand_count = 0;
+            for (int r = 0; r < comm_size; ++r)
+            {
+                if (demand_counts[r] < 0)
+                    ABORT("SymFact V2 partner-L demand count is invalid.");
+                if (total_demand_count >
+                    static_cast<long long>(std::numeric_limits<int>::max()))
+                    ABORT("SymFact V2 partner-L demand payload is too large for MPI.");
+                demand_displs[r] = static_cast<int>(total_demand_count);
+                total_demand_count += demand_counts[r];
+            }
+            if (total_demand_count >
+                static_cast<long long>(std::numeric_limits<int>::max()))
+                ABORT("SymFact V2 partner-L demand payload is too large for MPI.");
+
+            std::vector<int_t> all_demand_payload(
+                static_cast<size_t>(total_demand_count));
+            MPI_Allgatherv(local_demand_payload.empty()
+                               ? NULL
+                               : local_demand_payload.data(),
+                           local_demand_count, mpi_int_t,
+                           all_demand_payload.empty()
+                               ? NULL
+                               : all_demand_payload.data(),
+                           demand_counts.data(), demand_displs.data(),
+                           mpi_int_t, grid->comm);
+
+            for (size_t pos = 0; pos < all_demand_payload.size();)
+            {
+                if (pos + 4 > all_demand_payload.size())
+                    ABORT("SymFact V2 partner-L demand payload is truncated.");
+                int_t target_pc = all_demand_payload[pos++];
+                int_t dest_pr = all_demand_payload[pos++];
+                int_t k0 = all_demand_payload[pos++];
+                int_t source_pr = all_demand_payload[pos++];
+                if (target_pc < 0 || target_pc >= Pc ||
+                    dest_pr < 0 || dest_pr >= Pr ||
+                    k0 < 0 || k0 >= nsupers ||
+                    source_pr < 0 || source_pr >= Pr)
+                    ABORT("SymFact V2 partner-L demand payload is invalid.");
+                if (source_pr != myrow || symV2PanelRoot(k0) != mycol)
+                    continue;
+                int_t lk = symV2PanelIndex(k0);
+                if (lk < 0)
+                    continue;
+                size_t flat =
+                    static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                    static_cast<size_t>(target_pc);
+                size_t active_pos =
+                    flat * static_cast<size_t>(Pr) +
+                    static_cast<size_t>(dest_pr);
+                if (active_pos >= symV2PartnerLSendRowActive.size())
+                    ABORT("SymFact V2 partner-L send demand index is invalid.");
+                symV2PartnerLSendRowActive[active_pos] = 1;
+            }
+
             double tPartnerRecvMapBuild =
                 profile_setup ? SuperLU_timer_() : 0.0;
             struct SymV2CachedPartnerBlock
@@ -1810,9 +2035,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             };
             std::vector<std::vector<SymV2CachedPartnerBlock> >
                 cached_partner_blocks(nsupers);
-            size_t compact_count = xlu_checked_product(
-                static_cast<size_t>(nsupers), static_cast<size_t>(Pr),
-                "SymFact V2 partner-L compact receive count table");
             std::vector<std::vector<SymV2CachedPartnerBlock> >
                 cached_partner_recv_blocks(compact_count);
 
@@ -1836,7 +2058,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     size_t block_pos = meta_pos;
                     size_t block_end =
                         meta_pos + static_cast<size_t>(meta_len);
-                    if (target_pc == mycol)
+                    size_t demand_pos =
+                        static_cast<size_t>(k0) *
+                            static_cast<size_t>(Pr) +
+                        static_cast<size_t>(source_pr);
+                    if (target_pc == mycol &&
+                        local_receive_demand[demand_pos])
                     {
                         while (block_pos < block_end)
                         {
@@ -1881,7 +2108,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                          static_cast<size_t>(Pr) +
                                      static_cast<size_t>(pr);
                     symV2PartnerLRecvSizes[dst_pos] =
-                        global_recv_sizes[src_pos];
+                        local_receive_demand[dst_pos]
+                            ? global_recv_sizes[src_pos]
+                            : 0;
                 }
 
                 std::vector<SymV2CachedPartnerBlock> &blocks =
@@ -2091,6 +2320,7 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symL2LSendMeta.clear();
     symV2PartnerLHostSendBufs.clear();
     symV2PartnerLSendSizes.clear();
+    symV2PartnerLSendRowActive.clear();
     symV2PartnerLRecvSizes.clear();
     symV2PartnerLRecvIndex.clear();
     symV2PartnerLRecvMap.clear();
