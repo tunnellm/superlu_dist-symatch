@@ -9440,7 +9440,8 @@ pdgstrs3d_symldl_tree_comms_create(dtrf3Dpartition_t *trf3Dpartition,
         for (int_t k = 0; k < nsupers; ++k) {
             int_t tree = trf3Dpartition->supernode2treeMap[k];
             pdgstrs3d_symldl_panel_meta_t *kmeta = &panel_meta[k];
-            if (tree < 0 || tree >= numForests || !kmeta->has_panel)
+            if (tree < 0 || tree >= numForests || !kmeta->has_panel ||
+                grid3d->zscp.Iam != 0)
                 continue;
             local_active[tree * global_nprocs + global_rank] = 1;
             for (int_t row = 0; row < kmeta->row_count; ++row) {
@@ -9719,6 +9720,7 @@ pdgstrs3d_symldl_comm_meta_create(int_t nsupers,
         int root_rank;
         int local_need_xk;
         int local_has_diag;
+        int local_panel_active;
 
         cmeta->active = 0;
         cmeta->nprocs = 0;
@@ -9765,7 +9767,8 @@ pdgstrs3d_symldl_comm_meta_create(int_t nsupers,
 
         root_rank = pdgstrs3d_symldl_rank_to_tree_rank(tree_comm,
                                                        diag_owner[k]);
-        local_need_xk = (kmeta->has_panel && kmeta->row_count > 0);
+        local_panel_active = kmeta->has_panel && grid3d->zscp.Iam == 0;
+        local_need_xk = (local_panel_active && kmeta->row_count > 0);
         cmeta->needs_xk = local_need_xk;
         MPI_Allgather(&local_need_xk, 1, MPI_INT, fill_counts, 1, MPI_INT,
                       solve_comm);
@@ -9803,7 +9806,7 @@ pdgstrs3d_symldl_comm_meta_create(int_t nsupers,
                     cmeta->diag_ranks[owner++] = p;
         }
 
-        if (kmeta->has_panel && kmeta->row_count > 0) {
+        if (local_panel_active && kmeta->row_count > 0) {
             int row_count = pdgstrs3d_symldl_count_to_int(
                 kmeta->row_count, "SymLDL communication schedule rows");
             if (!(cmeta->row_to_send_pos = (int *) SUPERLU_MALLOC(
