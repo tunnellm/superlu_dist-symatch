@@ -67,6 +67,13 @@ extern "C"
         return 0;
     }
 
+    void dPrintLUgpuSetupProfile(dLUgpu_Handle LuH)
+    {
+        xLUstruct_t<double> *LU_v1 = reinterpret_cast<xLUstruct_t<double> *>(LuH);
+        if (LU_v1 != NULL)
+            LU_v1->printSymV2SetupProfile();
+    }
+
     void dSymLDLFactorGPUSynchronize(dLUgpu_Handle LuH)
     {
         (void) LuH;

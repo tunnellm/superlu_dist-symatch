@@ -380,6 +380,75 @@ struct xLUstruct_t
     double symContract1MaxResid = 0.0;
     std::vector<Ftype *> symV2DiagBlocks;
     std::vector<Ftype *> symV2DiagBlocksGPU;
+    enum SymV2SetupProfileId
+    {
+        SYM_V2_SETUP_NODE_MASK = 0,
+        SYM_V2_SETUP_PANEL_VEC_BUILD,
+        SYM_V2_SETUP_SEND_COUNT_EXCHANGE,
+        SYM_V2_SETUP_PARTNER_SCRATCH_SIZE,
+        SYM_V2_SETUP_CPU_WORKSPACE_ALLOC,
+        SYM_V2_SETUP_RECV_BUFFER_ALLOC,
+        SYM_V2_SETUP_DIAG_BUFFER_ALLOC,
+        SYM_V2_SETUP_INIT_SYM_WORKSPACE,
+        SYM_V2_SETUP_SYM_CPU_WORKSPACE,
+        SYM_V2_SETUP_PARTNER_SEND_MAP_BUILD,
+        SYM_V2_SETUP_PARTNER_SEND_GPU_ALLOC_COPY,
+        SYM_V2_SETUP_PARTNER_RECV_COUNT_ALLREDUCE,
+        SYM_V2_SETUP_PARTNER_META_ALLGATHER,
+        SYM_V2_SETUP_PARTNER_RECV_MAP_BUILD,
+        SYM_V2_SETUP_SET_GPU_TOTAL,
+        SYM_V2_SETUP_GPU_MEM_ESTIMATE,
+        SYM_V2_SETUP_COPY_L_PANELS_TO_GPU,
+        SYM_V2_SETUP_SYM_V2_INDEX_COPY,
+        SYM_V2_SETUP_GPU_PANEL_STRUCT_COPY,
+        SYM_V2_SETUP_GPU_DIAG_FACTOR_SETUP,
+        SYM_V2_SETUP_PER_STREAM_BUFFER_ALLOC,
+        SYM_V2_SETUP_DFBUF_GEMMBUF_ALLOC,
+        SYM_V2_SETUP_STREAM_HANDLE_CREATE,
+        SYM_V2_SETUP_DIAG_PREFETCH_ALLOC,
+        SYM_V2_SETUP_DEVICE_STRUCT_COPY,
+        SYM_V2_SETUP_COUNT
+    };
+
+    int symV2SetupProfileEnabled = 0;
+    int symV2SetupProfilePrinted = 0;
+    double symV2SetupProfileTime[SYM_V2_SETUP_COUNT] = {};
+    long long symV2SetupProfileCount[SYM_V2_SETUP_COUNT] = {};
+
+    bool symV2SetupProfileActive() const
+    {
+        return symV2SetupProfileEnabled != 0;
+    }
+
+    void symV2SetupProfileAdd(SymV2SetupProfileId id, double elapsed)
+    {
+        if (!symV2SetupProfileActive())
+            return;
+        symV2SetupProfileTime[id] += elapsed;
+        symV2SetupProfileCount[id] += 1;
+    }
+
+    struct SymV2SetupProfileScope
+    {
+        xLUstruct_t<Ftype> *owner;
+        SymV2SetupProfileId id;
+        bool active;
+        double start;
+
+        SymV2SetupProfileScope(xLUstruct_t<Ftype> *owner_,
+                               SymV2SetupProfileId id_)
+            : owner(owner_), id(id_),
+              active(owner_ != NULL && owner_->symV2SetupProfileActive()),
+              start(active ? SuperLU_timer_() : 0.0) {}
+
+        ~SymV2SetupProfileScope()
+        {
+            if (active)
+                owner->symV2SetupProfileAdd(id, SuperLU_timer_() - start);
+        }
+    };
+
+    void printSymV2SetupProfile();
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     enum SymGPU3DTimingId
     {

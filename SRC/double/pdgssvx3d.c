@@ -1821,12 +1821,15 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 #ifdef TEMPLATED_VERSION
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "before dCreateLUgpuHandle");
 	dSymV2Trace(grid3d, "before dCreateLUgpuHandle");
-	double gpu3d_create_time = SuperLU_timer_();
-	dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct, grid3d,
+		double gpu3d_create_time = SuperLU_timer_();
+		dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct, grid3d,
 							  SCT, options, stat, thresh, info);
-	gpu3d_create_time = SuperLU_timer_() - gpu3d_create_time;
-	SLU_SYM_GPU3D_TRACE_C(grid3d, "after dCreateLUgpuHandle");
-	dSymV2Trace(grid3d, "after dCreateLUgpuHandle");
+		gpu3d_create_time = SuperLU_timer_() - gpu3d_create_time;
+		if (options->SymFact == YES && gpu3dVersion == 2 &&
+		    dSymV2ProfileEnabled())
+			dPrintLUgpuSetupProfile(dLUgpu);
+		SLU_SYM_GPU3D_TRACE_C(grid3d, "after dCreateLUgpuHandle");
+		dSymV2Trace(grid3d, "after dCreateLUgpuHandle");
 
 				/* call pdgstrf3d() in C++ code */
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "before pdgstrf3d_LUv1");
@@ -1872,7 +1875,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	gpu3d_destroy_time = SuperLU_timer_() - gpu3d_destroy_time;
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "after dDestroyLUgpuHandle");
 	dSymV2Trace(grid3d, "after dDestroyLUgpuHandle");
-		if (options->SymFact == YES && gpu3dVersion == 2)
+		if (options->SymFact == YES && gpu3dVersion == 2 &&
+		    dSymV2ProfileEnabled())
 		{
 			double local_times[4] = {
 				gpu3d_create_time,

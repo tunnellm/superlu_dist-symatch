@@ -214,6 +214,90 @@ static inline double xlu_sym_inverse_scaled_residual(const double *a, int lda,
     return err_norm / denom;
 }
 
+template <typename Ftype>
+void xLUstruct_t<Ftype>::printSymV2SetupProfile()
+{
+    static const char *labels[SYM_V2_SETUP_COUNT] = {
+        "node_mask",
+        "panel_vec_build",
+        "send_count_exchange",
+        "partner_scratch_size",
+        "cpu_workspace_alloc",
+        "recv_buffer_alloc",
+        "diag_buffer_alloc",
+        "init_sym_workspace",
+        "sym_cpu_workspace",
+        "partner_send_map_build",
+        "partner_send_gpu_alloc_copy",
+        "partner_recv_count_allreduce",
+        "partner_meta_allgather",
+        "partner_recv_map_build",
+        "set_gpu_total",
+        "gpu_mem_estimate",
+        "copy_l_panels_to_gpu",
+        "sym_v2_index_copy",
+        "gpu_panel_struct_copy",
+        "gpu_diag_factor_setup",
+        "per_stream_buffer_alloc",
+        "dfbuf_gemmbuf_alloc",
+        "stream_handle_create",
+        "diag_prefetch_alloc",
+        "device_struct_copy"
+    };
+
+    if (!symV2SetupProfileActive() || symV2SetupProfilePrinted ||
+        grid3d == NULL)
+        return;
+    symV2SetupProfilePrinted = 1;
+
+    int mpi_initialized = 0;
+    int mpi_finalized = 0;
+    MPI_Initialized(&mpi_initialized);
+    MPI_Finalized(&mpi_finalized);
+    if (!mpi_initialized || mpi_finalized)
+        return;
+
+    double sum_time[SYM_V2_SETUP_COUNT] = {};
+    double max_time[SYM_V2_SETUP_COUNT] = {};
+    long long sum_count[SYM_V2_SETUP_COUNT] = {};
+    struct { double val; int rank; } local_max_time[SYM_V2_SETUP_COUNT];
+    struct { double val; int rank; } global_max_time[SYM_V2_SETUP_COUNT];
+    int nranks = 1;
+
+    for (int i = 0; i < SYM_V2_SETUP_COUNT; ++i)
+    {
+        local_max_time[i].val = symV2SetupProfileTime[i];
+        local_max_time[i].rank = grid3d->iam;
+    }
+
+    MPI_Comm_size(grid3d->comm, &nranks);
+    MPI_Reduce(symV2SetupProfileTime, sum_time, SYM_V2_SETUP_COUNT,
+               MPI_DOUBLE, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(symV2SetupProfileTime, max_time, SYM_V2_SETUP_COUNT,
+               MPI_DOUBLE, MPI_MAX, 0, grid3d->comm);
+    MPI_Reduce(local_max_time, global_max_time, SYM_V2_SETUP_COUNT,
+               MPI_DOUBLE_INT, MPI_MAXLOC, 0, grid3d->comm);
+    MPI_Reduce(symV2SetupProfileCount, sum_count, SYM_V2_SETUP_COUNT,
+               MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
+
+    if (grid3d->iam != 0)
+        return;
+
+    printf("SymFact GPU3D V2 setup profile (GPU3DV2_PROFILE=1):\n");
+    printf("  %-32s %12s %12s %12s %9s %12s\n",
+           "phase", "sum(s)", "avg_rank(s)", "max_rank(s)", "rank", "calls");
+    for (int i = 0; i < SYM_V2_SETUP_COUNT; ++i)
+    {
+        if (sum_count[i] == 0 && sum_time[i] == 0.0 && max_time[i] == 0.0)
+            continue;
+        double avg = (nranks > 0) ? sum_time[i] / (double)nranks : 0.0;
+        printf("  %-32s %12.6f %12.6f %12.6f %9d %12lld\n",
+               labels[i], sum_time[i], avg, max_time[i],
+               global_max_time[i].rank, sum_count[i]);
+    }
+    fflush(stdout);
+}
+
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
 template <typename Ftype>
 void xLUstruct_t<Ftype>::printSymGPU3DTiming()
@@ -520,6 +604,8 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
 {
     if (options->SymFact != YES || symGPU3DVersion != 2 || Pr <= 1)
         return 0;
+    SymV2SetupProfileScope profile_scope(
+        this, SYM_V2_SETUP_PARTNER_SCRATCH_SIZE);
 
     size_t partner_count_size = xlu_checked_product(
         static_cast<size_t>(nsupers), static_cast<size_t>(Pc),
@@ -588,10 +674,8 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
             static_cast<long long>(std::numeric_limits<int_t>::max()))
         ABORT("SymFact V2 partner-L scratch size exceeds int_t range.");
 
-    maxSymPartnerLvalCount =
-        std::max(maxLvalCount, static_cast<int_t>(max_partner_val));
-    maxSymPartnerLidxCount =
-        std::max(maxLidxCount, static_cast<int_t>(max_partner_idx));
+    maxSymPartnerLvalCount = static_cast<int_t>(max_partner_val);
+    maxSymPartnerLidxCount = static_cast<int_t>(max_partner_idx);
     return 0;
 }
 
@@ -621,7 +705,15 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     myrow = MYROW(iam, grid);
     mycol = MYCOL(iam, grid);
     symGPU3DVersion = (options->SymFact == YES) ? xlu_gpu3d_version() : 0;
+    {
+        const char *profile_env = std::getenv("GPU3DV2_PROFILE");
+        symV2SetupProfileEnabled =
+            (options->SymFact == YES && symGPU3DVersion == 2 &&
+             profile_env != NULL && profile_env[0] != '\0' &&
+             profile_env[0] != '0');
+    }
     maxLvl = symV2ForestLevelCount();
+    double tSetupNodeMask = SuperLU_timer_();
     if (symV2ScheduleActive())
     {
         isNodeInMyGrid = int32Calloc_dist((int) nsupers);
@@ -640,6 +732,8 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
                                            trf3Dpartition->myNodeCount,
                                            trf3Dpartition->treePerm);
     }
+    symV2SetupProfileAdd(SYM_V2_SETUP_NODE_MASK,
+                         SuperLU_timer_() - tSetupNodeMask);
     superlu_acc_offload = sp_ienv_dist(10, options); // get_acc_offload();
     xlu_sym_gpu3d_trace(grid3d, "constructor after isNodeInMyGrid");
 
@@ -678,6 +772,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     int_t rowVecCount = SUPERLU_MAX((int_t)1, localRowCount);
     bool sym_v2_mode = (options->SymFact == YES && symGPU3DVersion == 2);
     bool need_u_panel_storage = needsUPanelStorage();
+    double tSetupPanelVec = SuperLU_timer_();
     lPanelVec = new xlpanel_t<Ftype>[panelVecCount];
     uPanelVec = need_u_panel_storage ? new xupanel_t<Ftype>[rowVecCount] : NULL;
     xlu_sym_gpu3d_trace(grid3d, "constructor after panel vector allocation");
@@ -732,6 +827,8 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             localUidxSendCounts[i] = uPanelVec[i].indexSize();
         }
     }
+    symV2SetupProfileAdd(SYM_V2_SETUP_PANEL_VEC_BUILD,
+                         SuperLU_timer_() - tSetupPanelVec);
 
     // compute the send sizes
     // send and recv count for 2d comm
@@ -742,6 +839,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 
     std::vector<int_t> recvBuf(std::max(rowVecCount, panelVecCount), 0);
 
+    double tSetupSendCounts = SuperLU_timer_();
     if (!sym_v2_mode)
     {
         for (int pr = 0; pr < Pr; pr++)
@@ -810,9 +908,11 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxUidxCount = sym_v2_mode ? 0 : *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
     maxLvalCount = *std::max_element(LvalSendCounts.begin(), LvalSendCounts.end());
     maxLidxCount = *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end());
-    maxSymPartnerLvalCount = maxLvalCount;
-    maxSymPartnerLidxCount = maxLidxCount;
+    maxSymPartnerLvalCount = sym_v2_mode ? 0 : maxLvalCount;
+    maxSymPartnerLidxCount = sym_v2_mode ? 0 : maxLidxCount;
     dSymV2ComputePartnerScratchSize(LUstruct);
+    symV2SetupProfileAdd(SYM_V2_SETUP_SEND_COUNT_EXCHANGE,
+                         SuperLU_timer_() - tSetupSendCounts);
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
     std::printf("[sym-gpu3d-trace] rank %d: constructor counts nsupers=%lld Pr=%lld Pc=%lld numLA=%d maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld maxSymPartnerLval=%lld maxSymPartnerLidx=%lld\n",
                 (grid3d != NULL) ? grid3d->iam : -1,
@@ -826,6 +926,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 #endif
 
     // Allocate bigV, indirect
+    double tSetupCPUWorkspace = SuperLU_timer_();
     nThreads = getNumThreads(iam);
     // bigV = dgetBigV(ldt, nThreads);
     bigV = getBigV<Ftype>(ldt, nThreads);
@@ -841,9 +942,12 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     indirectCol = (int_t *)SUPERLU_MALLOC(indirect_bytes);
     if (indirect == NULL || indirectRow == NULL || indirectCol == NULL)
         ABORT("Malloc fails for panel indirect workspace.");
+    symV2SetupProfileAdd(SYM_V2_SETUP_CPU_WORKSPACE_ALLOC,
+                         SuperLU_timer_() - tSetupCPUWorkspace);
     xlu_sym_gpu3d_trace(grid3d, "constructor after indirect workspace allocation");
 
     // allocating communication buffers
+    double tSetupRecvBuffers = SuperLU_timer_();
     LvalRecvBufs.resize(options->num_lookaheads);
     UvalRecvBufs.resize(options->num_lookaheads);
     symPartnerLvalRecvBufs.resize(options->num_lookaheads);
@@ -905,8 +1009,11 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         bcastUidx[i] = bcUidx;
         #endif
     }
+    symV2SetupProfileAdd(SYM_V2_SETUP_RECV_BUFFER_ALLOC,
+                         SuperLU_timer_() - tSetupRecvBuffers);
     xlu_sym_gpu3d_trace(grid3d, "constructor after panel receive buffer allocation");
 
+    double tSetupDiagBuffers = SuperLU_timer_();
     numDiagBufs = 2*options->num_lookaheads;
     diagFactBufs.resize(numDiagBufs);  /* Sherry?? numDiagBufs == 32 hard-coded */
     // bcastDiagRow.resize(numDiagBufs);
@@ -954,10 +1061,15 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     //Yang: how is dFBufs being used in the c++ factorization code? Shall we call dinitDiagFactBufsArrMod instead to save memory? 
     dFBufs = initDiagFactBufsArr(numDiagBufs, diagBufDim);
     maxLeafNodes = mxLeafNode;
+    symV2SetupProfileAdd(SYM_V2_SETUP_DIAG_BUFFER_ALLOC,
+                         SuperLU_timer_() - tSetupDiagBuffers);
     xlu_sym_gpu3d_trace(grid3d, "constructor after dFBufs allocation");
 
     xlu_sym_gpu3d_trace(grid3d, "constructor before initSymFactWorkspace");
+    double tSetupSymWorkspace = SuperLU_timer_();
     initSymFactWorkspace();
+    symV2SetupProfileAdd(SYM_V2_SETUP_INIT_SYM_WORKSPACE,
+                         SuperLU_timer_() - tSetupSymWorkspace);
     xlu_sym_gpu3d_trace(grid3d, "constructor after initSymFactWorkspace");
     
     double tGPU = SuperLU_timer_();
@@ -965,7 +1077,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     {
     #ifdef HAVE_CUDA
         xlu_sym_gpu3d_trace(grid3d, "constructor before setLUstruct_GPU");
+        double tSetupGPU = SuperLU_timer_();
         setLUstruct_GPU();  /* Set up LU structure and buffers on GPU */
+        symV2SetupProfileAdd(SYM_V2_SETUP_SET_GPU_TOTAL,
+                             SuperLU_timer_() - tSetupGPU);
         xlu_sym_gpu3d_trace(grid3d, "constructor after setLUstruct_GPU");
 
         // TODO: remove it, checking is very slow
@@ -1018,6 +1133,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         return 0;
 
     xlu_sym_gpu3d_trace(grid3d, "enter initSymFactWorkspace");
+    int profile_setup = symV2SetupProfileActive() ? 1 : 0;
     symGPU3DContract = xlu_gpu3d_contract();
     symContractValidateTol = (symGPU3DContract == 1)
         ? xlu_env_double("GPU3DCONTRACT_VALIDATE_TOL", 1.0e8)
@@ -1029,6 +1145,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
     if (ldt < 0 || maxLvalCount < 0)
         ABORT("Negative SymFact workspace size.");
+    double tSymCPUWorkspace = SuperLU_timer_();
     size_t diag_work_count = xlu_checked_product(static_cast<size_t>(ldt),
                                                  static_cast<size_t>(ldt),
                                                  "SymFact work");
@@ -1065,6 +1182,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         if (symL2UOrders == NULL)
             ABORT("Malloc fails for SymFact L2U order workspace.");
     }
+    symV2SetupProfileAdd(SYM_V2_SETUP_SYM_CPU_WORKSPACE,
+                         SuperLU_timer_() - tSymCPUWorkspace);
     xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after CPU workspace allocation");
 
 #ifdef HAVE_CUDA
@@ -1222,6 +1341,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             if (nb <= 0)
                 continue;
 
+            double tPartnerSendMapBuild =
+                profile_setup ? SuperLU_timer_() : 0.0;
             int_t knsupc = SuperSize(jb);
             int_t nsupr = lsub[1];
             std::vector<std::vector<int_t> > host_maps(Pc);
@@ -1288,7 +1409,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         l_meta.push_back(row_order[i].first);
                 }
             }
+            if (profile_setup)
+                symV2SetupProfileAdd(
+                    SYM_V2_SETUP_PARTNER_SEND_MAP_BUILD,
+                    SuperLU_timer_() - tPartnerSendMapBuild);
 
+            double tPartnerSendGPU =
+                profile_setup ? SuperLU_timer_() : 0.0;
             for (int pc = 0; pc < Pc; ++pc)
             {
                 size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
@@ -1345,9 +1472,15 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         cudaMemcpyHostToDevice));
                 }
             }
+            if (profile_setup)
+                symV2SetupProfileAdd(
+                    SYM_V2_SETUP_PARTNER_SEND_GPU_ALLOC_COPY,
+                    SuperLU_timer_() - tPartnerSendGPU);
         }
         if (symGPU3DVersion == 2)
         {
+            double tPartnerRecvCount =
+                profile_setup ? SuperLU_timer_() : 0.0;
             size_t table_count = xlu_checked_product(
                 xlu_checked_product(static_cast<size_t>(nsupers),
                                     static_cast<size_t>(Pc),
@@ -1387,7 +1520,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             MPI_Allreduce(local_recv_sizes.data(), global_recv_sizes.data(),
                           static_cast<int>(table_count), MPI_INT, MPI_SUM,
                           grid->comm);
+            if (profile_setup)
+                symV2SetupProfileAdd(
+                    SYM_V2_SETUP_PARTNER_RECV_COUNT_ALLREDUCE,
+                    SuperLU_timer_() - tPartnerRecvCount);
 
+            double tPartnerMetaAllgather =
+                profile_setup ? SuperLU_timer_() : 0.0;
             std::vector<int_t> local_meta_payload;
             for (int_t lk = 0; lk < local_cols; ++lk)
             {
@@ -1454,7 +1593,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                : all_meta_payload.data(),
                            meta_counts.data(), meta_displs.data(), mpi_int_t,
                            grid->comm);
+            if (profile_setup)
+                symV2SetupProfileAdd(
+                    SYM_V2_SETUP_PARTNER_META_ALLGATHER,
+                    SuperLU_timer_() - tPartnerMetaAllgather);
 
+            double tPartnerRecvMapBuild =
+                profile_setup ? SuperLU_timer_() : 0.0;
             struct SymV2CachedPartnerBlock
             {
                 int_t gid;
@@ -1617,6 +1762,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         ABORT("SymFact V2 partner-L receive map size mismatch.");
                 }
             }
+            if (profile_setup)
+                symV2SetupProfileAdd(
+                    SYM_V2_SETUP_PARTNER_RECV_MAP_BUILD,
+                    SuperLU_timer_() - tPartnerRecvMapBuild);
         }
         xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after send GPU L2U map setup");
     }
@@ -2036,10 +2185,11 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastHost(
     int_t partner_nblocks = static_cast<int_t>(blocks.size());
     int_t partner_index_size =
         LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1 + partner_nrows;
-    if (partner_index_size > maxSymPartnerLidxCount ||
-        static_cast<int64_t>(partner_nrows) *
-                static_cast<int64_t>(ksupc) >
-            static_cast<int64_t>(maxSymPartnerLvalCount))
+    if (partner_nblocks > 0 &&
+        (partner_index_size > maxSymPartnerLidxCount ||
+         static_cast<int64_t>(partner_nrows) *
+                 static_cast<int64_t>(ksupc) >
+             static_cast<int64_t>(maxSymPartnerLvalCount)))
         ABORT("SymFact V2 host partner-L panel exceeds receive buffer.");
 
     if (partner_nblocks > 0 && partner_panel.isEmpty())

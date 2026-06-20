@@ -1527,6 +1527,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 {
     int i, stream;
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "enter setLUstruct_GPU");
+    double tSetupGpuMemEstimate = SuperLU_timer_();
 
 #if (DEBUGlevel >= 1)
     int iam = 0;
@@ -1682,6 +1683,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     }
 
     tRegion[0] = SuperLU_timer_() - tRegion[0];
+    symV2SetupProfileAdd(SYM_V2_SETUP_GPU_MEM_ESTIMATE,
+                         SuperLU_timer_() - tSetupGpuMemEstimate);
 #if ( PRNTlevel>=1 )
     // print the time taken to estimate memory on GPU
     if (grid3d->iam == 0)
@@ -1831,6 +1834,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             lPanelVec_GPU[i] = lPanelVec[i].copyToGPU();
     }
     tLsend = SuperLU_timer_() - tLsend;
+    symV2SetupProfileAdd(SYM_V2_SETUP_COPY_L_PANELS_TO_GPU, tLsend);
     tUsend = SuperLU_timer_();
     // cudaCheckError();
     for (i = 0; uPanelVec_GPU != NULL && i < localRowGpuCount; ++i)
@@ -1849,6 +1853,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 
     if (sym_v2_mode)
     {
+        double tSymV2IndexCopy = SuperLU_timer_();
         int_t *sym_v2_panel_index =
             xlu_sym_v2_panel_index_table<Ftype>(trf3Dpartition);
         if (sym_v2_panel_index == NULL)
@@ -1859,8 +1864,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                              sym_v2_panel_index,
                              nsupers * sizeof(int_t),
                              cudaMemcpyHostToDevice));
+        symV2SetupProfileAdd(SYM_V2_SETUP_SYM_V2_INDEX_COPY,
+                             SuperLU_timer_() - tSymV2IndexCopy);
     }
 
+    double tGpuPanelStructCopy = SuperLU_timer_();
     gpuErrchk(cudaMalloc(&A_gpu.lPanelVec,
                          localPanelGpuAlloc * sizeof(xlpanelGPU_t<Ftype>)));
     gpuErrchk(cudaMemcpy(A_gpu.lPanelVec, lPanelVec_GPU,
@@ -1875,6 +1883,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                    localRowGpuAlloc * sizeof(xupanelGPU_t<Ftype>),
                    cudaMemcpyHostToDevice));
     }
+    symV2SetupProfileAdd(SYM_V2_SETUP_GPU_PANEL_STRUCT_COPY,
+                         SuperLU_timer_() - tGpuPanelStructCopy);
 
     if (uPanelVec_GPU != NULL)
         delete [] uPanelVec_GPU;
@@ -1914,10 +1924,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     printf("Size of dfactBuf is %d\n", dfactBufSize);
 #endif
     tRegion[2] = SuperLU_timer_() - tRegion[2];
+    symV2SetupProfileAdd(SYM_V2_SETUP_GPU_DIAG_FACTOR_SETUP, tRegion[2]);
 
     tRegion[3] = SuperLU_timer_();
 
     double tcuMalloc=SuperLU_timer_();
+    double tPerStreamBufferAlloc = SuperLU_timer_();
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before per-stream buffer allocation");
 
     /* Sherry: where are these freed ?? */
@@ -1941,7 +1953,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             gpuErrchk(cudaMalloc(&A_gpu.UidxRecvBufs[stream],
                                  sizeof(int_t) *
                                      static_cast<size_t>(u_recv_idx_count)));
-        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLidxRecvBufs[stream], sizeof(int_t) * maxSymPartnerLidxCount));
+        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLidxRecvBufs[stream],
+                             sizeof(int_t) *
+                                 static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                                 maxSymPartnerLidxCount))));
         A_gpu.diagFactWork[stream] = NULL;
         A_gpu.diagFactIPIV[stream] = NULL;
         A_gpu.diagFactInfo[stream] = NULL;
@@ -1967,6 +1982,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 	        //cudaMalloc(&A_gpu.gpuGemmBuffs[stream], A_gpu.gemmBufferSize * sizeof(Ftype));
     }
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after per-stream buffer allocation");
+    symV2SetupProfileAdd(SYM_V2_SETUP_PER_STREAM_BUFFER_ALLOC,
+                         SuperLU_timer_() - tPerStreamBufferAlloc);
 
     /* Sherry: dfBufs[] changed to Ftype pointer **, max(batch, numCudaStreams) */
     int mxLeafNode = trf3Dpartition->mxLeafNode, mx_fsize = 0;
@@ -2017,6 +2034,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     fflush(stdout);
 #endif
 
+    double tDfbufGemmbufAlloc = SuperLU_timer_();
     A_gpu.dFBufs = (Ftype **) SUPERLU_MALLOC(num_dfbufs * sizeof(Ftype *));
     A_gpu.gpuGemmBuffs = (Ftype **) SUPERLU_MALLOC(num_gemmbufs * sizeof(Ftype *));
 
@@ -2060,6 +2078,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     gpuErrchk(cudaMalloc(&(A_gpu.dgpuGemmBuffs), sizeof(Ftype*) * num_gemmbufs));
     gpuErrchk(cudaMemcpy(A_gpu.dgpuGemmBuffs, A_gpu.gpuGemmBuffs, sizeof(Ftype*) * num_gemmbufs, cudaMemcpyHostToDevice));
     gpuErrchk(cudaGetLastError());
+    symV2SetupProfileAdd(SYM_V2_SETUP_DFBUF_GEMMBUF_ALLOC,
+                         SuperLU_timer_() - tDfbufGemmbufAlloc);
 
     tcuMalloc = SuperLU_timer_() - tcuMalloc;
 #if ( PRNTlevel>=1 )
@@ -2069,6 +2089,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 #endif
 
     double tcuStream=SuperLU_timer_();
+    double tStreamHandleCreate = SuperLU_timer_();
 
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
@@ -2099,9 +2120,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuErrchk(cudaStreamCreate(&A_gpu.lookAheadUStream[stream]));
 
     }
+    symV2SetupProfileAdd(SYM_V2_SETUP_STREAM_HANDLE_CREATE,
+                         SuperLU_timer_() - tStreamHandleCreate);
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after stream/handle creation");
     if (options->SymFact == YES)
     {
+        double tDiagPrefetchAlloc = SuperLU_timer_();
         xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before sym diag prefetch allocation");
         symDiagPrefetchBufs.assign(A_gpu.numCudaStreams, NULL);
         symDiagPrefetchDoneEvents.resize(A_gpu.numCudaStreams);
@@ -2116,6 +2140,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             gpuErrchk(cudaEventCreateWithFlags(&symDiagPrefetchDoneEvents[stream],
                                                cudaEventDisableTiming));
         }
+        symV2SetupProfileAdd(SYM_V2_SETUP_DIAG_PREFETCH_ALLOC,
+                             SuperLU_timer_() - tDiagPrefetchAlloc);
         xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after sym diag prefetch allocation");
     }
     tcuStreamCreate = SuperLU_timer_() - tcuStreamCreate;
@@ -2134,8 +2160,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 
     // allocate
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before device struct allocation");
+    double tDeviceStructCopy = SuperLU_timer_();
     gpuErrchk(cudaMalloc(&dA_gpu, sizeof(xLUstructGPU_t<Ftype>)));
     gpuErrchk(cudaMemcpy(dA_gpu, &A_gpu, sizeof(xLUstructGPU_t<Ftype>), cudaMemcpyHostToDevice));
+    symV2SetupProfileAdd(SYM_V2_SETUP_DEVICE_STRUCT_COPY,
+                         SuperLU_timer_() - tDeviceStructCopy);
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "exit setLUstruct_GPU");
 
 #endif /* match #if 0 ... #else ... */
