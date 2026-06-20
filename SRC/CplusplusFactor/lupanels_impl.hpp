@@ -1220,9 +1220,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symV2PartnerLSendSizes.assign(l2u_slots, 0);
         symPanelReadyEventIds.assign(nsupers, -1);
         symDiagPrefetchEventIds.assign(nsupers, -1);
-        std::vector<std::vector<int_t> > symV2PartnerLHostMaps;
-        if (symGPU3DVersion == 2)
-            symV2PartnerLHostMaps.assign(l2u_slots, std::vector<int_t>());
+        std::vector<size_t> symV2PartnerLMapOffsets(l2u_slots, 0);
+        std::vector<int_t> symV2PartnerLPackedMaps;
 
         dLocalLU_t *Llu = LUstructPtr->Llu;
         if (need_l2u_workspace)
@@ -1314,13 +1313,203 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after local GPU L2U map setup");
         }
 
+        if (symGPU3DVersion == 2)
+        {
+            double tPartnerSendMapBuild =
+                profile_setup ? SuperLU_timer_() : 0.0;
+            std::vector<size_t> map_counts(l2u_slots, 0);
+            std::vector<size_t> meta_counts(l2u_slots, 0);
+
+            for (int_t lk = 0; lk < local_cols; ++lk)
+            {
+                int_t *lsub = Llu->Lrowind_bc_ptr[lk];
+                int_t *lloc = Llu->Lindval_loc_bc_ptr[lk];
+                if (lsub == NULL || lloc == NULL || lsub[0] <= 0)
+                    continue;
+
+                int_t jb = symV2PanelGid(lk);
+                if (jb >= nsupers)
+                    continue;
+
+                int_t nb;
+                int_t idx_i;
+                if (myrow == symV2DiagRoot(jb))
+                {
+                    nb = lsub[0] - 1;
+                    idx_i = nb + 2;
+                }
+                else
+                {
+                    nb = lsub[0];
+                    idx_i = nb;
+                }
+                if (nb <= 0)
+                    continue;
+
+                int_t knsupc = SuperSize(jb);
+                for (int_t lb = 0; lb < nb; ++lb)
+                {
+                    int_t lptr_tmp = lloc[lb + idx_i];
+                    int_t ik = lsub[lptr_tmp];
+                    int ikcol = symV2PanelRoot(ik);
+                    if (ikcol < 0 || ikcol >= Pc)
+                        ABORT("SymFact V2 partner-L target process column is invalid.");
+                    int_t len = lsub[lptr_tmp + 1];
+                    if (len <= 0)
+                        continue;
+
+                    size_t flat = static_cast<size_t>(lk) *
+                                      static_cast<size_t>(Pc) +
+                                  static_cast<size_t>(ikcol);
+                    size_t map_add = xlu_checked_product(
+                        static_cast<size_t>(len),
+                        static_cast<size_t>(knsupc),
+                        "SymFact V2 packed partner-L send map");
+                    if (map_counts[flat] >
+                        std::numeric_limits<size_t>::max() - map_add)
+                        ABORT("SymFact V2 packed partner-L send map size overflows.");
+                    map_counts[flat] += map_add;
+
+                    size_t meta_add = static_cast<size_t>(len) + 2;
+                    if (meta_counts[flat] >
+                        std::numeric_limits<size_t>::max() - meta_add)
+                        ABORT("SymFact V2 packed partner-L metadata size overflows.");
+                    meta_counts[flat] += meta_add;
+                }
+            }
+
+            size_t total_partner_send = 0;
+            for (size_t flat = 0; flat < l2u_slots; ++flat)
+            {
+                if (map_counts[flat] >
+                    static_cast<size_t>(std::numeric_limits<int>::max()))
+                    ABORT("SymFact GPU L2L send map is too large for MPI.");
+                if (meta_counts[flat] >
+                    static_cast<size_t>(std::numeric_limits<int_t>::max()))
+                    ABORT("SymFact V2 partner-L metadata is too large.");
+                symV2PartnerLMapOffsets[flat] = total_partner_send;
+                total_partner_send += map_counts[flat];
+                if (total_partner_send < symV2PartnerLMapOffsets[flat])
+                    ABORT("SymFact V2 packed partner-L send map size overflows.");
+
+                symV2PartnerLSendSizes[flat] =
+                    static_cast<int>(map_counts[flat]);
+                if (map_counts[flat] > 0)
+                    symV2PartnerLHostSendBufs[flat].resize(map_counts[flat]);
+                if (meta_counts[flat] > 0)
+                    symL2LSendMeta[flat].resize(meta_counts[flat]);
+            }
+            symV2PartnerLPackedMaps.assign(total_partner_send, 0);
+
+            std::vector<size_t> map_write_offsets =
+                symV2PartnerLMapOffsets;
+            std::vector<size_t> meta_write_offsets(l2u_slots, 0);
+            std::vector<std::pair<int_t, int_t> > row_order;
+            for (int_t lk = 0; lk < local_cols; ++lk)
+            {
+                int_t *lsub = Llu->Lrowind_bc_ptr[lk];
+                int_t *lloc = Llu->Lindval_loc_bc_ptr[lk];
+                if (lsub == NULL || lloc == NULL || lsub[0] <= 0)
+                    continue;
+
+                int_t jb = symV2PanelGid(lk);
+                if (jb >= nsupers)
+                    continue;
+
+                int_t nb;
+                int_t idx_i;
+                int_t idx_v;
+                if (myrow == symV2DiagRoot(jb))
+                {
+                    nb = lsub[0] - 1;
+                    idx_i = nb + 2;
+                    idx_v = 2 * nb + 3;
+                }
+                else
+                {
+                    nb = lsub[0];
+                    idx_i = nb;
+                    idx_v = 2 * nb;
+                }
+                if (nb <= 0)
+                    continue;
+
+                int_t knsupc = SuperSize(jb);
+                int_t nsupr = lsub[1];
+                for (int_t lb = 0; lb < nb; ++lb)
+                {
+                    int_t luptr_tmp = lloc[lb + idx_v];
+                    int_t lptr_tmp = lloc[lb + idx_i];
+                    int_t ik = lsub[lptr_tmp];
+                    int ikcol = symV2PanelRoot(ik);
+                    if (ikcol < 0 || ikcol >= Pc)
+                        ABORT("SymFact V2 partner-L target process column is invalid.");
+                    int_t len = lsub[lptr_tmp + 1];
+                    if (len <= 0)
+                        continue;
+                    int_t fsupc = FstBlockC(ik);
+
+                    row_order.clear();
+                    row_order.reserve(static_cast<size_t>(len));
+                    for (int_t i = 0; i < len; ++i)
+                        row_order.push_back(std::make_pair(
+                            lsub[lptr_tmp + 2 + i] - fsupc, i));
+                    std::sort(row_order.begin(), row_order.end());
+
+                    size_t flat = static_cast<size_t>(lk) *
+                                      static_cast<size_t>(Pc) +
+                                  static_cast<size_t>(ikcol);
+                    std::vector<int_t> &meta = symL2LSendMeta[flat];
+                    size_t meta_pos = meta_write_offsets[flat];
+                    if (meta_pos + static_cast<size_t>(len) + 2 >
+                        meta.size())
+                        ABORT("SymFact V2 packed partner-L metadata overrun.");
+                    meta[meta_pos++] = ik;
+                    meta[meta_pos++] = len;
+                    for (int_t i = 0; i < len; ++i)
+                        meta[meta_pos++] = row_order[i].first;
+                    meta_write_offsets[flat] = meta_pos;
+
+                    size_t map_pos = map_write_offsets[flat];
+                    size_t map_end = symV2PartnerLMapOffsets[flat] +
+                                     map_counts[flat];
+                    for (int_t j = 0; j < knsupc; ++j)
+                    {
+                        for (int_t i = 0; i < len; ++i)
+                        {
+                            if (map_pos >= map_end)
+                                ABORT("SymFact V2 packed partner-L send map overrun.");
+                            int_t src_row = row_order[i].second;
+                            symV2PartnerLPackedMaps[map_pos++] =
+                                luptr_tmp + src_row + j * nsupr;
+                        }
+                    }
+                    map_write_offsets[flat] = map_pos;
+                }
+            }
+
+            for (size_t flat = 0; flat < l2u_slots; ++flat)
+            {
+                if (map_write_offsets[flat] !=
+                    symV2PartnerLMapOffsets[flat] + map_counts[flat])
+                    ABORT("SymFact V2 packed partner-L send map size mismatch.");
+                if (meta_write_offsets[flat] != meta_counts[flat])
+                    ABORT("SymFact V2 packed partner-L metadata size mismatch.");
+            }
+
+            if (profile_setup)
+                symV2SetupProfileAdd(
+                    SYM_V2_SETUP_PARTNER_SEND_MAP_BUILD,
+                    SuperLU_timer_() - tPartnerSendMapBuild);
+        }
+
         for (int_t lk = 0; lk < local_cols; ++lk)
         {
             bool have_comml_send =
                 (need_l2u_workspace &&
                  Llu->Send_CommL != NULL &&
                  Llu->Send_CommL[lk].ComQuant != NULL);
-            if (!have_comml_send && symGPU3DVersion != 2)
+            if (!have_comml_send)
                 continue;
 
             int_t *lsub = Llu->Lrowind_bc_ptr[lk];
@@ -1355,8 +1544,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             int_t knsupc = SuperSize(jb);
             int_t nsupr = lsub[1];
             std::vector<std::vector<int_t> > host_maps(Pc);
-            std::vector<std::vector<int_t> > host_l_maps(Pc);
-            std::vector<std::vector<int_t> > host_l_meta(Pc);
             for (int pc = 0; pc < Pc; ++pc)
             {
                 int size = have_comml_send
@@ -1396,27 +1583,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             map.push_back(luptr_tmp + src_row + j * nsupr);
                     }
                 }
-
-                if (symGPU3DVersion == 2)
-                {
-                    std::vector<int_t> &l_map = host_l_maps[ikcol];
-                    std::vector<int_t> &l_meta = host_l_meta[ikcol];
-                    l_meta.push_back(ik);
-                    l_meta.push_back(len);
-                    l_map.reserve(l_map.size() +
-                                  static_cast<size_t>(len) *
-                                      static_cast<size_t>(knsupc));
-                    for (int_t j = 0; j < knsupc; ++j)
-                    {
-                        for (int_t i = 0; i < len; ++i)
-                        {
-                            int_t src_row = row_order[i].second;
-                            l_map.push_back(luptr_tmp + src_row + j * nsupr);
-                        }
-                    }
-                    for (int_t i = 0; i < len; ++i)
-                        l_meta.push_back(row_order[i].first);
-                }
             }
             if (profile_setup)
                 symV2SetupProfileAdd(
@@ -1451,28 +1617,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         sizeof(int_t) * static_cast<size_t>(l2u_size),
                         cudaMemcpyHostToDevice));
                 }
-
-                if (symGPU3DVersion == 2 && !host_l_maps[pc].empty())
-                {
-                    if (host_l_maps[pc].size() >
-                        static_cast<size_t>(std::numeric_limits<int>::max()))
-                        ABORT("SymFact GPU L2L send map is too large for MPI.");
-
-                    symL2LSendMeta[flat].swap(host_l_meta[pc]);
-                    symV2PartnerLSendSizes[flat] =
-                        static_cast<int>(host_l_maps[pc].size());
-                    symV2PartnerLHostMaps[flat].swap(host_l_maps[pc]);
-                    symV2PartnerLHostSendBufs[flat].resize(
-                        symV2PartnerLHostMaps[flat].size());
-                }
             }
         }
         if (symGPU3DVersion == 2)
         {
             double tPartnerSendGPU =
                 profile_setup ? SuperLU_timer_() : 0.0;
-            std::vector<size_t> send_offsets(l2u_slots, 0);
-            size_t total_partner_send = 0;
+            size_t total_partner_send = symV2PartnerLPackedMaps.size();
             for (size_t flat = 0; flat < l2u_slots; ++flat)
             {
                 int size = symV2PartnerLSendSizes[flat];
@@ -1480,13 +1631,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     ABORT("SymFact V2 partner-L send size is invalid.");
                 if (size <= 0)
                     continue;
-                if (symV2PartnerLHostMaps[flat].size() !=
-                    static_cast<size_t>(size))
+                size_t offset = symV2PartnerLMapOffsets[flat];
+                if (offset + static_cast<size_t>(size) > total_partner_send ||
+                    offset + static_cast<size_t>(size) < offset)
                     ABORT("SymFact V2 partner-L host map size mismatch.");
-                send_offsets[flat] = total_partner_send;
-                total_partner_send += static_cast<size_t>(size);
-                if (total_partner_send < send_offsets[flat])
-                    ABORT("SymFact V2 partner-L pooled send size overflows.");
             }
 
             symV2PartnerLSendBufPoolCount = total_partner_send;
@@ -1502,23 +1650,19 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     xlu_checked_product(total_partner_send, sizeof(int_t),
                                         "SymFact GPU L2L send map pool")));
 
-                std::vector<int_t> packed_maps(total_partner_send);
                 for (size_t flat = 0; flat < l2u_slots; ++flat)
                 {
                     int size = symV2PartnerLSendSizes[flat];
                     if (size <= 0)
                         continue;
-                    size_t offset = send_offsets[flat];
-                    std::memcpy(&packed_maps[offset],
-                                symV2PartnerLHostMaps[flat].data(),
-                                sizeof(int_t) * static_cast<size_t>(size));
+                    size_t offset = symV2PartnerLMapOffsets[flat];
                     symV2PartnerLSendBufsGPU[flat] =
                         symV2PartnerLSendBufPoolGPU + offset;
                     symL2LSendMapsGPU[flat] =
                         symL2LSendMapPoolGPU + offset;
                 }
                 gpuErrchk(cudaMemcpy(
-                    symL2LSendMapPoolGPU, packed_maps.data(),
+                    symL2LSendMapPoolGPU, symV2PartnerLPackedMaps.data(),
                     sizeof(int_t) * total_partner_send,
                     cudaMemcpyHostToDevice));
             }
