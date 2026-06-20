@@ -9358,6 +9358,18 @@ pdgstrs3d_symldl_rank_to_tree_rank(pdgstrs3d_symldl_tree_comm_t *tree_comm,
 }
 
 static int
+pdgstrs3d_symldl_local_panel_active(dtrf3Dpartition_t *trf3Dpartition,
+                                    pdgstrs3d_symldl_panel_meta_t *kmeta,
+                                    int_t k)
+{
+    if (kmeta == NULL || !kmeta->has_panel)
+        return 0;
+    if (trf3Dpartition == NULL || trf3Dpartition->superGridMap == NULL)
+        ABORT("SymLDL solve requires LDL-native supernode grid metadata.");
+    return trf3Dpartition->superGridMap[k] == IN_GRID_AIJ;
+}
+
+static int
 pdgstrs3d_symldl_num_forests(dtrf3Dpartition_t *trf3Dpartition,
                              gridinfo3d_t *grid3d)
 {
@@ -9440,8 +9452,9 @@ pdgstrs3d_symldl_tree_comms_create(dtrf3Dpartition_t *trf3Dpartition,
         for (int_t k = 0; k < nsupers; ++k) {
             int_t tree = trf3Dpartition->supernode2treeMap[k];
             pdgstrs3d_symldl_panel_meta_t *kmeta = &panel_meta[k];
-            if (tree < 0 || tree >= numForests || !kmeta->has_panel ||
-                grid3d->zscp.Iam != 0)
+            if (tree < 0 || tree >= numForests ||
+                !pdgstrs3d_symldl_local_panel_active(trf3Dpartition,
+                                                     kmeta, k))
                 continue;
             local_active[tree * global_nprocs + global_rank] = 1;
             for (int_t row = 0; row < kmeta->row_count; ++row) {
@@ -9767,7 +9780,8 @@ pdgstrs3d_symldl_comm_meta_create(int_t nsupers,
 
         root_rank = pdgstrs3d_symldl_rank_to_tree_rank(tree_comm,
                                                        diag_owner[k]);
-        local_panel_active = kmeta->has_panel && grid3d->zscp.Iam == 0;
+        local_panel_active =
+            pdgstrs3d_symldl_local_panel_active(trf3Dpartition, kmeta, k);
         local_need_xk = (local_panel_active && kmeta->row_count > 0);
         cmeta->needs_xk = local_need_xk;
         MPI_Allgather(&local_need_xk, 1, MPI_INT, fill_counts, 1, MPI_INT,
