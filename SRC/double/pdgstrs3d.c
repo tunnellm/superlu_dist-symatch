@@ -9369,9 +9369,13 @@ pdgstrs3d_symldl_num_forests(dtrf3Dpartition_t *trf3Dpartition,
 
 static pdgstrs3d_symldl_tree_comm_t *
 pdgstrs3d_symldl_tree_comms_create(dtrf3Dpartition_t *trf3Dpartition,
+                                   pdgstrs3d_symldl_panel_meta_t *panel_meta,
+                                   int *diag_owner, int_t nsupers,
                                    gridinfo3d_t *grid3d, int global_nprocs)
 {
     pdgstrs3d_symldl_tree_comm_t *tree_comms;
+    int *local_active = NULL;
+    int *global_active = NULL;
     int maxLvl;
     int numForests;
     int global_rank;
@@ -9388,6 +9392,68 @@ pdgstrs3d_symldl_tree_comms_create(dtrf3Dpartition_t *trf3Dpartition,
     numForests = (1 << maxLvl) - 1;
     MPI_Comm_rank(grid3d->comm, &global_rank);
 
+    size_t active_count = pdgstrs3d_checked_product((size_t) numForests,
+                                                    (size_t) global_nprocs,
+                                                    "SymLDL tree active ranks");
+    int_t active_count_t = pdgstrs3d_checked_size_to_int_t(
+        active_count, "SymLDL tree active ranks");
+    int active_count_i = pdgstrs3d_symldl_count_to_int(
+        active_count_t, "SymLDL tree active ranks");
+    if (!(local_active = (int *) SUPERLU_MALLOC(
+              pdgstrs3d_checked_alloc_bytes(active_count_t, sizeof(int),
+                                            "SymLDL tree active ranks"))) ||
+        !(global_active = (int *) SUPERLU_MALLOC(
+              pdgstrs3d_checked_alloc_bytes(active_count_t, sizeof(int),
+                                            "SymLDL tree active ranks"))))
+        ABORT("Calloc fails for SymLDL tree active rank metadata.");
+    memset(local_active, 0,
+           pdgstrs3d_checked_alloc_bytes(active_count_t, sizeof(int),
+                                         "SymLDL tree active ranks"));
+    memset(global_active, 0,
+           pdgstrs3d_checked_alloc_bytes(active_count_t, sizeof(int),
+                                         "SymLDL tree active ranks"));
+
+    for (int tree = 0; tree < numForests; ++tree) {
+        if (grid3d->zscp.Iam == 0)
+            local_active[tree * global_nprocs + global_rank] = 1;
+    }
+
+    for (int ilvl = 0; ilvl < maxLvl; ++ilvl) {
+        if (!trf3Dpartition->myZeroTrIdxs[ilvl]) {
+            int_t tree = trf3Dpartition->myTreeIdxs[ilvl];
+            if (tree >= 0 && tree < numForests)
+                local_active[tree * global_nprocs + global_rank] = 1;
+        }
+    }
+
+    if (diag_owner != NULL) {
+        for (int_t k = 0; k < nsupers; ++k) {
+            int_t tree = trf3Dpartition->supernode2treeMap[k];
+            int owner = diag_owner[k];
+            if (tree >= 0 && tree < numForests &&
+                owner >= 0 && owner < global_nprocs)
+                local_active[tree * global_nprocs + owner] = 1;
+        }
+    }
+
+    if (panel_meta != NULL) {
+        for (int_t k = 0; k < nsupers; ++k) {
+            int_t tree = trf3Dpartition->supernode2treeMap[k];
+            pdgstrs3d_symldl_panel_meta_t *kmeta = &panel_meta[k];
+            if (tree < 0 || tree >= numForests || !kmeta->has_panel)
+                continue;
+            local_active[tree * global_nprocs + global_rank] = 1;
+            for (int_t row = 0; row < kmeta->row_count; ++row) {
+                int dest = kmeta->row_dest_global[row];
+                if (dest >= 0 && dest < global_nprocs)
+                    local_active[tree * global_nprocs + dest] = 1;
+            }
+        }
+    }
+
+    MPI_Allreduce(local_active, global_active, active_count_i, MPI_INT,
+                  MPI_MAX, grid3d->comm);
+
     if (!(tree_comms = (pdgstrs3d_symldl_tree_comm_t *)
               SUPERLU_MALLOC(pdgstrs3d_checked_product((size_t) numForests,
                               sizeof(pdgstrs3d_symldl_tree_comm_t),
@@ -9395,21 +9461,13 @@ pdgstrs3d_symldl_tree_comms_create(dtrf3Dpartition_t *trf3Dpartition,
         ABORT("Malloc fails for SymLDL tree communicators.");
 
     for (int tree = 0; tree < numForests; ++tree) {
-        int active = (grid3d->zscp.Iam == 0);
+        int active = global_active[tree * global_nprocs + global_rank];
 
         tree_comms[tree].comm = MPI_COMM_NULL;
         tree_comms[tree].active = 0;
         tree_comms[tree].rank = -1;
         tree_comms[tree].nprocs = 0;
         tree_comms[tree].global_to_local = NULL;
-
-        for (int ilvl = 0; ilvl < maxLvl; ++ilvl) {
-            if (!trf3Dpartition->myZeroTrIdxs[ilvl] &&
-                trf3Dpartition->myTreeIdxs[ilvl] == tree) {
-                active = 1;
-                break;
-            }
-        }
 
         MPI_Comm_split(grid3d->comm, active ? 0 : MPI_UNDEFINED,
                        global_rank, &tree_comms[tree].comm);
@@ -9438,6 +9496,8 @@ pdgstrs3d_symldl_tree_comms_create(dtrf3Dpartition_t *trf3Dpartition,
         }
     }
 
+    SUPERLU_FREE(global_active);
+    SUPERLU_FREE(local_active);
     return tree_comms;
 }
 
@@ -10529,18 +10589,20 @@ pdgstrs3d_symldl_solve_meta_get(dSOLVEstruct_t *SOLVEstruct, int_t n,
         pdgstrs3d_symldl_diag_owners(nsupers, trf3Dpartition, grid3d);
     meta->solve_order = pdgstrs3d_symldl_tree_order(nsupers,
                                                     trf3Dpartition, grid3d);
-    meta->tree_comms = pdgstrs3d_symldl_tree_comms_create(trf3Dpartition,
-                                                          grid3d,
-                                                          global_nprocs);
-    meta->numForests = meta->tree_comms
-                           ? pdgstrs3d_symldl_num_forests(trf3Dpartition,
-                                                          grid3d)
-                           : 0;
     meta->panel_meta = pdgstrs3d_symldl_panel_meta_create(nsupers, Llu,
                                                           Glu_persist, grid,
                                                           trf3Dpartition,
                                                           supernodeMask,
                                                           meta->diag_owner);
+    meta->tree_comms = pdgstrs3d_symldl_tree_comms_create(trf3Dpartition,
+                                                          meta->panel_meta,
+                                                          meta->diag_owner,
+                                                          nsupers, grid3d,
+                                                          global_nprocs);
+    meta->numForests = meta->tree_comms
+                           ? pdgstrs3d_symldl_num_forests(trf3Dpartition,
+                                                          grid3d)
+                           : 0;
     meta->max_panel_block_rows =
         pdgstrs3d_symldl_panel_meta_max_block_rows(meta->panel_meta, nsupers);
     meta->solve_schedule =
