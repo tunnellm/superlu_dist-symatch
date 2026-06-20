@@ -852,8 +852,8 @@ struct xLUstruct_t
     int_t dSchurCompUpdateExcludeOne(
         int_t k, int_t ex, // suypernodes to be excluded
         xlpanel_t<Ftype> &lpanel, xupanel_t<Ftype> &upanel);
-    int_t dSymV2PartnerLBcastHost(int_t k, xlpanel_t<Ftype> &partner_panel,
-                                  int raw_values = 0);
+    int_t dSymV2LFragmentExchangeHost(int_t k, int_t offset,
+                                      int raw_values = 0);
     int_t dSymSchurCompUpdatePartLL(
         int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
         int_t k, xlpanel_t<Ftype> &lpanel);
@@ -865,21 +865,21 @@ struct xLUstruct_t
         int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel);
     int_t dSymSchurCompUpdateExcludeOneLL(
         int_t k, int_t ex, xlpanel_t<Ftype> &lpanel);
-    int_t dSymSchurCompUpdatePartWithLPartner(
+    int_t dSymSchurCompUpdatePartWithLFragments(
         int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
         int_t k, xlpanel_t<Ftype> &lpanel,
-        xlpanel_t<Ftype> &partner_panel);
-    int_t dSymSchurCompUpLimitedMemWithLPartner(
+        int_t *frag_index, Ftype *frag_val);
+    int_t dSymSchurCompUpLimitedMemWithLFragments(
         int_t lStart, int_t lEnd,
-        int_t partnerStart, int_t partnerEnd,
+        int_t fragStart, int_t fragEnd,
         int_t k, xlpanel_t<Ftype> &lpanel,
-        xlpanel_t<Ftype> &partner_panel);
-    int_t dSymLookAheadUpdateWithLPartner(
+        int_t *frag_index, Ftype *frag_val);
+    int_t dSymLookAheadUpdateWithLFragments(
         int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
-        xlpanel_t<Ftype> &partner_panel);
-    int_t dSymSchurCompUpdateExcludeOneWithLPartner(
+        int_t *frag_index, Ftype *frag_val);
+    int_t dSymSchurCompUpdateExcludeOneWithLFragments(
         int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
-        xlpanel_t<Ftype> &partner_panel);
+        int_t *frag_index, Ftype *frag_val);
 
     int_t dsparseTreeFactor(
         sForest_t *sforest,
@@ -989,25 +989,25 @@ struct xLUstruct_t
         int streamId,
         int_t k, int_t ex, // suypernodes to be excluded
         xlpanel_t<Ftype> &lpanel, xupanel_t<Ftype> &upanel);
-    int_t dSymSchurCompUpdatePartWithLPartnerGPU(
+    int_t dSymSchurCompUpdatePartWithLFragmentsGPU(
         int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
-        int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+        int_t k, xlpanel_t<Ftype> &lpanel,
+        const int_t *frag_index, Ftype *frag_val,
         cublasHandle_t handle, cudaStream_t cuStream,
         Ftype *gemmBuff);
-    int_t dSymSchurCompUpLimitedMemWithLPartnerGPU(
+    int_t dSymSchurCompUpLimitedMemWithLFragmentsGPU(
         int_t lStart, int_t lEnd,
-        int_t partnerStart, int_t partnerEnd,
-        int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+        int_t fragStart, int_t fragEnd,
+        int_t k, xlpanel_t<Ftype> &lpanel,
+        const int_t *frag_index, Ftype *frag_val,
         cublasHandle_t handle, cudaStream_t cuStream,
         Ftype *gemmBuff);
-    int_t dSymLookAheadUpdateWithLPartnerGPU(
+    int_t dSymLookAheadUpdateWithLFragmentsGPU(
         int streamId,
-        int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
-        xlpanel_t<Ftype> &partner_panel);
-    int_t dSymSchurCompUpdateExcludeOneWithLPartnerGPU(
+        int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel);
+    int_t dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(
         int streamId,
-        int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
-        xlpanel_t<Ftype> &partner_panel);
+        int_t k, int_t ex, xlpanel_t<Ftype> &lpanel);
     int_t dSymSchurCompUpdatePartLLGPU(
         int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
         int_t k, xlpanel_t<Ftype> &lpanel,
@@ -1030,8 +1030,7 @@ struct xLUstruct_t
     int_t dPanelBcastGPU(int_t k, int_t offset);
     int_t dSymStartL2UGPU(int_t k, int_t stream_offset);
     int_t dSymV2ComputePartnerScratchSize(LUStruct_type<Ftype> *LUstruct);
-    int_t dSymV2PartnerLBcastGPU(int_t k, int_t stream_offset,
-                                 xlpanel_t<Ftype> &partner_panel);
+    int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);
@@ -1046,7 +1045,6 @@ struct xLUstruct_t
     // some more helper functions
     xupanel_t<Ftype> getKUpanel(int_t k, int_t offset);
     xlpanel_t<Ftype> getKLpanel(int_t k, int_t offset);
-    xlpanel_t<Ftype> getKPartnerLPanel(int_t k, int_t offset);
     int_t SyncLookAheadUpdate(int streamId);
 
     Ftype *gpuLvalBasePtr, *gpuUvalBasePtr;

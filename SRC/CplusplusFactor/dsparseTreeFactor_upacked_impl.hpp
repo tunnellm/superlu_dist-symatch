@@ -67,15 +67,14 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
             }
             else
             {
-                xlpanel_t<Ftype> partner_lpanel(
-                    symPartnerLidxRecvBufs[offset],
-                    symPartnerLvalRecvBufs[offset]);
-                if (partner_lpanel.isEmpty())
+                int_t *frag_index = symPartnerLidxRecvBufs[offset];
+                Ftype *frag_val = symPartnerLvalRecvBufs[offset];
+                if (frag_index == NULL || frag_index[0] <= 0)
                     return;
 
-                dSymSchurCompUpLimitedMemWithLPartner(
-                    st_lb, nlb, 0, partner_lpanel.nblocks(),
-                    k, k_lpanel, partner_lpanel);
+                dSymSchurCompUpLimitedMemWithLFragments(
+                    st_lb, nlb, 0, frag_index[0],
+                    k, k_lpanel, frag_index, frag_val);
             }
         };
 
@@ -156,7 +155,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
             /*=======   SchurComplement Update ======*/
             xupanel_t<Ftype> k_upanel;
             xlpanel_t<Ftype> k_lpanel(LidxRecvBufs[offset], LvalRecvBufs[offset]);
-            xlpanel_t<Ftype> partner_lpanel;
+            int_t *frag_index = NULL;
+            Ftype *frag_val = NULL;
             if (!sym_v2_mode)
             {
                 k_upanel = xupanel_t<Ftype>(UidxRecvBufs[offset],
@@ -178,9 +178,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
                 k_lpanel = lPanelVec[g2lCol(k)];
             }
             if (sym_v2_mode && !(Pr == 1 && Pc == 1))
-                partner_lpanel =
-                    xlpanel_t<Ftype>(symPartnerLidxRecvBufs[offset],
-                                      symPartnerLvalRecvBufs[offset]);
+            {
+                frag_index = symPartnerLidxRecvBufs[offset];
+                frag_val = symPartnerLvalRecvBufs[offset];
+            }
 
             int_t k_parent = gEtreeInfo->setree[k];
             /* Look Ahead Panel Update */
@@ -191,9 +192,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
                     if (Pr == 1 && Pc == 1)
                         dSymLookAheadUpdateLL(k, k_parent, k_lpanel);
                     else
-                        dSymLookAheadUpdateWithLPartner(k, k_parent,
-                                                        k_lpanel,
-                                                        partner_lpanel);
+                        dSymLookAheadUpdateWithLFragments(k, k_parent,
+                                                          k_lpanel,
+                                                          frag_index,
+                                                          frag_val);
                 }
             }
             else if(UidxSendCounts[k]>0 && LidxSendCounts[k]>0)
@@ -224,8 +226,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactor(
                         dSymSchurCompUpdateExcludeOneLL(k, k_parent,
                                                         k_lpanel);
                     else
-                        dSymSchurCompUpdateExcludeOneWithLPartner(
-                            k, k_parent, k_lpanel, partner_lpanel);
+                        dSymSchurCompUpdateExcludeOneWithLFragments(
+                            k, k_parent, k_lpanel, frag_index, frag_val);
                 }
             }
             else if(UidxSendCounts[k]>0 && LidxSendCounts[k]>0)

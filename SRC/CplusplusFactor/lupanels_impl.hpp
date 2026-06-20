@@ -23,9 +23,6 @@
 #ifdef HAVE_CUDA
 template <>
 int_t xLUstruct_t<double>::dSymStartL2UGPU(int_t k, int_t stream_offset);
-template <>
-int_t xLUstruct_t<double>::dSymV2PartnerLBcastGPU(int_t k, int_t stream_offset,
-                                                  xlpanel_t<double> &partner_panel);
 #endif
 
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
@@ -221,17 +218,17 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
         "node_mask",
         "panel_vec_build",
         "send_count_exchange",
-        "partner_scratch_size",
+        "lfrag_scratch_size",
         "cpu_workspace_alloc",
         "recv_buffer_alloc",
         "diag_buffer_alloc",
         "init_sym_workspace",
         "sym_cpu_workspace",
-        "partner_send_map_build",
-        "partner_send_gpu_alloc_copy",
-        "partner_recv_count_allreduce",
-        "partner_meta_allgather",
-        "partner_recv_map_build",
+        "lfrag_send_map_build",
+        "lfrag_send_gpu_alloc_copy",
+        "lfrag_recv_count_allreduce",
+        "lfrag_meta_allgather",
+        "lfrag_recv_map_build",
         "set_gpu_total",
         "gpu_mem_estimate",
         "copy_l_panels_to_gpu",
@@ -338,7 +335,7 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "factor_tree_wall"
     };
     static const char *labels_v2[SYM_GPU3D_T_COUNT] = {
-        "partner_l_start",
+        "lfrag_start",
         "diag_d2h",
         "diag_d2h_copy",
         "diag_d2h_wait",
@@ -353,7 +350,7 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "inv_h2d",
         "ldiag_d2d",
         "lpanel_transform",
-        "partner_l_finish",
+        "lfrag_finish",
         "panel_bcast",
         "panel_bcast_mpi",
         "panel_index_d2h",
@@ -409,11 +406,11 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "panel_bcast_bytes",
         "panel_bcast_mpi_bytes",
         "panel_index_d2h_bytes",
-        "partner_l_local_bytes",
-        "partner_l_send_bytes",
-        "partner_l_recv_bytes",
-        "partner_l_host_staging_bytes",
-        "partner_l_cuda_aware_send_bytes",
+        "lfrag_local_bytes",
+        "lfrag_send_bytes",
+        "lfrag_recv_bytes",
+        "lfrag_host_staging_bytes",
+        "lfrag_cuda_aware_send_bytes",
         "diag_d2h_bytes",
         "diag_prefetch_hits",
         "diag_prefetch_misses",
@@ -568,14 +565,6 @@ xlpanel_t<Ftype> xLUstruct_t<Ftype>::getKLpanel(int_t k, int_t offset)
     );
 }
 
-template <typename Ftype>
-xlpanel_t<Ftype> xLUstruct_t<Ftype>::getKPartnerLPanel(int_t k, int_t offset)
-{
-    return xlpanel_t<Ftype>(symPartnerLidxRecvBufs[offset],
-        symPartnerLvalRecvBufs[offset],
-        A_gpu.symPartnerLidxRecvBufs[offset],
-        A_gpu.symPartnerLvalRecvBufs[offset]);
-}
 #endif
 
 template <typename Ftype>
@@ -2161,25 +2150,32 @@ static int_t xluSymScatterLowerToL(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymV2PartnerLBcastHost(
-    int_t k, xlpanel_t<Ftype> &partner_panel, int raw_values)
+int_t xLUstruct_t<Ftype>::dSymV2LFragmentExchangeHost(
+    int_t k, int_t offset, int raw_values)
 {
+    (void)offset;
     (void)raw_values;
-    ABORT("SymFact GPU3D V2 host partner-L exchange is implemented for double precision only.");
+    ABORT("SymFact GPU3D V2 host L-fragment exchange is implemented for double precision only.");
     return 0;
 }
 
 template <>
-inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastHost(
-    int_t k, xlpanel_t<double> &partner_panel, int raw_values)
+inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeHost(
+    int_t k, int_t offset, int raw_values)
 {
     if (options->SymFact != YES || symGPU3DVersion != 2)
         return 0;
     if (k < 0 || k >= nsupers)
         return 0;
+    if (offset < 0 ||
+        static_cast<size_t>(offset) >= symPartnerLidxRecvBufs.size() ||
+        static_cast<size_t>(offset) >= symPartnerLvalRecvBufs.size())
+        ABORT("SymFact V2 host L-fragment exchange has an invalid buffer offset.");
 
     int_t kcol_ = symV2PanelRoot(k);
     int_t ksupc = SuperSize(k);
+    int_t *frag_index = symPartnerLidxRecvBufs[offset];
+    double *frag_val = symPartnerLvalRecvBufs[offset];
     std::vector<std::vector<int_t> > send_meta(Pc);
     std::vector<std::vector<double> > send_vals(Pc);
 
@@ -2397,44 +2393,44 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastHost(
     int_t partner_nblocks = static_cast<int_t>(blocks.size());
     int_t partner_index_size =
         LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1 + partner_nrows;
-    if (partner_nblocks > 0 &&
-        (partner_index_size > maxSymPartnerLidxCount ||
-         static_cast<int64_t>(partner_nrows) *
-                 static_cast<int64_t>(ksupc) >
-             static_cast<int64_t>(maxSymPartnerLvalCount)))
-        ABORT("SymFact V2 host partner-L panel exceeds receive buffer.");
+	    if (partner_nblocks > 0 &&
+	        (partner_index_size > maxSymPartnerLidxCount ||
+	         static_cast<int64_t>(partner_nrows) *
+	                 static_cast<int64_t>(ksupc) >
+	             static_cast<int64_t>(maxSymPartnerLvalCount)))
+	        ABORT("SymFact V2 host L-fragment buffer is too small.");
 
-    if (partner_nblocks > 0 && partner_panel.isEmpty())
-        ABORT("SymFact V2 host partner-L receive buffer is missing.");
+	    if (partner_nblocks > 0 && (frag_index == NULL || frag_val == NULL))
+	        ABORT("SymFact V2 host L-fragment receive buffer is missing.");
 
-    if (!partner_panel.isEmpty())
-    {
-        partner_panel.index[0] = partner_nblocks;
-        partner_panel.index[1] = partner_nrows;
-        partner_panel.index[2] = 0;
-        partner_panel.index[3] = ksupc;
-        int_t gid_ptr = LPANEL_HEADER_SIZE;
-        int_t px_ptr = LPANEL_HEADER_SIZE + partner_nblocks;
-        int_t row_ptr = LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1;
-        partner_panel.index[px_ptr] = 0;
-        for (int_t ib = 0; ib < partner_nblocks; ++ib)
-        {
-            int cid = order[static_cast<size_t>(ib)];
-            const SymV2HostPartnerBlock &block =
-                blocks[static_cast<size_t>(cid)];
-            partner_panel.index[gid_ptr + ib] = block.gid;
-            partner_panel.index[px_ptr + ib + 1] =
-                partner_panel.index[px_ptr + ib] +
-                static_cast<int_t>(block.rows.size());
-            for (size_t j = 0; j < block.rows.size(); ++j)
-                partner_panel.index[row_ptr++] = block.rows[j];
-        }
-        if (partner_nrows > 0)
-            std::memset(partner_panel.val, 0,
-                        sizeof(double) *
-                            static_cast<size_t>(partner_nrows) *
-                            static_cast<size_t>(ksupc));
-    }
+	    if (frag_index != NULL)
+	    {
+	        frag_index[0] = partner_nblocks;
+	        frag_index[1] = partner_nrows;
+	        frag_index[2] = 0;
+	        frag_index[3] = ksupc;
+	        int_t gid_ptr = LPANEL_HEADER_SIZE;
+	        int_t px_ptr = LPANEL_HEADER_SIZE + partner_nblocks;
+	        int_t row_ptr = LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1;
+	        frag_index[px_ptr] = 0;
+	        for (int_t ib = 0; ib < partner_nblocks; ++ib)
+	        {
+	            int cid = order[static_cast<size_t>(ib)];
+	            const SymV2HostPartnerBlock &block =
+	                blocks[static_cast<size_t>(cid)];
+	            frag_index[gid_ptr + ib] = block.gid;
+	            frag_index[px_ptr + ib + 1] =
+	                frag_index[px_ptr + ib] +
+	                static_cast<int_t>(block.rows.size());
+	            for (size_t j = 0; j < block.rows.size(); ++j)
+	                frag_index[row_ptr++] = block.rows[j];
+	        }
+	        if (frag_val != NULL && partner_nrows > 0)
+	            std::memset(frag_val, 0,
+	                        sizeof(double) *
+	                            static_cast<size_t>(partner_nrows) *
+	                            static_cast<size_t>(ksupc));
+	    }
 
     std::vector<MPI_Request> recv_reqs;
     std::vector<MPI_Request> send_reqs;
@@ -2474,10 +2470,10 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastHost(
         MPI_Waitall(static_cast<int>(recv_reqs.size()), recv_reqs.data(),
                     MPI_STATUSES_IGNORE);
 
-    if (!partner_panel.isEmpty() && partner_nrows > 0)
-    {
-        for (int pr = 0; pr < Pr; ++pr)
-        {
+	    if (frag_val != NULL && partner_nrows > 0)
+	    {
+	        for (int pr = 0; pr < Pr; ++pr)
+	        {
             size_t pos = 0;
             for (size_t p = 0; p < recv_pieces[pr].size(); ++p)
             {
@@ -2485,25 +2481,25 @@ inline int_t xLUstruct_t<double>::dSymV2PartnerLBcastHost(
                 int_t nrows = recv_pieces[pr][p].nrows;
                 int_t dst_offset =
                     block_starts[static_cast<size_t>(cid)];
-                size_t need =
-                    static_cast<size_t>(nrows) *
-                    static_cast<size_t>(ksupc);
-                if (pos + need > recv_buffers[pr].size())
-                    ABORT("SymFact V2 host partner-L receive buffer is truncated.");
-                for (int_t j = 0; j < ksupc; ++j)
-                    std::memcpy(&partner_panel.val[dst_offset +
-                                                   j * partner_panel.LDA()],
-                                &recv_buffers[pr][pos +
-                                                   static_cast<size_t>(j) *
-                                                       static_cast<size_t>(nrows)],
+	                size_t need =
+	                    static_cast<size_t>(nrows) *
+	                    static_cast<size_t>(ksupc);
+	                if (pos + need > recv_buffers[pr].size())
+	                    ABORT("SymFact V2 host L-fragment receive buffer is truncated.");
+	                for (int_t j = 0; j < ksupc; ++j)
+	                    std::memcpy(&frag_val[dst_offset +
+	                                          j * partner_nrows],
+	                                &recv_buffers[pr][pos +
+	                                                   static_cast<size_t>(j) *
+	                                                       static_cast<size_t>(nrows)],
                                 sizeof(double) *
                                     static_cast<size_t>(nrows));
-                pos += need;
-            }
-            if (pos != recv_buffers[pr].size())
-                ABORT("SymFact V2 host partner-L receive buffer has extra data.");
-        }
-    }
+	                pos += need;
+	            }
+	            if (pos != recv_buffers[pr].size())
+	                ABORT("SymFact V2 host L-fragment receive buffer has extra data.");
+	        }
+	    }
 
     if (!send_reqs.empty())
         MPI_Waitall(static_cast<int>(send_reqs.size()), send_reqs.data(),
@@ -2916,24 +2912,67 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneLL(
     return 0;
 }
 
+static inline int_t xluSymLFragmentNBlocks(const int_t *frag_index)
+{
+    return frag_index == NULL ? 0 : frag_index[0];
+}
+
+static inline int_t xluSymLFragmentGid(const int_t *frag_index, int_t k)
+{
+    return frag_index[LPANEL_HEADER_SIZE + k];
+}
+
+static inline int_t xluSymLFragmentStRow(const int_t *frag_index, int_t k)
+{
+    int_t nblocks = xluSymLFragmentNBlocks(frag_index);
+    return frag_index[LPANEL_HEADER_SIZE + nblocks + k];
+}
+
+static inline int_t xluSymLFragmentNbrow(const int_t *frag_index, int_t k)
+{
+    return xluSymLFragmentStRow(frag_index, k + 1) -
+           xluSymLFragmentStRow(frag_index, k);
+}
+
+static inline int_t *xluSymLFragmentRowList(int_t *frag_index, int_t k)
+{
+    int_t nblocks = xluSymLFragmentNBlocks(frag_index);
+    return &frag_index[LPANEL_HEADER_SIZE + 2 * nblocks + 1 +
+                       xluSymLFragmentStRow(frag_index, k)];
+}
+
+static inline int_t xluSymLFragmentFind(const int_t *frag_index, int_t gid)
+{
+    int_t nblocks = xluSymLFragmentNBlocks(frag_index);
+    for (int_t i = 0; i < nblocks; ++i)
+        if (xluSymLFragmentGid(frag_index, i) == gid)
+            return i;
+    return GLOBAL_BLOCK_NOT_FOUND;
+}
+
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartner(
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLFragments(
     int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
     int_t k, xlpanel_t<Ftype> &lpanel,
-    xlpanel_t<Ftype> &partner_panel)
+    int_t *frag_index, Ftype *frag_val)
 {
-    if (iSt >= iEnd || jSt >= jEnd ||
-        lpanel.isEmpty() || partner_panel.isEmpty())
+    if (iSt >= iEnd || jSt >= jEnd || lpanel.isEmpty() ||
+        frag_index == NULL || xluSymLFragmentNBlocks(frag_index) <= 0)
         return 0;
+    if (frag_val == NULL)
+        ABORT("SymFact V2 host L-fragment values are missing.");
 
     int_t gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
     int_t gemm_k = supersize(k);
+    int_t frag_lda = frag_index[1];
     if (gemm_m <= 0 || gemm_k <= 0)
         return 0;
+    if (frag_index[3] != gemm_k)
+        ABORT("SymFact V2 host L-fragment column count does not match the panel.");
 
     for (int_t jj = jSt; jj < jEnd; ++jj)
     {
-        int_t gemm_n = partner_panel.nbrow(jj);
+        int_t gemm_n = xluSymLFragmentNbrow(frag_index, jj);
         if (gemm_n <= 0)
             continue;
 
@@ -2947,24 +2986,24 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartner(
         superlu_gemm<Ftype>("N", "T",
                             gemm_m, gemm_n, gemm_k, alpha,
                             lpanel.blkPtr(iSt), lpanel.LDA(),
-                            partner_panel.blkPtr(jj),
-                            partner_panel.LDA(), beta,
+                            &frag_val[xluSymLFragmentStRow(frag_index, jj)],
+                            frag_lda, beta,
                             gemmBuff, gemm_m);
 
         for (int_t ii = iSt; ii < iEnd; ++ii)
         {
-            if (lpanel.gid(ii) < partner_panel.gid(jj))
+            if (lpanel.gid(ii) < xluSymLFragmentGid(frag_index, jj))
                 continue;
             int_t row_off = lpanel.stRow(ii) - lpanel.stRow(iSt);
             xluSymScatterLowerToL(this,
                                   lpanel.nbrow(ii),
-                                  partner_panel.nbrow(jj),
+                                  gemm_n,
                                   lpanel.gid(ii),
-                                  partner_panel.gid(jj),
+                                  xluSymLFragmentGid(frag_index, jj),
                                   &gemmBuff[row_off],
                                   gemm_m,
                                   lpanel.rowList(ii),
-                                  partner_panel.rowList(jj));
+                                  xluSymLFragmentRowList(frag_index, jj));
         }
     }
 
@@ -2972,27 +3011,27 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartner(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartner(
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragments(
     int_t lStart, int_t lEnd,
-    int_t partnerStart, int_t partnerEnd,
+    int_t fragStart, int_t fragEnd,
     int_t k, xlpanel_t<Ftype> &lpanel,
-    xlpanel_t<Ftype> &partner_panel)
+    int_t *frag_index, Ftype *frag_val)
 {
-    if (lStart >= lEnd || partnerStart >= partnerEnd ||
-        lpanel.isEmpty() || partner_panel.isEmpty())
+    if (lStart >= lEnd || fragStart >= fragEnd || lpanel.isEmpty() ||
+        frag_index == NULL || xluSymLFragmentNBlocks(frag_index) <= 0)
         return 0;
 
     int_t nlb = lpanel.nblocks();
-    int_t nub = partner_panel.nblocks();
+    int_t nfrag = xluSymLFragmentNBlocks(frag_index);
     lStart = SUPERLU_MAX((int_t)0, lStart);
-    partnerStart = SUPERLU_MAX((int_t)0, partnerStart);
+    fragStart = SUPERLU_MAX((int_t)0, fragStart);
     lEnd = SUPERLU_MIN(lEnd, nlb);
-    partnerEnd = SUPERLU_MIN(partnerEnd, nub);
-    if (lStart >= lEnd || partnerStart >= partnerEnd)
+    fragEnd = SUPERLU_MIN(fragEnd, nfrag);
+    if (lStart >= lEnd || fragStart >= fragEnd)
         return 0;
 
     int_t max_gemm_rows = SUPERLU_MAX((int_t)1, ldt);
-    for (int_t jSt = partnerStart; jSt < partnerEnd; ++jSt)
+    for (int_t jSt = fragStart; jSt < fragEnd; ++jSt)
     {
         int_t iEnd = lStart;
         while (iEnd < lEnd)
@@ -3003,10 +3042,10 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartner(
                 iEnd = lEnd;
             if (iEnd <= iSt)
                 iEnd = iSt + 1;
-            dSymSchurCompUpdatePartWithLPartner(iSt, iEnd,
-                                                jSt, jSt + 1,
-                                                k, lpanel,
-                                                partner_panel);
+            dSymSchurCompUpdatePartWithLFragments(iSt, iEnd,
+                                                  jSt, jSt + 1,
+                                                  k, lpanel,
+                                                  frag_index, frag_val);
         }
     }
 
@@ -3014,43 +3053,45 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartner(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLPartner(
+int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLFragments(
     int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
-    xlpanel_t<Ftype> &partner_panel)
+    int_t *frag_index, Ftype *frag_val)
 {
-    if (lpanel.isEmpty() || partner_panel.isEmpty())
+    if (lpanel.isEmpty() || frag_index == NULL ||
+        xluSymLFragmentNBlocks(frag_index) <= 0)
         return 0;
 
     int_t st_lb = lpanel.haveDiag() ? 1 : 0;
     int_t nlb = lpanel.nblocks();
-    int_t nub = partner_panel.nblocks();
+    int_t nfrag = xluSymLFragmentNBlocks(frag_index);
     int_t laILoc = lpanel.find(laIdx);
-    int_t laJLoc = partner_panel.find(laIdx);
+    int_t laJLoc = xluSymLFragmentFind(frag_index, laIdx);
 
     if (laJLoc != GLOBAL_BLOCK_NOT_FOUND)
-        dSymSchurCompUpLimitedMemWithLPartner(st_lb, nlb,
-                                              laJLoc, laJLoc + 1,
-                                              k, lpanel, partner_panel);
+        dSymSchurCompUpLimitedMemWithLFragments(st_lb, nlb,
+                                                laJLoc, laJLoc + 1,
+                                                k, lpanel,
+                                                frag_index, frag_val);
 
     if (laILoc != GLOBAL_BLOCK_NOT_FOUND)
     {
         if (laJLoc == GLOBAL_BLOCK_NOT_FOUND)
         {
-            dSymSchurCompUpLimitedMemWithLPartner(laILoc, laILoc + 1,
-                                                  0, nub,
-                                                  k, lpanel,
-                                                  partner_panel);
+            dSymSchurCompUpLimitedMemWithLFragments(laILoc, laILoc + 1,
+                                                    0, nfrag,
+                                                    k, lpanel,
+                                                    frag_index, frag_val);
         }
         else
         {
-            dSymSchurCompUpLimitedMemWithLPartner(laILoc, laILoc + 1,
-                                                  0, laJLoc,
-                                                  k, lpanel,
-                                                  partner_panel);
-            dSymSchurCompUpLimitedMemWithLPartner(laILoc, laILoc + 1,
-                                                  laJLoc + 1, nub,
-                                                  k, lpanel,
-                                                  partner_panel);
+            dSymSchurCompUpLimitedMemWithLFragments(laILoc, laILoc + 1,
+                                                    0, laJLoc,
+                                                    k, lpanel,
+                                                    frag_index, frag_val);
+            dSymSchurCompUpLimitedMemWithLFragments(laILoc, laILoc + 1,
+                                                    laJLoc + 1, nfrag,
+                                                    k, lpanel,
+                                                    frag_index, frag_val);
         }
     }
 
@@ -3058,18 +3099,19 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLPartner(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLPartner(
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLFragments(
     int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
-    xlpanel_t<Ftype> &partner_panel)
+    int_t *frag_index, Ftype *frag_val)
 {
-    if (lpanel.isEmpty() || partner_panel.isEmpty())
+    if (lpanel.isEmpty() || frag_index == NULL ||
+        xluSymLFragmentNBlocks(frag_index) <= 0)
         return 0;
 
     int_t st_lb = lpanel.haveDiag() ? 1 : 0;
     int_t nlb = lpanel.nblocks();
-    int_t nub = partner_panel.nblocks();
+    int_t nfrag = xluSymLFragmentNBlocks(frag_index);
     int_t exILoc = lpanel.find(ex);
-    int_t exJLoc = partner_panel.find(ex);
+    int_t exJLoc = xluSymLFragmentFind(frag_index, ex);
 
     auto update_i_range = [&](int_t ist, int_t iend)
     {
@@ -3077,16 +3119,19 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLPartner(
             return;
         if (exJLoc == GLOBAL_BLOCK_NOT_FOUND)
         {
-            dSymSchurCompUpLimitedMemWithLPartner(ist, iend, 0, nub,
-                                                  k, lpanel, partner_panel);
+            dSymSchurCompUpLimitedMemWithLFragments(ist, iend, 0, nfrag,
+                                                    k, lpanel,
+                                                    frag_index, frag_val);
         }
         else
         {
-            dSymSchurCompUpLimitedMemWithLPartner(ist, iend, 0, exJLoc,
-                                                  k, lpanel, partner_panel);
-            dSymSchurCompUpLimitedMemWithLPartner(ist, iend,
-                                                  exJLoc + 1, nub,
-                                                  k, lpanel, partner_panel);
+            dSymSchurCompUpLimitedMemWithLFragments(ist, iend, 0, exJLoc,
+                                                    k, lpanel,
+                                                    frag_index, frag_val);
+            dSymSchurCompUpLimitedMemWithLFragments(ist, iend,
+                                                    exJLoc + 1, nfrag,
+                                                    k, lpanel,
+                                                    frag_index, frag_val);
         }
     };
 
@@ -3919,18 +3964,13 @@ int_t xLUstruct_t<Ftype>::dPanelBcast(int_t k, int_t offset)
     if (mycol == sym_panel_root)
         k_lpanel = lPanelVec[symV2PanelIndex(k)];
 
-    if (symGPU3DVersion == 2)
-    {
-        if (Pr > 1)
-        {
-            xlpanel_t<Ftype> partner_lpanel(
-                symPartnerLidxRecvBufs[offset],
-                symPartnerLvalRecvBufs[offset]);
-            dSymV2PartnerLBcastHost(k, partner_lpanel);
-        }
+	    if (symGPU3DVersion == 2)
+	    {
+	        if (Pr > 1)
+	            dSymV2LFragmentExchangeHost(k, offset);
 
-        if (LidxSendCounts[k] > 0)
-        {
+	        if (LidxSendCounts[k] > 0)
+	        {
             MPI_Bcast(k_lpanel.index, LidxSendCounts[k], mpi_int_t,
                       sym_panel_root, grid3d->rscp.comm);
             MPI_Bcast(k_lpanel.val, LvalSendCounts[k],

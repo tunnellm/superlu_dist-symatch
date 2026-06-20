@@ -695,6 +695,135 @@ void scatterSymLowerTwoLRangeGPU_driver(
     gpuErrchk(cudaGetLastError());
 }
 
+static __device__ int_t symFragNBlocks(const int_t *frag_index)
+{
+    return frag_index[0];
+}
+
+static __device__ int_t symFragGid(const int_t *frag_index, int_t k)
+{
+    return frag_index[LPANEL_HEADER_SIZE + k];
+}
+
+static __device__ int_t symFragStRow(const int_t *frag_index, int_t k)
+{
+    int_t nblocks = symFragNBlocks(frag_index);
+    return frag_index[LPANEL_HEADER_SIZE + nblocks + k];
+}
+
+static __device__ int_t symFragNbrow(const int_t *frag_index, int_t k)
+{
+    return symFragStRow(frag_index, k + 1) - symFragStRow(frag_index, k);
+}
+
+static __device__ int_t *symFragRowList(int_t *frag_index, int_t k)
+{
+    int_t nblocks = symFragNBlocks(frag_index);
+    return &frag_index[LPANEL_HEADER_SIZE + 2 * nblocks + 1 +
+                       frag_index[LPANEL_HEADER_SIZE + nblocks + k]];
+}
+
+template <typename Ftype>
+__device__ void scatterSymLowerLFragmentRangeGPU_dev(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> &rowPanel,
+    int_t *fragIndex, Ftype *fragVal,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    int_t ii = iSt + blockIdx.x;
+    int_t jj = jSt + blockIdx.y;
+    int threadId = threadIdx.x;
+
+    int_t gi = rowPanel.gid(ii);
+    int_t gj = symFragGid(fragIndex, jj);
+    if (gi < gj)
+        return;
+
+    int_t lj = dA->lPanelIndex(gj);
+    if (lj < 0)
+        return;
+    int_t li = dA->lPanelVec[lj].find(gi);
+    if (li == GLOBAL_BLOCK_NOT_FOUND)
+        return;
+
+    Ftype *Dst = dA->lPanelVec[lj].blkPtr(li);
+    int_t lddst = dA->lPanelVec[lj].LDA();
+    int_t dstRowLen = dA->lPanelVec[lj].nbrow(li);
+    int_t *dstRowList = dA->lPanelVec[lj].rowList(li);
+    int_t dstColLen = dA->supersize(gj);
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *colS2D = &rowS2D[dA->maxSuperSize];
+    int *dstIdx = &colS2D[dA->maxSuperSize];
+
+    int nrows = rowPanel.nbrow(ii);
+    int ncols = symFragNbrow(fragIndex, jj);
+
+    computeIndirectMapGPU(rowS2D, nrows, rowPanel.rowList(ii),
+                          dstRowLen, dstRowList, dstIdx);
+    computeIndirectMapGPU(colS2D, ncols, symFragRowList(fragIndex, jj),
+                          dstColLen, NULL, dstIdx);
+
+    int nThreads = blockDim.x;
+    int colsPerThreadBlock = nThreads / nrows;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    int rowOff = rowPanel.stRow(ii) - rowPanel.stRow(iSt);
+    int colOff = symFragStRow(fragIndex, jj) - symFragStRow(fragIndex, jSt);
+    Ftype *Src = &gemmBuff[rowOff + colOff * LDgemmBuff];
+
+    if (threadId < nrows * colsPerThreadBlock)
+    {
+        int i = threadId % nrows;
+        int j = threadId / nrows;
+        while (j < ncols)
+        {
+            int di = rowS2D[i];
+            int dj = colS2D[j];
+            if (di >= 0 && di < dstRowLen && dj >= 0 && dj < dstColLen)
+                atomicAddT<Ftype>(&Dst[di + lddst * dj],
+                                  -Src[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
+template <typename Ftype>
+__global__ void scatterSymLowerLFragmentRangeGPU(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> rowPanel,
+    int_t *fragIndex, Ftype *fragVal,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    scatterSymLowerLFragmentRangeGPU_dev(iSt, jSt, gemmBuff, LDgemmBuff,
+                                         rowPanel, fragIndex, fragVal, dA);
+}
+
+template <typename Ftype>
+void scatterSymLowerLFragmentRangeGPU_driver(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int maxSuperSize, int ldt,
+    xlpanelGPU_t<Ftype> rowPanel,
+    int_t *fragIndex, Ftype *fragVal,
+    xLUstructGPU_t<Ftype> *dA,
+    cudaStream_t cuStream)
+{
+    dim3 dimBlock(ldt);
+    dim3 dimGrid(iEnd - iSt, jEnd - jSt);
+    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+
+    scatterSymLowerLFragmentRangeGPU<Ftype>
+        <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+            iSt, jSt, gemmBuff, LDgemmBuff, rowPanel, fragIndex, fragVal, dA);
+
+    gpuErrchk(cudaGetLastError());
+}
+
 template <>
 __device__ inline double symDeviceZero<double>()
 {
@@ -1282,20 +1411,35 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneLLGPU(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartnerGPU(
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLFragmentsGPU(
     int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
-    int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+    int_t k, xlpanel_t<Ftype> &lpanel,
+    const int_t *frag_index, Ftype *frag_val,
     cublasHandle_t handle, cudaStream_t cuStream,
     Ftype *gemmBuff)
 {
-    if (iSt >= iEnd || jSt >= jEnd ||
-        lpanel.isEmpty() || partner_panel.isEmpty())
+    if (iSt >= iEnd || jSt >= jEnd || lpanel.isEmpty() ||
+        frag_index == NULL || frag_val == NULL)
+        return 0;
+    if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
+        ABORT("SymFact V2 L-fragment metadata is missing.");
+    const std::vector<int_t> &frag = symV2PartnerLRecvIndex[k];
+    if (frag.empty())
         return 0;
 
+    int_t frag_nblocks = frag[0];
+    int_t frag_lda = frag[1];
+    if (frag_nblocks <= 0 || frag_lda <= 0)
+        return 0;
     for (int_t jj = jSt; jj < jEnd; ++jj)
     {
+        if (jj < 0 || jj >= frag_nblocks)
+            continue;
+        int_t st_ptr = LPANEL_HEADER_SIZE + frag_nblocks + jj;
+        int_t frag_start = frag[st_ptr];
+        int_t frag_end = frag[st_ptr + 1];
         int gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
-        int gemm_n = partner_panel.nbrow(jj);
+        int gemm_n = frag_end - frag_start;
         int gemm_k = supersize(k);
         if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
             continue;
@@ -1306,14 +1450,13 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartnerGPU(
         myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                             gemm_m, gemm_n, gemm_k, &alpha,
                             lpanel.blkPtrGPU(iSt), lpanel.LDA(),
-                            partner_panel.blkPtrGPU(jj),
-                            partner_panel.LDA(), &beta,
+                            frag_val + frag_start, frag_lda, &beta,
                             gemmBuff, gemm_m);
 
-        scatterSymLowerTwoLRangeGPU_driver<Ftype>(
+        scatterSymLowerLFragmentRangeGPU_driver<Ftype>(
             iSt, iEnd, jj, jj + 1, gemmBuff, gemm_m,
             A_gpu.maxSuperSize, ldt, lpanel.gpuPanel,
-            partner_panel.gpuPanel,
+            const_cast<int_t *>(frag_index), frag_val,
             dA_gpu, cuStream);
     }
 
@@ -1321,29 +1464,36 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLPartnerGPU(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartnerGPU(
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragmentsGPU(
     int_t lStart, int_t lEnd,
-    int_t partnerStart, int_t partnerEnd,
-    int_t k, xlpanel_t<Ftype> &lpanel, xlpanel_t<Ftype> &partner_panel,
+    int_t fragStart, int_t fragEnd,
+    int_t k, xlpanel_t<Ftype> &lpanel,
+    const int_t *frag_index, Ftype *frag_val,
     cublasHandle_t handle, cudaStream_t cuStream,
     Ftype *gemmBuff)
 {
-    if (lStart >= lEnd || partnerStart >= partnerEnd ||
-        lpanel.isEmpty() || partner_panel.isEmpty())
+    if (lStart >= lEnd || fragStart >= fragEnd || lpanel.isEmpty() ||
+        frag_index == NULL || frag_val == NULL)
+        return 0;
+    if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
+        ABORT("SymFact V2 L-fragment metadata is missing.");
+    const std::vector<int_t> &frag = symV2PartnerLRecvIndex[k];
+    if (frag.empty())
         return 0;
 
     int_t nlb = lpanel.nblocks();
-    int_t nub = partner_panel.nblocks();
+    int_t nfrag = frag[0];
     lStart = SUPERLU_MAX((int_t)0, lStart);
-    partnerStart = SUPERLU_MAX((int_t)0, partnerStart);
+    fragStart = SUPERLU_MAX((int_t)0, fragStart);
     lEnd = SUPERLU_MIN(lEnd, nlb);
-    partnerEnd = SUPERLU_MIN(partnerEnd, nub);
-    if (lStart >= lEnd || partnerStart >= partnerEnd)
+    fragEnd = SUPERLU_MIN(fragEnd, nfrag);
+    if (lStart >= lEnd || fragStart >= fragEnd)
         return 0;
 
-    for (int_t jSt = partnerStart; jSt < partnerEnd; ++jSt)
+    for (int_t jSt = fragStart; jSt < fragEnd; ++jSt)
     {
-        int ncols = partner_panel.nbrow(jSt);
+        int_t st_ptr = LPANEL_HEADER_SIZE + nfrag + jSt;
+        int ncols = frag[st_ptr + 1] - frag[st_ptr];
         if (ncols <= 0)
             continue;
 
@@ -1362,10 +1512,10 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartnerGPU(
             if (iEnd <= iSt)
                 iEnd = iSt + 1;
 
-            dSymSchurCompUpdatePartWithLPartnerGPU(iSt, iEnd, jSt, jSt + 1,
-                                                   k, lpanel, partner_panel,
-                                                   handle, cuStream,
-                                                   gemmBuff);
+            dSymSchurCompUpdatePartWithLFragmentsGPU(iSt, iEnd, jSt, jSt + 1,
+                                                     k, lpanel, frag_index,
+                                                     frag_val, handle,
+                                                     cuStream, gemmBuff);
         }
     }
 
@@ -1373,19 +1523,36 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLPartnerGPU(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLPartnerGPU(
+int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLFragmentsGPU(
     int streamId,
-    int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel,
-    xlpanel_t<Ftype> &partner_panel)
+    int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel)
 {
-    if (lpanel.isEmpty() || partner_panel.isEmpty())
+    if (lpanel.isEmpty())
+        return 0;
+    if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
+        ABORT("SymFact V2 L-fragment metadata is missing.");
+    const std::vector<int_t> &frag = symV2PartnerLRecvIndex[k];
+    if (frag.empty())
         return 0;
 
     int_t st_lb = lpanel.haveDiag() ? 1 : 0;
     int_t nlb = lpanel.nblocks();
-    int_t nub = partner_panel.nblocks();
+    int_t nfrag = frag[0];
     int_t laILoc = lpanel.find(laIdx);
-    int_t laJLoc = partner_panel.find(laIdx);
+    int_t laJLoc = GLOBAL_BLOCK_NOT_FOUND;
+    for (int_t jj = 0; jj < nfrag; ++jj)
+    {
+        if (frag[LPANEL_HEADER_SIZE + jj] == laIdx)
+        {
+            laJLoc = jj;
+            break;
+        }
+    }
+
+    int_t *frag_index = A_gpu.symPartnerLidxRecvBufs[streamId];
+    Ftype *frag_val = A_gpu.symPartnerLvalRecvBufs[streamId];
+    if (frag_index == NULL || frag_val == NULL)
+        ABORT("SymFact V2 L-fragment GPU buffers are missing.");
 
     cublasHandle_t colHandle = A_gpu.lookAheadLHandle[streamId];
     cudaStream_t colStream = A_gpu.lookAheadLStream[streamId];
@@ -1396,34 +1563,34 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLPartnerGPU(
     Ftype *rowGemmBuff = A_gpu.gpuGemmBuffs[streamId];
 
     if (laJLoc != GLOBAL_BLOCK_NOT_FOUND)
-        dSymSchurCompUpLimitedMemWithLPartnerGPU(st_lb, nlb,
-                                                 laJLoc, laJLoc + 1,
-                                                 k, lpanel, partner_panel,
-                                                 colHandle, colStream,
-                                                 colGemmBuff);
+        dSymSchurCompUpLimitedMemWithLFragmentsGPU(st_lb, nlb,
+                                                   laJLoc, laJLoc + 1,
+                                                   k, lpanel, frag_index,
+                                                   frag_val, colHandle,
+                                                   colStream, colGemmBuff);
 
     if (laILoc != GLOBAL_BLOCK_NOT_FOUND)
     {
         if (laJLoc == GLOBAL_BLOCK_NOT_FOUND)
         {
-            dSymSchurCompUpLimitedMemWithLPartnerGPU(laILoc, laILoc + 1,
-                                                     0, nub,
-                                                     k, lpanel, partner_panel,
-                                                     rowHandle, rowStream,
-                                                     rowGemmBuff);
+            dSymSchurCompUpLimitedMemWithLFragmentsGPU(laILoc, laILoc + 1,
+                                                       0, nfrag,
+                                                       k, lpanel, frag_index,
+                                                       frag_val, rowHandle,
+                                                       rowStream, rowGemmBuff);
         }
         else
         {
-            dSymSchurCompUpLimitedMemWithLPartnerGPU(laILoc, laILoc + 1,
-                                                     0, laJLoc,
-                                                     k, lpanel, partner_panel,
-                                                     rowHandle, rowStream,
-                                                     rowGemmBuff);
-            dSymSchurCompUpLimitedMemWithLPartnerGPU(laILoc, laILoc + 1,
-                                                     laJLoc + 1, nub,
-                                                     k, lpanel, partner_panel,
-                                                     rowHandle, rowStream,
-                                                     rowGemmBuff);
+            dSymSchurCompUpLimitedMemWithLFragmentsGPU(laILoc, laILoc + 1,
+                                                       0, laJLoc,
+                                                       k, lpanel, frag_index,
+                                                       frag_val, rowHandle,
+                                                       rowStream, rowGemmBuff);
+            dSymSchurCompUpLimitedMemWithLFragmentsGPU(laILoc, laILoc + 1,
+                                                       laJLoc + 1, nfrag,
+                                                       k, lpanel, frag_index,
+                                                       frag_val, rowHandle,
+                                                       rowStream, rowGemmBuff);
         }
     }
 
@@ -1431,19 +1598,37 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLPartnerGPU(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLPartnerGPU(
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(
     int streamId,
-    int_t k, int_t ex, xlpanel_t<Ftype> &lpanel,
-    xlpanel_t<Ftype> &partner_panel)
+    int_t k, int_t ex, xlpanel_t<Ftype> &lpanel)
 {
-    if (lpanel.isEmpty() || partner_panel.isEmpty())
+    if (lpanel.isEmpty())
+        return 0;
+    if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
+        ABORT("SymFact V2 L-fragment metadata is missing.");
+    const std::vector<int_t> &frag = symV2PartnerLRecvIndex[k];
+    if (frag.empty())
         return 0;
 
     int_t st_lb = lpanel.haveDiag() ? 1 : 0;
     int_t nlb = lpanel.nblocks();
-    int_t nub = partner_panel.nblocks();
+    int_t nfrag = frag[0];
     int_t exILoc = lpanel.find(ex);
-    int_t exJLoc = partner_panel.find(ex);
+    int_t exJLoc = GLOBAL_BLOCK_NOT_FOUND;
+    for (int_t jj = 0; jj < nfrag; ++jj)
+    {
+        if (frag[LPANEL_HEADER_SIZE + jj] == ex)
+        {
+            exJLoc = jj;
+            break;
+        }
+    }
+
+    int_t *frag_index = A_gpu.symPartnerLidxRecvBufs[streamId];
+    Ftype *frag_val = A_gpu.symPartnerLvalRecvBufs[streamId];
+    if (frag_index == NULL || frag_val == NULL)
+        ABORT("SymFact V2 L-fragment GPU buffers are missing.");
+
     cublasHandle_t handle = A_gpu.cuHandles[streamId];
     cudaStream_t cuStream = A_gpu.cuStreams[streamId];
     Ftype *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
@@ -1454,22 +1639,22 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLPartnerGPU(
             return;
         if (exJLoc == GLOBAL_BLOCK_NOT_FOUND)
         {
-            dSymSchurCompUpLimitedMemWithLPartnerGPU(ist, iend, 0, nub,
-                                                     k, lpanel, partner_panel,
-                                                     handle, cuStream,
-                                                     gemmBuff);
+            dSymSchurCompUpLimitedMemWithLFragmentsGPU(ist, iend, 0, nfrag,
+                                                       k, lpanel, frag_index,
+                                                       frag_val, handle,
+                                                       cuStream, gemmBuff);
         }
         else
         {
-            dSymSchurCompUpLimitedMemWithLPartnerGPU(ist, iend, 0, exJLoc,
-                                                     k, lpanel, partner_panel,
-                                                     handle, cuStream,
-                                                     gemmBuff);
-            dSymSchurCompUpLimitedMemWithLPartnerGPU(ist, iend,
-                                                     exJLoc + 1, nub,
-                                                     k, lpanel, partner_panel,
-                                                     handle, cuStream,
-                                                     gemmBuff);
+            dSymSchurCompUpLimitedMemWithLFragmentsGPU(ist, iend, 0, exJLoc,
+                                                       k, lpanel, frag_index,
+                                                       frag_val, handle,
+                                                       cuStream, gemmBuff);
+            dSymSchurCompUpLimitedMemWithLFragmentsGPU(ist, iend,
+                                                       exJLoc + 1, nfrag,
+                                                       k, lpanel, frag_index,
+                                                       frag_val, handle,
+                                                       cuStream, gemmBuff);
         }
     };
 

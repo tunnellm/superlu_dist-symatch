@@ -437,9 +437,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             bool sym_ll_local_2d = (Pr == 1 && Pc == 1);
             if (!sym_ll_local_2d)
             {
-                xlpanel_t<Ftype> partner_lpanel = getKPartnerLPanel(k, offset);
-                dSymV2PartnerLBcastGPU(k, offset, partner_lpanel);
-                SYM_V2_TRACE_SCHED(grid3d, k, "after partner exchange");
+                dSymV2LFragmentExchangeGPU(k, offset);
+                SYM_V2_TRACE_SCHED(grid3d, k, "after L-fragment exchange");
             }
 
             if (LidxSendCounts[k] > 0)
@@ -834,10 +833,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 }
                 else if (LidxSendCounts[k] > 0)
                 {
-                    xlpanel_t<Ftype> partner_lpanel = getKPartnerLPanel(k, offset);
-                    dSymLookAheadUpdateWithLPartnerGPU(offset, k, k_parent,
-                                                       k_lpanel,
-                                                       partner_lpanel);
+                    dSymLookAheadUpdateWithLFragmentsGPU(offset, k, k_parent,
+                                                         k_lpanel);
                 }
             }
             else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
@@ -946,11 +943,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 }
                 else if (LidxSendCounts[k] > 0)
                 {
-                    xlpanel_t<Ftype> partner_lpanel = getKPartnerLPanel(k, offset);
-                    dSymSchurCompUpdateExcludeOneWithLPartnerGPU(offset, k,
-                                                                 k_parent,
-                                                                 k_lpanel,
-                                                                 partner_lpanel);
+                    dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(offset, k,
+                                                                   k_parent,
+                                                                   k_lpanel);
                 }
             }
             else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
