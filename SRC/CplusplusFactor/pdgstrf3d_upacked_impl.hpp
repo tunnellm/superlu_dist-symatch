@@ -371,8 +371,6 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                 ABORT("GPU3DVERSION=2 requires an LDL-native partition forest.");
 
         symGPU3DVersion = 2;
-        SYM_V2_TRACE_FACTOR(grid3d, "pdgstrf3dSymV2 entry maxLvl=%d",
-                            static_cast<int>(maxLvl));
 
 #if (PRNTlevel >= 1)
         if (grid3d != NULL && grid3d->iam == 0)
@@ -395,11 +393,6 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
         SCT->pdgstrfTimer = SuperLU_timer_();
         for (int ilvl = 0; ilvl < maxLvl; ++ilvl)
         {
-                SYM_V2_TRACE_FACTOR(grid3d,
-                                    "level %d begin zero=%d tree=%d",
-                                    ilvl,
-                                    static_cast<int>(myZeroTrIdxs[ilvl]),
-                                    static_cast<int>(myTreeIdxs[ilvl]));
                 if (!myZeroTrIdxs[ilvl])
                 {
                         int tree = myTreeIdxs[ilvl];
@@ -407,10 +400,6 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                         if (ldl_forest != NULL)
                         {
                                 double t_factor = SuperLU_timer_();
-                                SYM_V2_TRACE_FACTOR(grid3d,
-                                                    "level %d factor begin tree=%d nodes=%d",
-                                                    ilvl, tree,
-                                                    static_cast<int>(ldl_forest->nNodes));
                                 if (superlu_acc_offload)
                                 {
 #ifdef HAVE_CUDA
@@ -427,17 +416,10 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                                 }
                                 SCT->tFactor3D[ilvl] = SuperLU_timer_() - t_factor;
                                 ldl_forest->cost = SCT->tFactor3D[ilvl];
-                                SYM_V2_TRACE_FACTOR(grid3d,
-                                                    "level %d factor end tree=%d elapsed=%.6f",
-                                                    ilvl, tree,
-                                                    SCT->tFactor3D[ilvl]);
                         }
 
                         if (ilvl < maxLvl - 1)
                         {
-                                SYM_V2_TRACE_FACTOR(grid3d,
-                                                    "level %d ancestor reduction begin",
-                                                    ilvl);
                                 if (superlu_acc_offload)
                                 {
 #ifdef HAVE_CUDA
@@ -452,22 +434,14 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                                         this->ancestorReduction3d(ilvl, myNodeCount,
                                                                  treePerm);
                                 }
-                                SYM_V2_TRACE_FACTOR(grid3d,
-                                                    "level %d ancestor reduction end",
-                                                    ilvl);
                         }
                 }
                 SCT->tSchCompUdt3d[ilvl] =
                         ilvl == 0 ? SCT->NetSchurUpTimer
                                   : SCT->NetSchurUpTimer - SCT->tSchCompUdt3d[ilvl - 1];
-                SYM_V2_TRACE_FACTOR(grid3d, "level %d end", ilvl);
         }
-        SYM_V2_TRACE_FACTOR(grid3d, "pdgstrf3dSymV2 before final barrier");
         MPI_Barrier(grid3d->comm);
-        SYM_V2_TRACE_FACTOR(grid3d, "pdgstrf3dSymV2 after final barrier");
         SCT->pdgstrfTimer = SuperLU_timer_() - SCT->pdgstrfTimer;
-        SYM_V2_TRACE_FACTOR(grid3d, "pdgstrf3dSymV2 exit elapsed=%.6f",
-                            SCT->pdgstrfTimer);
 
         return 0;
 } /* pdgstrf3dSymV2 */
