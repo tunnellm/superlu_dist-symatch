@@ -572,14 +572,17 @@ struct xLUstruct_t
     std::vector<int_t *> symL2LSendMapsGPU;
     double *symV2PartnerLSendBufPoolGPU;
     int_t *symL2LSendMapPoolGPU;
+    int_t *symV2PartnerLRecvMapPoolGPU;
     size_t symV2PartnerLSendBufPoolCount;
     size_t symL2LSendMapPoolCount;
+    size_t symV2PartnerLRecvMapPoolCount;
     std::vector<std::vector<int_t> > symL2LSendMeta;
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<int> symV2PartnerLRecvSizes;
     std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
     std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
+    std::vector<int_t *> symV2PartnerLRecvMapsGPU;
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
     std::vector<Ftype *> symDiagPrefetchBufs;

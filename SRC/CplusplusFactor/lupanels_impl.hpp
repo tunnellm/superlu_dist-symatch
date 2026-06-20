@@ -708,8 +708,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 #ifdef HAVE_CUDA
     symV2PartnerLSendBufPoolGPU = NULL;
     symL2LSendMapPoolGPU = NULL;
+    symV2PartnerLRecvMapPoolGPU = NULL;
     symV2PartnerLSendBufPoolCount = 0;
     symL2LSendMapPoolCount = 0;
+    symV2PartnerLRecvMapPoolCount = 0;
 #endif
     grid = &(grid3d->grid2d);
     iam = grid->iam;
@@ -1865,6 +1867,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             symV2PartnerLRecvSizes.assign(compact_count, 0);
             symV2PartnerLRecvIndex.assign(nsupers, std::vector<int_t>());
             symV2PartnerLRecvMap.assign(compact_count, std::vector<int_t>());
+            std::vector<size_t> symV2PartnerLRecvMapOffsets(compact_count, 0);
             for (int_t k0 = 0; k0 < nsupers; ++k0)
             {
                 for (int pr = 0; pr < Pr; ++pr)
@@ -1936,6 +1939,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     std::vector<int_t> &recv_map =
                         symV2PartnerLRecvMap[recv_pos];
                     long long expected_values = 0;
+                    int_t src_offset = 0;
                     for (size_t rb = 0; rb < recv_blocks.size(); ++rb)
                     {
                         int_t ib = GLOBAL_BLOCK_NOT_FOUND;
@@ -1953,6 +1957,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             static_cast<int_t>(recv_blocks[rb].cols.size());
                         recv_map.push_back(index[px_ptr + ib]);
                         recv_map.push_back(nrows);
+                        recv_map.push_back(src_offset);
+                        src_offset += nrows * SuperSize(k0);
                         expected_values +=
                             static_cast<long long>(nrows) *
                             static_cast<long long>(SuperSize(k0));
@@ -1967,6 +1973,47 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 symV2SetupProfileAdd(
                     SYM_V2_SETUP_PARTNER_RECV_MAP_BUILD,
                     SuperLU_timer_() - tPartnerRecvMapBuild);
+
+            size_t total_recv_map = 0;
+            for (size_t pos = 0; pos < symV2PartnerLRecvMap.size(); ++pos)
+            {
+                symV2PartnerLRecvMapOffsets[pos] = total_recv_map;
+                size_t map_size = symV2PartnerLRecvMap[pos].size();
+                if (total_recv_map >
+                    std::numeric_limits<size_t>::max() - map_size)
+                    ABORT("SymFact V2 partner-L receive map size overflows.");
+                total_recv_map += map_size;
+            }
+            symV2PartnerLRecvMapPoolCount = total_recv_map;
+            symV2PartnerLRecvMapsGPU.assign(compact_count, NULL);
+            if (total_recv_map > 0)
+            {
+                std::vector<int_t> packed_recv_maps(total_recv_map, 0);
+                for (size_t pos = 0; pos < symV2PartnerLRecvMap.size(); ++pos)
+                {
+                    if (symV2PartnerLRecvMap[pos].empty())
+                        continue;
+                    std::copy(symV2PartnerLRecvMap[pos].begin(),
+                              symV2PartnerLRecvMap[pos].end(),
+                              packed_recv_maps.begin() +
+                                  symV2PartnerLRecvMapOffsets[pos]);
+                }
+                gpuErrchk(cudaMalloc(
+                    (void **)&symV2PartnerLRecvMapPoolGPU,
+                    xlu_checked_product(total_recv_map, sizeof(int_t),
+                                        "SymFact V2 partner-L receive map pool")));
+                gpuErrchk(cudaMemcpy(
+                    symV2PartnerLRecvMapPoolGPU, packed_recv_maps.data(),
+                    sizeof(int_t) * total_recv_map,
+                    cudaMemcpyHostToDevice));
+                for (size_t pos = 0; pos < symV2PartnerLRecvMap.size(); ++pos)
+                {
+                    if (!symV2PartnerLRecvMap[pos].empty())
+                        symV2PartnerLRecvMapsGPU[pos] =
+                            symV2PartnerLRecvMapPoolGPU +
+                            symV2PartnerLRecvMapOffsets[pos];
+                }
+            }
         }
         xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after send GPU L2U map setup");
     }
@@ -2026,8 +2073,14 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
             if (symL2LSendMapsGPU[i] != NULL)
                 gpuErrchk(cudaFree(symL2LSendMapsGPU[i]));
     }
+    if (symV2PartnerLRecvMapPoolGPU != NULL)
+    {
+        gpuErrchk(cudaFree(symV2PartnerLRecvMapPoolGPU));
+        symV2PartnerLRecvMapPoolGPU = NULL;
+    }
     symV2PartnerLSendBufPoolCount = 0;
     symL2LSendMapPoolCount = 0;
+    symV2PartnerLRecvMapPoolCount = 0;
     for (size_t i = 0; i < symL2ULocalMapsGPU.size(); ++i)
         if (symL2ULocalMapsGPU[i] != NULL)
             gpuErrchk(cudaFree(symL2ULocalMapsGPU[i]));
@@ -2041,6 +2094,7 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLRecvSizes.clear();
     symV2PartnerLRecvIndex.clear();
     symV2PartnerLRecvMap.clear();
+    symV2PartnerLRecvMapsGPU.clear();
     symL2ULocalMapsGPU.clear();
     symPanelReadyEventIds.clear();
     for (size_t i = 0; i < symDiagPrefetchBufs.size(); ++i)

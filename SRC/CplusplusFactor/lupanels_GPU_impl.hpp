@@ -93,6 +93,30 @@ static __global__ void sym_l2u_local_gather_kernel(const double *lpanel,
     upanel[idx] = (src < 0) ? 0.0 : lpanel[src];
 }
 
+static __global__ void sym_lfrag_assemble_kernel(const double *stage,
+                                                 double *frag,
+                                                 const int_t *recv_map,
+                                                 int pieces,
+                                                 int_t ksupc,
+                                                 int_t frag_lda)
+{
+    int piece = blockIdx.x;
+    if (piece >= pieces)
+        return;
+
+    int_t dst_offset = recv_map[3 * piece];
+    int_t nrows = recv_map[3 * piece + 1];
+    int_t src_offset = recv_map[3 * piece + 2];
+    int_t count = nrows * ksupc;
+    for (int_t idx = threadIdx.x; idx < count; idx += blockDim.x)
+    {
+        int_t row = idx % nrows;
+        int_t col = idx / nrows;
+        frag[dst_offset + row + col * frag_lda] =
+            stage[src_offset + row + col * nrows];
+    }
+}
+
 template <typename T>
 static __global__ void sym_lpanel_transform_inplace_kernel(T *panel,
                                                            int_t panel_ld,
@@ -332,7 +356,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         symV2PartnerLSendSizes.empty() ||
         symV2PartnerLRecvSizes.empty() ||
         symV2PartnerLRecvIndex.empty() ||
-        symV2PartnerLRecvMap.empty())
+        symV2PartnerLRecvMap.empty() ||
+        symV2PartnerLRecvMapsGPU.empty())
         ABORT("SymFact GPU L-fragment buffers are not allocated.");
     if (k < 0 || k >= nsupers)
         return 0;
@@ -626,36 +651,45 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
             size_t pos = 0;
             size_t end = static_cast<size_t>(count);
+            if (recv_map.size() % 3 != 0)
+                ABORT("SymFact V2 true symmetric L-fragment receive map has invalid stride.");
+            int pieces = static_cast<int>(recv_map.size() / 3);
+            int_t *recv_map_gpu =
+                symV2PartnerLRecvMapsGPU[recv_count_base +
+                                          static_cast<size_t>(pr)];
+            if (pieces > 0 && recv_map_gpu == NULL)
+                ABORT("SymFact V2 true symmetric L-fragment device receive map is missing.");
             size_t map_pos = 0;
             while (map_pos < recv_map.size())
             {
-                if (map_pos + 2 > recv_map.size())
+                if (map_pos + 3 > recv_map.size())
                     ABORT("SymFact V2 true symmetric L-fragment receive map is truncated.");
                 int_t dst_offset = recv_map[map_pos++];
                 int_t nrows = recv_map[map_pos++];
+                int_t src_offset = recv_map[map_pos++];
                 if (dst_offset < 0 || nrows < 0 ||
                     dst_offset + nrows > frag_nrows)
                     ABORT("SymFact V2 true symmetric L-fragment receive map is invalid.");
-                double *dst = A_gpu.symPartnerLvalRecvBufs[stream_offset] +
-                              dst_offset;
                 size_t need = static_cast<size_t>(nrows) *
                               static_cast<size_t>(ksupc);
-                if (pos + need > end)
+                if (src_offset < 0 ||
+                    static_cast<size_t>(src_offset) + need > end)
                     ABORT("SymFact V2 true symmetric L-fragment buffer is truncated.");
+                pos += need;
+            }
+            if (pieces > 0)
+            {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 double assemble_issue_t = SuperLU_timer_();
 #endif
-                gpuErrchk(cudaMemcpy2DAsync(
-                    dst, sizeof(double) * static_cast<size_t>(frag_nrows),
-                    stage + pos, sizeof(double) * static_cast<size_t>(nrows),
-                    sizeof(double) * static_cast<size_t>(nrows),
-                    static_cast<size_t>(ksupc),
-                    cudaMemcpyDeviceToDevice, stream));
+                sym_lfrag_assemble_kernel<<<pieces, 256, 0, stream>>>(
+                    stage, A_gpu.symPartnerLvalRecvBufs[stream_offset],
+                    recv_map_gpu, pieces, ksupc, frag_nrows);
+                gpuErrchk(cudaGetLastError());
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 symTimingAdd(SYM_GPU3D_T_LFRAG_ASSEMBLE_ISSUE,
                              SuperLU_timer_() - assemble_issue_t);
 #endif
-                pos += need;
             }
             if (pos != end)
                 ABORT("SymFact V2 true symmetric L-fragment buffer has extra data.");
