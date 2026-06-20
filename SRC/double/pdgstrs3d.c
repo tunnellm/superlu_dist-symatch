@@ -11239,7 +11239,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     xtrsTimer.t_forwardSolve = SuperLU_timer_() - tx_st;
     xk_buf = workspace->xk_buf;
 
-    /* Dense diagonal apply z = D^{-1} y. */
+    /* Dense diagonal apply z = D^{-1} y on the canonical diagonal owner. */
     tx = SuperLU_timer_();
     for (int_t level = 0; level < solve_schedule->nlevels; ++level) {
     for (int_t ko = solve_schedule->level_ptr[level];
@@ -11249,93 +11249,42 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                          ? trf3Dpartition->supernode2treeMap[k] : -1;
         pdgstrs3d_symldl_tree_comm_t *tree_comm =
             (tree_comms && tree >= 0) ? &tree_comms[tree] : NULL;
-        MPI_Comm solve_comm;
-        int solve_rank;
-        int root_rank;
         pdgstrs3d_symldl_panel_meta_t *kmeta = &panel_meta[k];
         pdgstrs3d_symldl_comm_meta_t *cmeta = &comm_meta[k];
         int_t ksupc = SuperSize(k);
         int block_count = pdgstrs3d_symldl_count_to_int(ksupc * nrhs,
                                                         "SymLDL diagonal block");
-        int diag_owner_count = cmeta->diag_rank_count;
 
         if (tree_comm == NULL)
             ABORT("SymLDL solve is missing tree metadata for a diagonal block.");
         if (!tree_comm->active || !cmeta->active)
             continue;
-        solve_comm = tree_comm->comm;
-        solve_rank = tree_comm->rank;
-        root_rank = pdgstrs3d_symldl_rank_to_tree_rank(tree_comm,
-                                                       diag_owner[k]);
-        if (diag_owner_count == 0)
-            ABORT("SymLDL solve missing inverse diagonal block owner.");
+        if (global_rank != diag_owner[k])
+            continue;
+        if (!kmeta->has_diag)
+            ABORT("SymLDL solve diagonal owner is missing inverse diagonal block.");
 
-        for (int i = 0; i < block_count; ++i) {
-            diag_send_buf[i] = 0.0;
-            diag_buf[i] = 0.0;
-        }
-        if (global_rank == diag_owner[k]) {
-            int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, k);
-            double *xk = &x[X_BLK(lk)];
-            for (int rhs = 0; rhs < nrhs; ++rhs)
-                for (int_t i = 0; i < ksupc; ++i)
-                    xk_buf[i + (int_t) rhs * ksupc] = xk[i + (int_t) rhs * ksupc];
-        }
+        int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, k);
+        double *xk = &x[X_BLK(lk)];
+        for (int rhs = 0; rhs < nrhs; ++rhs)
+            for (int_t i = 0; i < ksupc; ++i)
+                xk_buf[i + (int_t) rhs * ksupc] =
+                    xk[i + (int_t) rhs * ksupc];
 
         ttmp = SuperLU_timer_();
-        if (solve_rank == root_rank) {
-            for (int i = 0; i < cmeta->diag_rank_count; ++i) {
-                int rank = cmeta->diag_ranks[i];
-                if (rank != root_rank)
-                    MPI_Send(xk_buf, block_count, MPI_DOUBLE, rank, Xk,
-                             solve_comm);
-            }
-        } else if (cmeta->has_diag) {
-            MPI_Recv(xk_buf, block_count, MPI_DOUBLE, root_rank, Xk,
-                     solve_comm, MPI_STATUS_IGNORE);
-        }
-        symldl_timer.diag_comm += SuperLU_timer_() - ttmp;
+        pdgstrs3d_symldl_dispatch_gemm(solve_meta, k, kmeta->diag_luptr,
+                               "N", "N", ksupc, nrhs, ksupc,
+                               1.0, &kmeta->lusup[kmeta->diag_luptr],
+                               kmeta->nsupr, xk_buf, ksupc,
+                               0.0, diag_buf, ksupc);
+        symldl_timer.diag_compute += SuperLU_timer_() - ttmp;
+        stat->ops[SOLVE] += 2.0 * (double) ksupc * (double) ksupc *
+                            (double) nrhs;
 
-        if (kmeta->has_diag) {
-            ttmp = SuperLU_timer_();
-            pdgstrs3d_symldl_dispatch_gemm(solve_meta, k, kmeta->diag_luptr,
-                                   "N", "N", ksupc, nrhs, ksupc,
-                                   1.0, &kmeta->lusup[kmeta->diag_luptr],
-                                   kmeta->nsupr, xk_buf, ksupc,
-                                   0.0, diag_send_buf, ksupc);
-            symldl_timer.diag_compute += SuperLU_timer_() - ttmp;
-            stat->ops[SOLVE] += 2.0 * (double) ksupc * (double) ksupc * (double) nrhs;
-        }
-
-        ttmp = SuperLU_timer_();
-        if (solve_rank == root_rank) {
-            if (cmeta->has_diag)
-                for (int i = 0; i < block_count; ++i)
-                    diag_buf[i] += diag_send_buf[i];
-            for (int i = 0; i < cmeta->diag_rank_count; ++i) {
-                int rank = cmeta->diag_ranks[i];
-                if (rank == root_rank)
-                    continue;
-                MPI_Recv(diag_send_buf, block_count, MPI_DOUBLE, rank,
-                         RD_L, solve_comm, MPI_STATUS_IGNORE);
-                for (int j = 0; j < block_count; ++j)
-                    diag_buf[j] += diag_send_buf[j];
-            }
-        } else if (cmeta->has_diag) {
-            MPI_Send(diag_send_buf, block_count, MPI_DOUBLE, root_rank,
-                     RD_L, solve_comm);
-        }
-        symldl_timer.diag_comm += SuperLU_timer_() - ttmp;
-        if (global_rank == diag_owner[k]) {
-            int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, k);
-            double *xk = &x[X_BLK(lk)];
-            if (diag_owner_count > 1)
-                for (int i = 0; i < block_count; ++i)
-                    diag_buf[i] /= (double) diag_owner_count;
-            for (int rhs = 0; rhs < nrhs; ++rhs)
-                for (int_t i = 0; i < ksupc; ++i)
-                    xk[i + (int_t) rhs * ksupc] = diag_buf[i + (int_t) rhs * ksupc];
-        }
+        for (int rhs = 0; rhs < nrhs; ++rhs)
+            for (int_t i = 0; i < ksupc; ++i)
+                xk[i + (int_t) rhs * ksupc] =
+                    diag_buf[i + (int_t) rhs * ksupc];
     }
     }
     (void) tx;
