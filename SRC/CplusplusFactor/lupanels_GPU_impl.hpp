@@ -337,6 +337,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     if (k < 0 || k >= nsupers)
         return 0;
 
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    double lfrag_total_t = SuperLU_timer_();
+#endif
+
     SYM_V2_TRACE_EXCHANGE(grid3d, k,
                           "enter L-fragment exchange myrow=%d mycol=%d krow=%d kcol=%d Lidx=%d",
                           static_cast<int>(myrow), static_cast<int>(mycol),
@@ -359,6 +363,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             symV2DiagBlocksGPU[k] == NULL)
             ABORT("SymFact V2 true symmetric device diagonal block is missing.");
 
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double pack_issue_t = SuperLU_timer_();
+#endif
         int_t lk = symV2PanelIndex(k);
         xlpanel_t<double> &lpanel = lPanelVec[lk];
         bool packed_any = false;
@@ -392,12 +399,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 lpanel.LDA(), symV2DiagBlocksGPU[k], ksupc);
             packed_any = true;
         }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAdd(SYM_GPU3D_T_LFRAG_PACK_ISSUE,
+                     SuperLU_timer_() - pack_issue_t);
+#endif
 
         if (packed_any)
         {
             gpuErrchk(cudaGetLastError());
             if (!cuda_aware)
             {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double d2h_issue_t = SuperLU_timer_();
+#endif
                 for (int pc = 0; pc < Pc; ++pc)
                 {
                     size_t flat = static_cast<size_t>(lk) *
@@ -420,8 +434,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                         sizeof(double) * static_cast<size_t>(size),
                         cudaMemcpyDeviceToHost, stream));
                 }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAdd(SYM_GPU3D_T_LFRAG_D2H_STAGE_ISSUE,
+                             SuperLU_timer_() - d2h_issue_t);
+#endif
             }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double pack_stage_sync_t = SuperLU_timer_();
+#endif
             gpuErrchk(cudaStreamSynchronize(stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAdd(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
+                         SuperLU_timer_() - pack_stage_sync_t);
+#endif
         }
     }
 
@@ -513,8 +538,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     }
 
     if (!recv_reqs.empty())
+    {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double recv_wait_t = SuperLU_timer_();
+#endif
         MPI_Waitall(static_cast<int>(recv_reqs.size()), recv_reqs.data(),
                     MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAdd(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
+                     SuperLU_timer_() - recv_wait_t);
+#endif
+    }
 
     if (static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
         ABORT("SymFact V2 true symmetric L-fragment cached index is missing.");
@@ -577,10 +611,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             else
             {
                 double *recv_data = recv_buffers[pr].data();
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double h2d_issue_t = SuperLU_timer_();
+#endif
                 gpuErrchk(cudaMemcpyAsync(
                     stage, recv_data,
                     sizeof(double) * static_cast<size_t>(count),
                     cudaMemcpyHostToDevice, stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAdd(SYM_GPU3D_T_LFRAG_H2D_STAGE_ISSUE,
+                             SuperLU_timer_() - h2d_issue_t);
+#endif
             }
 
             size_t pos = 0;
@@ -601,12 +642,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                               static_cast<size_t>(ksupc);
                 if (pos + need > end)
                     ABORT("SymFact V2 true symmetric L-fragment buffer is truncated.");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double assemble_issue_t = SuperLU_timer_();
+#endif
                 gpuErrchk(cudaMemcpy2DAsync(
                     dst, sizeof(double) * static_cast<size_t>(frag_nrows),
                     stage + pos, sizeof(double) * static_cast<size_t>(nrows),
                     sizeof(double) * static_cast<size_t>(nrows),
                     static_cast<size_t>(ksupc),
                     cudaMemcpyDeviceToDevice, stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAdd(SYM_GPU3D_T_LFRAG_ASSEMBLE_ISSUE,
+                             SuperLU_timer_() - assemble_issue_t);
+#endif
                 pos += need;
             }
             if (pos != end)
@@ -615,10 +663,28 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     }
 
     if (!send_reqs.empty())
+    {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double send_wait_t = SuperLU_timer_();
+#endif
         MPI_Waitall(static_cast<int>(send_reqs.size()), send_reqs.data(),
                     MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAdd(SYM_GPU3D_T_LFRAG_SEND_WAIT,
+                     SuperLU_timer_() - send_wait_t);
+#endif
+    }
 
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    double stream_sync_t = SuperLU_timer_();
+#endif
     gpuErrchk(cudaStreamSynchronize(stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    symTimingAdd(SYM_GPU3D_T_LFRAG_STREAM_SYNC,
+                 SuperLU_timer_() - stream_sync_t);
+    symTimingAdd(SYM_GPU3D_T_LFRAG_EXCHANGE_TOTAL,
+                 SuperLU_timer_() - lfrag_total_t);
+#endif
     SYM_V2_TRACE_EXCHANGE(grid3d, k, "leave L-fragment exchange");
     return 0;
 }
