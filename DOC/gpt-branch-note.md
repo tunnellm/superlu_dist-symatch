@@ -1,0 +1,1 @@
+This branch contains an experimental first-pass SymLDL v2 GPU factor-pipeline optimization.
