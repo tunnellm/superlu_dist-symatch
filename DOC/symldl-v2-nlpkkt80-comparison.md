@@ -15,6 +15,9 @@ symldl-v2-solve-optimization
 git@github.com:tunnellm/superlu_dist-symatch.git
 ```
 
+Scope: this file records `nlpkkt80` runs only. The saved `nlpkkt120` runs are
+recorded separately in `DOC/symldl-v2-nlpkkt120-comparison.md`.
+
 ## Test Setup
 
 Perlmutter run directory:
@@ -107,7 +110,7 @@ V2 solve timing components:
 | backward_compute | 0.298560 s |
 | backward_delta | 0.068922 s |
 
-## V2 Factor Communication Update
+## V2 Factor Communication Update: nlpkkt80 Smoke
 
 Recorded: 2026-06-21
 
@@ -178,11 +181,14 @@ Factorization_Time : 12.96
 Communication_Time : 12.96
 ```
 
+This is a one-node `nlpkkt80` smoke. It should not be read as the larger
+`nlpkkt120` scaling result.
+
 This perf-build smoke does not include the detailed `SLU_ENABLE_SYM_GPU3D_TIMING`
-factor counters. The timing-enabled smoke of the same commit and same grid,
-but using the instrumented build and 8 OMP threads, showed the targeted factor
-communication sections moving in the intended direction relative to the recent
-known-good rerun:
+factor counters. The timing-enabled smoke of the same commit and same matrix/grid,
+but using the instrumented build and 8 OMP threads instead of the 16-thread perf
+configuration above, showed the targeted factor communication sections moving in
+the intended direction relative to the recent good rerun:
 
 | Metric | Recent good rerun | fe7fd76b timing smoke | Change |
 |---|---:|---:|---:|
