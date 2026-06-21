@@ -588,6 +588,7 @@ struct xLUstruct_t
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<unsigned char> symV2PartnerLSendRowActive;
+    std::vector<unsigned char> symV2PartnerLPrepacked;
     std::vector<int> symV2PartnerLRecvSizes;
     std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
     std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
@@ -1051,6 +1052,7 @@ struct xLUstruct_t
     int_t dPanelBcastGPU(int_t k, int_t offset);
     int_t dSymStartL2UGPU(int_t k, int_t stream_offset);
     int_t dSymV2ComputePartnerScratchSize(LUStruct_type<Ftype> *LUstruct);
+    int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,

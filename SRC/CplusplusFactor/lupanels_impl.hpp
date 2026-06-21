@@ -23,6 +23,9 @@
 #ifdef HAVE_CUDA
 template <>
 int_t xLUstruct_t<double>::dSymStartL2UGPU(int_t k, int_t stream_offset);
+template <>
+int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
+    int_t k, int_t stream_offset);
 #endif
 
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
@@ -1247,6 +1250,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             xlu_checked_product(l2u_slots, static_cast<size_t>(Pr),
                                 "SymFact V2 partner-L send row activity"),
             0);
+        symV2PartnerLPrepacked.assign(static_cast<size_t>(local_cols), 0);
         symPanelReadyEventIds.assign(nsupers, -1);
         symDiagPrefetchEventIds.assign(nsupers, -1);
         std::vector<size_t> symV2PartnerLMapOffsets(l2u_slots, 0);
@@ -2337,6 +2341,7 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLHostSendBufs.clear();
     symV2PartnerLSendSizes.clear();
     symV2PartnerLSendRowActive.clear();
+    symV2PartnerLPrepacked.clear();
     symV2PartnerLRecvSizes.clear();
     symV2PartnerLRecvIndex.clear();
     symV2PartnerLRecvMap.clear();
@@ -3666,6 +3671,10 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
 #endif
     if (symGPU3DVersion != 2)
         dSymStartL2U(k, handle_offset);
+#ifdef HAVE_CUDA
+    else if (superlu_acc_offload)
+        dSymV2PrepackLFragmentsGPU(k, handle_offset);
+#endif
 
     int_t ksupc = SuperSize(k);
     int_t sym_panel_root = symV2PanelRoot(k);
