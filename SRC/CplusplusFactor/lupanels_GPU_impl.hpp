@@ -538,6 +538,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     std::vector<MPI_Request> send_reqs;
     std::vector<std::vector<double> > recv_buffers(cuda_aware ? 0 : Pr);
     recv_reqs.reserve(Pr);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    double recv_post_t = SuperLU_timer_();
+#endif
     for (int pr = 0; pr < Pr; ++pr)
     {
         int size = recv_sizes[pr];
@@ -560,7 +563,16 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                   SLU_MPI_TAG(5, k), grid->comm, &req);
         recv_reqs.push_back(req);
     }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    symTimingAdd(SYM_GPU3D_T_LFRAG_RECV_POST,
+                 SuperLU_timer_() - recv_post_t);
+    symStatAdd(SYM_GPU3D_S_L2U_RECV_REQUESTS,
+               static_cast<long long>(recv_reqs.size()));
+#endif
 
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    double send_post_t = SuperLU_timer_();
+#endif
     if (mycol == kcol_)
     {
         int_t send_lk = symV2PanelIndex(k);
@@ -601,13 +613,20 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             }
         }
     }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    symTimingAdd(SYM_GPU3D_T_LFRAG_SEND_POST,
+                 SuperLU_timer_() - send_post_t);
+    symStatAdd(SYM_GPU3D_S_L2U_SEND_REQUESTS,
+               static_cast<long long>(send_reqs.size()));
+#endif
 
     if (!recv_reqs.empty())
     {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double recv_wait_t = SuperLU_timer_();
 #endif
-        MPI_Waitall(static_cast<int>(recv_reqs.size()), recv_reqs.data(),
+        MPI_Waitall(static_cast<int>(recv_reqs.size()),
+                    recv_reqs.data(),
                     MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         symTimingAdd(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,

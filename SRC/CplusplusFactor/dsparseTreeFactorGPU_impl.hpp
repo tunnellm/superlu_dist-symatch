@@ -806,6 +806,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double sym_sched_t = 0.0;
+        double sym_sched_book_t = 0.0;
         int_t sched_window_end = SUPERLU_MIN(nnodes, k1 + winSize);
         if (sym_timing_enabled)
         {
@@ -819,6 +820,15 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
         {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double sym_book_start = 0.0;
+            int sym_book_open = 0;
+            if (sym_timing_enabled)
+            {
+                sym_book_start = SuperLU_timer_();
+                sym_book_open = 1;
+            }
+#endif
             int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
@@ -828,11 +838,25 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             {
                 if (Pr == 1 && Pc == 1 && LidxSendCounts[k] > 0)
                 {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                    if (sym_timing_enabled && sym_book_open)
+                    {
+                        sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                        sym_book_open = 0;
+                    }
+#endif
                     dSymLookAheadUpdateLLGPU(offset, k, k_parent,
                                              k_lpanel);
                 }
                 else if (LidxSendCounts[k] > 0)
                 {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                    if (sym_timing_enabled && sym_book_open)
+                    {
+                        sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                        sym_book_open = 0;
+                    }
+#endif
                     dSymLookAheadUpdateWithLFragmentsGPU(offset, k, k_parent,
                                                          k_lpanel);
                 }
@@ -843,14 +867,27 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 if (sym_timing_enabled)
                     symStatAdd(SYM_GPU3D_S_LOOKAHEAD_UPDATES);
+                if (sym_timing_enabled && sym_book_open)
+                {
+                    sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                    sym_book_open = 0;
+                }
 #endif
                 lookAheadUpdateGPU(offset, k, k_parent, k_lpanel, k_upanel);
             }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            if (sym_timing_enabled && sym_book_open)
+                sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+#endif
         }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
+        {
             symTimingAdd(SYM_GPU3D_T_SCHED_LOOKAHEAD_DISPATCH,
                          SuperLU_timer_() - sym_sched_t);
+            symTimingAdd(SYM_GPU3D_T_SCHED_LOOKAHEAD_BOOKKEEP,
+                         sym_sched_book_t);
+        }
 #endif
 
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
@@ -900,10 +937,22 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 
 	#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
+        {
             sym_sched_t = SuperLU_timer_();
+            sym_sched_book_t = 0.0;
+        }
 #endif
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
         {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double sym_book_start = 0.0;
+            int sym_book_open = 0;
+            if (sym_timing_enabled)
+            {
+                sym_book_start = SuperLU_timer_();
+                sym_book_open = 1;
+            }
+#endif
             int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
@@ -924,9 +973,24 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 	                        // dDiagFactorPanelSolveGPU(k_parent, dOffset,dFBufs);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                             if (sym_timing_enabled)
+                            {
                                 symStatAdd(SYM_GPU3D_S_PARENT_FACTOR_NODES);
+                                if (sym_book_open)
+                                {
+                                    sym_sched_book_t +=
+                                        SuperLU_timer_() - sym_book_start;
+                                    sym_book_open = 0;
+                                }
+                            }
 #endif
 	                        dDFactPSolveGPU(k_parent, dOffset, dFBufs);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                            if (sym_timing_enabled)
+                            {
+                                sym_book_start = SuperLU_timer_();
+                                sym_book_open = 1;
+                            }
+#endif
 	                        donePanelSolve[k0_parent] = 1;
 	                    }
                 }
@@ -937,12 +1001,26 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             {
                 if (Pr == 1 && Pc == 1 && LidxSendCounts[k] > 0)
                 {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                    if (sym_timing_enabled && sym_book_open)
+                    {
+                        sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                        sym_book_open = 0;
+                    }
+#endif
                     dSymSchurCompUpdateExcludeOneLLGPU(offset, k,
                                                        k_parent,
                                                        k_lpanel);
                 }
                 else if (LidxSendCounts[k] > 0)
                 {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                    if (sym_timing_enabled && sym_book_open)
+                    {
+                        sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                        sym_book_open = 0;
+                    }
+#endif
                     dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(offset, k,
                                                                    k_parent,
                                                                    k_lpanel);
@@ -953,25 +1031,52 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 if (sym_timing_enabled)
+                {
                     symStatAdd(SYM_GPU3D_S_EXCLUDE_UPDATES);
+                    if (sym_book_open)
+                    {
+                        sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                        sym_book_open = 0;
+                    }
+                }
 #endif
                 dSchurCompUpdateExcludeOneGPU(offset, k, k_parent, k_lpanel, k_upanel);
             }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            if (sym_timing_enabled && sym_book_open)
+                sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+#endif
         }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
+        {
             symTimingAdd(SYM_GPU3D_T_SCHED_FACTOR_DISPATCH,
                          SuperLU_timer_() - sym_sched_t);
+            symTimingAdd(SYM_GPU3D_T_SCHED_FACTOR_BOOKKEEP,
+                         sym_sched_book_t);
+        }
 #endif
 
         int_t k1_next = k1 + winSize;
         int_t oldWinSize = winSize;
-	#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
+        {
             sym_sched_t = SuperLU_timer_();
+            sym_sched_book_t = 0.0;
+        }
 #endif
         for (int_t k0_next = k1_next; k0_next < SUPERLU_MIN(nnodes, k1_next + winSize); ++k0_next)
         {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double sym_book_start = 0.0;
+            int sym_book_open = 0;
+            if (sym_timing_enabled)
+            {
+                sym_book_start = SuperLU_timer_();
+                sym_book_open = 1;
+            }
+#endif
             int k_next = perm_c_supno[k0_next];
             if (!localNumChildrenLeft[k0_next])
             {
@@ -982,30 +1087,68 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 int_t offset_next = getBufferOffset(k0_next, k1_next, winSize, winParity + 1, halfWin);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 if (sym_timing_enabled)
+                {
                     symStatAdd(SYM_GPU3D_S_SCHED_READY_BCASTS);
+                    if (sym_book_open)
+                    {
+                        sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                        sym_book_open = 0;
+                    }
+                }
 #endif
                 dPanelBcastGPU(k_next, offset_next);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                if (sym_timing_enabled)
+                {
+                    sym_book_start = SuperLU_timer_();
+                    sym_book_open = 1;
+                }
+#endif
                 donePanelBcast[k0_next] = 1;
                 // printf("Trying  %d on offset %d\n", k0_next, offset_next);
             }
             else
             {
                 winSize = k0_next - k1_next;
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                if (sym_timing_enabled && sym_book_open)
+                    sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+#endif
                 break;
             }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            if (sym_timing_enabled && sym_book_open)
+                sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+#endif
         }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
+        {
             symTimingAdd(SYM_GPU3D_T_SCHED_BCAST_ADVANCE,
                          SuperLU_timer_() - sym_sched_t);
+            symTimingAdd(SYM_GPU3D_T_SCHED_BCAST_BOOKKEEP,
+                         sym_sched_book_t);
+        }
 #endif
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
+        {
             sym_sched_t = SuperLU_timer_();
+            sym_sched_book_t = 0.0;
+        }
 #endif
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + oldWinSize); ++k0)
         {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double sym_book_start = 0.0;
+            int sym_book_open = 0;
+            if (sym_timing_enabled)
+            {
+                sym_book_start = SuperLU_timer_();
+                sym_book_open = 1;
+            }
+#endif
             int_t k = perm_c_supno[k0];
             // int_t offset = (k0-k1)%oldWinSize;
             // if(winParity%2)
@@ -1015,12 +1158,29 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
                 (symGPU3DVersion != 2 &&
                  UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0))
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                if (sym_timing_enabled && sym_book_open)
+                {
+                    sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                    sym_book_open = 0;
+                }
+#endif
                 gpuErrchk(cudaStreamSynchronize(A_gpu.cuStreams[offset]));
+            }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            if (sym_timing_enabled && sym_book_open)
+                sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+#endif
         }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
+        {
             symTimingAdd(SYM_GPU3D_T_SCHED_FINAL_SYNC,
                          SuperLU_timer_() - sym_sched_t);
+            symTimingAdd(SYM_GPU3D_T_SCHED_FINAL_SYNC_BOOKKEEP,
+                         sym_sched_book_t);
+        }
 #endif
 
         k1 = k1_next;
