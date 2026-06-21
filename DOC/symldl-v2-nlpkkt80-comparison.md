@@ -107,6 +107,93 @@ V2 solve timing components:
 | backward_compute | 0.298560 s |
 | backward_delta | 0.068922 s |
 
+## V2 Factor Communication Update
+
+Recorded: 2026-06-21
+
+Updated SymLDL v2 code commit:
+
+```text
+fe7fd76b Optimize SymFact V2 factor communication
+```
+
+Perlmutter run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/v2-perf-validate/20260621-163955-nlpkkt80-gpu-2x1x2-1n-54808768
+```
+
+Local copy:
+
+```text
+/tmp/20260621-163955-nlpkkt80-gpu-2x1x2-1n-54808768
+```
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Top-level timing:
+
+| Phase | Time |
+|---|---:|
+| EQUIL | 0.077 s |
+| ROWPERM | 0.810 s |
+| COLPERM | 6.328 s |
+| SYMBFACT | 10.208 s |
+| DISTRIBUTE | 3.757 s |
+| FACTOR | 15.701 s |
+| SOLVE | 0.980 s |
+
+Correctness:
+
+| Metric | Value |
+|---|---:|
+| exit code | 0 |
+| info | 0 |
+| tiny pivots | 0 |
+| solution error `||X-Xtrue||/||X||` | 1.847411e-13 |
+| max component relative error | 1.705303e-13 |
+| sytrf 2x2 pivots | 0 |
+| inertia `(pos,neg,zero)` | `(550400, 512000, 0)` |
+
+High-level factor timing from this perf build reported:
+
+```text
+Factorization_Time : 12.96
+Communication_Time : 12.96
+```
+
+This perf-build smoke does not include the detailed `SLU_ENABLE_SYM_GPU3D_TIMING`
+factor counters. The timing-enabled smoke of the same commit and same grid,
+but using the instrumented build and 8 OMP threads, showed the targeted factor
+communication sections moving in the intended direction relative to the recent
+known-good rerun:
+
+| Metric | Recent good rerun | fe7fd76b timing smoke | Change |
+|---|---:|---:|---:|
+| FACTOR time | 17.736 s | 15.284 s | 1.16x faster |
+| internal Factorization_Time | 14.930 s | 12.460 s | 1.20x faster |
+| SOLVE time | 0.961 s | 0.978 s | 0.98x |
+| lpanel_transform max rank | 1.003 s | 0.595 s | 1.69x faster |
+| lfrag_exchange_total max rank | 5.086 s | 2.515 s | 2.02x faster |
+| lfrag_mpi_recv_wait max rank | 2.527 s | 1.041 s | 2.43x faster |
+| lfrag_h2d_stage_issue max rank | 2.168 s | 1.015 s | 2.14x faster |
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
