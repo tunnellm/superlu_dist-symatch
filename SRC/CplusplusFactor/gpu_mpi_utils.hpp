@@ -53,6 +53,43 @@ static inline bool superlu_sym_v2_async_factor()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_batch_ancestor_reduce()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_BATCH_ANCESTOR_REDUCE");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 1;
+        return true;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_BATCH_ANCESTOR_REDUCE must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline size_t superlu_sym_v2_ancestor_batch_bytes()
+{
+    static size_t cached = 0;
+    if (cached != 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_ANCESTOR_BATCH_BYTES");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 256u * 1024u * 1024u;
+        return cached;
+    }
+    char *end = NULL;
+    unsigned long long value = std::strtoull(env, &end, 10);
+    if (end == env || *end != '\0' || value < 4096ull)
+        ABORT("GPU3DV2_ANCESTOR_BATCH_BYTES must be an integer >= 4096.");
+    cached = static_cast<size_t>(value);
+    return cached;
+}
+
 static inline bool superlu_cuda_aware_mpi()
 {
     static int cached = -1;

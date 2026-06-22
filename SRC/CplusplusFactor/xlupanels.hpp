@@ -1058,6 +1058,9 @@ struct xLUstruct_t
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);
+    int_t dSymV2BatchAncestorReduceGPU(int_t numNodes, int_t *nodeList,
+                                       int_t sender, int_t receiver,
+                                       int_t reduction_level);
     int_t zSendLPanelGPU(int_t k0, int_t receiverGrid);
     int_t zRecvLPanelGPU(int_t k0, int_t senderGrid, Ftype alpha, Ftype beta);
     int_t zSendUPanelGPU(int_t k0, int_t receiverGrid);
