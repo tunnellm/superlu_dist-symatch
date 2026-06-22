@@ -289,3 +289,13 @@ The following saved runs are not valid timing comparisons:
 |---|---|
 | V2 CPU perf, 4x2x2, 4 nodes, job 54779146 | Timed out after 3D initialization before numerical factorization completed; no `status.txt` was copied locally. |
 | V2 `GPU3DCONTRACT=1`, 4x2x2, 4 nodes, job 54798792 | Failed with exit code 143 after `inertia_from_dsytrf: malformed ipiv at end of array`; not comparable. |
+| V2 CTA scatter pre-fix, 2x2x2, 2 nodes, job 54817311 | `GPU3DV2_CTA_SCATTER=0` completed with `FACTOR 39.264 s`, `Factorization_Time 32.98 s`, and solution error `2.131628e-13`; `GPU3DV2_CTA_SCATTER=1` timed out after 3D initialization because the first CTA implementation called the barrier-using device `find()` from only thread 0. |
+| V2 CTA scatter pre-fix, 2x2x4, 4 nodes, job 54817312 | Cancelled after the CTA bug was identified; only partial `GPU3DV2_CTA_SCATTER=0` output was produced, so it is not a timing comparison. |
+
+The CTA scatter lookup bug was fixed in:
+
+```text
+e93d9a09 Fix SymLDL V2 CTA scatter lookup
+```
+
+Only the smaller `nlpkkt80` CTA A/B smoke has been rerun after that fix so far.

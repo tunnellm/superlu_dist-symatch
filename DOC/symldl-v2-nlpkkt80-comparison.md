@@ -324,6 +324,79 @@ Correctness:
 The async-factor pipeline was correct on this smoke, but the performance
 movement was small compared with the earlier batched Schur update.
 
+## V2 CTA Scatter Path: nlpkkt80 Smoke
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commits:
+
+```text
+47136448 Add SymLDL V2 CTA scatter path
+e93d9a09 Fix SymLDL V2 CTA scatter lookup
+```
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directories:
+
+```text
+pre-fix CTA smoke: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260621-220413-v2-ctaAB-grid2x1x2-1n-54817310
+fixed CTA smoke: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260621-222236-v2-ctaAB-grid2x1x2-1n-54817612
+```
+
+Local copies:
+
+```text
+pre-fix CTA smoke: /tmp/20260621-220413-v2-ctaAB-grid2x1x2-1n-54817310
+fixed CTA smoke: /tmp/20260621-222236-v2-ctaAB-grid2x1x2-1n-54817612
+```
+
+The initial CTA implementation was invalid: `GPU3DV2_CTA_SCATTER=1` timed out
+after 3D initialization because the CTA metadata path called the barrier-using
+device `find()` routine from only thread 0. Commit `e93d9a09` fixed this by
+having the whole CTA enter `find()` before thread 0 consumes the result.
+
+Fixed top-level timing:
+
+| CTA Scatter | FACTOR | Factorization_Time | SOLVE |
+|---:|---:|---:|---:|
+| 0 | 10.206 s | 7.44 s | 0.977 s |
+| 1 | 10.323 s | 7.58 s | 0.970 s |
+
+CTA scatter speed:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 0.989x |
+| Factorization_Time speedup | 0.982x |
+| FACTOR change | 1.15% slower |
+
+Correctness:
+
+| CTA Scatter | Exit | Info | Tiny pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 1 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+
+The fixed CTA scatter path was correct on this smoke, but it was slightly slower
+than the existing scatter kernel.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
