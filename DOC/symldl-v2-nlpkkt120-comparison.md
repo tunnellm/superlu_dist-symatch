@@ -281,6 +281,84 @@ Correctness:
 The async-factor pipeline was correct on these smokes, but the performance
 movement was small compared with the earlier batched Schur update.
 
+## V2 Lower-Envelope Schur Pruning
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+1a5ea2b3 Add SymLDL V2 lower-envelope Schur pruning
+```
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-090955-v2-lowerAB-grid2x2x2-2n-54831683
+4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-090955-v2-lowerAB-grid2x2x4-4n-54831684
+```
+
+Local copies:
+
+```text
+2 nodes, 2x2x2: /tmp/superlu-stage5-lower-envelope/20260622-090955-v2-lowerAB-grid2x2x2-2n-54831683
+4 nodes, 2x2x4: /tmp/superlu-stage5-lower-envelope/20260622-090955-v2-lowerAB-grid2x2x4-4n-54831684
+```
+
+Top-level timing:
+
+| Grid | Nodes | Lower Envelope | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 39.114 s | 32.84 s | 1.951 s |
+| 2x2x2 | 2 | 1 | 38.452 s | 32.12 s | 1.985 s |
+| 2x2x4 | 4 | 0 | 23.154 s | 19.38 s | 1.346 s |
+| 2x2x4 | 4 | 1 | 22.520 s | 18.78 s | 1.295 s |
+
+Lower-envelope speedup:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR reduction |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 1.017x | 1.022x | 1.69% |
+| 2x2x4 | 4 | 1.028x | 1.032x | 2.74% |
+
+Correctness:
+
+| Grid | Nodes | Lower Envelope | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+
+The lower-envelope path was correct on these smokes and consistently faster,
+but the gain was modest compared with the earlier batched Schur update.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:

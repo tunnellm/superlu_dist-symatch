@@ -397,6 +397,72 @@ Correctness:
 The fixed CTA scatter path was correct on this smoke, but it was slightly slower
 than the existing scatter kernel.
 
+## V2 Lower-Envelope Schur Pruning: nlpkkt80 Smoke
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+1a5ea2b3 Add SymLDL V2 lower-envelope Schur pruning
+```
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260622-090715-v2-lowerAB-grid2x1x2-1n-54831681
+```
+
+Local copy:
+
+```text
+/tmp/superlu-stage5-lower-envelope/20260622-090715-v2-lowerAB-grid2x1x2-1n-54831681
+```
+
+Top-level timing:
+
+| Lower Envelope | FACTOR | Factorization_Time | SOLVE |
+|---:|---:|---:|---:|
+| 0 | 10.336 s | 7.51 s | 0.987 s |
+| 1 | 10.067 s | 7.35 s | 0.978 s |
+
+Lower-envelope speed:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 1.027x |
+| Factorization_Time speedup | 1.022x |
+| FACTOR reduction | 2.60% |
+
+Correctness:
+
+| Lower Envelope | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 1 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+
+The lower-envelope path was correct on this smoke and gave a modest factor-time
+improvement with the neutral A/B settings from the CTA test disabled.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
