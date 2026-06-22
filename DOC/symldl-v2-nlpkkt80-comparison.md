@@ -260,6 +260,70 @@ Correctness:
 | solution error `||X-Xtrue||/||X||` | 1.847411e-13 | 1.989520e-13 |
 | inertia `(pos,neg,zero)` | `(550400, 512000, 0)` | `(550400, 512000, 0)` |
 
+## V2 Async Factor Pipeline: nlpkkt80 Smoke
+
+Recorded: 2026-06-21
+
+Updated SymLDL v2 code commit:
+
+```text
+d8a85006 Add SymLDL V2 async factor pipeline
+```
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260621-205432-v2-asyncAB-grid2x1x2-1n-54814871
+```
+
+Local copy:
+
+```text
+/tmp/20260621-205432-v2-asyncAB-grid2x1x2-1n-54814871
+```
+
+Top-level timing:
+
+| Async Factor | FACTOR | Factorization_Time | SOLVE | Grid-0 Level-0 | Grid-0 Level-1 |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 10.227 s | 7.48 s | 0.983 s | 0.2736 s | 7.0577 s |
+| 1 | 10.090 s | 7.37 s | 0.979 s | 0.2947 s | 6.6668 s |
+
+Async factor speedup:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 1.014x |
+| Factorization_Time speedup | 1.015x |
+| FACTOR reduction | 1.34% |
+
+Correctness:
+
+| Async Factor | Exit | Info | Tiny pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 1 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+
+The async-factor pipeline was correct on this smoke, but the performance
+movement was small compared with the earlier batched Schur update.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.

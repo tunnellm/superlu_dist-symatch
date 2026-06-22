@@ -196,6 +196,91 @@ Correctness:
 | 2x2x4 | 4 | 0 | 0 | 0 | 0 | 2.415845e-13 | `(1814400, 1728000, 0)` |
 | 2x2x4 | 4 | 1 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
 
+## V2 Async Factor Pipeline
+
+Recorded: 2026-06-21
+
+Updated SymLDL v2 code commit:
+
+```text
+d8a85006 Add SymLDL V2 async factor pipeline
+```
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260621-204938-v2-asyncAB-grid2x2x2-2n-54814690
+4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260621-204938-v2-asyncAB-grid2x2x4-4n-54814691
+```
+
+Local copies:
+
+```text
+2 nodes, 2x2x2: /tmp/20260621-204938-v2-asyncAB-grid2x2x2-2n-54814690
+4 nodes, 2x2x4: /tmp/20260621-204938-v2-asyncAB-grid2x2x4-4n-54814691
+```
+
+Top-level timing:
+
+| Grid | Nodes | Async Factor | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 38.922 s | 32.58 s | 1.948 s |
+| 2x2x2 | 2 | 1 | 38.696 s | 32.34 s | 1.936 s |
+| 2x2x4 | 4 | 0 | 22.943 s | 19.21 s | 1.287 s |
+| 2x2x4 | 4 | 1 | 22.795 s | 18.99 s | 1.288 s |
+
+Async factor speedup:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR reduction |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 1.006x | 1.007x | 0.58% |
+| 2x2x4 | 4 | 1.006x | 1.012x | 0.65% |
+
+Factor-tree timing:
+
+| Grid | Nodes | Async Factor | Grid-0 Level-0 | Grid-0 Level-1 | Grid-0 Level-2 |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 1.8470 s | 30.5691 s | - |
+| 2x2x2 | 2 | 1 | 1.8214 s | 30.3973 s | - |
+| 2x2x4 | 4 | 0 | 1.8192 s | 2.0472 s | 14.8550 s |
+| 2x2x4 | 4 | 1 | 1.8455 s | 2.0411 s | 14.6055 s |
+
+Correctness:
+
+| Grid | Nodes | Async Factor | Exit | Info | Tiny pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 1 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 1 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+
+The async-factor pipeline was correct on these smokes, but the performance
+movement was small compared with the earlier batched Schur update.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
