@@ -12,6 +12,7 @@
 #include "lupanels_GPU.cuh"
 #include "lupanels.hpp"
 #include "gpuCommon.hpp"
+#include "gpu_mpi_utils.hpp"
 #include "cublas_cusolver_wrappers.hpp"
 
 #define USABLE_GPU_MEM_FRACTION 0.9
@@ -1577,12 +1578,36 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartLLGPU(
     if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
         return 0;
 
-    int threads = 256;
-    int blocks = (gemm_k * gemm_n + threads - 1) / threads;
-    buildSymRawLRangeGPU<Ftype><<<blocks, threads, 0, cuStream>>>(
-        rawBlock, gemm_n, lpanel.gpuPanel, jSt, jEnd,
-        symV2DiagBlocksGPU[k], gemm_k);
-    gpuErrchk(cudaGetLastError());
+    Ftype *raw_rhs = NULL;
+    int raw_ld = gemm_n;
+    if (superlu_sym_v2_wpanel_cache())
+    {
+        for (size_t slot = 0; slot < symV2RawPanelNodes.size(); ++slot)
+        {
+            if (symV2RawPanelNodes[slot] == k)
+            {
+                if (A_gpu.symV2RawPanelBufs[slot] == NULL ||
+                    A_gpu.symV2RawPanelReadyEvents[slot] == NULL)
+                    ABORT("SymFact V2 cached W panel is missing.");
+                gpuErrchk(cudaStreamWaitEvent(
+                    cuStream, A_gpu.symV2RawPanelReadyEvents[slot], 0));
+                raw_rhs = A_gpu.symV2RawPanelBufs[slot] + lpanel.stRow(jSt);
+                raw_ld = lpanel.LDA();
+                break;
+            }
+        }
+    }
+    if (raw_rhs == NULL)
+    {
+        int threads = 256;
+        int blocks = (gemm_k * gemm_n + threads - 1) / threads;
+        buildSymRawLRangeGPU<Ftype><<<blocks, threads, 0, cuStream>>>(
+            rawBlock, gemm_n, lpanel.gpuPanel, jSt, jEnd,
+            symV2DiagBlocksGPU[k], gemm_k);
+        gpuErrchk(cudaGetLastError());
+        raw_rhs = rawBlock;
+        raw_ld = gemm_n;
+    }
 
     Ftype alpha = one<Ftype>();
     Ftype beta = zeroT<Ftype>();
@@ -1590,7 +1615,7 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartLLGPU(
     myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                         gemm_m, gemm_n, gemm_k, &alpha,
                         lpanel.blkPtrGPU(iSt), lpanel.LDA(),
-                        rawBlock, gemm_n, &beta,
+                        raw_rhs, raw_ld, &beta,
                         gemmBuff, gemm_m);
 
     scatterSymLowerRangeGPU_driver<Ftype>(
@@ -2430,7 +2455,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     int_t lookahead_u_val_count =
         sym_v2_mode ? maxLvalCount : maxUvalCount;
 
+    size_t sym_v2_raw_panel_count =
+        (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+            ? static_cast<size_t>(maxLvalCount)
+            : 0;
     size_t dataPerStream = (3 * sizeof(Ftype) * maxLvalCount +
+                            sizeof(Ftype) * sym_v2_raw_panel_count +
                             2 * sizeof(Ftype) * maxSymPartnerLvalCount +
                             sizeof(Ftype) * u_recv_val_count +
                             sizeof(Ftype) * lookahead_u_val_count +
@@ -2493,6 +2523,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     MPI_Allreduce(&numberOfStreams, &rNumberOfStreams, 1,
                   MPI_INT, MPI_MIN, grid3d->comm);
     A_gpu.numCudaStreams = rNumberOfStreams;
+    if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+        symV2RawPanelNodes.assign(static_cast<size_t>(rNumberOfStreams), -1);
 
     int symGpuContract = (options->SymFact == YES)
         ? superlu_gpu3d_contract_for_setup() : 0;
@@ -2739,6 +2771,13 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuErrchk(cudaMalloc(&A_gpu.symPartnerLStageBufs[stream],
                              sizeof(Ftype) *
                                  static_cast<size_t>(SUPERLU_MAX((int_t)1, maxSymPartnerLvalCount))));
+        A_gpu.symV2RawPanelBufs[stream] = NULL;
+        A_gpu.symV2RawPanelReadyEvents[stream] = NULL;
+        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+            gpuErrchk(cudaMalloc(&A_gpu.symV2RawPanelBufs[stream],
+                                 sizeof(Ftype) *
+                                     static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                                     maxLvalCount))));
         gpuErrchk(cudaMalloc(&A_gpu.LidxRecvBufs[stream], sizeof(int_t) * maxLidxCount));
         A_gpu.UidxRecvBufs[stream] = NULL;
         if (u_recv_idx_count > 0)
@@ -2898,6 +2937,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuErrchk(cudaStreamCreate(&A_gpu.cuStreams[stream]));
         gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
                                            cudaEventDisableTiming));
+        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+            gpuErrchk(cudaEventCreateWithFlags(
+                &A_gpu.symV2RawPanelReadyEvents[stream],
+                cudaEventDisableTiming));
         gpuErrchk(cudaEventCreateWithFlags(
             &A_gpu.symV2PartnerLPackReadyEvents[stream],
             cudaEventDisableTiming));

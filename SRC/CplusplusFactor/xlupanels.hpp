@@ -597,6 +597,7 @@ struct xLUstruct_t
     std::vector<int_t *> symV2PartnerLRecvMapsGPU;
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
+    std::vector<int_t> symV2RawPanelNodes;
     std::vector<Ftype *> symDiagPrefetchBufs;
     std::vector<cudaEvent_t> symDiagPrefetchDoneEvents;
     std::vector<int> symDiagPrefetchEventIds;
@@ -845,6 +846,10 @@ struct xLUstruct_t
             for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
             {
                 cudaEventDestroy(A_gpu.panelReadyEvents[stream]);
+                if (A_gpu.symV2RawPanelReadyEvents[stream] != NULL)
+                    cudaEventDestroy(A_gpu.symV2RawPanelReadyEvents[stream]);
+                if (A_gpu.symV2RawPanelBufs[stream] != NULL)
+                    cudaFree(A_gpu.symV2RawPanelBufs[stream]);
                 cudaEventDestroy(A_gpu.symV2PartnerLPackReadyEvents[stream]);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 cudaEventDestroy(A_gpu.diagD2HStartEvents[stream]);

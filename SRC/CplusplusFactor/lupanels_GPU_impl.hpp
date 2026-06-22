@@ -381,6 +381,21 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
         return 0;
     }
 
+    if (superlu_sym_v2_wpanel_cache())
+    {
+        if (static_cast<size_t>(stream_offset) >= symV2RawPanelNodes.size() ||
+            A_gpu.symV2RawPanelBufs[stream_offset] == NULL ||
+            A_gpu.symV2RawPanelReadyEvents[stream_offset] == NULL)
+            ABORT("SymFact V2 W-panel ring is not initialized.");
+        gpuErrchk(cudaMemcpyAsync(
+            A_gpu.symV2RawPanelBufs[stream_offset], lpanel.gpuPanel.val,
+            static_cast<size_t>(lpanel.nzvalSize()) * sizeof(double),
+            cudaMemcpyDeviceToDevice, stream));
+        gpuErrchk(cudaEventRecord(
+            A_gpu.symV2RawPanelReadyEvents[stream_offset], stream));
+        symV2RawPanelNodes[stream_offset] = k;
+    }
+
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double pack_issue_t = SuperLU_timer_();
 #endif

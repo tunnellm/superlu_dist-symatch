@@ -2379,6 +2379,7 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLRecvMapsGPU.clear();
     symL2ULocalMapsGPU.clear();
     symPanelReadyEventIds.clear();
+    symV2RawPanelNodes.clear();
     for (size_t i = 0; i < symDiagPrefetchBufs.size(); ++i)
         if (symDiagPrefetchBufs[i] != NULL)
             gpuErrchk(cudaFreeHost(symDiagPrefetchBufs[i]));
