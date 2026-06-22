@@ -115,6 +115,87 @@ Run directories:
 2x2x4, 4 nodes: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260620-102715-v2-debug10-grid2x2x4-4n-54759849
 ```
 
+## V2 Batched Schur Update
+
+Recorded: 2026-06-21
+
+Updated SymLDL v2 code commit:
+
+```text
+84805b52 Batch SymLDL V2 Schur updates
+```
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260621-191405-v2-batchAB-grid2x2x2-2n-54811758
+4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260621-191646-v2-batchAB-grid2x2x4-4n-54811760
+```
+
+Local copies:
+
+```text
+2 nodes, 2x2x2: /tmp/20260621-191405-v2-batchAB-grid2x2x2-2n-54811758
+4 nodes, 2x2x4: /tmp/20260621-191646-v2-batchAB-grid2x2x4-4n-54811760
+```
+
+Top-level timing:
+
+| Grid | Nodes | Batch Schur | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 52.127 s | 45.77 s | 1.971 s |
+| 2x2x2 | 2 | 1 | 38.863 s | 32.56 s | 1.953 s |
+| 2x2x4 | 4 | 0 | 30.053 s | 26.24 s | 1.309 s |
+| 2x2x4 | 4 | 1 | 22.910 s | 19.12 s | 1.311 s |
+
+Batched Schur speedup:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR reduction |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 1.34x | 1.41x | 25.45% |
+| 2x2x4 | 4 | 1.31x | 1.37x | 23.77% |
+
+Factor-tree timing:
+
+| Grid | Nodes | Batch Schur | Grid-0 Level-0 | Grid-0 Level-1 | Grid-0 Level-2 |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 2.0572 s | 43.5668 s | - |
+| 2x2x2 | 2 | 1 | 1.8319 s | 30.5885 s | - |
+| 2x2x4 | 4 | 0 | 2.0553 s | 2.7222 s | 20.9713 s |
+| 2x2x4 | 4 | 1 | 1.8509 s | 2.0330 s | 14.7576 s |
+
+Correctness:
+
+| Grid | Nodes | Batch Schur | Exit | Info | Tiny pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 1 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 2.415845e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 1 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
@@ -123,4 +204,3 @@ The following saved runs are not valid timing comparisons:
 |---|---|
 | V2 CPU perf, 4x2x2, 4 nodes, job 54779146 | Timed out after 3D initialization before numerical factorization completed; no `status.txt` was copied locally. |
 | V2 `GPU3DCONTRACT=1`, 4x2x2, 4 nodes, job 54798792 | Failed with exit code 143 after `inertia_from_dsytrf: malformed ipiv at end of array`; not comparable. |
-

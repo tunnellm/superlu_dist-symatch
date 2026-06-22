@@ -200,6 +200,66 @@ the intended direction relative to the recent good rerun:
 | lfrag_mpi_recv_wait max rank | 2.527 s | 1.041 s | 2.43x faster |
 | lfrag_h2d_stage_issue max rank | 2.168 s | 1.015 s | 2.14x faster |
 
+## V2 Batched Schur Update: nlpkkt80 Smoke
+
+Recorded: 2026-06-21
+
+Updated SymLDL v2 code commit:
+
+```text
+84805b52 Batch SymLDL V2 Schur updates
+```
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directories:
+
+```text
+GPU3DV2_BATCH_SCHUR=0: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/v2-perf-validate/20260621-182242-nlpkkt80-gpu-2x1x2-1n-54810432
+GPU3DV2_BATCH_SCHUR=1: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/v2-perf-validate/20260621-191403-nlpkkt80-gpu-2x1x2-1n-54811636
+```
+
+Local copies:
+
+```text
+GPU3DV2_BATCH_SCHUR=0: /tmp/20260621-182242-nlpkkt80-gpu-2x1x2-1n-54810432
+GPU3DV2_BATCH_SCHUR=1: /tmp/20260621-191403-nlpkkt80-gpu-2x1x2-1n-54811636
+```
+
+Top-level timing:
+
+| Metric | Batch Schur off | Batch Schur on | Change |
+|---|---:|---:|---:|
+| FACTOR | 15.814 s | 10.283 s | 1.54x faster |
+| Factorization_Time | 13.02 s | 7.53 s | 1.73x faster |
+| SOLVE | 0.986 s | 0.989 s | unchanged |
+| Grid-0 Factor:Level-0 | 0.3829 s | 0.3009 s | 1.27x faster |
+| Grid-0 Factor:Level-1 | 12.3405 s | 7.0350 s | 1.75x faster |
+
+Correctness:
+
+| Metric | Batch Schur off | Batch Schur on |
+|---|---:|---:|
+| exit code | 0 | 0 |
+| info | 0 | 0 |
+| tiny pivots | 0 | 0 |
+| solution error `||X-Xtrue||/||X||` | 1.847411e-13 | 1.989520e-13 |
+| inertia `(pos,neg,zero)` | `(550400, 512000, 0)` | `(550400, 512000, 0)` |
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
