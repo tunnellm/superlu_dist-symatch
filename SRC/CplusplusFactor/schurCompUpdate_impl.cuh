@@ -668,36 +668,33 @@ __global__ void scatterSymLowerRangeGPU_cta(
     __shared__ int_t *s_dst_rows;
     __shared__ int_t *s_src_cols;
 
+    const int_t gi = lpanel.gid(ii);
+    const int_t gj = lpanel.gid(jj);
+    const int_t lj = (gi >= gj) ? dA->lPanelIndex(gj) : -1;
+    int_t li = GLOBAL_BLOCK_NOT_FOUND;
+    if (lj >= 0)
+        li = dA->lPanelVec[lj].find(gi);
+
     if (threadId == 0)
     {
         s_valid = 0;
-        const int_t gi = lpanel.gid(ii);
-        const int_t gj = lpanel.gid(jj);
-        if (gi >= gj)
+        if (gi >= gj && lj >= 0 && li != GLOBAL_BLOCK_NOT_FOUND)
         {
-            const int_t lj = dA->lPanelIndex(gj);
-            if (lj >= 0)
-            {
-                const int_t li = dA->lPanelVec[lj].find(gi);
-                if (li != GLOBAL_BLOCK_NOT_FOUND)
-                {
-                    s_nrows = static_cast<int>(lpanel.nbrow(ii));
-                    s_ncols = static_cast<int>(lpanel.nbrow(jj));
-                    s_dst = dA->lPanelVec[lj].blkPtr(li);
-                    s_lddst = dA->lPanelVec[lj].LDA();
-                    s_dst_row_len = dA->lPanelVec[lj].nbrow(li);
-                    s_dst_rows = dA->lPanelVec[lj].rowList(li);
-                    s_dst_col_len = dA->supersize(gj);
-                    s_src_rows = lpanel.rowList(ii);
-                    s_src_cols = lpanel.rowList(jj);
-                    const int_t row_off = lpanel.stRow(ii) - lpanel.stRow(iSt);
-                    const int_t col_off = lpanel.stRow(jj) - lpanel.stRow(jSt);
-                    s_src = gemmBuff + row_off + col_off * LDgemmBuff;
-                    s_row_identity =
-                        (s_nrows == static_cast<int>(s_dst_row_len)) ? 1 : 0;
-                    s_valid = (s_nrows > 0 && s_ncols > 0) ? 1 : 0;
-                }
-            }
+            s_nrows = static_cast<int>(lpanel.nbrow(ii));
+            s_ncols = static_cast<int>(lpanel.nbrow(jj));
+            s_dst = dA->lPanelVec[lj].blkPtr(li);
+            s_lddst = dA->lPanelVec[lj].LDA();
+            s_dst_row_len = dA->lPanelVec[lj].nbrow(li);
+            s_dst_rows = dA->lPanelVec[lj].rowList(li);
+            s_dst_col_len = dA->supersize(gj);
+            s_src_rows = lpanel.rowList(ii);
+            s_src_cols = lpanel.rowList(jj);
+            const int_t row_off = lpanel.stRow(ii) - lpanel.stRow(iSt);
+            const int_t col_off = lpanel.stRow(jj) - lpanel.stRow(jSt);
+            s_src = gemmBuff + row_off + col_off * LDgemmBuff;
+            s_row_identity =
+                (s_nrows == static_cast<int>(s_dst_row_len)) ? 1 : 0;
+            s_valid = (s_nrows > 0 && s_ncols > 0) ? 1 : 0;
         }
     }
     __syncthreads();
@@ -1004,39 +1001,36 @@ __global__ void scatterSymLowerLFragmentRangeGPU_cta(
     __shared__ int_t *s_dst_rows;
     __shared__ int_t *s_src_cols;
 
+    const int_t gi = rowPanel.gid(ii);
+    const int_t gj = symFragGid(fragIndex, jj);
+    const int_t lj = (gi >= gj) ? dA->lPanelIndex(gj) : -1;
+    int_t li = GLOBAL_BLOCK_NOT_FOUND;
+    if (lj >= 0)
+        li = dA->lPanelVec[lj].find(gi);
+
     if (threadId == 0)
     {
         s_valid = 0;
-        const int_t gi = rowPanel.gid(ii);
-        const int_t gj = symFragGid(fragIndex, jj);
-        if (gi >= gj)
+        if (gi >= gj && lj >= 0 && li != GLOBAL_BLOCK_NOT_FOUND)
         {
-            const int_t lj = dA->lPanelIndex(gj);
-            if (lj >= 0)
-            {
-                const int_t li = dA->lPanelVec[lj].find(gi);
-                if (li != GLOBAL_BLOCK_NOT_FOUND)
-                {
-                    s_nrows = static_cast<int>(rowPanel.nbrow(ii));
-                    s_ncols = static_cast<int>(symFragNbrow(fragIndex, jj));
-                    s_dst = dA->lPanelVec[lj].blkPtr(li);
-                    s_lddst = dA->lPanelVec[lj].LDA();
-                    s_dst_row_len = dA->lPanelVec[lj].nbrow(li);
-                    s_dst_rows = dA->lPanelVec[lj].rowList(li);
-                    s_dst_col_len = dA->supersize(gj);
-                    s_src_rows = rowPanel.rowList(ii);
-                    s_src_cols = symFragRowList(fragIndex, jj);
-                    const int_t row_off =
-                        rowPanel.stRow(ii) - rowPanel.stRow(iSt);
-                    const int_t col_off =
-                        symFragStRow(fragIndex, jj) -
-                        symFragStRow(fragIndex, jSt);
-                    s_src = gemmBuff + row_off + col_off * LDgemmBuff;
-                    s_row_identity =
-                        (s_nrows == static_cast<int>(s_dst_row_len)) ? 1 : 0;
-                    s_valid = (s_nrows > 0 && s_ncols > 0) ? 1 : 0;
-                }
-            }
+            s_nrows = static_cast<int>(rowPanel.nbrow(ii));
+            s_ncols = static_cast<int>(symFragNbrow(fragIndex, jj));
+            s_dst = dA->lPanelVec[lj].blkPtr(li);
+            s_lddst = dA->lPanelVec[lj].LDA();
+            s_dst_row_len = dA->lPanelVec[lj].nbrow(li);
+            s_dst_rows = dA->lPanelVec[lj].rowList(li);
+            s_dst_col_len = dA->supersize(gj);
+            s_src_rows = rowPanel.rowList(ii);
+            s_src_cols = symFragRowList(fragIndex, jj);
+            const int_t row_off =
+                rowPanel.stRow(ii) - rowPanel.stRow(iSt);
+            const int_t col_off =
+                symFragStRow(fragIndex, jj) -
+                symFragStRow(fragIndex, jSt);
+            s_src = gemmBuff + row_off + col_off * LDgemmBuff;
+            s_row_identity =
+                (s_nrows == static_cast<int>(s_dst_row_len)) ? 1 : 0;
+            s_valid = (s_nrows > 0 && s_ncols > 0) ? 1 : 0;
         }
     }
     __syncthreads();
