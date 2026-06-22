@@ -46,6 +46,56 @@ static inline int superlu_gpu3d_contract_for_setup()
     return (int)value;
 }
 
+static inline bool superlu_sym_v2_batch_schur_enabled()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+
+    const char *env = std::getenv("GPU3DV2_BATCH_SCHUR");
+    cached = (env == NULL || env[0] == '\0') ? 1 : (std::atoi(env) != 0);
+    return cached != 0;
+}
+
+static inline int superlu_sym_v2_batch_schur_col_limit(
+    int nrows, int64_t gemm_capacity)
+{
+    static int cached_override = -1;
+    if (cached_override < 0)
+    {
+        const char *env = std::getenv("GPU3DV2_BATCH_SCHUR_COLS");
+        if (env == NULL || env[0] == '\0')
+        {
+            cached_override = 0;
+        }
+        else
+        {
+            char *end = NULL;
+            long value = std::strtol(env, &end, 10);
+            if (end == env || *end != '\0' || value <= 0 ||
+                value > 2147483647L)
+                ABORT("GPU3DV2_BATCH_SCHUR_COLS must be a positive integer.");
+            cached_override = static_cast<int>(value);
+        }
+    }
+
+    if (cached_override > 0)
+        return cached_override;
+
+    int limit = static_cast<int>(std::sqrt(
+        static_cast<double>(SUPERLU_MAX((int64_t)1, gemm_capacity))));
+    if (limit < 1)
+        limit = 1;
+    if (nrows > 0 && nrows < limit)
+    {
+        int64_t wide_limit = gemm_capacity / static_cast<int64_t>(nrows);
+        if (wide_limit > limit)
+            limit = static_cast<int>(SUPERLU_MIN(
+                wide_limit, static_cast<int64_t>(2147483647L)));
+    }
+    return limit;
+}
+
 size_t getGPUMemPerProcs(MPI_Comm baseCommunicator);
 
 template <typename Ftype>
@@ -1287,17 +1337,92 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLLGPU(
     if (lStart >= lEnd || jStart >= jEnd || lpanel.isEmpty())
         return 0;
 
-    for (int_t jSt = jStart; jSt < jEnd; ++jSt)
+    if (!superlu_sym_v2_batch_schur_enabled())
+    {
+        for (int_t jSt = jStart; jSt < jEnd; ++jSt)
+        {
+            int_t jNext = jSt + 1;
+            int ncols = lpanel.stRow(jNext) - lpanel.stRow(jSt);
+            if (ncols <= 0)
+                continue;
+
+            int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+            int maxGemmRows = nrows;
+            if (static_cast<int64_t>(nrows) * ncols >
+                static_cast<int64_t>(A_gpu.gemmBufferSize))
+                maxGemmRows = SUPERLU_MAX(
+                    1, static_cast<int>(A_gpu.gemmBufferSize / ncols));
+
+            int_t iEnd = lStart;
+            while (iEnd < lEnd)
+            {
+                int_t iSt = iEnd;
+                iEnd = lpanel.getEndBlock(iSt, maxGemmRows);
+                if (iEnd > lEnd)
+                    iEnd = lEnd;
+                if (iEnd <= iSt)
+                    iEnd = iSt + 1;
+
+                dSymSchurCompUpdatePartLLGPU(iSt, iEnd, jSt, jNext,
+                                             k, lpanel, handle, cuStream,
+                                             rawBlock, gemmBuff);
+            }
+        }
+        return 0;
+    }
+
+    /* GPU3DV2_BATCH_SCHUR: group adjacent symmetric blocks. */
+    const int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+    const int ncols_total = lpanel.stRow(jEnd) - lpanel.stRow(jStart);
+    if (nrows <= 0 || ncols_total <= 0)
+        return 0;
+
+    const int64_t gemm_capacity = SUPERLU_MAX(
+        static_cast<int64_t>(1),
+        static_cast<int64_t>(A_gpu.gemmBufferSize));
+    int max_block_rows = 1;
+    for (int_t ii = lStart; ii < lEnd; ++ii)
+        max_block_rows = SUPERLU_MAX(max_block_rows,
+                                     static_cast<int>(lpanel.nbrow(ii)));
+
+    int col_limit = superlu_sym_v2_batch_schur_col_limit(
+        nrows, gemm_capacity);
+    int64_t hard_col_limit = gemm_capacity /
+                             static_cast<int64_t>(max_block_rows);
+    if (hard_col_limit < 1)
+        hard_col_limit = 1;
+    col_limit = SUPERLU_MIN(
+        col_limit,
+        static_cast<int>(SUPERLU_MIN(
+            hard_col_limit, static_cast<int64_t>(2147483647L))));
+    col_limit = SUPERLU_MIN(col_limit, ncols_total);
+    col_limit = SUPERLU_MAX(col_limit, 1);
+
+    int_t jSt = jStart;
+    while (jSt < jEnd)
     {
         int_t jNext = jSt + 1;
-        int ncols = lpanel.stRow(jNext) - lpanel.stRow(jSt);
-        if (ncols <= 0)
-            continue;
+        while (jNext < jEnd)
+        {
+            int candidate_cols =
+                lpanel.stRow(jNext + 1) - lpanel.stRow(jSt);
+            if (candidate_cols > col_limit)
+                break;
+            ++jNext;
+        }
 
-        int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+        int group_cols = lpanel.stRow(jNext) - lpanel.stRow(jSt);
+        if (group_cols <= 0)
+        {
+            jSt = jNext;
+            continue;
+        }
+
         int maxGemmRows = nrows;
-        if (nrows * ncols > A_gpu.gemmBufferSize)
-            maxGemmRows = SUPERLU_MAX(1, A_gpu.gemmBufferSize / ncols);
+        if (static_cast<int64_t>(nrows) * group_cols > gemm_capacity)
+            maxGemmRows = static_cast<int>(
+                gemm_capacity / static_cast<int64_t>(group_cols));
+        maxGemmRows = SUPERLU_MAX(maxGemmRows, 1);
 
         int_t iEnd = lStart;
         while (iEnd < lEnd)
@@ -1313,6 +1438,7 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLLGPU(
                                          k, lpanel, handle, cuStream,
                                          rawBlock, gemmBuff);
         }
+        jSt = jNext;
     }
 
     return 0;
@@ -1431,34 +1557,67 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartWithLFragmentsGPU(
     int_t frag_lda = frag[1];
     if (frag_nblocks <= 0 || frag_lda <= 0)
         return 0;
-    for (int_t jj = jSt; jj < jEnd; ++jj)
+
+    jSt = SUPERLU_MAX((int_t)0, jSt);
+    jEnd = SUPERLU_MIN(jEnd, frag_nblocks);
+    if (jSt >= jEnd)
+        return 0;
+
+    if (!superlu_sym_v2_batch_schur_enabled())
     {
-        if (jj < 0 || jj >= frag_nblocks)
-            continue;
-        int_t st_ptr = LPANEL_HEADER_SIZE + frag_nblocks + jj;
-        int_t frag_start = frag[st_ptr];
-        int_t frag_end = frag[st_ptr + 1];
-        int gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
-        int gemm_n = frag_end - frag_start;
-        int gemm_k = supersize(k);
-        if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
-            continue;
+        for (int_t jj = jSt; jj < jEnd; ++jj)
+        {
+            int_t st_ptr = LPANEL_HEADER_SIZE + frag_nblocks + jj;
+            int_t frag_start = frag[st_ptr];
+            int_t frag_end = frag[st_ptr + 1];
+            int gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
+            int gemm_n = frag_end - frag_start;
+            int gemm_k = supersize(k);
+            if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
+                continue;
 
-        Ftype alpha = one<Ftype>();
-        Ftype beta = zeroT<Ftype>();
-        cublasSetStream(handle, cuStream);
-        myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-                            gemm_m, gemm_n, gemm_k, &alpha,
-                            lpanel.blkPtrGPU(iSt), lpanel.LDA(),
-                            frag_val + frag_start, frag_lda, &beta,
-                            gemmBuff, gemm_m);
+            Ftype alpha = one<Ftype>();
+            Ftype beta = zeroT<Ftype>();
+            cublasSetStream(handle, cuStream);
+            myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                                gemm_m, gemm_n, gemm_k, &alpha,
+                                lpanel.blkPtrGPU(iSt), lpanel.LDA(),
+                                frag_val + frag_start, frag_lda, &beta,
+                                gemmBuff, gemm_m);
 
-        scatterSymLowerLFragmentRangeGPU_driver<Ftype>(
-            iSt, iEnd, jj, jj + 1, gemmBuff, gemm_m,
-            A_gpu.maxSuperSize, ldt, lpanel.gpuPanel,
-            const_cast<int_t *>(frag_index), frag_val,
-            dA_gpu, cuStream);
+            scatterSymLowerLFragmentRangeGPU_driver<Ftype>(
+                iSt, iEnd, jj, jj + 1, gemmBuff, gemm_m,
+                A_gpu.maxSuperSize, ldt, lpanel.gpuPanel,
+                const_cast<int_t *>(frag_index), frag_val,
+                dA_gpu, cuStream);
+        }
+        return 0;
     }
+
+    /* GPU3DV2_BATCH_SCHUR: group adjacent symmetric blocks. */
+    const int_t starts = LPANEL_HEADER_SIZE + frag_nblocks;
+    const int_t frag_start = frag[starts + jSt];
+    const int_t frag_end = frag[starts + jEnd];
+    const int gemm_m = lpanel.stRow(iEnd) - lpanel.stRow(iSt);
+    const int gemm_n = frag_end - frag_start;
+    const int gemm_k = supersize(k);
+    if (gemm_m <= 0 || gemm_n <= 0 || gemm_k <= 0)
+        return 0;
+
+    Ftype alpha = one<Ftype>();
+    Ftype beta = zeroT<Ftype>();
+    cublasSetStream(handle, cuStream);
+    myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        gemm_m, gemm_n, gemm_k, &alpha,
+                        lpanel.blkPtrGPU(iSt), lpanel.LDA(),
+                        frag_val + frag_start, frag_lda, &beta,
+                        gemmBuff, gemm_m);
+
+    scatterSymLowerLFragmentRangeGPU_driver<Ftype>(
+        iSt, iEnd, jSt, jEnd, gemmBuff, gemm_m,
+        A_gpu.maxSuperSize, ldt, lpanel.gpuPanel,
+        const_cast<int_t *>(frag_index), frag_val,
+        dA_gpu, cuStream);
 
     return 0;
 }
@@ -1490,17 +1649,95 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragmentsGPU(
     if (lStart >= lEnd || fragStart >= fragEnd)
         return 0;
 
-    for (int_t jSt = fragStart; jSt < fragEnd; ++jSt)
+    if (!superlu_sym_v2_batch_schur_enabled())
     {
-        int_t st_ptr = LPANEL_HEADER_SIZE + nfrag + jSt;
-        int ncols = frag[st_ptr + 1] - frag[st_ptr];
-        if (ncols <= 0)
-            continue;
+        for (int_t jSt = fragStart; jSt < fragEnd; ++jSt)
+        {
+            int_t st_ptr = LPANEL_HEADER_SIZE + nfrag + jSt;
+            int ncols = frag[st_ptr + 1] - frag[st_ptr];
+            if (ncols <= 0)
+                continue;
 
-        int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+            int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+            int maxGemmRows = nrows;
+            if (static_cast<int64_t>(nrows) * ncols >
+                static_cast<int64_t>(A_gpu.gemmBufferSize))
+                maxGemmRows = SUPERLU_MAX(
+                    1, static_cast<int>(A_gpu.gemmBufferSize / ncols));
+
+            int_t iEnd = lStart;
+            while (iEnd < lEnd)
+            {
+                int_t iSt = iEnd;
+                iEnd = lpanel.getEndBlock(iSt, maxGemmRows);
+                if (iEnd > lEnd)
+                    iEnd = lEnd;
+                if (iEnd <= iSt)
+                    iEnd = iSt + 1;
+
+                dSymSchurCompUpdatePartWithLFragmentsGPU(
+                    iSt, iEnd, jSt, jSt + 1,
+                    k, lpanel, frag_index, frag_val,
+                    handle, cuStream, gemmBuff);
+            }
+        }
+        return 0;
+    }
+
+    /* GPU3DV2_BATCH_SCHUR: group adjacent symmetric blocks. */
+    const int_t starts = LPANEL_HEADER_SIZE + nfrag;
+    const int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+    const int ncols_total = frag[starts + fragEnd] -
+                            frag[starts + fragStart];
+    if (nrows <= 0 || ncols_total <= 0)
+        return 0;
+
+    const int64_t gemm_capacity = SUPERLU_MAX(
+        static_cast<int64_t>(1),
+        static_cast<int64_t>(A_gpu.gemmBufferSize));
+    int max_block_rows = 1;
+    for (int_t ii = lStart; ii < lEnd; ++ii)
+        max_block_rows = SUPERLU_MAX(max_block_rows,
+                                     static_cast<int>(lpanel.nbrow(ii)));
+
+    int col_limit = superlu_sym_v2_batch_schur_col_limit(
+        nrows, gemm_capacity);
+    int64_t hard_col_limit = gemm_capacity /
+                             static_cast<int64_t>(max_block_rows);
+    if (hard_col_limit < 1)
+        hard_col_limit = 1;
+    col_limit = SUPERLU_MIN(
+        col_limit,
+        static_cast<int>(SUPERLU_MIN(
+            hard_col_limit, static_cast<int64_t>(2147483647L))));
+    col_limit = SUPERLU_MIN(col_limit, ncols_total);
+    col_limit = SUPERLU_MAX(col_limit, 1);
+
+    int_t jSt = fragStart;
+    while (jSt < fragEnd)
+    {
+        int_t jNext = jSt + 1;
+        while (jNext < fragEnd)
+        {
+            int candidate_cols = frag[starts + jNext + 1] -
+                                 frag[starts + jSt];
+            if (candidate_cols > col_limit)
+                break;
+            ++jNext;
+        }
+
+        int group_cols = frag[starts + jNext] - frag[starts + jSt];
+        if (group_cols <= 0)
+        {
+            jSt = jNext;
+            continue;
+        }
+
         int maxGemmRows = nrows;
-        if (nrows * ncols > A_gpu.gemmBufferSize)
-            maxGemmRows = SUPERLU_MAX(1, A_gpu.gemmBufferSize / ncols);
+        if (static_cast<int64_t>(nrows) * group_cols > gemm_capacity)
+            maxGemmRows = static_cast<int>(
+                gemm_capacity / static_cast<int64_t>(group_cols));
+        maxGemmRows = SUPERLU_MAX(maxGemmRows, 1);
 
         int_t iEnd = lStart;
         while (iEnd < lEnd)
@@ -1512,11 +1749,12 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragmentsGPU(
             if (iEnd <= iSt)
                 iEnd = iSt + 1;
 
-            dSymSchurCompUpdatePartWithLFragmentsGPU(iSt, iEnd, jSt, jSt + 1,
-                                                     k, lpanel, frag_index,
-                                                     frag_val, handle,
-                                                     cuStream, gemmBuff);
+            dSymSchurCompUpdatePartWithLFragmentsGPU(
+                iSt, iEnd, jSt, jNext,
+                k, lpanel, frag_index, frag_val,
+                handle, cuStream, gemmBuff);
         }
+        jSt = jNext;
     }
 
     return 0;
