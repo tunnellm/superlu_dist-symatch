@@ -68,6 +68,17 @@ static inline bool superlu_sym_v2_cta_scatter_enabled()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_lower_envelope_enabled()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+
+    const char *env = std::getenv("GPU3DV2_LOWER_ENVELOPE");
+    cached = (env == NULL || env[0] == '\0') ? 1 : (std::atoi(env) != 0);
+    return cached != 0;
+}
+
 static inline int superlu_sym_v2_batch_schur_col_limit(
     int nrows, int64_t gemm_capacity)
 {
@@ -1602,9 +1613,9 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLLGPU(
     }
 
     /* GPU3DV2_BATCH_SCHUR: group adjacent symmetric blocks. */
-    const int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+    const int nrows_total = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
     const int ncols_total = lpanel.stRow(jEnd) - lpanel.stRow(jStart);
-    if (nrows <= 0 || ncols_total <= 0)
+    if (nrows_total <= 0 || ncols_total <= 0)
         return 0;
 
     const int64_t gemm_capacity = SUPERLU_MAX(
@@ -1615,22 +1626,62 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLLGPU(
         max_block_rows = SUPERLU_MAX(max_block_rows,
                                      static_cast<int>(lpanel.nbrow(ii)));
 
-    int col_limit = superlu_sym_v2_batch_schur_col_limit(
-        nrows, gemm_capacity);
-    int64_t hard_col_limit = gemm_capacity /
-                             static_cast<int64_t>(max_block_rows);
-    if (hard_col_limit < 1)
-        hard_col_limit = 1;
-    col_limit = SUPERLU_MIN(
-        col_limit,
-        static_cast<int>(SUPERLU_MIN(
-            hard_col_limit, static_cast<int64_t>(2147483647L))));
-    col_limit = SUPERLU_MIN(col_limit, ncols_total);
-    col_limit = SUPERLU_MAX(col_limit, 1);
+    const bool envelope_requested =
+        superlu_sym_v2_lower_envelope_enabled();
+    bool gid_sorted = true;
+    if (envelope_requested)
+    {
+        const int_t order_begin = SUPERLU_MIN(lStart, jStart);
+        const int_t order_end = SUPERLU_MAX(lEnd, jEnd);
+        for (int_t ii = order_begin + 1; ii < order_end; ++ii)
+        {
+            if (lpanel.gid(ii) < lpanel.gid(ii - 1))
+            {
+                gid_sorted = false;
+                break;
+            }
+        }
+    }
+    const bool lower_envelope = envelope_requested && gid_sorted;
 
+    int_t envelope_l_start = lStart;
     int_t jSt = jStart;
     while (jSt < jEnd)
     {
+        if (lower_envelope)
+        {
+            const int_t min_col_gid = lpanel.gid(jSt);
+            while (envelope_l_start < lEnd &&
+                   lpanel.gid(envelope_l_start) < min_col_gid)
+                ++envelope_l_start;
+            if (envelope_l_start >= lEnd)
+                break;
+        }
+        else
+        {
+            envelope_l_start = lStart;
+        }
+
+        const int group_nrows =
+            lpanel.stRow(lEnd) - lpanel.stRow(envelope_l_start);
+        if (group_nrows <= 0)
+            break;
+
+        int col_limit = superlu_sym_v2_batch_schur_col_limit(
+            group_nrows, gemm_capacity);
+        int64_t hard_col_limit = gemm_capacity /
+                                 static_cast<int64_t>(max_block_rows);
+        if (hard_col_limit < 1)
+            hard_col_limit = 1;
+        col_limit = SUPERLU_MIN(
+            col_limit,
+            static_cast<int>(SUPERLU_MIN(
+                hard_col_limit, static_cast<int64_t>(2147483647L))));
+        const int remaining_cols = static_cast<int>(
+            lpanel.stRow(jEnd) - lpanel.stRow(jSt));
+        col_limit = SUPERLU_MIN(col_limit, remaining_cols);
+        col_limit = SUPERLU_MAX(col_limit, 1);
+
         int_t jNext = jSt + 1;
         while (jNext < jEnd)
         {
@@ -1648,13 +1699,13 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLLGPU(
             continue;
         }
 
-        int maxGemmRows = nrows;
-        if (static_cast<int64_t>(nrows) * group_cols > gemm_capacity)
+        int maxGemmRows = group_nrows;
+        if (static_cast<int64_t>(group_nrows) * group_cols > gemm_capacity)
             maxGemmRows = static_cast<int>(
                 gemm_capacity / static_cast<int64_t>(group_cols));
         maxGemmRows = SUPERLU_MAX(maxGemmRows, 1);
 
-        int_t iEnd = lStart;
+        int_t iEnd = envelope_l_start;
         while (iEnd < lEnd)
         {
             int_t iSt = iEnd;
@@ -1916,10 +1967,10 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragmentsGPU(
 
     /* GPU3DV2_BATCH_SCHUR: group adjacent symmetric blocks. */
     const int_t starts = LPANEL_HEADER_SIZE + nfrag;
-    const int nrows = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
+    const int nrows_total = lpanel.stRow(lEnd) - lpanel.stRow(lStart);
     const int ncols_total = frag[starts + fragEnd] -
                             frag[starts + fragStart];
-    if (nrows <= 0 || ncols_total <= 0)
+    if (nrows_total <= 0 || ncols_total <= 0)
         return 0;
 
     const int64_t gemm_capacity = SUPERLU_MAX(
@@ -1930,22 +1981,71 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragmentsGPU(
         max_block_rows = SUPERLU_MAX(max_block_rows,
                                      static_cast<int>(lpanel.nbrow(ii)));
 
-    int col_limit = superlu_sym_v2_batch_schur_col_limit(
-        nrows, gemm_capacity);
-    int64_t hard_col_limit = gemm_capacity /
-                             static_cast<int64_t>(max_block_rows);
-    if (hard_col_limit < 1)
-        hard_col_limit = 1;
-    col_limit = SUPERLU_MIN(
-        col_limit,
-        static_cast<int>(SUPERLU_MIN(
-            hard_col_limit, static_cast<int64_t>(2147483647L))));
-    col_limit = SUPERLU_MIN(col_limit, ncols_total);
-    col_limit = SUPERLU_MAX(col_limit, 1);
+    const bool envelope_requested =
+        superlu_sym_v2_lower_envelope_enabled();
+    bool row_gid_sorted = true;
+    bool frag_gid_sorted = true;
+    if (envelope_requested)
+    {
+        for (int_t ii = lStart + 1; ii < lEnd; ++ii)
+        {
+            if (lpanel.gid(ii) < lpanel.gid(ii - 1))
+            {
+                row_gid_sorted = false;
+                break;
+            }
+        }
+        for (int_t jj = fragStart + 1; jj < fragEnd; ++jj)
+        {
+            if (frag[LPANEL_HEADER_SIZE + jj] <
+                frag[LPANEL_HEADER_SIZE + jj - 1])
+            {
+                frag_gid_sorted = false;
+                break;
+            }
+        }
+    }
+    const bool lower_envelope =
+        envelope_requested && row_gid_sorted && frag_gid_sorted;
 
+    int_t envelope_l_start = lStart;
     int_t jSt = fragStart;
     while (jSt < fragEnd)
     {
+        if (lower_envelope)
+        {
+            const int_t min_col_gid = frag[LPANEL_HEADER_SIZE + jSt];
+            while (envelope_l_start < lEnd &&
+                   lpanel.gid(envelope_l_start) < min_col_gid)
+                ++envelope_l_start;
+            if (envelope_l_start >= lEnd)
+                break;
+        }
+        else
+        {
+            envelope_l_start = lStart;
+        }
+
+        const int group_nrows =
+            lpanel.stRow(lEnd) - lpanel.stRow(envelope_l_start);
+        if (group_nrows <= 0)
+            break;
+
+        int col_limit = superlu_sym_v2_batch_schur_col_limit(
+            group_nrows, gemm_capacity);
+        int64_t hard_col_limit = gemm_capacity /
+                                 static_cast<int64_t>(max_block_rows);
+        if (hard_col_limit < 1)
+            hard_col_limit = 1;
+        col_limit = SUPERLU_MIN(
+            col_limit,
+            static_cast<int>(SUPERLU_MIN(
+                hard_col_limit, static_cast<int64_t>(2147483647L))));
+        const int remaining_cols = static_cast<int>(
+            frag[starts + fragEnd] - frag[starts + jSt]);
+        col_limit = SUPERLU_MIN(col_limit, remaining_cols);
+        col_limit = SUPERLU_MAX(col_limit, 1);
+
         int_t jNext = jSt + 1;
         while (jNext < fragEnd)
         {
@@ -1963,13 +2063,13 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragmentsGPU(
             continue;
         }
 
-        int maxGemmRows = nrows;
-        if (static_cast<int64_t>(nrows) * group_cols > gemm_capacity)
+        int maxGemmRows = group_nrows;
+        if (static_cast<int64_t>(group_nrows) * group_cols > gemm_capacity)
             maxGemmRows = static_cast<int>(
                 gemm_capacity / static_cast<int64_t>(group_cols));
         maxGemmRows = SUPERLU_MAX(maxGemmRows, 1);
 
-        int_t iEnd = lStart;
+        int_t iEnd = envelope_l_start;
         while (iEnd < lEnd)
         {
             int_t iSt = iEnd;
