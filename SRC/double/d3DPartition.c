@@ -2,6 +2,7 @@
 
 #include "superlu_ddefs.h"
 #include <string.h>
+#include <stdlib.h>
 
 extern int_t calcTopInfoForest(sForest_t *forest, int_t nsupers,
                                int_t *setree);
@@ -10,6 +11,7 @@ typedef struct {
     double panel_work;
     double row_work;
     double rank_work;
+    double comm_work;
     double tree_weight;
 } dSymV2LDLCost_t;
 
@@ -34,6 +36,7 @@ static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
     cost->rank_work =
         SUPERLU_MAX(1.0, diag_cost + panel_factor_cost + solve_cost +
                          0.25 * ll_schur_cost + partner_comm_cost);
+    cost->comm_work = partner_comm_cost;
     cost->tree_weight =
         SUPERLU_MAX(1.0, diag_cost + panel_factor_cost + ll_schur_cost +
                          partner_comm_cost + solve_cost);
@@ -150,11 +153,25 @@ static void dSymV2EstimateSupernodeWork(int_t k, int_t *xsup,
     dSymV2CostFromDims(ksupc, lrows, grid->nprow, cost);
 }
 
+static double dSymV2OwnerAffinityWeight(void)
+{
+    const char *env = getenv("GPU3DV2_OWNER_AFFINITY");
+    if (env == NULL || env[0] == '\0')
+        return 0.0;
+    char *end = NULL;
+    double value = strtod(env, &end);
+    if (end == env || *end != '\0' || value < 0.0)
+        ABORT("GPU3DV2_OWNER_AFFINITY must be a nonnegative number.");
+    return value;
+}
+
 static void dSymV2ChooseOwnerPair(const double *panel_load,
                                   const double *row_load,
                                   const double *rank_load,
                                   gridinfo_t *grid,
                                   const dSymV2LDLCost_t *cost,
+                                  int parent_pr, int parent_pc,
+                                  double affinity_weight,
                                   int *diag_root, int *panel_root)
 {
     double best_score = -1.0;
@@ -172,9 +189,18 @@ static void dSymV2ChooseOwnerPair(const double *panel_load,
             double max_projected = SUPERLU_MAX(projected_panel,
                                       SUPERLU_MAX(projected_row,
                                                   projected_rank));
+            double affinity_penalty = 0.0;
+            if (affinity_weight > 0.0 && parent_pr >= 0 && parent_pc >= 0)
+            {
+                if (pc != parent_pc)
+                    affinity_penalty += cost->comm_work;
+                if (pr != parent_pr)
+                    affinity_penalty += 0.5 * cost->comm_work;
+            }
             double score = max_projected +
                            0.05 * (projected_panel + projected_row +
-                                   projected_rank);
+                                   projected_rank) +
+                           affinity_weight * affinity_penalty;
             if (best_score < 0.0 || score < best_score)
             {
                 best_score = score;
@@ -190,6 +216,7 @@ static void dSymV2ChooseOwnerPair(const double *panel_load,
 
 static void dSymV2InitLDLOwners(int_t nsupers,
                                 dtrf3Dpartition_t *trf3Dpart,
+                                int_t *setree,
                                 int_t *xsup,
                                 Glu_freeable_t *Glu_freeable,
                                 gridinfo3d_t *grid3d)
@@ -223,14 +250,33 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         ABORT("Malloc fails for SymFact V2 LDL owner metadata.");
 
     MPI_Comm_rank(grid3d->comm, &global_rank);
+    const double affinity_weight = dSymV2OwnerAffinityWeight();
     for (int_t k = 0; k < nsupers; ++k)
     {
+        trf3Dpart->symV2PanelRoot[k] = -1;
+        trf3Dpart->symV2DiagRoot[k] = -1;
+    }
+    for (int_t order = 0; order < nsupers; ++order)
+    {
+        const int_t k = affinity_weight > 0.0
+                            ? nsupers - 1 - order
+                            : order;
         dSymV2LDLCost_t cost;
         int panel_root;
         int diag_root;
         int owner_rank;
+        const int_t parent = setree != NULL ? setree[k] : nsupers;
+        const int parent_pr =
+            (parent >= 0 && parent < nsupers)
+                ? trf3Dpart->symV2DiagRoot[parent]
+                : -1;
+        const int parent_pc =
+            (parent >= 0 && parent < nsupers)
+                ? trf3Dpart->symV2PanelRoot[parent]
+                : -1;
         dSymV2EstimateSupernodeWork(k, xsup, Glu_freeable, grid, &cost);
         dSymV2ChooseOwnerPair(panel_load, row_load, rank_load, grid, &cost,
+                              parent_pr, parent_pc, affinity_weight,
                               &diag_root, &panel_root);
         owner_rank = PNUM(diag_root, panel_root, grid);
         panel_load[panel_root] += cost.panel_work;
@@ -774,7 +820,7 @@ static void dTrfPartitionInitImpl(int_t nsupers,  dLUstruct_t *LUstruct,
     trf3Dpart->symV2LocalRowCount = 0;
     dSymV2ResetLDLMetadata(trf3Dpart);
     if (use_sym_v2_weights)
-        dSymV2InitLDLOwners(nsupers, trf3Dpart,
+        dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
                             LUstruct->Glu_persist->xsup,
                             Glu_freeable, grid3d);
       int_t *myTreeIdxs = getGridTrees(grid3d);
@@ -961,7 +1007,7 @@ void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
                             LUstruct->Glu_persist->xsup,
                             Glu_freeable, NULL, grid3d);
     trf3Dpart->gEtreeInfo = fillEtreeInfo(nsupers, setree, treeList);
-    dSymV2InitLDLOwners(nsupers, trf3Dpart,
+    dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
                         LUstruct->Glu_persist->xsup,
                         Glu_freeable, grid3d);
     dSymV2BuildLDLSchedule(nsupers, setree, trf3Dpart,
