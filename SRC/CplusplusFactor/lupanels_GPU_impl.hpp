@@ -367,16 +367,19 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
     /* A retained handle may execute another numerical factorization. */
     symV2PartnerLPrepacked[static_cast<size_t>(lk)] = 0;
 
-    xlpanel_t<double> &lpanel = lPanelVec[lk];
-    if (lpanel.isEmpty())
-    {
-        symV2PartnerLPrepacked[static_cast<size_t>(lk)] = 1;
-        return 0;
-    }
-
     if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
         stream_offset = 0;
     cudaStream_t stream = A_gpu.cuStreams[stream_offset];
+
+    xlpanel_t<double> &lpanel = lPanelVec[lk];
+    if (lpanel.isEmpty())
+    {
+        gpuErrchk(cudaEventRecord(
+            A_gpu.symV2PartnerLPackReadyEvents[stream_offset], stream));
+        symV2PartnerLPrepacked[static_cast<size_t>(lk)] =
+            static_cast<unsigned char>(stream_offset + 1);
+        return 0;
+    }
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double pack_issue_t = SuperLU_timer_();
@@ -426,7 +429,10 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
                  SuperLU_timer_() - pack_issue_t);
 #endif
 
-    symV2PartnerLPrepacked[static_cast<size_t>(lk)] = 1;
+    gpuErrchk(cudaEventRecord(
+        A_gpu.symV2PartnerLPackReadyEvents[stream_offset], stream));
+    symV2PartnerLPrepacked[static_cast<size_t>(lk)] =
+        static_cast<unsigned char>(stream_offset + 1);
     return 0;
 }
 
@@ -471,7 +477,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
     if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
         stream_offset = 0;
-    cudaStream_t stream = A_gpu.cuStreams[stream_offset];
+    bool async_factor = superlu_sym_v2_async_factor();
+    cudaStream_t stream = async_factor
+                              ? A_gpu.lookAheadUStream[stream_offset]
+                              : A_gpu.cuStreams[stream_offset];
     int_t kcol_ = symV2PanelRoot(k);
     int_t ksupc = SuperSize(k);
     int tag_ub = symFactTagUb;
@@ -481,14 +490,36 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     if (mycol == kcol_)
     {
         int_t lk = symV2PanelIndex(k);
-        bool prepacked =
-            lk >= 0 &&
-            static_cast<size_t>(lk) < symV2PartnerLPrepacked.size() &&
-            symV2PartnerLPrepacked[static_cast<size_t>(lk)] != 0;
+        unsigned char prepacked_slot =
+            (lk >= 0 &&
+             static_cast<size_t>(lk) < symV2PartnerLPrepacked.size())
+                ? symV2PartnerLPrepacked[static_cast<size_t>(lk)]
+                : 0;
+        bool prepacked = prepacked_slot != 0;
+        if (async_factor && prepacked)
+        {
+            int pack_event_id = static_cast<int>(prepacked_slot) - 1;
+            if (pack_event_id < 0 ||
+                pack_event_id >= A_gpu.numCudaStreams)
+                ABORT("SymFact V2 raw L-fragment pack event is invalid.");
+            gpuErrchk(cudaStreamWaitEvent(
+                stream,
+                A_gpu.symV2PartnerLPackReadyEvents[pack_event_id], 0));
+        }
         if (!prepacked &&
             (symV2DiagBlocksGPU.size() != static_cast<size_t>(nsupers) ||
              symV2DiagBlocksGPU[k] == NULL))
             ABORT("SymFact V2 true symmetric device diagonal block is missing.");
+        if (async_factor && !prepacked &&
+            k >= 0 && static_cast<size_t>(k) < symPanelReadyEventIds.size() &&
+            symPanelReadyEventIds[k] >= 0)
+        {
+            int panel_event_id = symPanelReadyEventIds[k];
+            if (panel_event_id >= A_gpu.numCudaStreams)
+                ABORT("SymFact V2 transformed-panel event is invalid.");
+            gpuErrchk(cudaStreamWaitEvent(
+                stream, A_gpu.panelReadyEvents[panel_event_id], 0));
+        }
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double pack_issue_t = SuperLU_timer_();

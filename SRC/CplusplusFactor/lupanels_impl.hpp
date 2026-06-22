@@ -4230,13 +4230,15 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
             }
             gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[handle_offset],
                                       cuStream));
-            if (Pr == 1 && Pc == 1 &&
+            if ((symGPU3DVersion == 2 || (Pr == 1 && Pc == 1)) &&
                 k >= 0 && static_cast<size_t>(k) < symPanelReadyEventIds.size())
                 symPanelReadyEventIds[k] = handle_offset;
             bool local_singleton_panel =
                 (Pr == 1 && Pc == 1 &&
                  grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1);
-            if (!local_singleton_panel)
+            bool async_v2_panel =
+                (symGPU3DVersion == 2 && superlu_sym_v2_async_factor());
+            if (!local_singleton_panel && !async_v2_panel)
                 gpuErrchk(cudaStreamSynchronize(cuStream));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             symTimingAdd(SYM_GPU3D_T_LPANEL_TRANSFORM,

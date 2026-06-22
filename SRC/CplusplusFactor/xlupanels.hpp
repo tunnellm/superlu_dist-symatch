@@ -831,6 +831,7 @@ struct xLUstruct_t
             for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
             {
                 cudaEventDestroy(A_gpu.panelReadyEvents[stream]);
+                cudaEventDestroy(A_gpu.symV2PartnerLPackReadyEvents[stream]);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 cudaEventDestroy(A_gpu.diagD2HStartEvents[stream]);
                 cudaEventDestroy(A_gpu.diagD2HEndEvents[stream]);

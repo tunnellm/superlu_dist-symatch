@@ -2186,8 +2186,14 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         cudaStreamCreate(&A_gpu.cuStreams[stream]);
         gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
                                            cudaEventDisableTiming));
+        gpuErrchk(cudaEventCreateWithFlags(
+            &A_gpu.symV2PartnerLPackReadyEvents[stream],
+            cudaEventDisableTiming));
         gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[stream],
                                   A_gpu.cuStreams[stream]));
+        gpuErrchk(cudaEventRecord(
+            A_gpu.symV2PartnerLPackReadyEvents[stream],
+            A_gpu.cuStreams[stream]));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         gpuErrchk(cudaEventCreate(&A_gpu.diagD2HStartEvents[stream]));
         gpuErrchk(cudaEventCreate(&A_gpu.diagD2HEndEvents[stream]));
@@ -2529,8 +2535,14 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuErrchk(cudaStreamCreate(&A_gpu.cuStreams[stream]));
         gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
                                            cudaEventDisableTiming));
+        gpuErrchk(cudaEventCreateWithFlags(
+            &A_gpu.symV2PartnerLPackReadyEvents[stream],
+            cudaEventDisableTiming));
         gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[stream],
                                   A_gpu.cuStreams[stream]));
+        gpuErrchk(cudaEventRecord(
+            A_gpu.symV2PartnerLPackReadyEvents[stream],
+            A_gpu.cuStreams[stream]));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         gpuErrchk(cudaEventCreate(&A_gpu.diagD2HStartEvents[stream]));
         gpuErrchk(cudaEventCreate(&A_gpu.diagD2HEndEvents[stream]));

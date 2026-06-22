@@ -441,6 +441,30 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 SYM_V2_TRACE_SCHED(grid3d, k, "after L-fragment exchange");
             }
 
+            bool local_singleton_panel =
+                (Pr == 1 && Pc == 1 &&
+                 grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1);
+            if (superlu_sym_v2_async_factor() &&
+                !local_singleton_panel && mycol == sym_panel_root &&
+                LidxSendCounts[k] > 0 && k >= 0 &&
+                static_cast<size_t>(k) < symPanelReadyEventIds.size() &&
+                symPanelReadyEventIds[k] >= 0)
+            {
+                int event_id = symPanelReadyEventIds[k];
+                if (event_id >= A_gpu.numCudaStreams)
+                    ABORT("SymFact V2 panel-ready event is invalid.");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double panel_ready_wait_t = SuperLU_timer_();
+#endif
+                gpuErrchk(cudaEventSynchronize(
+                    A_gpu.panelReadyEvents[event_id]));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAdd(SYM_GPU3D_T_LPANEL_TRANSFORM,
+                             SuperLU_timer_() - panel_ready_wait_t);
+#endif
+                symPanelReadyEventIds[k] = -1;
+            }
+
             if (LidxSendCounts[k] > 0)
             {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -733,6 +757,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     bool local_sym_singleton =
         (options->SymFact == YES && Pr == 1 && Pc == 1 &&
          grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1);
+    bool sym_v2_async_factor =
+        (symGPU3DVersion == 2 && superlu_sym_v2_async_factor());
     std::vector<int> prefetchChildrenLeft;
     std::vector<int> prefetchParentStamp;
     int prefetchStamp = 0;
@@ -751,7 +777,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
     for (int_t k0 = k_st; k0 < k_end; k0++)
     {
         int_t k = perm_c_supno[k0];
-        int_t offset = local_sym_singleton ? (k0 % numLA) : 0;
+        int_t offset =
+            (local_sym_singleton || sym_v2_async_factor)
+                ? (k0 % numLA)
+                : 0;
         if (local_sym_singleton)
             dSymStartDiagPrefetch(k, offset);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -969,7 +998,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #if (PRNTlevel >= 2)
                         printf("parent %d of node %d during second phase\n", k0_parent, k0);
 #endif
-	                        int_t dOffset = local_sym_singleton ? offset : 0;
+	                        int_t dOffset =
+	                            (local_sym_singleton || sym_v2_async_factor)
+	                                ? offset
+	                                : 0;
 	                        // dDiagFactorPanelSolveGPU(k_parent, dOffset,dFBufs);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                             if (sym_timing_enabled)

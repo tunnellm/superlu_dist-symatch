@@ -408,6 +408,7 @@ struct xLUstructGPU_t
     // Ftype arrays are problematic 
     cudaStream_t cuStreams[MAX_CUDA_STREAMS];
     cudaEvent_t panelReadyEvents[MAX_CUDA_STREAMS];
+    cudaEvent_t symV2PartnerLPackReadyEvents[MAX_CUDA_STREAMS];
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     cudaEvent_t diagD2HStartEvents[MAX_CUDA_STREAMS];
     cudaEvent_t diagD2HEndEvents[MAX_CUDA_STREAMS];
