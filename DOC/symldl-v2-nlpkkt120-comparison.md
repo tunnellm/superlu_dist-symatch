@@ -458,6 +458,104 @@ setup, and batch without adding allocation or synchronization inside each
 ancestor reduction call. The current implementation should remain disabled for
 independent benchmarks.
 
+## V2 Pinned MPI Staging
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commits:
+
+```text
+9cfaefd3 Add SymLDL V2 pinned MPI staging
+4030be83 Fix SymLDL V2 pinned staging teardown
+```
+
+The first pinned-staging run completed factorization and solve correctly but
+crashed during teardown because pinned receive buffers could be released through
+the normal `SUPERLU_FREE` path. Commit `4030be83` fixed that ownership lifetime
+bug and the A/B below is from the clean rerun.
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-142106-v2-pinAB-grid2x2x2-2n-54844472
+4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-142329-v2-pinAB-grid2x2x4-4n-54844473
+```
+
+Local copies:
+
+```text
+2 nodes, 2x2x2: /tmp/superlu-stage7-pinned-staging-fixed/20260622-142106-v2-pinAB-grid2x2x2-2n-54844472
+4 nodes, 2x2x4: /tmp/superlu-stage7-pinned-staging-fixed/20260622-142329-v2-pinAB-grid2x2x4-4n-54844473
+```
+
+Top-level timing:
+
+| Grid | Nodes | Pinned Staging | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 37.828 s | 31.37 s | 1.944 s |
+| 2x2x2 | 2 | 1 | 40.342 s | 29.55 s | 1.933 s |
+| 2x2x4 | 4 | 0 | 22.614 s | 18.82 s | 1.293 s |
+| 2x2x4 | 4 | 1 | 24.663 s | 17.85 s | 1.312 s |
+
+Pinned staging speed:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR change |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0.938x | 1.062x | 6.64% slower |
+| 2x2x4 | 4 | 0.917x | 1.054x | 9.06% slower |
+
+Factor-tree timing:
+
+| Grid | Nodes | Pinned Staging | Grid-0 Level-0 | Grid-0 Level-1 | Grid-0 Level-2 |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 1.8272 s | 29.4074 s | - |
+| 2x2x2 | 2 | 1 | 1.6447 s | 27.7658 s | - |
+| 2x2x4 | 4 | 0 | 1.8080 s | 1.9305 s | 14.5920 s |
+| 2x2x4 | 4 | 1 | 1.6911 s | 1.9073 s | 13.7320 s |
+
+Correctness:
+
+| Grid | Nodes | Pinned Staging | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+
+Pinned staging was correct after the teardown fix and improved the internal
+factor-tree timing by about 5-9%, but top-level `FACTOR` time regressed by
+about 7-9%. This is useful timing movement: it suggests the patch moves cost
+outside the measured factor-tree region or adds setup/teardown/allocation
+overhead around the factor call, making those outer costs a cleaner next target.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:

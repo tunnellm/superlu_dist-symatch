@@ -531,6 +531,82 @@ The batched ancestor reduction was correct on this smoke but slower. This is a
 one-node case, so the result is mostly a sanity check rather than the target
 `Pz>1` scaling case.
 
+## V2 Pinned MPI Staging: nlpkkt80 Smoke
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commits:
+
+```text
+9cfaefd3 Add SymLDL V2 pinned MPI staging
+4030be83 Fix SymLDL V2 pinned staging teardown
+```
+
+The first pinned-staging run completed factorization and solve correctly but
+crashed during teardown because pinned receive buffers could be released through
+the normal `SUPERLU_FREE` path. Commit `4030be83` fixed that ownership lifetime
+bug and the A/B below is from the clean rerun.
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260622-141647-v2-pinAB-grid2x1x2-1n-54844470
+```
+
+Local copy:
+
+```text
+/tmp/superlu-stage7-pinned-staging-fixed/20260622-141647-v2-pinAB-grid2x1x2-1n-54844470
+```
+
+Top-level timing:
+
+| Pinned Staging | FACTOR | Factorization_Time | SOLVE |
+|---:|---:|---:|---:|
+| 0 | 10.389 s | 7.51 s | 0.997 s |
+| 1 | 11.643 s | 6.90 s | 0.969 s |
+
+Pinned staging speed:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 0.892x |
+| Factorization_Time speedup | 1.088x |
+| FACTOR change | 12.07% slower |
+
+Correctness:
+
+| Pinned Staging | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 1 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+
+Pinned staging improved the internal factor-tree timing, but top-level `FACTOR`
+time regressed. This suggests the patch moves cost outside the measured
+`Factorization_Time` region or adds allocation/setup/teardown overhead around
+the factor call.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
