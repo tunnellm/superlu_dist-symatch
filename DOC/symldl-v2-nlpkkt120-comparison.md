@@ -359,6 +359,105 @@ Correctness:
 The lower-envelope path was correct on these smokes and consistently faster,
 but the gain was modest compared with the earlier batched Schur update.
 
+## V2 Batched Ancestor Reduction
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+c3e59c71 Add SymLDL V2 batched ancestor reduction
+```
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-111520-v2-ancAB-grid2x2x2-2n-54837381
+4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-111520-v2-ancAB-grid2x2x4-4n-54837383
+```
+
+Local copies:
+
+```text
+2 nodes, 2x2x2: /tmp/superlu-stage6-ancestor-reduce/20260622-111520-v2-ancAB-grid2x2x2-2n-54837381
+4 nodes, 2x2x4: /tmp/superlu-stage6-ancestor-reduce/20260622-111520-v2-ancAB-grid2x2x4-4n-54837383
+```
+
+Top-level timing:
+
+| Grid | Nodes | Batched Ancestor Reduce | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 38.616 s | 32.27 s | 1.974 s |
+| 2x2x2 | 2 | 1 | 39.017 s | 32.71 s | 2.003 s |
+| 2x2x4 | 4 | 0 | 22.662 s | 18.92 s | 1.313 s |
+| 2x2x4 | 4 | 1 | 25.136 s | 21.38 s | 1.328 s |
+
+Batched ancestor reduction speed:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR change |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0.990x | 0.987x | 1.04% slower |
+| 2x2x4 | 4 | 0.902x | 0.885x | 10.92% slower |
+
+Factor-tree timing:
+
+| Grid | Nodes | Batched Ancestor Reduce | Grid-0 Level-0 | Grid-0 Level-1 | Grid-0 Level-2 |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 1.8438 s | 30.2790 s | - |
+| 2x2x2 | 2 | 1 | 1.8499 s | 29.8869 s | - |
+| 2x2x4 | 4 | 0 | 1.8062 s | 1.9521 s | 14.6483 s |
+| 2x2x4 | 4 | 1 | 1.8238 s | 1.9356 s | 14.4818 s |
+
+Correctness:
+
+| Grid | Nodes | Batched Ancestor Reduce | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+
+The batched ancestor reduction was correct but slower, especially in the
+targeted `Pz>1` four-node case. The factor-tree level timers moved slightly in
+the favorable direction, but total `Factorization_Time` and top-level `FACTOR`
+regressed. That points to overhead outside the existing level timers: per-chunk
+`cudaMalloc`/`cudaFree`, per-chunk pinned host staging allocation, explicit
+packing, `MPI_Sendrecv` signature checks, and extra stream synchronization are
+the likely costs.
+
+This patch may still be salvageable if rewritten to use persistent device and
+pinned host scratch buffers, perform layout/signature validation once during
+setup, and batch without adding allocation or synchronization inside each
+ancestor reduction call. The current implementation should remain disabled for
+independent benchmarks.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:

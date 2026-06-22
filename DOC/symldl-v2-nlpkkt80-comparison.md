@@ -463,6 +463,74 @@ Correctness:
 The lower-envelope path was correct on this smoke and gave a modest factor-time
 improvement with the neutral A/B settings from the CTA test disabled.
 
+## V2 Batched Ancestor Reduction: nlpkkt80 Smoke
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+c3e59c71 Add SymLDL V2 batched ancestor reduction
+```
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260622-110556-v2-ancAB-grid2x1x2-1n-54837380
+```
+
+Local copy:
+
+```text
+/tmp/superlu-stage6-ancestor-reduce/20260622-110556-v2-ancAB-grid2x1x2-1n-54837380
+```
+
+Top-level timing:
+
+| Batched Ancestor Reduce | FACTOR | Factorization_Time | SOLVE |
+|---:|---:|---:|---:|
+| 0 | 10.066 s | 7.26 s | 0.979 s |
+| 1 | 10.397 s | 7.62 s | 0.988 s |
+
+Batched ancestor reduction speed:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 0.968x |
+| Factorization_Time speedup | 0.953x |
+| FACTOR change | 3.29% slower |
+
+Correctness:
+
+| Batched Ancestor Reduce | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 1 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+
+The batched ancestor reduction was correct on this smoke but slower. This is a
+one-node case, so the result is mostly a sanity check rather than the target
+`Pz>1` scaling case.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
