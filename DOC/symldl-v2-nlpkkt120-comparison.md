@@ -653,6 +653,113 @@ factor timers; the four-node case did not improve the ancestor reduction path.
 Keep this path opt-in/off by default unless a later rewrite changes the CTA
 scatter work enough to make the lookup cost dominant.
 
+## V2 Owner Affinity
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+547f79cd Add SymLDL V2 owner affinity policy
+```
+
+This A/B tested a parent/child owner-affinity penalty in the SymLDL v2
+post-symbolic 3D owner selection. The test kept the other independent
+restructuring candidates disabled.
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_PINNED_STAGING: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-153205-v2-ownerAB-grid2x2x2-2n-54848022
+4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-153520-v2-ownerAB-grid2x2x4-4n-54848024
+```
+
+Local copies:
+
+```text
+2 nodes, 2x2x2: /tmp/superlu-stage9-owner-affinity/20260622-153205-v2-ownerAB-grid2x2x2-2n-54848022
+4 nodes, 2x2x4: /tmp/superlu-stage9-owner-affinity/20260622-153520-v2-ownerAB-grid2x2x4-4n-54848024
+```
+
+Top-level timing:
+
+| Grid | Nodes | Owner Affinity | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 38.534 s | 32.23 s | 1.987 s |
+| 2x2x2 | 2 | 0.05 | 38.654 s | 32.08 s | 1.941 s |
+| 2x2x4 | 4 | 0 | 22.791 s | 19.03 s | 1.287 s |
+| 2x2x4 | 4 | 0.05 | 22.120 s | 18.40 s | 1.182 s |
+
+Owner-affinity speed:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR change |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0.997x | 1.005x | 0.31% slower |
+| 2x2x4 | 4 | 1.030x | 1.034x | 2.94% faster |
+
+Factor-tree timing:
+
+| Grid | Nodes | Owner Affinity | 3D-AncestorReduce | Grid-0 Level-0 | Grid-0 Level-1 | Grid-0 Level-2 |
+|---|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0.1373 s | 1.8077 s | 30.2800 s | - |
+| 2x2x2 | 2 | 0.05 | 0.1309 s | 1.8669 s | 30.0769 s | - |
+| 2x2x4 | 4 | 0 | 0.4423 s | 1.8262 s | 1.9372 s | 14.7277 s |
+| 2x2x4 | 4 | 0.05 | 0.4187 s | 1.8571 s | 1.9428 s | 14.1788 s |
+
+Memory high-water:
+
+| Grid | Nodes | Owner Affinity | Sum-of-all | Avg | Max |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 93484.01 MB | 11685.50 MB | 12040.09 MB |
+| 2x2x2 | 2 | 0.05 | 93483.81 MB | 11685.48 MB | 11808.28 MB |
+| 2x2x4 | 4 | 0 | 112028.71 MB | 7001.79 MB | 7456.77 MB |
+| 2x2x4 | 4 | 0.05 | 112028.78 MB | 7001.80 MB | 7160.06 MB |
+
+Correctness:
+
+| Grid | Nodes | Owner Affinity | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 0.05 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0.05 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+
+Owner affinity was correct and looks promising for the four-node `Pz=4` case:
+top-level factor time improved by about 3%, internal factor time by about 3.4%,
+solve time by about 8%, and max memory high-water dropped by about 297 MB. The
+two-node case was effectively neutral. This candidate is worth keeping opt-in
+and tuning with a small weight sweep after the remaining independent patches are
+tested.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:

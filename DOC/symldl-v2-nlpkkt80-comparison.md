@@ -680,6 +680,80 @@ The serial CTA lookup was correct and produced a small one-node improvement.
 This was not enough to justify enabling it by default without the larger
 multi-node result.
 
+## V2 Owner Affinity: nlpkkt80 Smoke
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+547f79cd Add SymLDL V2 owner affinity policy
+```
+
+This A/B tested a parent/child owner-affinity penalty in the SymLDL v2
+post-symbolic 3D owner selection. The test kept the other independent
+restructuring candidates disabled.
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_PINNED_STAGING: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260622-153205-v2-ownerAB-grid2x1x2-1n-54848021
+```
+
+Local copy:
+
+```text
+/tmp/superlu-stage9-owner-affinity/20260622-153205-v2-ownerAB-grid2x1x2-1n-54848021
+```
+
+Top-level timing:
+
+| Owner Affinity | FACTOR | Factorization_Time | SOLVE |
+|---:|---:|---:|---:|
+| 0 | 10.226 s | 7.42 s | 0.964 s |
+| 0.05 | 9.932 s | 7.19 s | 1.002 s |
+
+Owner-affinity speed:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 1.030x |
+| Factorization_Time speedup | 1.032x |
+| FACTOR reduction | 2.88% |
+
+Correctness:
+
+| Owner Affinity | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 0.05 | 0 | 0 | 0 | 0 | 1.847411e-13 | `(550400, 512000, 0)` |
+
+Owner affinity was correct and improved one-node factor time, though solve time
+was slightly slower. The larger multi-node result is more important for deciding
+whether to keep this candidate.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
