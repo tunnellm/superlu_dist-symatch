@@ -57,6 +57,17 @@ static inline bool superlu_sym_v2_batch_schur_enabled()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_cta_scatter_enabled()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+
+    const char *env = std::getenv("GPU3DV2_CTA_SCATTER");
+    cached = (env == NULL || env[0] == '\0') ? 1 : (std::atoi(env) != 0);
+    return cached != 0;
+}
+
 static inline int superlu_sym_v2_batch_schur_col_limit(
     int nrows, int64_t gemm_capacity)
 {
@@ -624,6 +635,108 @@ __global__ void scatterSymLowerRangeGPU(
                                 lpanel, dA);
 }
 
+/*
+ * CTA-metadata scatter path for native symmetric updates.
+ *
+ * The legacy kernel has every thread repeat the destination-panel lookup,
+ * block find, pointer extraction, and column-map copy.  This variant performs
+ * invariant metadata work once per CTA and broadcasts it through shared
+ * variables.  It also bypasses row-map construction when source and
+ * destination row lists are identical, which is common in dense-fill panels.
+ */
+template <typename Ftype>
+__global__ void scatterSymLowerRangeGPU_cta(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> lpanel,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    const int threadId = threadIdx.x;
+    const int_t ii = iSt + blockIdx.x;
+    const int_t jj = jSt + blockIdx.y;
+
+    __shared__ int s_valid;
+    __shared__ int s_nrows;
+    __shared__ int s_ncols;
+    __shared__ int s_row_identity;
+    __shared__ int_t s_lddst;
+    __shared__ int_t s_dst_row_len;
+    __shared__ int_t s_dst_col_len;
+    __shared__ Ftype *s_dst;
+    __shared__ Ftype *s_src;
+    __shared__ int_t *s_src_rows;
+    __shared__ int_t *s_dst_rows;
+    __shared__ int_t *s_src_cols;
+
+    if (threadId == 0)
+    {
+        s_valid = 0;
+        const int_t gi = lpanel.gid(ii);
+        const int_t gj = lpanel.gid(jj);
+        if (gi >= gj)
+        {
+            const int_t lj = dA->lPanelIndex(gj);
+            if (lj >= 0)
+            {
+                const int_t li = dA->lPanelVec[lj].find(gi);
+                if (li != GLOBAL_BLOCK_NOT_FOUND)
+                {
+                    s_nrows = static_cast<int>(lpanel.nbrow(ii));
+                    s_ncols = static_cast<int>(lpanel.nbrow(jj));
+                    s_dst = dA->lPanelVec[lj].blkPtr(li);
+                    s_lddst = dA->lPanelVec[lj].LDA();
+                    s_dst_row_len = dA->lPanelVec[lj].nbrow(li);
+                    s_dst_rows = dA->lPanelVec[lj].rowList(li);
+                    s_dst_col_len = dA->supersize(gj);
+                    s_src_rows = lpanel.rowList(ii);
+                    s_src_cols = lpanel.rowList(jj);
+                    const int_t row_off = lpanel.stRow(ii) - lpanel.stRow(iSt);
+                    const int_t col_off = lpanel.stRow(jj) - lpanel.stRow(jSt);
+                    s_src = gemmBuff + row_off + col_off * LDgemmBuff;
+                    s_row_identity =
+                        (s_nrows == static_cast<int>(s_dst_row_len)) ? 1 : 0;
+                    s_valid = (s_nrows > 0 && s_ncols > 0) ? 1 : 0;
+                }
+            }
+        }
+    }
+    __syncthreads();
+    if (!s_valid)
+        return;
+
+    if (s_row_identity && threadId < s_nrows &&
+        s_src_rows[threadId] != s_dst_rows[threadId])
+        atomicExch(&s_row_identity, 0);
+    __syncthreads();
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *dstIdx = rowS2D + dA->maxSuperSize;
+    if (!s_row_identity)
+        computeIndirectMapGPU(rowS2D, s_nrows, s_src_rows,
+                              s_dst_row_len, s_dst_rows, dstIdx);
+
+    int colsPerThreadBlock = blockDim.x / s_nrows;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    if (threadId < s_nrows * colsPerThreadBlock)
+    {
+        const int i = threadId % s_nrows;
+        int j = threadId / s_nrows;
+        while (j < s_ncols)
+        {
+            const int di = s_row_identity ? i : rowS2D[i];
+            const int dj = static_cast<int>(s_src_cols[j]);
+            if (di >= 0 && di < s_dst_row_len &&
+                dj >= 0 && dj < s_dst_col_len)
+                atomicAddT<Ftype>(&s_dst[di + s_lddst * dj],
+                                  -s_src[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
 template <typename Ftype>
 void scatterSymLowerRangeGPU_driver(
     int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
@@ -635,11 +748,22 @@ void scatterSymLowerRangeGPU_driver(
 {
     dim3 dimBlock(ldt);
     dim3 dimGrid(iEnd - iSt, jEnd - jSt);
-    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+    const bool cta_scatter = superlu_sym_v2_cta_scatter_enabled();
+    size_t sharedMemorySize =
+        (cta_scatter ? 2 : 3) * maxSuperSize * sizeof(int_t);
 
-    scatterSymLowerRangeGPU<Ftype>
-        <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
-            iSt, jSt, gemmBuff, LDgemmBuff, lpanel, dA);
+    if (cta_scatter)
+    {
+        scatterSymLowerRangeGPU_cta<Ftype>
+            <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+                iSt, jSt, gemmBuff, LDgemmBuff, lpanel, dA);
+    }
+    else
+    {
+        scatterSymLowerRangeGPU<Ftype>
+            <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+                iSt, jSt, gemmBuff, LDgemmBuff, lpanel, dA);
+    }
 
     gpuErrchk(cudaGetLastError());
 }
@@ -853,6 +977,105 @@ __global__ void scatterSymLowerLFragmentRangeGPU(
                                          rowPanel, fragIndex, fragVal, dA);
 }
 
+/* CTA-invariant metadata path for received raw-L fragments. */
+template <typename Ftype>
+__global__ void scatterSymLowerLFragmentRangeGPU_cta(
+    int_t iSt, int_t jSt,
+    Ftype *gemmBuff, int LDgemmBuff,
+    xlpanelGPU_t<Ftype> rowPanel,
+    int_t *fragIndex, Ftype *fragVal,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    (void)fragVal;
+    const int threadId = threadIdx.x;
+    const int_t ii = iSt + blockIdx.x;
+    const int_t jj = jSt + blockIdx.y;
+
+    __shared__ int s_valid;
+    __shared__ int s_nrows;
+    __shared__ int s_ncols;
+    __shared__ int s_row_identity;
+    __shared__ int_t s_lddst;
+    __shared__ int_t s_dst_row_len;
+    __shared__ int_t s_dst_col_len;
+    __shared__ Ftype *s_dst;
+    __shared__ Ftype *s_src;
+    __shared__ int_t *s_src_rows;
+    __shared__ int_t *s_dst_rows;
+    __shared__ int_t *s_src_cols;
+
+    if (threadId == 0)
+    {
+        s_valid = 0;
+        const int_t gi = rowPanel.gid(ii);
+        const int_t gj = symFragGid(fragIndex, jj);
+        if (gi >= gj)
+        {
+            const int_t lj = dA->lPanelIndex(gj);
+            if (lj >= 0)
+            {
+                const int_t li = dA->lPanelVec[lj].find(gi);
+                if (li != GLOBAL_BLOCK_NOT_FOUND)
+                {
+                    s_nrows = static_cast<int>(rowPanel.nbrow(ii));
+                    s_ncols = static_cast<int>(symFragNbrow(fragIndex, jj));
+                    s_dst = dA->lPanelVec[lj].blkPtr(li);
+                    s_lddst = dA->lPanelVec[lj].LDA();
+                    s_dst_row_len = dA->lPanelVec[lj].nbrow(li);
+                    s_dst_rows = dA->lPanelVec[lj].rowList(li);
+                    s_dst_col_len = dA->supersize(gj);
+                    s_src_rows = rowPanel.rowList(ii);
+                    s_src_cols = symFragRowList(fragIndex, jj);
+                    const int_t row_off =
+                        rowPanel.stRow(ii) - rowPanel.stRow(iSt);
+                    const int_t col_off =
+                        symFragStRow(fragIndex, jj) -
+                        symFragStRow(fragIndex, jSt);
+                    s_src = gemmBuff + row_off + col_off * LDgemmBuff;
+                    s_row_identity =
+                        (s_nrows == static_cast<int>(s_dst_row_len)) ? 1 : 0;
+                    s_valid = (s_nrows > 0 && s_ncols > 0) ? 1 : 0;
+                }
+            }
+        }
+    }
+    __syncthreads();
+    if (!s_valid)
+        return;
+
+    if (s_row_identity && threadId < s_nrows &&
+        s_src_rows[threadId] != s_dst_rows[threadId])
+        atomicExch(&s_row_identity, 0);
+    __syncthreads();
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *dstIdx = rowS2D + dA->maxSuperSize;
+    if (!s_row_identity)
+        computeIndirectMapGPU(rowS2D, s_nrows, s_src_rows,
+                              s_dst_row_len, s_dst_rows, dstIdx);
+
+    int colsPerThreadBlock = blockDim.x / s_nrows;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    if (threadId < s_nrows * colsPerThreadBlock)
+    {
+        const int i = threadId % s_nrows;
+        int j = threadId / s_nrows;
+        while (j < s_ncols)
+        {
+            const int di = s_row_identity ? i : rowS2D[i];
+            const int dj = static_cast<int>(s_src_cols[j]);
+            if (di >= 0 && di < s_dst_row_len &&
+                dj >= 0 && dj < s_dst_col_len)
+                atomicAddT<Ftype>(&s_dst[di + s_lddst * dj],
+                                  -s_src[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
 template <typename Ftype>
 void scatterSymLowerLFragmentRangeGPU_driver(
     int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
@@ -865,11 +1088,24 @@ void scatterSymLowerLFragmentRangeGPU_driver(
 {
     dim3 dimBlock(ldt);
     dim3 dimGrid(iEnd - iSt, jEnd - jSt);
-    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+    const bool cta_scatter = superlu_sym_v2_cta_scatter_enabled();
+    size_t sharedMemorySize =
+        (cta_scatter ? 2 : 3) * maxSuperSize * sizeof(int_t);
 
-    scatterSymLowerLFragmentRangeGPU<Ftype>
-        <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
-            iSt, jSt, gemmBuff, LDgemmBuff, rowPanel, fragIndex, fragVal, dA);
+    if (cta_scatter)
+    {
+        scatterSymLowerLFragmentRangeGPU_cta<Ftype>
+            <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+                iSt, jSt, gemmBuff, LDgemmBuff,
+                rowPanel, fragIndex, fragVal, dA);
+    }
+    else
+    {
+        scatterSymLowerLFragmentRangeGPU<Ftype>
+            <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+                iSt, jSt, gemmBuff, LDgemmBuff,
+                rowPanel, fragIndex, fragVal, dA);
+    }
 
     gpuErrchk(cudaGetLastError());
 }
