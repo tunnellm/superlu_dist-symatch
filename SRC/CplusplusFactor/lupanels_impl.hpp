@@ -2370,7 +2370,6 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
             gpuErrchk(cudaFreeHost(symV2PartnerLHostSendBufsPinned[i]));
     symV2PartnerLHostSendBufsPinned.clear();
     symV2PartnerLHostSendBufs.clear();
-    symV2PartnerLHostRecvPinned = 0;
     symV2PartnerLSendSizes.clear();
     symV2PartnerLSendRowActive.clear();
     symV2PartnerLPrepacked.clear();

@@ -711,6 +711,7 @@ struct xLUstruct_t
                 superluFreeIfAllocated(UidxRecvBufs[i]);
             superluFreeIfAllocated(symPartnerLidxRecvBufs[i]);
         }
+        symV2PartnerLHostRecvPinned = 0;
     }
 
     anc25d_t anc25d;
