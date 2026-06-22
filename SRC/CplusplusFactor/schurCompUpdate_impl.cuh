@@ -64,7 +64,7 @@ static inline bool superlu_sym_v2_cta_scatter_enabled()
         return cached != 0;
 
     const char *env = std::getenv("GPU3DV2_CTA_SCATTER");
-    cached = (env == NULL || env[0] == '\0') ? 1 : (std::atoi(env) != 0);
+    cached = (env == NULL || env[0] == '\0') ? 0 : (std::atoi(env) != 0);
     return cached != 0;
 }
 
@@ -233,6 +233,31 @@ __device__ int_t xlpanelGPU_t<Ftype>::find(int_t k)
     }
     __syncthreads();
     return idx;
+}
+
+template <typename Ftype>
+__device__ int_t xlpanelGPU_t<Ftype>::findSerial(int_t k)
+{
+    const int_t n = nblocks();
+    int_t lo = 0;
+    int_t hi = n;
+    while (lo < hi)
+    {
+        const int_t mid = lo + (hi - lo) / 2;
+        const int_t g = gid(mid);
+        if (g < k)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo < n && gid(lo) == k)
+        return lo;
+
+    /* Preserve correctness if a panel was not stored in sorted GID order. */
+    for (int_t i = 0; i < n; ++i)
+        if (gid(i) == k)
+            return i;
+    return GLOBAL_BLOCK_NOT_FOUND;
 }
 
 template <typename Ftype>
@@ -682,9 +707,13 @@ __global__ void scatterSymLowerRangeGPU_cta(
     const int_t gi = lpanel.gid(ii);
     const int_t gj = lpanel.gid(jj);
     const int_t lj = (gi >= gj) ? dA->lPanelIndex(gj) : -1;
-    int_t li = GLOBAL_BLOCK_NOT_FOUND;
-    if (lj >= 0)
-        li = dA->lPanelVec[lj].find(gi);
+    __shared__ int_t s_lookup_li;
+    if (threadId == 0)
+        s_lookup_li = (lj >= 0)
+                          ? dA->lPanelVec[lj].findSerial(gi)
+                          : GLOBAL_BLOCK_NOT_FOUND;
+    __syncthreads();
+    const int_t li = s_lookup_li;
 
     if (threadId == 0)
     {
@@ -1015,9 +1044,13 @@ __global__ void scatterSymLowerLFragmentRangeGPU_cta(
     const int_t gi = rowPanel.gid(ii);
     const int_t gj = symFragGid(fragIndex, jj);
     const int_t lj = (gi >= gj) ? dA->lPanelIndex(gj) : -1;
-    int_t li = GLOBAL_BLOCK_NOT_FOUND;
-    if (lj >= 0)
-        li = dA->lPanelVec[lj].find(gi);
+    __shared__ int_t s_lookup_li;
+    if (threadId == 0)
+        s_lookup_li = (lj >= 0)
+                          ? dA->lPanelVec[lj].findSerial(gi)
+                          : GLOBAL_BLOCK_NOT_FOUND;
+    __syncthreads();
+    const int_t li = s_lookup_li;
 
     if (threadId == 0)
     {

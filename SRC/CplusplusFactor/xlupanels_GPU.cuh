@@ -105,6 +105,8 @@ class xlpanelGPU_t
 
         DEVICE_CALLABLE
         int_t find(int_t k);
+        DEVICE_CALLABLE
+        int_t findSerial(int_t k);
         // // for L panel I don't need any special transformation function
         // int_t panelSolve(int_t ksupsz, Ftype *DiagBlk, int_t LDD);
         // int_t diagFactor(int_t k, Ftype *UBlk, int_t LDU, Ftype thresh, int_t *xsup,
