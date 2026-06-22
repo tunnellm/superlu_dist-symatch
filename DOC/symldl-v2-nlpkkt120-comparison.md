@@ -556,6 +556,103 @@ about 7-9%. This is useful timing movement: it suggests the patch moves cost
 outside the measured factor-tree region or adds setup/teardown/allocation
 overhead around the factor call, making those outer costs a cleaner next target.
 
+## V2 Serial CTA Lookup
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+6687ac4b Add SymLDL V2 serial CTA lookup
+```
+
+This A/B re-tested the CTA scatter path after replacing the barrier-using
+cooperative destination lookup with a serial thread-0 lookup. The test kept the
+other independent restructuring candidates disabled.
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_PINNED_STAGING: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-150241-v2-r1ctaAB-grid2x2x2-2n-54846797
+4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-150942-v2-r1ctaAB-grid2x2x4-4n-54846798
+```
+
+Local copies:
+
+```text
+2 nodes, 2x2x2: /tmp/superlu-stage8-r1-cta-serial/20260622-150241-v2-r1ctaAB-grid2x2x2-2n-54846797
+4 nodes, 2x2x4: /tmp/superlu-stage8-r1-cta-serial/20260622-150942-v2-r1ctaAB-grid2x2x4-4n-54846798
+```
+
+Top-level timing:
+
+| Grid | Nodes | CTA Scatter | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 37.521 s | 31.37 s | 1.927 s |
+| 2x2x2 | 2 | 1 | 37.544 s | 31.38 s | 1.911 s |
+| 2x2x4 | 4 | 0 | 22.739 s | 18.89 s | 1.298 s |
+| 2x2x4 | 4 | 1 | 22.901 s | 19.06 s | 1.278 s |
+
+Serial CTA lookup speed:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR change |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0.999x | 1.000x | 0.06% slower |
+| 2x2x4 | 4 | 0.993x | 0.991x | 0.71% slower |
+
+Factor-tree timing:
+
+| Grid | Nodes | CTA Scatter | 3D-AncestorReduce | Grid-0 Level-0 | Grid-0 Level-1 | Grid-0 Level-2 |
+|---|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0.3673 s | 1.7935 s | 29.2180 s | - |
+| 2x2x2 | 2 | 1 | 0.1350 s | 1.8328 s | 29.4165 s | - |
+| 2x2x4 | 4 | 0 | 0.4163 s | 1.8260 s | 1.9137 s | 14.6731 s |
+| 2x2x4 | 4 | 1 | 0.4145 s | 1.8227 s | 1.9754 s | 14.7783 s |
+
+Correctness:
+
+| Grid | Nodes | CTA Scatter | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+
+The serial CTA lookup was correct, but not a useful multi-node performance win.
+It was neutral on two nodes and slightly slower on four nodes. The two-node
+case moved `3D-AncestorReduce` down, but that gain was absorbed by slower level
+factor timers; the four-node case did not improve the ancestor reduction path.
+Keep this path opt-in/off by default unless a later rewrite changes the CTA
+scatter work enough to make the lookup cost dominant.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
@@ -573,4 +670,4 @@ The CTA scatter lookup bug was fixed in:
 e93d9a09 Fix SymLDL V2 CTA scatter lookup
 ```
 
-Only the smaller `nlpkkt80` CTA A/B smoke has been rerun after that fix so far.
+The later serial CTA lookup rerun is recorded above.

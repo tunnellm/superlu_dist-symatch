@@ -607,6 +607,79 @@ time regressed. This suggests the patch moves cost outside the measured
 `Factorization_Time` region or adds allocation/setup/teardown overhead around
 the factor call.
 
+## V2 Serial CTA Lookup: nlpkkt80 Smoke
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+6687ac4b Add SymLDL V2 serial CTA lookup
+```
+
+This A/B re-tested the CTA scatter path after replacing the barrier-using
+cooperative destination lookup with a serial thread-0 lookup. The test kept the
+other independent restructuring candidates disabled.
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+grid: 2x1x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_PINNED_STAGING: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260622-144528-v2-r1ctaAB-grid2x1x2-1n-54846794
+```
+
+Local copy:
+
+```text
+/tmp/superlu-stage8-r1-cta-serial/20260622-144528-v2-r1ctaAB-grid2x1x2-1n-54846794
+```
+
+Top-level timing:
+
+| CTA Scatter | FACTOR | Factorization_Time | SOLVE |
+|---:|---:|---:|---:|
+| 0 | 10.328 s | 7.51 s | 0.973 s |
+| 1 | 10.170 s | 7.42 s | 0.956 s |
+
+Serial CTA lookup speed:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 1.016x |
+| Factorization_Time speedup | 1.012x |
+| FACTOR reduction | 1.53% |
+
+Correctness:
+
+| CTA Scatter | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 1 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+
+The serial CTA lookup was correct and produced a small one-node improvement.
+This was not enough to justify enabling it by default without the larger
+multi-node result.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.
