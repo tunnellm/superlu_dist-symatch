@@ -586,6 +586,8 @@ struct xLUstruct_t
     size_t symV2PartnerLRecvMapPoolCount;
     std::vector<std::vector<int_t> > symL2LSendMeta;
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
+    std::vector<double *> symV2PartnerLHostSendBufsPinned;
+    int symV2PartnerLHostRecvPinned = 0;
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<unsigned char> symV2PartnerLSendRowActive;
     std::vector<unsigned char> symV2PartnerLPrepacked;
@@ -692,7 +694,18 @@ struct xLUstruct_t
             superluFreeIfAllocated(LvalRecvBufs[i]);
             if (include_u_buffers)
                 superluFreeIfAllocated(UvalRecvBufs[i]);
-            superluFreeIfAllocated(symPartnerLvalRecvBufs[i]);
+#ifdef HAVE_CUDA
+            if (symV2PartnerLHostRecvPinned &&
+                symPartnerLvalRecvBufs[i] != NULL)
+            {
+                gpuErrchk(cudaFreeHost(symPartnerLvalRecvBufs[i]));
+                symPartnerLvalRecvBufs[i] = NULL;
+            }
+            else
+#endif
+            {
+                superluFreeIfAllocated(symPartnerLvalRecvBufs[i]);
+            }
             superluFreeIfAllocated(LidxRecvBufs[i]);
             if (include_u_buffers)
                 superluFreeIfAllocated(UidxRecvBufs[i]);

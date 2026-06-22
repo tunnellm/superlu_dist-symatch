@@ -617,16 +617,22 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     }
                     if (!active_remote_dest)
                         continue;
-                    if (symV2PartnerLHostSendBufs[flat].size() <
-                        static_cast<size_t>(size))
-                        ABORT("SymFact V2 true symmetric L-fragment host send buffer is too small.");
+                    double *host_stage =
+                        (flat < symV2PartnerLHostSendBufsPinned.size() &&
+                         symV2PartnerLHostSendBufsPinned[flat] != NULL)
+                            ? symV2PartnerLHostSendBufsPinned[flat]
+                            : (symV2PartnerLHostSendBufs[flat].empty()
+                                   ? NULL
+                                   : symV2PartnerLHostSendBufs[flat].data());
+                    if (host_stage == NULL)
+                        ABORT("SymFact V2 true symmetric L-fragment host send buffer is missing.");
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     symStatAdd(SYM_GPU3D_S_L2U_HOST_STAGING_BYTES,
                                static_cast<long long>(size) *
                                    static_cast<long long>(sizeof(double)));
 #endif
                     gpuErrchk(cudaMemcpyAsync(
-                        symV2PartnerLHostSendBufs[flat].data(),
+                        host_stage,
                         symV2PartnerLSendBufsGPU[flat],
                         sizeof(double) * static_cast<size_t>(size),
                         cudaMemcpyDeviceToHost, stream));
@@ -734,8 +740,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             if (size <= 0)
                 continue;
             double *sendbuf = symV2PartnerLSendBufsGPU[flat];
-            double *hostbuf = cuda_aware ? NULL
-                                         : symV2PartnerLHostSendBufs[flat].data();
+            double *hostbuf = NULL;
+            if (!cuda_aware)
+            {
+                hostbuf =
+                    (flat < symV2PartnerLHostSendBufsPinned.size() &&
+                     symV2PartnerLHostSendBufsPinned[flat] != NULL)
+                        ? symV2PartnerLHostSendBufsPinned[flat]
+                        : (symV2PartnerLHostSendBufs[flat].empty()
+                               ? NULL
+                               : symV2PartnerLHostSendBufs[flat].data());
+                if (hostbuf == NULL)
+                    ABORT("SymFact V2 host send staging is missing.");
+            }
             if (sendbuf == NULL)
                 ABORT("SymFact V2 true symmetric L-fragment send buffer is missing.");
             for (int pr = 0; pr < Pr; ++pr)

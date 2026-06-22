@@ -1014,8 +1014,22 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
                                     "SymFact V2 partner-L index receive buffer");
         LvalRecvBufs[i] = lval_bytes ? (Ftype *)SUPERLU_MALLOC(lval_bytes) : NULL;
         UvalRecvBufs[i] = uval_bytes ? (Ftype *)SUPERLU_MALLOC(uval_bytes) : NULL;
-        symPartnerLvalRecvBufs[i] =
-            sym_partner_lval_bytes ? (Ftype *)SUPERLU_MALLOC(sym_partner_lval_bytes) : NULL;
+        symPartnerLvalRecvBufs[i] = NULL;
+#ifdef HAVE_CUDA
+        if (sym_partner_lval_bytes && sym_v2_mode && superlu_acc_offload &&
+            superlu_sym_v2_pinned_staging())
+        {
+            gpuErrchk(cudaMallocHost(
+                (void **)&symPartnerLvalRecvBufs[i], sym_partner_lval_bytes));
+            symV2PartnerLHostRecvPinned = 1;
+        }
+        else
+#endif
+        if (sym_partner_lval_bytes)
+        {
+            symPartnerLvalRecvBufs[i] =
+                (Ftype *)SUPERLU_MALLOC(sym_partner_lval_bytes);
+        }
         LidxRecvBufs[i] = lidx_bytes ? (int_t *)SUPERLU_MALLOC(lidx_bytes) : NULL;
         UidxRecvBufs[i] = uidx_bytes ? (int_t *)SUPERLU_MALLOC(uidx_bytes) : NULL;
         symPartnerLidxRecvBufs[i] =
@@ -1245,6 +1259,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symL2LSendMapsGPU.assign(l2u_slots, NULL);
         symL2LSendMeta.assign(l2u_slots, std::vector<int_t>());
         symV2PartnerLHostSendBufs.assign(l2u_slots, std::vector<double>());
+        symV2PartnerLHostSendBufsPinned.assign(l2u_slots, NULL);
         symV2PartnerLSendSizes.assign(l2u_slots, 0);
         symV2PartnerLSendRowActive.assign(
             xlu_checked_product(l2u_slots, static_cast<size_t>(Pr),
@@ -1428,7 +1443,19 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 symV2PartnerLSendSizes[flat] =
                     static_cast<int>(map_counts[flat]);
                 if (map_counts[flat] > 0)
-                    symV2PartnerLHostSendBufs[flat].resize(map_counts[flat]);
+                {
+                    if (superlu_sym_v2_pinned_staging())
+                    {
+                        gpuErrchk(cudaMallocHost(
+                            (void **)&symV2PartnerLHostSendBufsPinned[flat],
+                            xlu_checked_product(map_counts[flat], sizeof(double),
+                                                "SymFact V2 pinned send staging")));
+                    }
+                    else
+                    {
+                        symV2PartnerLHostSendBufs[flat].resize(map_counts[flat]);
+                    }
+                }
                 if (meta_counts[flat] > 0)
                     symL2LSendMeta[flat].resize(meta_counts[flat]);
             }
@@ -2338,7 +2365,12 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLSendBufsGPU.clear();
     symL2LSendMapsGPU.clear();
     symL2LSendMeta.clear();
+    for (size_t i = 0; i < symV2PartnerLHostSendBufsPinned.size(); ++i)
+        if (symV2PartnerLHostSendBufsPinned[i] != NULL)
+            gpuErrchk(cudaFreeHost(symV2PartnerLHostSendBufsPinned[i]));
+    symV2PartnerLHostSendBufsPinned.clear();
     symV2PartnerLHostSendBufs.clear();
+    symV2PartnerLHostRecvPinned = 0;
     symV2PartnerLSendSizes.clear();
     symV2PartnerLSendRowActive.clear();
     symV2PartnerLPrepacked.clear();
