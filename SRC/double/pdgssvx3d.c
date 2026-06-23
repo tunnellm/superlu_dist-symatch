@@ -92,6 +92,14 @@ static int dSymV2ProfileEnabled(void)
 	return env != NULL && env[0] != '\0' && env[0] != '0';
 }
 
+static int dSymV2FactorProfileEnabled(void)
+{
+	const char *env = getenv("GPU3DV2_FACTOR_PROFILE");
+	if (env != NULL && env[0] != '\0')
+		return env[0] != '0';
+	return dSymV2ProfileEnabled();
+}
+
 static int_t dSymV2QuerySpace_dist(int_t n, dLUstruct_t *LUstruct,
 				   dtrf3Dpartition_t *trf3Dpartition,
 				   SuperLUStat_t *stat,
@@ -1840,6 +1848,9 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				else
 					pdgstrf3d_LUv1(dLUgpu);
 	gpu3d_factor_call_time = SuperLU_timer_() - gpu3d_factor_call_time;
+		if (options->SymFact == YES && gpu3dVersion == 2 &&
+		    dSymV2FactorProfileEnabled())
+			dPrintLUgpuFactorProfile(dLUgpu);
 	SLU_SYM_GPU3D_TRACE_C(grid3d, "after pdgstrf3d_LUv1");
 	dSymV2Trace(grid3d, "after pdgstrf3d_LUv");
 

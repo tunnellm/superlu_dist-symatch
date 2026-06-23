@@ -42,6 +42,7 @@ extern "C"
 
     int dCopyLUGPU2Host(dLUgpu_Handle LuH, dLUstruct_t *LUstruct);
     void dPrintLUgpuSetupProfile(dLUgpu_Handle LuH);
+    void dPrintLUgpuFactorProfile(dLUgpu_Handle LuH);
     void dSymLDLFactorGPUSynchronize(dLUgpu_Handle LuH);
     int dSymLDLFactorGPUCopyPanelToHost(dLUgpu_Handle LuH, int_t k);
 

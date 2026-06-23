@@ -469,6 +469,64 @@ struct xLUstruct_t
                            int_t iSt, int_t iEnd,
                            int_t jSt, int_t jEnd,
                            const std::vector<int_t> *frag);
+    enum SymV2FactorProfileId
+    {
+        SYM_V2_FACTOR_TREE_WALL = 0,
+        SYM_V2_FACTOR_INITIAL_FACTOR_DISPATCH,
+        SYM_V2_FACTOR_INITIAL_PANEL_BCAST,
+        SYM_V2_FACTOR_SCHED_LOOKAHEAD_DISPATCH,
+        SYM_V2_FACTOR_LOOKAHEAD_UPDATE,
+        SYM_V2_FACTOR_LOOKAHEAD_SYNC,
+        SYM_V2_FACTOR_SCHED_FACTOR_DISPATCH,
+        SYM_V2_FACTOR_PARENT_FACTOR,
+        SYM_V2_FACTOR_EXCLUDE_UPDATE,
+        SYM_V2_FACTOR_BCAST_ADVANCE,
+        SYM_V2_FACTOR_FINAL_SYNC,
+        SYM_V2_FACTOR_DIAG_PANEL_SOLVE,
+        SYM_V2_FACTOR_PANEL_BCAST,
+        SYM_V2_FACTOR_PARTNER_L_EXCHANGE,
+        SYM_V2_FACTOR_COUNT
+    };
+
+    int symV2FactorProfileEnabled = 0;
+    int symV2FactorProfilePrinted = 0;
+    double symV2FactorProfileTime[SYM_V2_FACTOR_COUNT] = {};
+    long long symV2FactorProfileCount[SYM_V2_FACTOR_COUNT] = {};
+
+    bool symV2FactorProfileActive() const
+    {
+        return symV2FactorProfileEnabled != 0;
+    }
+
+    void symV2FactorProfileAdd(SymV2FactorProfileId id, double elapsed)
+    {
+        if (!symV2FactorProfileActive())
+            return;
+        symV2FactorProfileTime[id] += elapsed;
+        symV2FactorProfileCount[id] += 1;
+    }
+
+    struct SymV2FactorProfileScope
+    {
+        xLUstruct_t<Ftype> *owner;
+        SymV2FactorProfileId id;
+        bool active;
+        double start;
+
+        SymV2FactorProfileScope(xLUstruct_t<Ftype> *owner_,
+                                SymV2FactorProfileId id_)
+            : owner(owner_), id(id_),
+              active(owner_ != NULL && owner_->symV2FactorProfileActive()),
+              start(active ? SuperLU_timer_() : 0.0) {}
+
+        ~SymV2FactorProfileScope()
+        {
+            if (active)
+                owner->symV2FactorProfileAdd(id, SuperLU_timer_() - start);
+        }
+    };
+
+    void printSymV2FactorProfile();
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     enum SymGPU3DTimingId
     {

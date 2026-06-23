@@ -71,6 +71,13 @@ extern "C"
             LU_v1->printSymV2SetupProfile();
     }
 
+    void dPrintLUgpuFactorProfile(dLUgpu_Handle LuH)
+    {
+        xLUstruct_t<double> *LU_v1 = reinterpret_cast<xLUstruct_t<double> *>(LuH);
+        if (LU_v1 != NULL)
+            LU_v1->printSymV2FactorProfile();
+    }
+
     void dSymLDLFactorGPUSynchronize(dLUgpu_Handle LuH)
     {
 #ifdef HAVE_CUDA

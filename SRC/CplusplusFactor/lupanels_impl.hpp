@@ -298,6 +298,79 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
     fflush(stdout);
 }
 
+template <typename Ftype>
+void xLUstruct_t<Ftype>::printSymV2FactorProfile()
+{
+    static const char *labels[SYM_V2_FACTOR_COUNT] = {
+        "tree_wall",
+        "initial_factor_dispatch",
+        "initial_panel_bcast",
+        "sched_lookahead_dispatch",
+        "lookahead_update",
+        "lookahead_sync",
+        "sched_factor_dispatch",
+        "parent_factor",
+        "exclude_update",
+        "bcast_advance",
+        "final_sync",
+        "diag_panel_solve",
+        "panel_bcast",
+        "partner_l_exchange"
+    };
+
+    if (!symV2FactorProfileActive() || symV2FactorProfilePrinted ||
+        grid3d == NULL)
+        return;
+    symV2FactorProfilePrinted = 1;
+
+    int mpi_initialized = 0;
+    int mpi_finalized = 0;
+    MPI_Initialized(&mpi_initialized);
+    MPI_Finalized(&mpi_finalized);
+    if (!mpi_initialized || mpi_finalized)
+        return;
+
+    double sum_time[SYM_V2_FACTOR_COUNT] = {};
+    double max_time[SYM_V2_FACTOR_COUNT] = {};
+    long long sum_count[SYM_V2_FACTOR_COUNT] = {};
+    struct { double val; int rank; } local_max_time[SYM_V2_FACTOR_COUNT];
+    struct { double val; int rank; } global_max_time[SYM_V2_FACTOR_COUNT];
+    int nranks = 1;
+
+    for (int i = 0; i < SYM_V2_FACTOR_COUNT; ++i)
+    {
+        local_max_time[i].val = symV2FactorProfileTime[i];
+        local_max_time[i].rank = grid3d->iam;
+    }
+
+    MPI_Comm_size(grid3d->comm, &nranks);
+    MPI_Reduce(symV2FactorProfileTime, sum_time, SYM_V2_FACTOR_COUNT,
+               MPI_DOUBLE, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(symV2FactorProfileTime, max_time, SYM_V2_FACTOR_COUNT,
+               MPI_DOUBLE, MPI_MAX, 0, grid3d->comm);
+    MPI_Reduce(local_max_time, global_max_time, SYM_V2_FACTOR_COUNT,
+               MPI_DOUBLE_INT, MPI_MAXLOC, 0, grid3d->comm);
+    MPI_Reduce(symV2FactorProfileCount, sum_count, SYM_V2_FACTOR_COUNT,
+               MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
+
+    if (grid3d->iam != 0)
+        return;
+
+    printf("SymFact GPU3D V2 factor-loop profile (GPU3DV2_FACTOR_PROFILE=1):\n");
+    printf("  %-28s %12s %12s %12s %9s %12s\n",
+           "phase", "sum(s)", "avg_rank(s)", "max_rank(s)", "rank", "calls");
+    for (int i = 0; i < SYM_V2_FACTOR_COUNT; ++i)
+    {
+        if (sum_count[i] == 0 && sum_time[i] == 0.0 && max_time[i] == 0.0)
+            continue;
+        double avg = (nranks > 0) ? sum_time[i] / (double)nranks : 0.0;
+        printf("  %-28s %12.6f %12.6f %12.6f %9d %12lld\n",
+               labels[i], sum_time[i], avg, max_time[i],
+               global_max_time[i].rank, sum_count[i]);
+    }
+    fflush(stdout);
+}
+
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
 template <typename Ftype>
 void xLUstruct_t<Ftype>::printSymGPU3DTiming()
@@ -749,10 +822,21 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     symGPU3DVersion = (options->SymFact == YES) ? xlu_gpu3d_version() : 0;
     {
         const char *profile_env = std::getenv("GPU3DV2_PROFILE");
+        const char *factor_profile_env =
+            std::getenv("GPU3DV2_FACTOR_PROFILE");
+        int profile_on =
+            (profile_env != NULL && profile_env[0] != '\0' &&
+             profile_env[0] != '0');
+        int factor_profile_on =
+            (factor_profile_env != NULL && factor_profile_env[0] != '\0')
+                ? (factor_profile_env[0] != '0')
+                : profile_on;
         symV2SetupProfileEnabled =
             (options->SymFact == YES && symGPU3DVersion == 2 &&
-             profile_env != NULL && profile_env[0] != '\0' &&
-             profile_env[0] != '0');
+             profile_on);
+        symV2FactorProfileEnabled =
+            (options->SymFact == YES && symGPU3DVersion == 2 &&
+             factor_profile_on);
     }
     maxLvl = symV2ForestLevelCount();
     double tSetupNodeMask = SuperLU_timer_();

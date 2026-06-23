@@ -232,6 +232,9 @@ int_t xLUstruct_t<Ftype>::dDFactPSolveGPU(int_t k, int_t offset, diagFactBufs_ty
 
     if (options->SymFact == YES)
     {
+        SymV2FactorProfileScope sym_v2_factor_scope(
+            (symGPU3DVersion == 2) ? this : NULL,
+            SYM_V2_FACTOR_DIAG_PANEL_SOLVE);
         double t0 = SuperLU_timer_();
         int_t ret = dSymDiagFactorPanelSolve(k, offset, offset, dFBufs);
         SCT->tDiagFactorPanelSolve += (SuperLU_timer_() - t0);
@@ -301,6 +304,9 @@ int_t xLUstruct_t<Ftype>::dDFactPSolveGPU(int_t k, int_t handle_offset, int buff
 
     if (options->SymFact == YES)
     {
+        SymV2FactorProfileScope sym_v2_factor_scope(
+            (symGPU3DVersion == 2) ? this : NULL,
+            SYM_V2_FACTOR_DIAG_PANEL_SOLVE);
         double t0 = SuperLU_timer_();
         int_t ret = dSymDiagFactorPanelSolve(k, handle_offset, buffer_offset, dFBufs);
         SCT->tDiagFactorPanelSolve += (SuperLU_timer_() - t0);
@@ -366,6 +372,9 @@ int_t xLUstruct_t<Ftype>::dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFa
 {
     if (options->SymFact == YES)
     {
+        SymV2FactorProfileScope sym_v2_factor_scope(
+            (symGPU3DVersion == 2) ? this : NULL,
+            SYM_V2_FACTOR_DIAG_PANEL_SOLVE);
         double t0 = SuperLU_timer_();
         int_t ret = dSymDiagFactorPanelSolve(k, offset, offset, dFBufs);
         SCT->tDiagFactorPanelSolve += (SuperLU_timer_() - t0);
@@ -427,6 +436,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
     {
         if (symGPU3DVersion == 2)
         {
+            SymV2FactorProfileScope sym_v2_panel_scope(
+                this, SYM_V2_FACTOR_PANEL_BCAST);
             int_t sym_panel_root = symV2PanelRoot(k);
             SYM_V2_TRACE_SCHED(grid3d, k,
                                "panel bcast true-sym entry Lidx=%d offset=%d",
@@ -437,6 +448,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             bool sym_single_process_row = (Pr == 1);
             if (!sym_single_process_row)
             {
+                SymV2FactorProfileScope sym_v2_lfrag_scope(
+                    this, SYM_V2_FACTOR_PARTNER_L_EXCHANGE);
                 dSymV2LFragmentExchangeGPU(k, offset);
                 SYM_V2_TRACE_SCHED(grid3d, k, "after L-fragment exchange");
             }
@@ -791,6 +804,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
          grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1);
     bool sym_v2_async_factor =
         (symGPU3DVersion == 2 && superlu_sym_v2_async_factor());
+    SymV2FactorProfileScope sym_v2_tree_scope(
+        (symGPU3DVersion == 2) ? this : NULL,
+        SYM_V2_FACTOR_TREE_WALL);
     std::vector<int> prefetchChildrenLeft;
     std::vector<int> prefetchParentStamp;
     int prefetchStamp = 0;
@@ -808,6 +824,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
     for (int_t k0 = k_st; k0 < k_end; k0++)
     {
+        SymV2FactorProfileScope sym_v2_initial_factor_scope(
+            (symGPU3DVersion == 2) ? this : NULL,
+            SYM_V2_FACTOR_INITIAL_FACTOR_DISPATCH);
         int_t k = perm_c_supno[k0];
         int_t offset =
             (local_sym_singleton || sym_v2_async_factor)
@@ -851,6 +870,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         int_t offset = k0 % numLA;
         if (!donePanelBcast[k0])
         {
+            SymV2FactorProfileScope sym_v2_initial_bcast_scope(
+                (symGPU3DVersion == 2) ? this : NULL,
+                SYM_V2_FACTOR_INITIAL_PANEL_BCAST);
             dPanelBcastGPU(k, offset);
             donePanelBcast[k0] = 1;
         }
@@ -881,6 +903,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
         {
+            SymV2FactorProfileScope sym_v2_sched_scope(
+                (symGPU3DVersion == 2) ? this : NULL,
+                SYM_V2_FACTOR_SCHED_LOOKAHEAD_DISPATCH);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double sym_book_start = 0.0;
             int sym_book_open = 0;
@@ -906,6 +931,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                         sym_book_open = 0;
                     }
 #endif
+                    SymV2FactorProfileScope sym_v2_la_scope(
+                        this, SYM_V2_FACTOR_LOOKAHEAD_UPDATE);
                     dSymLookAheadUpdateLLGPU(offset, k, k_parent,
                                              k_lpanel);
                 }
@@ -918,6 +945,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                         sym_book_open = 0;
                     }
 #endif
+                    SymV2FactorProfileScope sym_v2_la_scope(
+                        this, SYM_V2_FACTOR_LOOKAHEAD_UPDATE);
                     dSymLookAheadUpdateWithLFragmentsGPU(offset, k, k_parent,
                                                          k_lpanel);
                 }
@@ -955,6 +984,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         {
             // int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
+            SymV2FactorProfileScope sym_v2_la_sync_scope(
+                (symGPU3DVersion == 2) ? this : NULL,
+                SYM_V2_FACTOR_LOOKAHEAD_SYNC);
             SyncLookAheadUpdate(offset);
         }
 
@@ -1005,6 +1037,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
         {
+            SymV2FactorProfileScope sym_v2_sched_scope(
+                (symGPU3DVersion == 2) ? this : NULL,
+                SYM_V2_FACTOR_SCHED_FACTOR_DISPATCH);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double sym_book_start = 0.0;
             int sym_book_open = 0;
@@ -1047,6 +1082,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                                 }
                             }
 #endif
+                            SymV2FactorProfileScope sym_v2_parent_scope(
+                                (symGPU3DVersion == 2) ? this : NULL,
+                                SYM_V2_FACTOR_PARENT_FACTOR);
 	                        dDFactPSolveGPU(k_parent, dOffset, dFBufs);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                             if (sym_timing_enabled)
@@ -1072,6 +1110,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                         sym_book_open = 0;
                     }
 #endif
+                    SymV2FactorProfileScope sym_v2_exclude_scope(
+                        this, SYM_V2_FACTOR_EXCLUDE_UPDATE);
                     dSymSchurCompUpdateExcludeOneLLGPU(offset, k,
                                                        k_parent,
                                                        k_lpanel);
@@ -1085,6 +1125,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                         sym_book_open = 0;
                     }
 #endif
+                    SymV2FactorProfileScope sym_v2_exclude_scope(
+                        this, SYM_V2_FACTOR_EXCLUDE_UPDATE);
                     dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(offset, k,
                                                                    k_parent,
                                                                    k_lpanel);
@@ -1132,6 +1174,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
         for (int_t k0_next = k1_next; k0_next < SUPERLU_MIN(nnodes, k1_next + winSize); ++k0_next)
         {
+            SymV2FactorProfileScope sym_v2_bcast_advance_scope(
+                (symGPU3DVersion == 2) ? this : NULL,
+                SYM_V2_FACTOR_BCAST_ADVANCE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double sym_book_start = 0.0;
             int sym_book_open = 0;
@@ -1204,6 +1249,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + oldWinSize); ++k0)
         {
+            SymV2FactorProfileScope sym_v2_final_sync_scope(
+                (symGPU3DVersion == 2) ? this : NULL,
+                SYM_V2_FACTOR_FINAL_SYNC);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double sym_book_start = 0.0;
             int sym_book_open = 0;

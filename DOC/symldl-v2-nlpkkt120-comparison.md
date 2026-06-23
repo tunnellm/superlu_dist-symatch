@@ -864,6 +864,101 @@ partner-L cached receive-index size check. Since it occurred with
 `GPU3DV2_WPANEL_CACHE=0`, this is an existing Pr=1 partner-L metadata/buffer
 sizing issue and not a W-panel cache correctness failure.
 
+## V2 Pooled Pinned Staging And GPU Arenas
+
+Recorded: 2026-06-23
+
+Relevant SymLDL v2 commits:
+
+```text
+6867bcea Add SymLDL V2 pooled pinned staging
+2825bf0a Add SymLDL V2 GPU allocation arenas
+14b6af0d Align SymLDL V2 GPU panel arenas
+```
+
+The R7 run compared pageable staging, the original per-buffer pinned staging,
+and pooled pinned staging. The R8 run then tested GPU panel and workspace
+arenas on top of pooled pinned staging. R8 initially exposed a device pointer
+alignment bug in panel arenas; `14b6af0d` aligned the arena value payload after
+the integer index payload.
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+R8 fixed, 2 nodes, 2x2x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-223221-v2-r8ComboFix-grid2x2x2-2n-54867465
+R8 fixed, 4 nodes, 2x2x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-224915-v2-r8ComboFix-grid2x2x4-4n-54867467
+```
+
+Local copies:
+
+```text
+R8 fixed, 4 nodes: /tmp/superlu-r8-combo-fix/20260622-224915-v2-r8ComboFix-grid2x2x4-4n-54867467
+```
+
+R7 pooled staging summary:
+
+| Grid | Nodes | Mode | FACTOR | Factorization_Time | SOLVE | create handle |
+|---|---:|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | pageable baseline | 38.622 s | 32.33 s | 1.947 s | 6.285 s |
+| 2x2x2 | 2 | original pinned staging | 41.283 s | 30.56 s | 1.954 s | 10.714 s |
+| 2x2x2 | 2 | pooled pinned staging | 34.372 s | 30.34 s | 1.920 s | 4.027 s |
+| 2x2x2 | 2 | pooled pinned staging plus prior winners | 35.174 s | 31.03 s | 1.967 s | 4.135 s |
+| 2x2x4 | 4 | pageable baseline | 22.698 s | 18.75 s | 1.371 s | 3.941 s |
+| 2x2x4 | 4 | original pinned staging | 24.604 s | 17.69 s | 1.299 s | 6.911 s |
+| 2x2x4 | 4 | pooled pinned staging | 20.123 s | 17.53 s | 1.276 s | 2.584 s |
+| 2x2x4 | 4 | pooled pinned staging plus prior winners | 19.699 s | 17.26 s | 1.203 s | 2.431 s |
+
+R8 fixed arena comparison:
+
+| Grid | Nodes | Mode | Panel arena | Workspace arena | Prior winners | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | A R7 baseline | 0 | 0 | 0 | 34.518 s | 30.48 s | 2.032 s |
+| 2x2x2 | 2 | B panel arena | 1 | 0 | 0 | 33.216 s | 29.73 s | 1.937 s |
+| 2x2x2 | 2 | C workspace arena | 0 | 1 | 0 | 34.090 s | 30.10 s | 1.918 s |
+| 2x2x2 | 2 | D both arenas | 1 | 1 | 0 | 33.289 s | 29.82 s | 1.908 s |
+| 2x2x2 | 2 | E R7 winners | 0 | 0 | 1 | 34.414 s | 30.21 s | 1.943 s |
+| 2x2x2 | 2 | F both arenas plus winners | 1 | 1 | 1 | 33.489 s | 29.88 s | 1.928 s |
+| 2x2x4 | 4 | A R7 baseline | 0 | 0 | 0 | 20.190 s | 17.69 s | 1.295 s |
+| 2x2x4 | 4 | B panel arena | 1 | 0 | 0 | 19.499 s | 17.31 s | 1.253 s |
+| 2x2x4 | 4 | C workspace arena | 0 | 1 | 0 | 19.973 s | 17.44 s | 1.347 s |
+| 2x2x4 | 4 | D both arenas | 1 | 1 | 0 | 19.534 s | 17.35 s | 1.258 s |
+| 2x2x4 | 4 | E R7 winners | 0 | 0 | 1 | 19.561 s | 17.14 s | 1.184 s |
+| 2x2x4 | 4 | F both arenas plus winners | 1 | 1 | 1 | 19.281 s | 17.18 s | 1.156 s |
+
+R8 correctness for all fixed arena modes:
+
+| Grid | Nodes | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 2.13e-13 to 2.27e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 2.13e-13 to 2.27e-13 | `(1814400, 1728000, 0)` |
+
+The useful R7/R8 effect is now mostly setup-side: pooled pinned staging removes
+the original pinned-staging setup penalty, and panel arenas reduce panel-copy
+setup cost. The remaining factor-loop cost is still dominated by the V2
+base-level work, so further tuning should target Schur/panel update scheduling
+rather than additional allocation cleanup.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
