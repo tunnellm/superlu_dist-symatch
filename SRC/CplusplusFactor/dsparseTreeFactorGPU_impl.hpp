@@ -480,14 +480,15 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
 
             if (LidxSendCounts[k] > 0)
             {
+                long long l_bytes =
+                    static_cast<long long>(LidxSendCounts[k]) *
+                        static_cast<long long>(sizeof(int_t)) +
+                    static_cast<long long>(LvalSendCounts[k]) *
+                        static_cast<long long>(sizeof(Ftype));
+                symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PANEL_CALL, l_bytes);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 double sym_panel_bcast_t = SuperLU_timer_();
                 symStatAdd(SYM_GPU3D_S_PANEL_BCASTS);
-                long long l_bytes =
-                    static_cast<long long>(LidxSendCounts[k]) *
-                    static_cast<long long>(sizeof(int_t)) +
-                    static_cast<long long>(LvalSendCounts[k]) *
-                    static_cast<long long>(sizeof(Ftype));
                 symStatAdd(SYM_GPU3D_S_PANEL_BCAST_BYTES, l_bytes);
 #endif
                 if (grid3d->rscp.Np > 1)
@@ -497,6 +498,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                     double sym_panel_mpi_t = SuperLU_timer_();
                     symStatAdd(SYM_GPU3D_S_PANEL_BCAST_MPI_BYTES, l_bytes);
 #endif
+                    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PANEL_MPI,
+                                           l_bytes);
                     superlu_gpu_mpi_bcast(k_lpanel.gpuPanel.index,
                                           k_lpanel.index, sizeof(int_t),
                                           static_cast<int>(LidxSendCounts[k]),
@@ -535,6 +538,10 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 symTimingAdd(SYM_GPU3D_T_PANEL_BCAST,
                              SuperLU_timer_() - sym_panel_bcast_t);
 #endif
+            }
+            else
+            {
+                symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PANEL_CALL, 0);
             }
 
             if (Pr == 1 && Pc > 1 && LidxSendCounts[k] > 0)

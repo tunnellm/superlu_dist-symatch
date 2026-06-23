@@ -317,6 +317,26 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
         "panel_bcast",
         "partner_l_exchange"
     };
+    static const char *payload_labels[SYM_V2_PAYLOAD_COUNT] = {
+        "panel_call",
+        "panel_mpi",
+        "partner_call",
+        "partner_mpi_send",
+        "partner_mpi_recv",
+        "partner_self"
+    };
+    static const char *payload_bin_labels[SYM_V2_PAYLOAD_BIN_COUNT] = {
+        "0",
+        "<=1K",
+        "<=4K",
+        "<=16K",
+        "<=64K",
+        "<=256K",
+        "<=1M",
+        "<=4M",
+        "<=16M",
+        ">16M"
+    };
 
     if (!symV2FactorProfileActive() || symV2FactorProfilePrinted ||
         grid3d == NULL)
@@ -333,9 +353,17 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
     double sum_time[SYM_V2_FACTOR_COUNT] = {};
     double max_time[SYM_V2_FACTOR_COUNT] = {};
     long long sum_count[SYM_V2_FACTOR_COUNT] = {};
+    long long payload_sum_count[SYM_V2_PAYLOAD_COUNT]
+        [SYM_V2_PAYLOAD_BIN_COUNT] = {};
+    long long payload_sum_bytes[SYM_V2_PAYLOAD_COUNT]
+        [SYM_V2_PAYLOAD_BIN_COUNT] = {};
+    long long payload_max_bytes[SYM_V2_PAYLOAD_COUNT]
+        [SYM_V2_PAYLOAD_BIN_COUNT] = {};
     struct { double val; int rank; } local_max_time[SYM_V2_FACTOR_COUNT];
     struct { double val; int rank; } global_max_time[SYM_V2_FACTOR_COUNT];
     int nranks = 1;
+    int payload_slots =
+        SYM_V2_PAYLOAD_COUNT * SYM_V2_PAYLOAD_BIN_COUNT;
 
     for (int i = 0; i < SYM_V2_FACTOR_COUNT; ++i)
     {
@@ -352,6 +380,12 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
                MPI_DOUBLE_INT, MPI_MAXLOC, 0, grid3d->comm);
     MPI_Reduce(symV2FactorProfileCount, sum_count, SYM_V2_FACTOR_COUNT,
                MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(&symV2PayloadProfileCount[0][0], &payload_sum_count[0][0],
+               payload_slots, MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(&symV2PayloadProfileBytes[0][0], &payload_sum_bytes[0][0],
+               payload_slots, MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(&symV2PayloadProfileMaxBytes[0][0], &payload_max_bytes[0][0],
+               payload_slots, MPI_LONG_LONG_INT, MPI_MAX, 0, grid3d->comm);
 
     if (grid3d->iam != 0)
         return;
@@ -367,6 +401,30 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
         printf("  %-28s %12.6f %12.6f %12.6f %9d %12lld\n",
                labels[i], sum_time[i], avg, max_time[i],
                global_max_time[i].rank, sum_count[i]);
+    }
+    printf("SymFact GPU3D V2 payload histogram:\n");
+    printf("  %-18s %-8s %12s %12s %12s %12s\n",
+           "payload", "bin", "messages", "total_MB", "avg_KB", "max_MB");
+    for (int i = 0; i < SYM_V2_PAYLOAD_COUNT; ++i)
+    {
+        for (int b = 0; b < SYM_V2_PAYLOAD_BIN_COUNT; ++b)
+        {
+            long long count = payload_sum_count[i][b];
+            if (count == 0)
+                continue;
+            double total_mb =
+                (double)payload_sum_bytes[i][b] / (1024.0 * 1024.0);
+            double avg_kb =
+                count > 0
+                    ? (double)payload_sum_bytes[i][b] /
+                          (double)count / 1024.0
+                    : 0.0;
+            double max_mb =
+                (double)payload_max_bytes[i][b] / (1024.0 * 1024.0);
+            printf("  %-18s %-8s %12lld %12.3f %12.3f %12.3f\n",
+                   payload_labels[i], payload_bin_labels[b], count,
+                   total_mb, avg_kb, max_mb);
+        }
     }
     fflush(stdout);
 }

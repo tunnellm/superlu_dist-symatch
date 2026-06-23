@@ -493,6 +493,39 @@ struct xLUstruct_t
     double symV2FactorProfileTime[SYM_V2_FACTOR_COUNT] = {};
     long long symV2FactorProfileCount[SYM_V2_FACTOR_COUNT] = {};
 
+    enum SymV2PayloadProfileId
+    {
+        SYM_V2_PAYLOAD_PANEL_CALL = 0,
+        SYM_V2_PAYLOAD_PANEL_MPI,
+        SYM_V2_PAYLOAD_PARTNER_CALL,
+        SYM_V2_PAYLOAD_PARTNER_MPI_SEND,
+        SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
+        SYM_V2_PAYLOAD_PARTNER_SELF,
+        SYM_V2_PAYLOAD_COUNT
+    };
+
+    enum SymV2PayloadProfileBin
+    {
+        SYM_V2_PAYLOAD_ZERO = 0,
+        SYM_V2_PAYLOAD_LE_1K,
+        SYM_V2_PAYLOAD_LE_4K,
+        SYM_V2_PAYLOAD_LE_16K,
+        SYM_V2_PAYLOAD_LE_64K,
+        SYM_V2_PAYLOAD_LE_256K,
+        SYM_V2_PAYLOAD_LE_1M,
+        SYM_V2_PAYLOAD_LE_4M,
+        SYM_V2_PAYLOAD_LE_16M,
+        SYM_V2_PAYLOAD_GT_16M,
+        SYM_V2_PAYLOAD_BIN_COUNT
+    };
+
+    long long symV2PayloadProfileCount
+        [SYM_V2_PAYLOAD_COUNT][SYM_V2_PAYLOAD_BIN_COUNT] = {};
+    long long symV2PayloadProfileBytes
+        [SYM_V2_PAYLOAD_COUNT][SYM_V2_PAYLOAD_BIN_COUNT] = {};
+    long long symV2PayloadProfileMaxBytes
+        [SYM_V2_PAYLOAD_COUNT][SYM_V2_PAYLOAD_BIN_COUNT] = {};
+
     bool symV2FactorProfileActive() const
     {
         return symV2FactorProfileEnabled != 0;
@@ -504,6 +537,44 @@ struct xLUstruct_t
             return;
         symV2FactorProfileTime[id] += elapsed;
         symV2FactorProfileCount[id] += 1;
+    }
+
+    int symV2PayloadProfileBin(long long bytes) const
+    {
+        if (bytes <= 0)
+            return SYM_V2_PAYLOAD_ZERO;
+        if (bytes <= 1024LL)
+            return SYM_V2_PAYLOAD_LE_1K;
+        if (bytes <= 4LL * 1024LL)
+            return SYM_V2_PAYLOAD_LE_4K;
+        if (bytes <= 16LL * 1024LL)
+            return SYM_V2_PAYLOAD_LE_16K;
+        if (bytes <= 64LL * 1024LL)
+            return SYM_V2_PAYLOAD_LE_64K;
+        if (bytes <= 256LL * 1024LL)
+            return SYM_V2_PAYLOAD_LE_256K;
+        if (bytes <= 1024LL * 1024LL)
+            return SYM_V2_PAYLOAD_LE_1M;
+        if (bytes <= 4LL * 1024LL * 1024LL)
+            return SYM_V2_PAYLOAD_LE_4M;
+        if (bytes <= 16LL * 1024LL * 1024LL)
+            return SYM_V2_PAYLOAD_LE_16M;
+        return SYM_V2_PAYLOAD_GT_16M;
+    }
+
+    void symV2PayloadProfileAdd(SymV2PayloadProfileId id, long long bytes)
+    {
+        if (!symV2FactorProfileActive())
+            return;
+        if (id < 0 || id >= SYM_V2_PAYLOAD_COUNT)
+            return;
+        if (bytes < 0)
+            bytes = 0;
+        int bin = symV2PayloadProfileBin(bytes);
+        symV2PayloadProfileCount[id][bin] += 1;
+        symV2PayloadProfileBytes[id][bin] += bytes;
+        if (bytes > symV2PayloadProfileMaxBytes[id][bin])
+            symV2PayloadProfileMaxBytes[id][bin] = bytes;
     }
 
     struct SymV2FactorProfileScope

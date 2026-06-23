@@ -520,6 +520,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double lfrag_total_t = SuperLU_timer_();
 #endif
+    long long sym_v2_partner_payload_bytes = 0;
 
     SYM_V2_TRACE_EXCHANGE(grid3d, k,
                           "enter L-fragment exchange myrow=%d mycol=%d krow=%d kcol=%d Lidx=%d",
@@ -801,6 +802,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             continue;
         MPI_Request req;
         double *recv_ptr = NULL;
+        long long recv_bytes =
+            static_cast<long long>(size) *
+            static_cast<long long>(sizeof(double));
+        sym_v2_partner_payload_bytes += recv_bytes;
+        symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
+                               recv_bytes);
         if (cuda_aware)
         {
             recv_ptr = A_gpu.symPartnerLStageBufs[stream_offset] +
@@ -864,6 +871,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 if (dest == iam)
                     continue;
                 MPI_Request req;
+                long long send_bytes =
+                    static_cast<long long>(size) *
+                    static_cast<long long>(sizeof(double));
+                sym_v2_partner_payload_bytes += send_bytes;
+                symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_SEND,
+                                       send_bytes);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 if (cuda_aware)
                     symStatAdd(SYM_GPU3D_S_L2U_CUDA_AWARE_SEND_BYTES,
@@ -972,6 +985,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             {
                 if (mycol != kcol_)
                     ABORT("SymFact V2 self fragment has an invalid source column.");
+                long long self_bytes =
+                    static_cast<long long>(count) *
+                    static_cast<long long>(sizeof(double));
+                sym_v2_partner_payload_bytes += self_bytes;
+                symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_SELF,
+                                       self_bytes);
                 int_t send_lk = symV2PanelIndex(k);
                 size_t self_flat =
                     static_cast<size_t>(send_lk) * static_cast<size_t>(Pc) +
@@ -1059,6 +1078,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     symTimingAdd(SYM_GPU3D_T_LFRAG_EXCHANGE_TOTAL,
                  SuperLU_timer_() - lfrag_total_t);
 #endif
+    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_CALL,
+                           sym_v2_partner_payload_bytes);
     SYM_V2_TRACE_EXCHANGE(grid3d, k, "leave L-fragment exchange");
     return 0;
 }
