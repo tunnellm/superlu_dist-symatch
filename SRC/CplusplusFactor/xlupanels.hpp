@@ -125,7 +125,12 @@ public:
 
     size_t totalSize()
     {
-        return sizeof(int_t) * indexSize() + sizeof(Ftype) * nzvalSize();
+        size_t idxSize = sizeof(int_t) * indexSize();
+        const size_t align = alignof(Ftype);
+        const size_t mask = align - 1;
+        if (align > 1)
+            idxSize = (idxSize + mask) & ~mask;
+        return idxSize + sizeof(Ftype) * nzvalSize();
     }
 
     // return the maximal iEnd such that stRow(iEnd)-stRow(iSt) < maxRow;
@@ -282,7 +287,12 @@ public:
     }
     size_t totalSize()
     {
-        return sizeof(int_t) * indexSize() + sizeof(Ftype) * nzvalSize();
+        size_t idxSize = sizeof(int_t) * indexSize();
+        const size_t align = alignof(Ftype);
+        const size_t mask = align - 1;
+        if (align > 1)
+            idxSize = (idxSize + mask) & ~mask;
+        return idxSize + sizeof(Ftype) * nzvalSize();
     }
     int_t checkCorrectness()
     {

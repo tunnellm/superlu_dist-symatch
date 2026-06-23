@@ -209,11 +209,16 @@ xlpanelGPU_t<T> xlpanel_t<T>::copyToGPU(void* basePtr)
         return gpuPanel;
     size_t idxSize = sizeof(int_t) * indexSize();
     size_t valSize = sizeof(T) * nzvalSize();
+    size_t valOffset = idxSize;
+    const size_t align = alignof(T);
+    const size_t mask = align - 1;
+    if (align > 1)
+        valOffset = (valOffset + mask) & ~mask;
 
     gpuPanel.index = (int_t*) basePtr;
     gpuErrchk(cudaMemcpy(gpuPanel.index, index, idxSize, cudaMemcpyHostToDevice));
 
-    basePtr = (char *)basePtr+ idxSize; 
+    basePtr = (char *)basePtr + valOffset;
     gpuPanel.val = (T *) basePtr; 
 
     gpuErrchk(cudaMemcpy(gpuPanel.val, val, valSize, cudaMemcpyHostToDevice));
@@ -298,11 +303,16 @@ xupanelGPU_t<T> xupanel_t<T>::copyToGPU(void* basePtr)
         return gpuPanel;
     size_t idxSize = sizeof(int_t) * indexSize();
     size_t valSize = sizeof(T) * nzvalSize();
+    size_t valOffset = idxSize;
+    const size_t align = alignof(T);
+    const size_t mask = align - 1;
+    if (align > 1)
+        valOffset = (valOffset + mask) & ~mask;
 
     gpuPanel.index = (int_t*) basePtr;
     gpuErrchk(cudaMemcpy(gpuPanel.index, index, idxSize, cudaMemcpyHostToDevice));
 
-    basePtr = (char *)basePtr+ idxSize; 
+    basePtr = (char *)basePtr + valOffset;
     gpuPanel.val = (T *) basePtr; 
 
     gpuErrchk(cudaMemcpy(gpuPanel.val, val, valSize, cudaMemcpyHostToDevice));
