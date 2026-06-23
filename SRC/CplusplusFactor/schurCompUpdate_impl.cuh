@@ -231,7 +231,7 @@ void xLUstruct_t<Ftype>::printSymV2FrontProbe()
             : 0.0;
         std::printf(
             "SymFact V2 front probe: lower_pairs=%lld present=%lld "
-            "direct_pairs=%lld (%.2f%%) flops=%lld direct_flops=%lld (%.2f%%)\\n",
+            "direct_pairs=%lld (%.2f%%) flops=%lld direct_flops=%lld (%.2f%%)\n",
             global[0], global[1], global[2], pair_pct,
             global[3], global[4], flop_pct);
         std::fflush(stdout);
