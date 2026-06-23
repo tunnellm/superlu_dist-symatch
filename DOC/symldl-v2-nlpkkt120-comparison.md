@@ -959,6 +959,79 @@ setup cost. The remaining factor-loop cost is still dominated by the V2
 base-level work, so further tuning should target Schur/panel update scheduling
 rather than additional allocation cleanup.
 
+## V2 Factor-Loop Profile
+
+Recorded: 2026-06-23
+
+Updated SymLDL v2 code commit:
+
+```text
+1edfb12e Add SymLDL V2 factor-loop profiling
+```
+
+This run used a clean Perlmutter worktree at:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2-factor-profile
+```
+
+The run enabled `GPU3DV2_FACTOR_PROFILE=1` and disabled the broader
+`GPU3DV2_PROFILE` setup profile. The top-level `FACTOR` time is therefore
+available, but the separate `Factorization_Time` line is intentionally absent
+from these logs.
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2-factor-profile/results/nlpkkt120/20260622-232743-v2-factorProfileBDF-grid2x2x4-4n-54870992
+```
+
+Local copy:
+
+```text
+/tmp/superlu-factor-profile/20260622-232743-v2-factorProfileBDF-grid2x2x4-4n-54870992
+```
+
+Top-level timing:
+
+| Grid | Nodes | Mode | FACTOR | SOLVE |
+|---|---:|---|---:|---:|
+| 2x2x4 | 4 | B panel arena | 19.782 s | 1.266 s |
+| 2x2x4 | 4 | D both arenas | 19.737 s | 1.260 s |
+| 2x2x4 | 4 | F both arenas plus winners | 19.326 s | 1.150 s |
+
+Factor-loop max-rank timing:
+
+| Phase | B panel arena | D both arenas | F both arenas plus winners |
+|---|---:|---:|---:|
+| tree wall | 17.247 s | 17.234 s | 16.850 s |
+| initial factor dispatch | 0.894 s | 0.838 s | 0.750 s |
+| initial panel broadcast | 0.338 s | 0.453 s | 0.112 s |
+| scheduler lookahead dispatch | 0.250 s | 0.233 s | 0.212 s |
+| lookahead update | 0.247 s | 0.230 s | 0.209 s |
+| lookahead sync | 0.152 s | 0.152 s | 0.152 s |
+| scheduler factor dispatch | 3.311 s | 3.314 s | 3.062 s |
+| parent factor | 2.965 s | 2.968 s | 2.715 s |
+| exclude update | 0.353 s | 0.342 s | 0.349 s |
+| broadcast advance | 13.071 s | 13.084 s | 12.629 s |
+| final sync | 0.044 s | 0.044 s | 0.044 s |
+| diagonal panel solve | 3.856 s | 3.798 s | 3.412 s |
+| panel broadcast | 13.405 s | 13.533 s | 12.734 s |
+| partner-L exchange | 7.217 s | 7.323 s | 6.732 s |
+
+Correctness:
+
+| Mode | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|
+| B panel arena | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| D both arenas | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| F both arenas plus winners | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+
+Interpretation: `F` is still the best of the tested combinations. The dominant
+remaining factor-loop bucket is panel broadcast/advance, and about half of that
+is partner-L exchange. Diagonal panel solve is secondary, around 3.4 s max rank
+in the best run. Lookahead update and final sync are small by comparison.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
