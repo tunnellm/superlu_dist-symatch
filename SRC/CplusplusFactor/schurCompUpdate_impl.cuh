@@ -80,6 +80,62 @@ static inline bool superlu_sym_v2_lower_envelope_enabled()
     return cached != 0;
 }
 
+
+static inline bool superlu_sym_v2_panel_arena_enabled()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_PANEL_ARENA");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_PANEL_ARENA must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline bool superlu_sym_v2_workspace_arena_enabled()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_WORKSPACE_ARENA");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_WORKSPACE_ARENA must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline size_t superlu_sym_v2_arena_align(size_t value)
+{
+    const size_t alignment = 256;
+    const size_t mask = alignment - 1;
+    if (value > static_cast<size_t>(-1) - mask)
+        ABORT("SymFact V2 GPU arena alignment overflows.");
+    return (value + mask) & ~mask;
+}
+
+static inline size_t superlu_sym_v2_arena_advance(
+    size_t offset, size_t count, size_t elem_size, const char *label)
+{
+    offset = superlu_sym_v2_arena_align(offset);
+    const size_t bytes = xlu_checked_product(count, elem_size, label);
+    if (offset > static_cast<size_t>(-1) - bytes)
+        ABORT("SymFact V2 GPU arena size overflows.");
+    return offset + bytes;
+}
+
 static inline int superlu_sym_v2_batch_schur_col_limit(
     int nrows, int64_t gemm_capacity)
 {
@@ -2530,7 +2586,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         int_t gid = symV2PanelGid(i);
         if (gid < nsupers && isNodeInMyGrid[gid] == 1)
         {
-            memReqData += lPanelVec[i].totalSize();
+            size_t panel_bytes = lPanelVec[i].totalSize();
+            if (sym_v2_mode && superlu_sym_v2_panel_arena_enabled())
+                panel_bytes = superlu_sym_v2_arena_align(panel_bytes);
+            if (memReqData > static_cast<size_t>(-1) - panel_bytes)
+                ABORT("SymFact V2 panel arena memory estimate overflows.");
+            memReqData += panel_bytes;
             totalNzvalSize += lPanelVec[i].nzvalSize();
             if(lPanelVec[i].nzvalSize()>0)
                 max_nzrow = SUPERLU_MAX(lPanelVec[i].nzrows(),max_nzrow);
@@ -2773,13 +2834,58 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         new xlpanelGPU_t<Ftype>[localPanelGpuAlloc]();
     bool sym_v2_skip_u_gpu_setup =
         (options->SymFact == YES && symGPU3DVersion == 2);
+    const bool use_sym_v2_panel_arena =
+        sym_v2_mode && superlu_sym_v2_panel_arena_enabled();
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before copy panels to GPU");
     tLsend = SuperLU_timer_();
-    for (i = 0; i < localPanelGpuCount; ++i)
+    if (use_sym_v2_panel_arena)
     {
-        int_t gid = symV2PanelGid(i);
-        if (gid < nsupers && isNodeInMyGrid[gid] == 1)
-            lPanelVec_GPU[i] = lPanelVec[i].copyToGPU();
+        size_t arena_bytes = 0;
+        for (i = 0; i < localPanelGpuCount; ++i)
+        {
+            int_t gid = symV2PanelGid(i);
+            if (gid >= nsupers || isNodeInMyGrid[gid] != 1 ||
+                lPanelVec[i].isEmpty())
+                continue;
+            arena_bytes = superlu_sym_v2_arena_align(arena_bytes);
+            const size_t panel_bytes = lPanelVec[i].totalSize();
+            if (arena_bytes > static_cast<size_t>(-1) - panel_bytes)
+                ABORT("SymFact V2 L-panel arena size overflows.");
+            arena_bytes += panel_bytes;
+        }
+        arena_bytes = superlu_sym_v2_arena_align(arena_bytes);
+        if (arena_bytes > 0)
+        {
+            gpuErrchk(cudaMalloc(&symV2LPanelArenaGPU, arena_bytes));
+            symV2LPanelArenaBytes = arena_bytes;
+        }
+
+        size_t arena_offset = 0;
+        for (i = 0; i < localPanelGpuCount; ++i)
+        {
+            int_t gid = symV2PanelGid(i);
+            if (gid >= nsupers || isNodeInMyGrid[gid] != 1 ||
+                lPanelVec[i].isEmpty())
+                continue;
+            arena_offset = superlu_sym_v2_arena_align(arena_offset);
+            const size_t panel_bytes = lPanelVec[i].totalSize();
+            if (symV2LPanelArenaGPU == NULL ||
+                arena_offset + panel_bytes > symV2LPanelArenaBytes ||
+                arena_offset + panel_bytes < arena_offset)
+                ABORT("SymFact V2 L-panel arena layout is invalid.");
+            lPanelVec_GPU[i] = lPanelVec[i].copyToGPU(
+                static_cast<char *>(symV2LPanelArenaGPU) + arena_offset);
+            arena_offset += panel_bytes;
+        }
+    }
+    else
+    {
+        for (i = 0; i < localPanelGpuCount; ++i)
+        {
+            int_t gid = symV2PanelGid(i);
+            if (gid < nsupers && isNodeInMyGrid[gid] == 1)
+                lPanelVec_GPU[i] = lPanelVec[i].copyToGPU();
+        }
     }
     tLsend = SuperLU_timer_() - tLsend;
     symV2SetupProfileAdd(SYM_V2_SETUP_COPY_L_PANELS_TO_GPU, tLsend);
@@ -2880,61 +2986,200 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     double tPerStreamBufferAlloc = SuperLU_timer_();
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before per-stream buffer allocation");
 
-    /* Sherry: where are these freed ?? */
+    const bool use_sym_v2_workspace_arena =
+        sym_v2_mode && superlu_sym_v2_workspace_arena_enabled();
+    size_t sym_v2_stream_arena_stride = 0;
+    if (use_sym_v2_workspace_arena)
+    {
+        size_t offset = 0;
+        offset = superlu_sym_v2_arena_advance(
+            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1, maxLvalCount)),
+            sizeof(Ftype), "SymFact V2 arena L receive values");
+        if (u_recv_val_count > 0)
+            offset = superlu_sym_v2_arena_advance(
+                offset, static_cast<size_t>(u_recv_val_count), sizeof(Ftype),
+                "SymFact V2 arena U receive values");
+        offset = superlu_sym_v2_arena_advance(
+            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                    maxSymPartnerLvalCount)),
+            sizeof(Ftype), "SymFact V2 arena partner values");
+        offset = superlu_sym_v2_arena_advance(
+            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                    maxSymPartnerLvalCount)),
+            sizeof(Ftype), "SymFact V2 arena partner staging");
+        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+            offset = superlu_sym_v2_arena_advance(
+                offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                        maxLvalCount)),
+                sizeof(Ftype), "SymFact V2 arena W panel");
+        offset = superlu_sym_v2_arena_advance(
+            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1, maxLidxCount)),
+            sizeof(int_t), "SymFact V2 arena L receive indices");
+        if (u_recv_idx_count > 0)
+            offset = superlu_sym_v2_arena_advance(
+                offset, static_cast<size_t>(u_recv_idx_count), sizeof(int_t),
+                "SymFact V2 arena U receive indices");
+        offset = superlu_sym_v2_arena_advance(
+            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                    maxSymPartnerLidxCount)),
+            sizeof(int_t), "SymFact V2 arena partner indices");
+        if (needGpuDiagFactor)
+        {
+            offset = superlu_sym_v2_arena_advance(
+                offset, static_cast<size_t>(SUPERLU_MAX(1, dfactBufSize)),
+                sizeof(Ftype), "SymFact V2 arena diagonal work");
+            offset = superlu_sym_v2_arena_advance(
+                offset, static_cast<size_t>(SUPERLU_MAX((int_t)1, ldt)),
+                sizeof(int), "SymFact V2 arena diagonal pivots");
+            offset = superlu_sym_v2_arena_advance(
+                offset, 1, sizeof(int), "SymFact V2 arena diagonal info");
+        }
+        offset = superlu_sym_v2_arena_advance(
+            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1, maxLvalCount)),
+            sizeof(Ftype), "SymFact V2 arena lookahead L");
+        offset = superlu_sym_v2_arena_advance(
+            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                    lookahead_u_val_count)),
+            sizeof(Ftype), "SymFact V2 arena lookahead U");
+        sym_v2_stream_arena_stride = superlu_sym_v2_arena_align(offset);
+        symV2StreamArenaBytes = xlu_checked_product(
+            sym_v2_stream_arena_stride,
+            static_cast<size_t>(A_gpu.numCudaStreams),
+            "SymFact V2 stream workspace arena");
+        if (symV2StreamArenaBytes > 0)
+            gpuErrchk(cudaMalloc(&symV2StreamArenaGPU,
+                                 symV2StreamArenaBytes));
+    }
+
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
-        gpuErrchk(cudaMalloc(&A_gpu.LvalRecvBufs[stream], sizeof(Ftype) * maxLvalCount));
+        A_gpu.LvalRecvBufs[stream] = NULL;
         A_gpu.UvalRecvBufs[stream] = NULL;
-        if (u_recv_val_count > 0)
-            gpuErrchk(cudaMalloc(&A_gpu.UvalRecvBufs[stream],
-                                 sizeof(Ftype) *
-                                     static_cast<size_t>(u_recv_val_count)));
-        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLvalRecvBufs[stream],
-                             sizeof(Ftype) *
-                                 static_cast<size_t>(SUPERLU_MAX((int_t)1, maxSymPartnerLvalCount))));
-        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLStageBufs[stream],
-                             sizeof(Ftype) *
-                                 static_cast<size_t>(SUPERLU_MAX((int_t)1, maxSymPartnerLvalCount))));
+        A_gpu.symPartnerLvalRecvBufs[stream] = NULL;
+        A_gpu.symPartnerLStageBufs[stream] = NULL;
         A_gpu.symV2RawPanelBufs[stream] = NULL;
         A_gpu.symV2RawPanelReadyEvents[stream] = NULL;
-        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
-            gpuErrchk(cudaMalloc(&A_gpu.symV2RawPanelBufs[stream],
-                                 sizeof(Ftype) *
-                                     static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                                     maxLvalCount))));
-        gpuErrchk(cudaMalloc(&A_gpu.LidxRecvBufs[stream], sizeof(int_t) * maxLidxCount));
+        A_gpu.LidxRecvBufs[stream] = NULL;
         A_gpu.UidxRecvBufs[stream] = NULL;
-        if (u_recv_idx_count > 0)
-            gpuErrchk(cudaMalloc(&A_gpu.UidxRecvBufs[stream],
-                                 sizeof(int_t) *
-                                     static_cast<size_t>(u_recv_idx_count)));
-        gpuErrchk(cudaMalloc(&A_gpu.symPartnerLidxRecvBufs[stream],
-                             sizeof(int_t) *
-                                 static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                                 maxSymPartnerLidxCount))));
+        A_gpu.symPartnerLidxRecvBufs[stream] = NULL;
         A_gpu.diagFactWork[stream] = NULL;
         A_gpu.diagFactIPIV[stream] = NULL;
         A_gpu.diagFactInfo[stream] = NULL;
-        if (needGpuDiagFactor)
+        A_gpu.lookAheadLGemmBuffer[stream] = NULL;
+        A_gpu.lookAheadUGemmBuffer[stream] = NULL;
+
+        if (use_sym_v2_workspace_arena)
         {
-            // allocate the space for diagonal factor on GPU
-            gpuErrchk(cudaMalloc(&A_gpu.diagFactWork[stream],
-                                 sizeof(Ftype) * dfactBufSize));
-            gpuErrchk(cudaMalloc(&A_gpu.diagFactIPIV[stream],
-                                 sizeof(int) * ldt));
-            gpuErrchk(cudaMalloc(&A_gpu.diagFactInfo[stream],
-                                 sizeof(int)));
+            char *stream_base =
+                static_cast<char *>(symV2StreamArenaGPU) +
+                static_cast<size_t>(stream) * sym_v2_stream_arena_stride;
+            size_t offset = 0;
+            auto take = [&](size_t count, size_t elem_size,
+                            const char *label) -> void *
+            {
+                const size_t begin = superlu_sym_v2_arena_align(offset);
+                offset = superlu_sym_v2_arena_advance(
+                    offset, count, elem_size, label);
+                if (offset > sym_v2_stream_arena_stride)
+                    ABORT("SymFact V2 stream arena layout exceeds stride.");
+                return stream_base + begin;
+            };
+
+            A_gpu.LvalRecvBufs[stream] = static_cast<Ftype *>(take(
+                static_cast<size_t>(SUPERLU_MAX((int_t)1, maxLvalCount)),
+                sizeof(Ftype), "SymFact V2 arena L receive values"));
+            if (u_recv_val_count > 0)
+                A_gpu.UvalRecvBufs[stream] = static_cast<Ftype *>(take(
+                    static_cast<size_t>(u_recv_val_count), sizeof(Ftype),
+                    "SymFact V2 arena U receive values"));
+            A_gpu.symPartnerLvalRecvBufs[stream] = static_cast<Ftype *>(take(
+                static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                maxSymPartnerLvalCount)),
+                sizeof(Ftype), "SymFact V2 arena partner values"));
+            A_gpu.symPartnerLStageBufs[stream] = static_cast<Ftype *>(take(
+                static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                maxSymPartnerLvalCount)),
+                sizeof(Ftype), "SymFact V2 arena partner staging"));
+            if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+                A_gpu.symV2RawPanelBufs[stream] = static_cast<Ftype *>(take(
+                    static_cast<size_t>(SUPERLU_MAX((int_t)1, maxLvalCount)),
+                    sizeof(Ftype), "SymFact V2 arena W panel"));
+            A_gpu.LidxRecvBufs[stream] = static_cast<int_t *>(take(
+                static_cast<size_t>(SUPERLU_MAX((int_t)1, maxLidxCount)),
+                sizeof(int_t), "SymFact V2 arena L receive indices"));
+            if (u_recv_idx_count > 0)
+                A_gpu.UidxRecvBufs[stream] = static_cast<int_t *>(take(
+                    static_cast<size_t>(u_recv_idx_count), sizeof(int_t),
+                    "SymFact V2 arena U receive indices"));
+            A_gpu.symPartnerLidxRecvBufs[stream] = static_cast<int_t *>(take(
+                static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                maxSymPartnerLidxCount)),
+                sizeof(int_t), "SymFact V2 arena partner indices"));
+            if (needGpuDiagFactor)
+            {
+                A_gpu.diagFactWork[stream] = static_cast<Ftype *>(take(
+                    static_cast<size_t>(SUPERLU_MAX(1, dfactBufSize)),
+                    sizeof(Ftype), "SymFact V2 arena diagonal work"));
+                A_gpu.diagFactIPIV[stream] = static_cast<int *>(take(
+                    static_cast<size_t>(SUPERLU_MAX((int_t)1, ldt)),
+                    sizeof(int), "SymFact V2 arena diagonal pivots"));
+                A_gpu.diagFactInfo[stream] = static_cast<int *>(take(
+                    1, sizeof(int), "SymFact V2 arena diagonal info"));
+            }
+            A_gpu.lookAheadLGemmBuffer[stream] = static_cast<Ftype *>(take(
+                static_cast<size_t>(SUPERLU_MAX((int_t)1, maxLvalCount)),
+                sizeof(Ftype), "SymFact V2 arena lookahead L"));
+            A_gpu.lookAheadUGemmBuffer[stream] = static_cast<Ftype *>(take(
+                static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                lookahead_u_val_count)),
+                sizeof(Ftype), "SymFact V2 arena lookahead U"));
         }
-
-        /*lookAhead buffers and stream*/
-        gpuErrchk(cudaMalloc(&A_gpu.lookAheadLGemmBuffer[stream], sizeof(Ftype) * maxLvalCount));
-
-        gpuErrchk(cudaMalloc(&A_gpu.lookAheadUGemmBuffer[stream],
-                             sizeof(Ftype) *
-                                 static_cast<size_t>(SUPERLU_MAX((int_t)1, lookahead_u_val_count))));
-            // Sherry: replace this by new code
-	        //cudaMalloc(&A_gpu.dFBufs[stream], ldt * ldt * sizeof(Ftype));
-	        //cudaMalloc(&A_gpu.gpuGemmBuffs[stream], A_gpu.gemmBufferSize * sizeof(Ftype));
+        else
+        {
+            gpuErrchk(cudaMalloc(&A_gpu.LvalRecvBufs[stream],
+                                 sizeof(Ftype) * maxLvalCount));
+            if (u_recv_val_count > 0)
+                gpuErrchk(cudaMalloc(&A_gpu.UvalRecvBufs[stream],
+                                     sizeof(Ftype) *
+                                         static_cast<size_t>(u_recv_val_count)));
+            gpuErrchk(cudaMalloc(&A_gpu.symPartnerLvalRecvBufs[stream],
+                                 sizeof(Ftype) * static_cast<size_t>(
+                                     SUPERLU_MAX((int_t)1,
+                                                 maxSymPartnerLvalCount))));
+            gpuErrchk(cudaMalloc(&A_gpu.symPartnerLStageBufs[stream],
+                                 sizeof(Ftype) * static_cast<size_t>(
+                                     SUPERLU_MAX((int_t)1,
+                                                 maxSymPartnerLvalCount))));
+            if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+                gpuErrchk(cudaMalloc(&A_gpu.symV2RawPanelBufs[stream],
+                                     sizeof(Ftype) * static_cast<size_t>(
+                                         SUPERLU_MAX((int_t)1, maxLvalCount))));
+            gpuErrchk(cudaMalloc(&A_gpu.LidxRecvBufs[stream],
+                                 sizeof(int_t) * maxLidxCount));
+            if (u_recv_idx_count > 0)
+                gpuErrchk(cudaMalloc(&A_gpu.UidxRecvBufs[stream],
+                                     sizeof(int_t) * static_cast<size_t>(
+                                         u_recv_idx_count)));
+            gpuErrchk(cudaMalloc(&A_gpu.symPartnerLidxRecvBufs[stream],
+                                 sizeof(int_t) * static_cast<size_t>(
+                                     SUPERLU_MAX((int_t)1,
+                                                 maxSymPartnerLidxCount))));
+            if (needGpuDiagFactor)
+            {
+                gpuErrchk(cudaMalloc(&A_gpu.diagFactWork[stream],
+                                     sizeof(Ftype) * dfactBufSize));
+                gpuErrchk(cudaMalloc(&A_gpu.diagFactIPIV[stream],
+                                     sizeof(int) * ldt));
+                gpuErrchk(cudaMalloc(&A_gpu.diagFactInfo[stream],
+                                     sizeof(int)));
+            }
+            gpuErrchk(cudaMalloc(&A_gpu.lookAheadLGemmBuffer[stream],
+                                 sizeof(Ftype) * maxLvalCount));
+            gpuErrchk(cudaMalloc(&A_gpu.lookAheadUGemmBuffer[stream],
+                                 sizeof(Ftype) * static_cast<size_t>(
+                                     SUPERLU_MAX((int_t)1,
+                                                 lookahead_u_val_count))));
+        }
     }
     xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after per-stream buffer allocation");
     symV2SetupProfileAdd(SYM_V2_SETUP_PER_STREAM_BUFFER_ALLOC,
@@ -3007,14 +3252,59 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 	    sum_gemmC_size += static_cast<size_t>(trf3Dpartition->gemmCsizes[i]);
 	}
     } else { /* uniform-size buffers */
-	size_t dfbuf_elems = sym_diag_buf_elems;
+        size_t dfbuf_elems = sym_diag_buf_elems;
         xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU before dfbuf/gemmbuf allocation");
-	for (i = 0; i < num_dfbufs; ++i) {
-        gpuErrchk(cudaMalloc(&(A_gpu.dFBufs[i]), dfbuf_elems * sizeof(Ftype)));
-	    gpuErrchk(cudaMalloc(&(A_gpu.gpuGemmBuffs[i]), A_gpu.gemmBufferSize * sizeof(Ftype)));
-	    sum_diag_size += dfbuf_elems;
-	    sum_gemmC_size += A_gpu.gemmBufferSize;
-	}
+        if (use_sym_v2_workspace_arena)
+        {
+            size_t stride = 0;
+            stride = superlu_sym_v2_arena_advance(
+                stride, dfbuf_elems, sizeof(Ftype),
+                "SymFact V2 arena diagonal buffer");
+            stride = superlu_sym_v2_arena_advance(
+                stride, static_cast<size_t>(A_gpu.gemmBufferSize),
+                sizeof(Ftype), "SymFact V2 arena GEMM buffer");
+            stride = superlu_sym_v2_arena_align(stride);
+            symV2GemmArenaBytes = xlu_checked_product(
+                stride, static_cast<size_t>(num_dfbufs),
+                "SymFact V2 dFBuf/GEMM arena");
+            if (symV2GemmArenaBytes > 0)
+                gpuErrchk(cudaMalloc(&symV2GemmArenaGPU,
+                                     symV2GemmArenaBytes));
+
+            for (i = 0; i < num_dfbufs; ++i)
+            {
+                char *base = static_cast<char *>(symV2GemmArenaGPU) +
+                             static_cast<size_t>(i) * stride;
+                size_t offset = 0;
+                size_t begin = superlu_sym_v2_arena_align(offset);
+                offset = superlu_sym_v2_arena_advance(
+                    offset, dfbuf_elems, sizeof(Ftype),
+                    "SymFact V2 arena diagonal buffer");
+                A_gpu.dFBufs[i] = reinterpret_cast<Ftype *>(base + begin);
+                begin = superlu_sym_v2_arena_align(offset);
+                offset = superlu_sym_v2_arena_advance(
+                    offset, static_cast<size_t>(A_gpu.gemmBufferSize),
+                    sizeof(Ftype), "SymFact V2 arena GEMM buffer");
+                if (offset > stride)
+                    ABORT("SymFact V2 dFBuf/GEMM arena layout exceeds stride.");
+                A_gpu.gpuGemmBuffs[i] =
+                    reinterpret_cast<Ftype *>(base + begin);
+                sum_diag_size += dfbuf_elems;
+                sum_gemmC_size += A_gpu.gemmBufferSize;
+            }
+        }
+        else
+        {
+            for (i = 0; i < num_dfbufs; ++i)
+            {
+                gpuErrchk(cudaMalloc(&(A_gpu.dFBufs[i]),
+                                     dfbuf_elems * sizeof(Ftype)));
+                gpuErrchk(cudaMalloc(&(A_gpu.gpuGemmBuffs[i]),
+                                     A_gpu.gemmBufferSize * sizeof(Ftype)));
+                sum_diag_size += dfbuf_elems;
+                sum_gemmC_size += A_gpu.gemmBufferSize;
+            }
+        }
         xlu_sym_gpu3d_trace_gpu_setup(grid3d, "setLUstruct_GPU after dfbuf/gemmbuf allocation");
     }
 

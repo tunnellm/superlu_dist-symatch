@@ -618,6 +618,12 @@ struct xLUstruct_t
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
     std::vector<int_t> symV2RawPanelNodes;
+    void *symV2LPanelArenaGPU = NULL;
+    void *symV2StreamArenaGPU = NULL;
+    void *symV2GemmArenaGPU = NULL;
+    size_t symV2LPanelArenaBytes = 0;
+    size_t symV2StreamArenaBytes = 0;
+    size_t symV2GemmArenaBytes = 0;
     std::vector<Ftype *> symDiagPrefetchBufs;
     std::vector<cudaEvent_t> symDiagPrefetchDoneEvents;
     std::vector<int> symDiagPrefetchEventIds;
@@ -885,7 +891,8 @@ struct xLUstruct_t
                 cudaEventDestroy(A_gpu.panelReadyEvents[stream]);
                 if (A_gpu.symV2RawPanelReadyEvents[stream] != NULL)
                     cudaEventDestroy(A_gpu.symV2RawPanelReadyEvents[stream]);
-                if (A_gpu.symV2RawPanelBufs[stream] != NULL)
+                if (A_gpu.symV2RawPanelBufs[stream] != NULL &&
+                    symV2StreamArenaGPU == NULL)
                     cudaFree(A_gpu.symV2RawPanelBufs[stream]);
                 cudaEventDestroy(A_gpu.symV2PartnerLPackReadyEvents[stream]);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -900,6 +907,24 @@ struct xLUstruct_t
             }
             if (A_gpu.symV2PanelLocalIndex != NULL)
                 cudaFree(A_gpu.symV2PanelLocalIndex);
+            if (symV2StreamArenaGPU != NULL)
+            {
+                cudaFree(symV2StreamArenaGPU);
+                symV2StreamArenaGPU = NULL;
+                symV2StreamArenaBytes = 0;
+            }
+            if (symV2GemmArenaGPU != NULL)
+            {
+                cudaFree(symV2GemmArenaGPU);
+                symV2GemmArenaGPU = NULL;
+                symV2GemmArenaBytes = 0;
+            }
+            if (symV2LPanelArenaGPU != NULL)
+            {
+                cudaFree(symV2LPanelArenaGPU);
+                symV2LPanelArenaGPU = NULL;
+                symV2LPanelArenaBytes = 0;
+            }
             XLU_V2_DTOR_TRACE("after GPU scratch free");
         }
 
