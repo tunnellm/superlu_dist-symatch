@@ -754,6 +754,97 @@ Owner affinity was correct and improved one-node factor time, though solve time
 was slightly slower. The larger multi-node result is more important for deciding
 whether to keep this candidate.
 
+## V2 W-Panel Cache: nlpkkt80 Smoke
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+89d17d23 Add SymLDL V2 W-panel cache
+```
+
+This A/B tested the explicit transient W-panel cache. The normal current-grid
+case completed cleanly. The additional Pr=1 diagnostic grid failed in the
+baseline `GPU3DV2_WPANEL_CACHE=0` case before the candidate case ran, so that
+failure is recorded as a separate partner-L metadata/layout issue rather than a
+W-panel cache regression.
+
+Case:
+
+```text
+matrix: nlpkkt80
+nodes: 1 GPU node
+ranks: 4 MPI ranks, 4 ranks per node
+threads: 16 OMP threads per rank
+current grid: 2x1x2
+Pr=1 diagnostic grid: 1x2x2
+lookahead: 32
+build: build-perlmutter-v2-perf
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_PINNED_STAGING: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt80/20260622-160106-v2-wpanelBundleAB-nlpkkt80_bundle-1n-54848742
+```
+
+Local copy:
+
+```text
+/tmp/superlu-stage10-wpanel-bundle/20260622-160106-v2-wpanelBundleAB-nlpkkt80_bundle-1n-54848742
+```
+
+Top-level timing for the current grid:
+
+| W-panel cache | FACTOR | Factorization_Time | SOLVE |
+|---:|---:|---:|---:|
+| 0 | 10.151 s | 7.32 s | 0.965 s |
+| 1 | 10.152 s | 7.35 s | 0.963 s |
+
+W-panel cache speed:
+
+| Metric | Result |
+|---|---:|
+| FACTOR speedup | 1.000x |
+| Factorization_Time speedup | 0.996x |
+| FACTOR change | neutral |
+
+Factor-tree timing:
+
+| W-panel cache | 3D-AncestorReduce | Grid-0 Level-0 | Grid-0 Level-1 |
+|---:|---:|---:|---:|
+| 0 | 0.2251 s | 0.2763 s | 6.8274 s |
+| 1 | 0.3787 s | 0.2748 s | 6.6932 s |
+
+Correctness:
+
+| W-panel cache | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+| 1 | 0 | 0 | 0 | 0 | 1.989520e-13 | `(550400, 512000, 0)` |
+
+The Pr=1 diagnostic baseline failed with:
+
+```text
+SymFact V2 partner-L cached index exceeds receive buffer.
+```
+
+The failure occurred in `SRC/CplusplusFactor/lupanels_impl.hpp` at the
+partner-L cached receive-index size check. Because this happened with
+`GPU3DV2_WPANEL_CACHE=0`, it should be treated as an existing Pr=1
+partner-L metadata/buffer sizing issue.
+
 ## Notes
 
 Do not use `/tmp/superlu-perlmutter-results/nlpkkt80/v0_2x1x2_1n4r_8t.log` as the correctness baseline for this comparison. That run reported `FACTOR time 27.151 s` and `SOLVE time 0.660 s`, but also had solution error `3.648858e-01` and zero sytrf 2x2 pivots, so it is not comparable to the clean V0 baseline above.

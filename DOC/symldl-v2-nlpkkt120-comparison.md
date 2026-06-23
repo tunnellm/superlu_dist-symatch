@@ -760,6 +760,110 @@ two-node case was effectively neutral. This candidate is worth keeping opt-in
 and tuning with a small weight sweep after the remaining independent patches are
 tested.
 
+## V2 W-Panel Cache
+
+Recorded: 2026-06-22
+
+Updated SymLDL v2 code commit:
+
+```text
+89d17d23 Add SymLDL V2 W-panel cache
+```
+
+This A/B tested the explicit transient W-panel cache. The normal current-grid
+cases completed cleanly on both node counts. The additional Pr=1 diagnostic
+grids failed in the baseline `GPU3DV2_WPANEL_CACHE=0` case before the candidate
+case ran, so those failures are recorded as a separate partner-L metadata/layout
+issue rather than a W-panel cache regression.
+
+These runs used the Perlmutter perf build, with each A/B pair run inside the
+same debug allocation:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/build-perlmutter-v2-perf/EXAMPLE/pddrive3d-sym
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 16 OMP threads per rank
+lookahead: 32
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_PINNED_STAGING: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_SYM_SOLVE_GPU: 1
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_RELAX: 64
+SUPERLU_MAXSUP: 256
+```
+
+Run directories:
+
+```text
+2 nodes, current 2x2x2 plus Pr=1 diagnostic 1x4x2: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-162448-v2-wpanelBundleAB-nlpkkt120_2n_bundle-2n-54848743
+4 nodes, current 2x2x4 plus Pr=1 diagnostic 1x4x4: /pscratch/sd/m/mtunnell/superlu_dist-symatch-v2/results/nlpkkt120/20260622-162448-v2-wpanelBundleAB-nlpkkt120_4n_bundle-4n-54848744
+```
+
+Local copies:
+
+```text
+2 nodes: /tmp/superlu-stage10-wpanel-bundle/20260622-162448-v2-wpanelBundleAB-nlpkkt120_2n_bundle-2n-54848743
+4 nodes: /tmp/superlu-stage10-wpanel-bundle/20260622-162448-v2-wpanelBundleAB-nlpkkt120_4n_bundle-4n-54848744
+```
+
+Top-level timing for the current grids:
+
+| Grid | Nodes | W-panel cache | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 37.913 s | 31.40 s | 1.928 s |
+| 2x2x2 | 2 | 1 | 37.542 s | 31.24 s | 1.914 s |
+| 2x2x4 | 4 | 0 | 22.431 s | 18.66 s | 1.294 s |
+| 2x2x4 | 4 | 1 | 22.367 s | 18.54 s | 1.260 s |
+
+W-panel cache speed:
+
+| Grid | Nodes | FACTOR speedup | Factorization_Time speedup | FACTOR reduction |
+|---|---:|---:|---:|---:|
+| 2x2x2 | 2 | 1.010x | 1.005x | 0.98% |
+| 2x2x4 | 4 | 1.003x | 1.006x | 0.29% |
+
+Factor-tree timing:
+
+| Grid | Nodes | W-panel cache | 3D-AncestorReduce | Grid-0 Level-0 | Grid-0 Level-1 | Grid-0 Level-2 |
+|---|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0.1404 s | 1.8203 s | 29.4528 s | - |
+| 2x2x2 | 2 | 1 | 0.1283 s | 1.8124 s | 29.2941 s | - |
+| 2x2x4 | 4 | 0 | 0.4229 s | 1.8578 s | 1.9198 s | 14.3843 s |
+| 2x2x4 | 4 | 1 | 0.4371 s | 1.8307 s | 1.9423 s | 14.2548 s |
+
+Correctness for the current grids:
+
+| Grid | Nodes | W-panel cache | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 2 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 0 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+| 2x2x4 | 4 | 1 | 0 | 0 | 0 | 0 | 2.131628e-13 | `(1814400, 1728000, 0)` |
+
+The Pr=1 diagnostic baselines failed with:
+
+```text
+SymFact V2 partner-L cached index exceeds receive buffer.
+```
+
+The failure occurred in `SRC/CplusplusFactor/lupanels_impl.hpp` at the
+partner-L cached receive-index size check. Since it occurred with
+`GPU3DV2_WPANEL_CACHE=0`, this is an existing Pr=1 partner-L metadata/buffer
+sizing issue and not a W-panel cache correctness failure.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
