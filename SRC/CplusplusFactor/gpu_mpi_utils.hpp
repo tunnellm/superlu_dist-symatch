@@ -108,6 +108,24 @@ static inline bool superlu_sym_v2_pinned_staging()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_pinned_staging_pool()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_PINNED_STAGING_POOL");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_PINNED_STAGING_POOL must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
 static inline bool superlu_sym_v2_wpanel_cache()
 {
     static int cached = -1;

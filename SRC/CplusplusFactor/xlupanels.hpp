@@ -597,7 +597,17 @@ struct xLUstruct_t
     std::vector<std::vector<int_t> > symL2LSendMeta;
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
     std::vector<double *> symV2PartnerLHostSendBufsPinned;
+    double *symV2PartnerLHostSendPoolPinned = NULL;
+    Ftype *symV2PartnerLHostRecvPoolPinned = NULL;
+    size_t symV2PartnerLHostSendPoolPinnedCount = 0;
+    size_t symV2PartnerLHostRecvPoolPinnedCount = 0;
     int symV2PartnerLHostRecvPinned = 0;
+    std::vector<size_t> symV2PartnerLHostSendScratchOffsets;
+    std::vector<int> symV2ExchangeSendSizesScratch;
+    std::vector<int> symV2ExchangeRecvSizesScratch;
+    std::vector<int> symV2ExchangeRecvOffsetsScratch;
+    std::vector<MPI_Request> symV2ExchangeRecvReqsScratch;
+    std::vector<MPI_Request> symV2ExchangeSendReqsScratch;
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<unsigned char> symV2PartnerLSendRowActive;
     std::vector<unsigned char> symV2PartnerLPrepacked;
@@ -700,14 +710,23 @@ struct xLUstruct_t
     void freeRecvBuffers(bool include_u_buffers)
     {
         int nlook = (options != NULL) ? options->num_lookaheads : 0;
+#ifdef HAVE_CUDA
+        const bool pooled_partner_recv =
+            symV2PartnerLHostRecvPoolPinned != NULL;
+#endif
         for (int i = 0; i < nlook; i++)
         {
             superluFreeIfAllocated(LvalRecvBufs[i]);
             if (include_u_buffers)
                 superluFreeIfAllocated(UvalRecvBufs[i]);
 #ifdef HAVE_CUDA
-            if (symV2PartnerLHostRecvPinned &&
-                symPartnerLvalRecvBufs[i] != NULL)
+            if (pooled_partner_recv)
+            {
+                /* All lookahead entries alias the one synchronous scratch pool. */
+                symPartnerLvalRecvBufs[i] = NULL;
+            }
+            else if (symV2PartnerLHostRecvPinned &&
+                     symPartnerLvalRecvBufs[i] != NULL)
             {
                 gpuErrchk(cudaFreeHost(symPartnerLvalRecvBufs[i]));
                 symPartnerLvalRecvBufs[i] = NULL;
@@ -722,6 +741,14 @@ struct xLUstruct_t
                 superluFreeIfAllocated(UidxRecvBufs[i]);
             superluFreeIfAllocated(symPartnerLidxRecvBufs[i]);
         }
+#ifdef HAVE_CUDA
+        if (symV2PartnerLHostRecvPoolPinned != NULL)
+        {
+            gpuErrchk(cudaFreeHost(symV2PartnerLHostRecvPoolPinned));
+            symV2PartnerLHostRecvPoolPinned = NULL;
+        }
+        symV2PartnerLHostRecvPoolPinnedCount = 0;
+#endif
         symV2PartnerLHostRecvPinned = 0;
     }
 

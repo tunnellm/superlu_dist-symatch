@@ -1004,6 +1004,27 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     int_t u_recv_val_count = sym_v2_mode ? 0 : maxUvalCount;
     int_t u_recv_idx_count = sym_v2_mode ? 0 : maxUidxCount;
 
+#ifdef HAVE_CUDA
+    const bool use_sym_v2_pooled_pinned_staging =
+        sym_v2_mode && superlu_acc_offload &&
+        !superlu_cuda_aware_mpi() &&
+        superlu_sym_v2_pinned_staging() &&
+        superlu_sym_v2_pinned_staging_pool();
+    if (use_sym_v2_pooled_pinned_staging &&
+        maxSymPartnerLvalCount > 0 && options->num_lookaheads > 0)
+    {
+        const size_t pooled_recv_bytes = xlu_checked_alloc_bytes(
+            maxSymPartnerLvalCount, sizeof(Ftype),
+            "SymFact V2 pooled pinned receive staging");
+        gpuErrchk(cudaMallocHost(
+            (void **)&symV2PartnerLHostRecvPoolPinned,
+            pooled_recv_bytes));
+        symV2PartnerLHostRecvPoolPinnedCount =
+            static_cast<size_t>(maxSymPartnerLvalCount);
+        symV2PartnerLHostRecvPinned = 1;
+    }
+#endif
+
     for (int i = 0; i < options->num_lookaheads; i++)
     {
         size_t lval_bytes = xlu_checked_alloc_bytes(maxLvalCount, sizeof(Ftype),
@@ -1024,8 +1045,13 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         UvalRecvBufs[i] = uval_bytes ? (Ftype *)SUPERLU_MALLOC(uval_bytes) : NULL;
         symPartnerLvalRecvBufs[i] = NULL;
 #ifdef HAVE_CUDA
-        if (sym_partner_lval_bytes && sym_v2_mode && superlu_acc_offload &&
-            superlu_sym_v2_pinned_staging())
+        if (symV2PartnerLHostRecvPoolPinned != NULL)
+        {
+            symPartnerLvalRecvBufs[i] = symV2PartnerLHostRecvPoolPinned;
+        }
+        else if (sym_partner_lval_bytes && sym_v2_mode &&
+                 superlu_acc_offload &&
+                 superlu_sym_v2_pinned_staging())
         {
             gpuErrchk(cudaMallocHost(
                 (void **)&symPartnerLvalRecvBufs[i], sym_partner_lval_bytes));
@@ -1268,6 +1294,16 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symL2LSendMeta.assign(l2u_slots, std::vector<int_t>());
         symV2PartnerLHostSendBufs.assign(l2u_slots, std::vector<double>());
         symV2PartnerLHostSendBufsPinned.assign(l2u_slots, NULL);
+        symV2PartnerLHostSendScratchOffsets.assign(l2u_slots, 0);
+        symV2ExchangeSendSizesScratch.assign(static_cast<size_t>(Pc), 0);
+        symV2ExchangeRecvSizesScratch.assign(static_cast<size_t>(Pr), 0);
+        symV2ExchangeRecvOffsetsScratch.assign(static_cast<size_t>(Pr), -1);
+        symV2ExchangeRecvReqsScratch.clear();
+        symV2ExchangeRecvReqsScratch.reserve(static_cast<size_t>(Pr));
+        symV2ExchangeSendReqsScratch.clear();
+        symV2ExchangeSendReqsScratch.reserve(xlu_checked_product(
+            static_cast<size_t>(Pr), static_cast<size_t>(Pc),
+            "SymFact V2 pooled MPI request scratch"));
         symV2PartnerLSendSizes.assign(l2u_slots, 0);
         symV2PartnerLSendRowActive.assign(
             xlu_checked_product(l2u_slots, static_cast<size_t>(Pr),
@@ -1435,6 +1471,33 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             }
 
             size_t total_partner_send = 0;
+            size_t max_partner_host_send_scratch = 0;
+            if (superlu_sym_v2_pinned_staging() &&
+                superlu_sym_v2_pinned_staging_pool() &&
+                !superlu_cuda_aware_mpi())
+            {
+                for (int_t lk = 0; lk < local_cols; ++lk)
+                {
+                    size_t panel_scratch_count = 0;
+                    for (int pc = 0; pc < Pc; ++pc)
+                    {
+                        size_t flat = static_cast<size_t>(lk) *
+                                          static_cast<size_t>(Pc) +
+                                      static_cast<size_t>(pc);
+                        symV2PartnerLHostSendScratchOffsets[flat] =
+                            panel_scratch_count;
+                        if (panel_scratch_count >
+                            std::numeric_limits<size_t>::max() -
+                                map_counts[flat])
+                            ABORT("SymFact V2 pooled send staging size overflows.");
+                        panel_scratch_count += map_counts[flat];
+                    }
+                    max_partner_host_send_scratch = SUPERLU_MAX(
+                        max_partner_host_send_scratch,
+                        panel_scratch_count);
+                }
+            }
+
             for (size_t flat = 0; flat < l2u_slots; ++flat)
             {
                 if (map_counts[flat] >
@@ -1452,14 +1515,16 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     static_cast<int>(map_counts[flat]);
                 if (map_counts[flat] > 0)
                 {
-                    if (superlu_sym_v2_pinned_staging())
+                    if (superlu_sym_v2_pinned_staging() &&
+                        !superlu_sym_v2_pinned_staging_pool())
                     {
+                        /* Original R2 mode: one pinned allocation per chunk. */
                         gpuErrchk(cudaMallocHost(
                             (void **)&symV2PartnerLHostSendBufsPinned[flat],
                             xlu_checked_product(map_counts[flat], sizeof(double),
                                                 "SymFact V2 pinned send staging")));
                     }
-                    else
+                    else if (!superlu_sym_v2_pinned_staging())
                     {
                         symV2PartnerLHostSendBufs[flat].resize(map_counts[flat]);
                     }
@@ -1468,6 +1533,32 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     symL2LSendMeta[flat].resize(meta_counts[flat]);
             }
             symV2PartnerLPackedMaps.assign(total_partner_send, 0);
+            if (superlu_sym_v2_pinned_staging() &&
+                superlu_sym_v2_pinned_staging_pool() &&
+                !superlu_cuda_aware_mpi() &&
+                max_partner_host_send_scratch > 0)
+            {
+                gpuErrchk(cudaMallocHost(
+                    (void **)&symV2PartnerLHostSendPoolPinned,
+                    xlu_checked_product(max_partner_host_send_scratch,
+                                        sizeof(double),
+                                        "SymFact V2 pooled pinned send staging")));
+                symV2PartnerLHostSendPoolPinnedCount =
+                    max_partner_host_send_scratch;
+                for (size_t flat = 0; flat < l2u_slots; ++flat)
+                {
+                    if (map_counts[flat] == 0)
+                        continue;
+                    size_t offset =
+                        symV2PartnerLHostSendScratchOffsets[flat];
+                    if (offset + map_counts[flat] >
+                            symV2PartnerLHostSendPoolPinnedCount ||
+                        offset + map_counts[flat] < offset)
+                        ABORT("SymFact V2 pooled send staging map is invalid.");
+                    symV2PartnerLHostSendBufsPinned[flat] =
+                        symV2PartnerLHostSendPoolPinned + offset;
+                }
+            }
 
             std::vector<size_t> map_write_offsets =
                 symV2PartnerLMapOffsets;
@@ -2373,10 +2464,25 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLSendBufsGPU.clear();
     symL2LSendMapsGPU.clear();
     symL2LSendMeta.clear();
-    for (size_t i = 0; i < symV2PartnerLHostSendBufsPinned.size(); ++i)
-        if (symV2PartnerLHostSendBufsPinned[i] != NULL)
-            gpuErrchk(cudaFreeHost(symV2PartnerLHostSendBufsPinned[i]));
+    if (symV2PartnerLHostSendPoolPinned != NULL)
+    {
+        gpuErrchk(cudaFreeHost(symV2PartnerLHostSendPoolPinned));
+        symV2PartnerLHostSendPoolPinned = NULL;
+    }
+    else
+    {
+        for (size_t i = 0; i < symV2PartnerLHostSendBufsPinned.size(); ++i)
+            if (symV2PartnerLHostSendBufsPinned[i] != NULL)
+                gpuErrchk(cudaFreeHost(symV2PartnerLHostSendBufsPinned[i]));
+    }
+    symV2PartnerLHostSendPoolPinnedCount = 0;
     symV2PartnerLHostSendBufsPinned.clear();
+    symV2PartnerLHostSendScratchOffsets.clear();
+    symV2ExchangeSendSizesScratch.clear();
+    symV2ExchangeRecvSizesScratch.clear();
+    symV2ExchangeRecvOffsetsScratch.clear();
+    symV2ExchangeRecvReqsScratch.clear();
+    symV2ExchangeSendReqsScratch.clear();
     symV2PartnerLHostSendBufs.clear();
     symV2PartnerLSendSizes.clear();
     symV2PartnerLSendRowActive.clear();

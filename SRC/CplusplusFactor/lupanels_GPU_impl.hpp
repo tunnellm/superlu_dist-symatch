@@ -528,7 +528,23 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     int_t ksupc = SuperSize(k);
     int tag_ub = symFactTagUb;
     bool cuda_aware = superlu_cuda_aware_mpi();
-    std::vector<int> send_sizes(Pc, 0);
+    const bool pooled_staging =
+        !cuda_aware && superlu_sym_v2_pinned_staging() &&
+        superlu_sym_v2_pinned_staging_pool();
+    std::vector<int> local_send_sizes;
+    std::vector<int> &send_sizes = pooled_staging
+        ? symV2ExchangeSendSizesScratch
+        : local_send_sizes;
+    if (pooled_staging)
+    {
+        if (send_sizes.size() != static_cast<size_t>(Pc))
+            ABORT("SymFact V2 pooled send-size scratch is invalid.");
+        std::fill(send_sizes.begin(), send_sizes.end(), 0);
+    }
+    else
+    {
+        send_sizes.assign(static_cast<size_t>(Pc), 0);
+    }
 
     if (mycol == kcol_)
     {
@@ -704,8 +720,27 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             symV2PartnerLRecvMap.size())
         ABORT("SymFact V2 true symmetric L-fragment receive sizes are missing.");
 
-    std::vector<int> recv_sizes(Pr, 0);
-    std::vector<int> recv_offsets(Pr, -1);
+    std::vector<int> local_recv_sizes;
+    std::vector<int> local_recv_offsets;
+    std::vector<int> &recv_sizes = pooled_staging
+        ? symV2ExchangeRecvSizesScratch
+        : local_recv_sizes;
+    std::vector<int> &recv_offsets = pooled_staging
+        ? symV2ExchangeRecvOffsetsScratch
+        : local_recv_offsets;
+    if (pooled_staging)
+    {
+        if (recv_sizes.size() != static_cast<size_t>(Pr) ||
+            recv_offsets.size() != static_cast<size_t>(Pr))
+            ABORT("SymFact V2 pooled receive scratch is invalid.");
+        std::fill(recv_sizes.begin(), recv_sizes.end(), 0);
+        std::fill(recv_offsets.begin(), recv_offsets.end(), -1);
+    }
+    else
+    {
+        recv_sizes.assign(static_cast<size_t>(Pr), 0);
+        recv_offsets.assign(static_cast<size_t>(Pr), -1);
+    }
     int recv_total = 0;
     for (int pr = 0; pr < Pr; ++pr)
     {
@@ -723,8 +758,16 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     if (recv_total > 0 && A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
         ABORT("SymFact V2 true symmetric L-fragment staging buffer is missing.");
 
-    std::vector<MPI_Request> recv_reqs;
-    std::vector<MPI_Request> send_reqs;
+    std::vector<MPI_Request> local_recv_reqs;
+    std::vector<MPI_Request> local_send_reqs;
+    std::vector<MPI_Request> &recv_reqs = pooled_staging
+        ? symV2ExchangeRecvReqsScratch
+        : local_recv_reqs;
+    std::vector<MPI_Request> &send_reqs = pooled_staging
+        ? symV2ExchangeSendReqsScratch
+        : local_send_reqs;
+    recv_reqs.clear();
+    send_reqs.clear();
     double *recv_host_base = NULL;
     if (!cuda_aware && recv_total > 0)
     {
