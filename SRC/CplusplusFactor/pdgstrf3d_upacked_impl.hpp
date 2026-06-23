@@ -441,6 +441,7 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                                   : SCT->NetSchurUpTimer - SCT->tSchCompUdt3d[ilvl - 1];
         }
         MPI_Barrier(grid3d->comm);
+        printSymV2FrontProbe();
         SCT->pdgstrfTimer = SuperLU_timer_() - SCT->pdgstrfTimer;
 
         return 0;

@@ -119,6 +119,125 @@ static inline int superlu_sym_v2_batch_schur_col_limit(
     return limit;
 }
 
+static inline bool superlu_sym_v2_front_probe_enabled()
+{
+    const char *env = std::getenv("GPU3DV2_FRONT_PROBE");
+    return env != NULL && env[0] != '\0' && std::atoi(env) != 0;
+}
+
+template <typename Ftype>
+void xLUstruct_t<Ftype>::symV2ProbeLLRange(
+    int_t k, xlpanel_t<Ftype> &lpanel,
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    const std::vector<int_t> *frag)
+{
+    if (!superlu_sym_v2_front_probe_enabled() || lpanel.isEmpty())
+        return;
+    const int_t nfrag = (frag != NULL && !frag->empty()) ? (*frag)[0] : 0;
+    for (int_t jj = jSt; jj < jEnd; ++jj)
+    {
+        int_t gj = 0;
+        int_t ncols = 0;
+        const int_t *cols = NULL;
+        if (frag == NULL)
+        {
+            gj = lpanel.gid(jj);
+            ncols = lpanel.nbrow(jj);
+            cols = lpanel.rowList(jj);
+        }
+        else
+        {
+            if (jj < 0 || jj >= nfrag)
+                continue;
+            gj = (*frag)[LPANEL_HEADER_SIZE + jj];
+            const int_t starts = LPANEL_HEADER_SIZE + nfrag;
+            const int_t rows = LPANEL_HEADER_SIZE + 2 * nfrag + 1;
+            const int_t begin = (*frag)[starts + jj];
+            const int_t end = (*frag)[starts + jj + 1];
+            ncols = end - begin;
+            cols = frag->data() + rows + begin;
+        }
+        bool contiguous_cols = ncols > 0;
+        for (int_t c = 1; c < ncols; ++c)
+            if (cols[c] != cols[0] + c)
+                contiguous_cols = false;
+
+        for (int_t ii = iSt; ii < iEnd; ++ii)
+        {
+            const int_t gi = lpanel.gid(ii);
+            if (gi < gj)
+                continue;
+            ++symV2ProbePairs;
+            const int_t lj = symV2PanelIndex(gj);
+            if (lj < 0 || lPanelVec[lj].isEmpty())
+                continue;
+            const int_t li = lPanelVec[lj].find(gi);
+            if (li == GLOBAL_BLOCK_NOT_FOUND)
+                continue;
+            ++symV2ProbePresentPairs;
+
+            const int_t nrows = lpanel.nbrow(ii);
+            const long long flops =
+                2LL * static_cast<long long>(nrows) *
+                static_cast<long long>(ncols) *
+                static_cast<long long>(supersize(k));
+            symV2ProbeFlops += flops;
+
+            bool identical_rows =
+                nrows == lPanelVec[lj].nbrow(li);
+            if (identical_rows)
+            {
+                const int_t *src = lpanel.rowList(ii);
+                const int_t *dst = lPanelVec[lj].rowList(li);
+                for (int_t r = 0; r < nrows; ++r)
+                    if (src[r] != dst[r])
+                    {
+                        identical_rows = false;
+                        break;
+                    }
+            }
+            if (identical_rows && contiguous_cols)
+            {
+                ++symV2ProbeDirectPairs;
+                symV2ProbeDirectFlops += flops;
+            }
+        }
+    }
+}
+
+template <typename Ftype>
+void xLUstruct_t<Ftype>::printSymV2FrontProbe()
+{
+    if (!superlu_sym_v2_front_probe_enabled())
+        return;
+    long long local[5] = {
+        symV2ProbePairs,
+        symV2ProbePresentPairs,
+        symV2ProbeDirectPairs,
+        symV2ProbeFlops,
+        symV2ProbeDirectFlops
+    };
+    long long global[5] = {0, 0, 0, 0, 0};
+    MPI_Reduce(local, global, 5, MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+    if (grid3d->iam == 0)
+    {
+        const double pair_pct = global[1] > 0
+            ? 100.0 * static_cast<double>(global[2]) /
+                  static_cast<double>(global[1])
+            : 0.0;
+        const double flop_pct = global[3] > 0
+            ? 100.0 * static_cast<double>(global[4]) /
+                  static_cast<double>(global[3])
+            : 0.0;
+        std::printf(
+            "SymFact V2 front probe: lower_pairs=%lld present=%lld "
+            "direct_pairs=%lld (%.2f%%) flops=%lld direct_flops=%lld (%.2f%%)\\n",
+            global[0], global[1], global[2], pair_pct,
+            global[3], global[4], flop_pct);
+        std::fflush(stdout);
+    }
+}
+
 size_t getGPUMemPerProcs(MPI_Comm baseCommunicator);
 
 template <typename Ftype>
@@ -1636,6 +1755,8 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemLLGPU(
     if (lStart >= lEnd || jStart >= jEnd || lpanel.isEmpty())
         return 0;
 
+    symV2ProbeLLRange(k, lpanel, lStart, lEnd, jStart, jEnd, NULL);
+
     if (!superlu_sym_v2_batch_schur_enabled())
     {
         for (int_t jSt = jStart; jSt < jEnd; ++jSt)
@@ -1987,6 +2108,9 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemWithLFragmentsGPU(
     fragEnd = SUPERLU_MIN(fragEnd, nfrag);
     if (lStart >= lEnd || fragStart >= fragEnd)
         return 0;
+
+    symV2ProbeLLRange(k, lpanel, lStart, lEnd,
+                      fragStart, fragEnd, &frag);
 
     if (!superlu_sym_v2_batch_schur_enabled())
     {

@@ -378,6 +378,11 @@ struct xLUstruct_t
     int64_t symContract1Accepted = 0;
     int64_t symContract1Fallbacks = 0;
     double symContract1MaxResid = 0.0;
+    long long symV2ProbePairs = 0;
+    long long symV2ProbePresentPairs = 0;
+    long long symV2ProbeDirectPairs = 0;
+    long long symV2ProbeFlops = 0;
+    long long symV2ProbeDirectFlops = 0;
     std::vector<Ftype *> symV2DiagBlocks;
     std::vector<Ftype *> symV2DiagBlocksGPU;
     enum SymV2SetupProfileId
@@ -449,6 +454,11 @@ struct xLUstruct_t
     };
 
     void printSymV2SetupProfile();
+    void printSymV2FrontProbe();
+    void symV2ProbeLLRange(int_t k, xlpanel_t<Ftype> &lpanel,
+                           int_t iSt, int_t iEnd,
+                           int_t jSt, int_t jEnd,
+                           const std::vector<int_t> *frag);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     enum SymGPU3DTimingId
     {
