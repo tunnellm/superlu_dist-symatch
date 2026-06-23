@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 #include "mpi.h"
 #include "gpuCommon.hpp"
@@ -124,6 +125,124 @@ static inline bool superlu_sym_v2_pinned_staging_pool()
         ABORT("GPU3DV2_PINNED_STAGING_POOL must be a boolean value.");
     cached = parsed;
     return cached != 0;
+}
+
+static inline bool superlu_sym_v2_tiny_aggregate()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_TINY_AGGREGATE");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_TINY_AGGREGATE must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline size_t superlu_sym_v2_tiny_aggregate_bytes()
+{
+    static size_t cached = 0;
+    if (cached != 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_TINY_AGG_BYTES");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 64u * 1024u;
+        return cached;
+    }
+    char *end = NULL;
+    unsigned long long value = std::strtoull(env, &end, 10);
+    if (end == env || *end != '\0' || value < sizeof(double) ||
+        value > static_cast<unsigned long long>(
+            std::numeric_limits<size_t>::max()))
+        ABORT("GPU3DV2_TINY_AGG_BYTES must be a positive byte count.");
+    cached = static_cast<size_t>(value);
+    return cached;
+}
+
+static inline size_t superlu_sym_v2_tiny_aggregate_total_bytes()
+{
+    static size_t cached = 0;
+    if (cached != 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_TINY_AGG_TOTAL_BYTES");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 256u * 1024u;
+        return cached;
+    }
+    char *end = NULL;
+    unsigned long long value = std::strtoull(env, &end, 10);
+    if (end == env || *end != '\0' || value < sizeof(double) ||
+        value > static_cast<unsigned long long>(
+            std::numeric_limits<size_t>::max()))
+        ABORT("GPU3DV2_TINY_AGG_TOTAL_BYTES must be a positive byte count.");
+    cached = static_cast<size_t>(value);
+    return cached;
+}
+
+static inline int superlu_sym_v2_tiny_aggregate_min_messages()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_TINY_AGG_MIN_MESSAGES");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 4;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 1 || value > 2147483647L)
+        ABORT("GPU3DV2_TINY_AGG_MIN_MESSAGES must be a positive integer.");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
+static inline bool superlu_sym_v2_large_recv_pipeline()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_LARGE_RECV_PIPELINE");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_LARGE_RECV_PIPELINE must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline size_t superlu_sym_v2_large_recv_bytes()
+{
+    static size_t cached = 0;
+    if (cached != 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_LARGE_RECV_BYTES");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 4u * 1024u * 1024u;
+        return cached;
+    }
+    char *end = NULL;
+    unsigned long long value = std::strtoull(env, &end, 10);
+    if (end == env || *end != '\0' || value < sizeof(double) ||
+        value > static_cast<unsigned long long>(
+            std::numeric_limits<size_t>::max()))
+        ABORT("GPU3DV2_LARGE_RECV_BYTES must be a positive byte count.");
+    cached = static_cast<size_t>(value);
+    return cached;
 }
 
 static inline bool superlu_sym_v2_wpanel_cache()

@@ -747,6 +747,14 @@ struct xLUstruct_t
     std::vector<int> symV2ExchangeRecvOffsetsScratch;
     std::vector<MPI_Request> symV2ExchangeRecvReqsScratch;
     std::vector<MPI_Request> symV2ExchangeSendReqsScratch;
+    std::vector<int> symV2ExchangeRecvPeersScratch;
+    std::vector<int> symV2ExchangeWaitIndicesScratch;
+    std::vector<MPI_Status> symV2ExchangeWaitStatusesScratch;
+    std::vector<unsigned char> symV2TinyAggregateEligible;
+    std::vector<int> symV2TinyAggregateCounts;
+    std::vector<int> symV2TinyAggregateDispls;
+    std::vector<int> symV2TinyAggregateTotals;
+    std::vector<int> symV2TinyAggregateLogicalMessages;
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<unsigned char> symV2PartnerLSendRowActive;
     std::vector<unsigned char> symV2PartnerLPrepacked;
