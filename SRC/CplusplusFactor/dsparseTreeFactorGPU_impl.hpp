@@ -434,8 +434,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                                static_cast<int>(offset));
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
 
-            bool sym_ll_local_2d = (Pr == 1 && Pc == 1);
-            if (!sym_ll_local_2d)
+            bool sym_single_process_row = (Pr == 1);
+            if (!sym_single_process_row)
             {
                 dSymV2LFragmentExchangeGPU(k, offset);
                 SYM_V2_TRACE_SCHED(grid3d, k, "after L-fragment exchange");
@@ -522,6 +522,38 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 symTimingAdd(SYM_GPU3D_T_PANEL_BCAST,
                              SuperLU_timer_() - sym_panel_bcast_t);
 #endif
+            }
+
+            if (Pr == 1 && Pc > 1 && LidxSendCounts[k] > 0)
+            {
+                int_t ksupc = SuperSize(k);
+                if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers) ||
+                    symV2DiagBlocksGPU.size() != static_cast<size_t>(nsupers))
+                    ABORT("SymFact V2 diagonal block vector has invalid size.");
+                if (mycol == sym_panel_root && symV2DiagBlocksGPU[k] == NULL)
+                    ABORT("SymFact V2 device diagonal block is missing on panel root.");
+                if (symV2DiagBlocks[k] == NULL)
+                {
+                    symV2DiagBlocks[k] = (Ftype *)SUPERLU_MALLOC(
+                        xlu_checked_square_alloc_bytes(
+                            ksupc, sizeof(Ftype),
+                            "SymFact V2 diagonal block broadcast"));
+                    if (symV2DiagBlocks[k] == NULL)
+                        ABORT("Malloc fails for SymFact V2 diagonal block broadcast.");
+                }
+                if (symV2DiagBlocksGPU[k] == NULL)
+                {
+                    gpuErrchk(cudaMalloc(
+                        (void **)&symV2DiagBlocksGPU[k],
+                        xlu_checked_square_alloc_bytes(
+                            ksupc, sizeof(Ftype),
+                            "SymFact V2 device diagonal block broadcast")));
+                }
+                superlu_gpu_mpi_bcast(
+                    symV2DiagBlocksGPU[k], symV2DiagBlocks[k],
+                    sizeof(Ftype), static_cast<int>(ksupc * ksupc),
+                    get_mpi_type<Ftype>(), sym_panel_root,
+                    grid3d->rscp.comm);
             }
 
             SCT->tPanelBcast += (SuperLU_timer_() - t0);
@@ -865,7 +897,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             /* L o o k   A h e a d   P a n e l   U p d a t e */
             if (symGPU3DVersion == 2)
             {
-                if (Pr == 1 && Pc == 1 && LidxSendCounts[k] > 0)
+                if (Pr == 1 && LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     if (sym_timing_enabled && sym_book_open)
@@ -1031,7 +1063,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             /*proceed with remaining SchurComplement update */
             if (symGPU3DVersion == 2)
             {
-                if (Pr == 1 && Pc == 1 && LidxSendCounts[k] > 0)
+                if (Pr == 1 && LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     if (sym_timing_enabled && sym_book_open)

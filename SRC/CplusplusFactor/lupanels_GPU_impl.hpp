@@ -353,6 +353,32 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
         ABORT("GPU3DVERSION=2 raw L-fragment prepack requires GPU offload.");
     if (k < 0 || k >= nsupers || mycol != symV2PanelRoot(k))
         return 0;
+    if (Pr <= 1)
+    {
+        int_t lk = symV2PanelIndex(k);
+        if (lk < 0)
+            return 0;
+        xlpanel_t<double> &lpanel = lPanelVec[lk];
+        if (!lpanel.isEmpty() && superlu_sym_v2_wpanel_cache())
+        {
+            if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
+                stream_offset = 0;
+            if (static_cast<size_t>(stream_offset) >= symV2RawPanelNodes.size())
+                ABORT("SymFact V2 W-panel ring is not initialized.");
+            if (A_gpu.symV2RawPanelBufs[stream_offset] == NULL ||
+                A_gpu.symV2RawPanelReadyEvents[stream_offset] == NULL)
+                ABORT("SymFact V2 W-panel ring is not initialized.");
+            cudaStream_t stream = A_gpu.cuStreams[stream_offset];
+            gpuErrchk(cudaMemcpyAsync(
+                A_gpu.symV2RawPanelBufs[stream_offset], lpanel.gpuPanel.val,
+                static_cast<size_t>(lpanel.nzvalSize()) * sizeof(double),
+                cudaMemcpyDeviceToDevice, stream));
+            gpuErrchk(cudaEventRecord(
+                A_gpu.symV2RawPanelReadyEvents[stream_offset], stream));
+            symV2RawPanelNodes[stream_offset] = k;
+        }
+        return 0;
+    }
     if (symV2PartnerLSendBufsGPU.empty() || symL2LSendMapsGPU.empty() ||
         symV2PartnerLSendSizes.empty() ||
         symV2PartnerLSendRowActive.empty() ||
@@ -467,6 +493,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         return 0;
     if (!superlu_acc_offload)
         ABORT("GPU3DVERSION=2 true symmetric mode requires GPU offload.");
+    if (Pr <= 1)
+        return 0;
     if (symV2PartnerLSendBufsGPU.empty() || symL2LSendMapsGPU.empty() ||
         symV2PartnerLHostSendBufs.empty() ||
         symV2PartnerLSendSizes.empty() ||

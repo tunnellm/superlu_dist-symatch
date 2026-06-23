@@ -628,8 +628,16 @@ template <>
 inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
     LUStruct_type<double> *LUstruct)
 {
-    if (options->SymFact != YES || symGPU3DVersion != 2 || Pr <= 1)
+    if (options->SymFact != YES || symGPU3DVersion != 2)
         return 0;
+    if (Pr <= 1)
+    {
+        /* No partner-row fragment exchange is needed with one process row, but
+           the LL Schur path still reuses this buffer as raw-panel workspace. */
+        maxSymPartnerLvalCount = maxLvalCount;
+        maxSymPartnerLidxCount = 0;
+        return 0;
+    }
     SymV2SetupProfileScope profile_scope(
         this, SYM_V2_SETUP_PARTNER_SCRATCH_SIZE);
 
@@ -1361,7 +1369,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after local GPU L2U map setup");
         }
 
-        if (symGPU3DVersion == 2)
+        if (symGPU3DVersion == 2 && Pr > 1)
         {
             double tPartnerSendMapBuild =
                 profile_setup ? SuperLU_timer_() : 0.0;
@@ -1679,7 +1687,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 }
             }
         }
-        if (symGPU3DVersion == 2)
+        if (symGPU3DVersion == 2 && Pr > 1)
         {
             double tPartnerSendGPU =
                 profile_setup ? SuperLU_timer_() : 0.0;
@@ -1731,7 +1739,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     SYM_V2_SETUP_PARTNER_SEND_GPU_ALLOC_COPY,
                     SuperLU_timer_() - tPartnerSendGPU);
         }
-        if (symGPU3DVersion == 2)
+        if (symGPU3DVersion == 2 && Pr > 1)
         {
             double tPartnerRecvCount =
                 profile_setup ? SuperLU_timer_() : 0.0;
