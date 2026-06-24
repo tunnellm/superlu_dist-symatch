@@ -434,6 +434,9 @@ struct xLUstructGPU_t
     Ftype* UvalRecvBufs[MAX_CUDA_STREAMS];
     Ftype* symPartnerLvalRecvBufs[MAX_CUDA_STREAMS];
     Ftype* symPartnerLStageBufs[MAX_CUDA_STREAMS];
+    Ftype* symV2RowFragStageBufs[MAX_CUDA_STREAMS];
+    Ftype* symV2RowFragValRecvBufs[MAX_CUDA_STREAMS];
+    int_t* symV2RowFragIdxRecvBufs[MAX_CUDA_STREAMS];
     Ftype* symV2RawPanelBufs[MAX_CUDA_STREAMS];
     cudaEvent_t symV2RawPanelReadyEvents[MAX_CUDA_STREAMS];
     int_t* LidxRecvBufs[MAX_CUDA_STREAMS];

@@ -394,6 +394,7 @@ struct xLUstruct_t
     long long symV2ProbeFlops = 0;
     long long symV2ProbeDirectFlops = 0;
     std::vector<Ftype *> symV2DiagBlocks;
+    std::vector<Ftype *> symV2InvDiagBlocks;
     std::vector<Ftype *> symV2DiagBlocksGPU;
     enum SymV2SetupProfileId
     {
@@ -730,17 +731,22 @@ struct xLUstruct_t
     double *symV2PartnerLSendBufPoolGPU;
     int_t *symL2LSendMapPoolGPU;
     int_t *symV2PartnerLRecvMapPoolGPU;
+    int_t *symV2RowFragRecvMapPoolGPU;
     size_t symV2PartnerLSendBufPoolCount;
     size_t symL2LSendMapPoolCount;
     size_t symV2PartnerLRecvMapPoolCount;
+    size_t symV2RowFragRecvMapPoolCount;
     std::vector<std::vector<int_t> > symL2LSendMeta;
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
     std::vector<double *> symV2PartnerLHostSendBufsPinned;
     double *symV2PartnerLHostSendPoolPinned = NULL;
     Ftype *symV2PartnerLHostRecvPoolPinned = NULL;
+    Ftype *symV2RowFragHostRecvPoolPinned = NULL;
     size_t symV2PartnerLHostSendPoolPinnedCount = 0;
     size_t symV2PartnerLHostRecvPoolPinnedCount = 0;
+    size_t symV2RowFragHostRecvPoolPinnedCount = 0;
     int symV2PartnerLHostRecvPinned = 0;
+    int symV2RowFragHostRecvPinned = 0;
     std::vector<size_t> symV2PartnerLHostSendScratchOffsets;
     std::vector<int> symV2ExchangeSendSizesScratch;
     std::vector<int> symV2ExchangeRecvSizesScratch;
@@ -752,11 +758,17 @@ struct xLUstruct_t
     std::vector<MPI_Status> symV2ExchangeWaitStatusesScratch;
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<unsigned char> symV2PartnerLSendRowActive;
+    std::vector<unsigned char> symV2RowFragSendActive;
     std::vector<unsigned char> symV2PartnerLPrepacked;
     std::vector<int> symV2PartnerLRecvSizes;
     std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
+    std::vector<std::vector<int_t> > symV2PartnerLRecvIndexBySrc;
     std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
     std::vector<int_t *> symV2PartnerLRecvMapsGPU;
+    std::vector<int> symV2RowFragRecvSizes;
+    std::vector<std::vector<int_t> > symV2RowFragRecvIndex;
+    std::vector<std::vector<int_t> > symV2RowFragRecvMap;
+    std::vector<int_t *> symV2RowFragRecvMapsGPU;
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
     std::vector<int_t> symV2RawPanelNodes;
@@ -799,6 +811,7 @@ struct xLUstruct_t
     std::vector<Ftype *> LvalRecvBufs;
     std::vector<Ftype *> UvalRecvBufs;
     std::vector<Ftype *> symPartnerLvalRecvBufs;
+    std::vector<Ftype *> symV2RowFragHostRecvBufs;
     std::vector<int_t *> LidxRecvBufs;
     std::vector<int_t *> UidxRecvBufs;
     std::vector<int_t *> symPartnerLidxRecvBufs;
@@ -861,6 +874,8 @@ struct xLUstruct_t
 #ifdef HAVE_CUDA
         const bool pooled_partner_recv =
             symV2PartnerLHostRecvPoolPinned != NULL;
+        const bool pooled_row_recv =
+            symV2RowFragHostRecvPoolPinned != NULL;
 #endif
         for (int i = 0; i < nlook; i++)
         {
@@ -884,6 +899,28 @@ struct xLUstruct_t
             {
                 superluFreeIfAllocated(symPartnerLvalRecvBufs[i]);
             }
+#ifdef HAVE_CUDA
+            if (i < static_cast<int>(symV2RowFragHostRecvBufs.size()))
+            {
+                if (pooled_row_recv)
+                {
+                    symV2RowFragHostRecvBufs[i] = NULL;
+                }
+                else if (symV2RowFragHostRecvPinned &&
+                         symV2RowFragHostRecvBufs[i] != NULL)
+                {
+                    gpuErrchk(cudaFreeHost(symV2RowFragHostRecvBufs[i]));
+                    symV2RowFragHostRecvBufs[i] = NULL;
+                }
+                else
+                {
+                    superluFreeIfAllocated(symV2RowFragHostRecvBufs[i]);
+                }
+            }
+#else
+            if (i < static_cast<int>(symV2RowFragHostRecvBufs.size()))
+                superluFreeIfAllocated(symV2RowFragHostRecvBufs[i]);
+#endif
             superluFreeIfAllocated(LidxRecvBufs[i]);
             if (include_u_buffers)
                 superluFreeIfAllocated(UidxRecvBufs[i]);
@@ -896,8 +933,18 @@ struct xLUstruct_t
             symV2PartnerLHostRecvPoolPinned = NULL;
         }
         symV2PartnerLHostRecvPoolPinnedCount = 0;
+        if (symV2RowFragHostRecvPoolPinned != NULL)
+        {
+            gpuErrchk(cudaFreeHost(symV2RowFragHostRecvPoolPinned));
+            symV2RowFragHostRecvPoolPinned = NULL;
+        }
+        symV2RowFragHostRecvPoolPinnedCount = 0;
 #endif
+#ifdef HAVE_CUDA
         symV2PartnerLHostRecvPinned = 0;
+        symV2RowFragHostRecvPinned = 0;
+#endif
+        symV2RowFragHostRecvBufs.clear();
     }
 
     anc25d_t anc25d;
@@ -995,6 +1042,9 @@ struct xLUstruct_t
         for (size_t i = 0; i < symV2DiagBlocks.size(); ++i)
             if (symV2DiagBlocks[i] != NULL)
                 SUPERLU_FREE(symV2DiagBlocks[i]);
+        for (size_t i = 0; i < symV2InvDiagBlocks.size(); ++i)
+            if (symV2InvDiagBlocks[i] != NULL)
+                SUPERLU_FREE(symV2InvDiagBlocks[i]);
 #ifdef HAVE_CUDA
         for (size_t i = 0; i < symV2DiagBlocksGPU.size(); ++i)
             if (symV2DiagBlocksGPU[i] != NULL)
@@ -1031,6 +1081,15 @@ struct xLUstruct_t
             for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
             {
                 cudaEventDestroy(A_gpu.panelReadyEvents[stream]);
+                if (A_gpu.symV2RowFragStageBufs[stream] != NULL &&
+                    symV2StreamArenaGPU == NULL)
+                    cudaFree(A_gpu.symV2RowFragStageBufs[stream]);
+                if (A_gpu.symV2RowFragValRecvBufs[stream] != NULL &&
+                    symV2StreamArenaGPU == NULL)
+                    cudaFree(A_gpu.symV2RowFragValRecvBufs[stream]);
+                if (A_gpu.symV2RowFragIdxRecvBufs[stream] != NULL &&
+                    symV2StreamArenaGPU == NULL)
+                    cudaFree(A_gpu.symV2RowFragIdxRecvBufs[stream]);
                 if (A_gpu.symV2RawPanelReadyEvents[stream] != NULL)
                     cudaEventDestroy(A_gpu.symV2RawPanelReadyEvents[stream]);
                 if (A_gpu.symV2RawPanelBufs[stream] != NULL &&
@@ -1254,6 +1313,29 @@ struct xLUstruct_t
     int_t dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(
         int streamId,
         int_t k, int_t ex, xlpanel_t<Ftype> &lpanel);
+    int_t dSymSchurCompUpdatePartDualFragmentsGPU(
+        int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+        int_t k,
+        const std::vector<int_t> &row_frag,
+        const std::vector<int_t> &col_frag,
+        int_t *row_frag_index, Ftype *row_frag_val,
+        int_t *col_frag_index, Ftype *col_frag_val,
+        cublasHandle_t handle, cudaStream_t cuStream,
+        Ftype *gemmBuff);
+    int_t dSymSchurCompUpLimitedMemDualFragmentsGPU(
+        int_t rowStart, int_t rowEnd,
+        int_t colStart, int_t colEnd,
+        int_t k,
+        const std::vector<int_t> &row_frag,
+        const std::vector<int_t> &col_frag,
+        int_t *row_frag_index, Ftype *row_frag_val,
+        int_t *col_frag_index, Ftype *col_frag_val,
+        cublasHandle_t handle, cudaStream_t cuStream,
+        Ftype *gemmBuff);
+    int_t dSymLookAheadUpdateDualFragmentsGPU(
+        int streamId, int_t k, int_t laIdx);
+    int_t dSymSchurCompUpdateExcludeOneDualFragmentsGPU(
+        int streamId, int_t k, int_t ex);
     int_t dSymSchurCompUpdatePartLLGPU(
         int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
         int_t k, xlpanel_t<Ftype> &lpanel,

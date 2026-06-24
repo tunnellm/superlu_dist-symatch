@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdio>
 #include <cinttypes>
+#include <climits>
 #include <cstdlib>
 #include "superlu_ddefs.h"
 #include "lupanels.hpp"
@@ -446,6 +447,51 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
 
             bool sym_single_process_row = (Pr == 1);
+            const bool pc_fragment_schur =
+                superlu_sym_v2_pc_fragment_schur();
+            if (!sym_single_process_row && pc_fragment_schur)
+            {
+                if (superlu_cuda_aware_mpi())
+                    ABORT("GPU3DV2_PC_FRAGMENT_SCHUR currently requires non-CUDA-aware MPI for inverse-diagonal row broadcast.");
+                int local_row_frag_need =
+                    (k >= 0 &&
+                     static_cast<size_t>(k) < symV2RowFragRecvIndex.size() &&
+                     !symV2RowFragRecvIndex[static_cast<size_t>(k)].empty())
+                        ? 1
+                        : 0;
+                int row_frag_need = 0;
+                MPI_Allreduce(&local_row_frag_need, &row_frag_need, 1,
+                              MPI_INT, MPI_MAX, grid3d->rscp.comm);
+                if (row_frag_need)
+                {
+                    int_t ksupc = SuperSize(k);
+                    long long diag_count =
+                        static_cast<long long>(ksupc) *
+                        static_cast<long long>(ksupc);
+                    if (diag_count > INT_MAX)
+                        ABORT("SymFact V2 Pc-fragment inverse diagonal broadcast is too large for MPI.");
+                    ensureSymFactWorkSize(diag_count);
+                    int row_rank = -1;
+                    MPI_Comm_rank(grid3d->rscp.comm, &row_rank);
+                    if (row_rank == sym_panel_root)
+                    {
+                        if (symV2InvDiagBlocks.size() !=
+                                static_cast<size_t>(nsupers) ||
+                            symV2InvDiagBlocks[k] == NULL)
+                            ABORT("SymFact V2 Pc-fragment inverse diagonal source block is missing.");
+                        memcpy(symFactWork, symV2InvDiagBlocks[k],
+                               sizeof(Ftype) *
+                                   static_cast<size_t>(diag_count));
+                    }
+                    MPI_Bcast(symFactWork, static_cast<int>(diag_count),
+                              get_mpi_type<Ftype>(), sym_panel_root,
+                              grid3d->rscp.comm);
+                    gpuErrchk(cudaMemcpy(A_gpu.dFBufs[offset], symFactWork,
+                                         sizeof(Ftype) *
+                                             static_cast<size_t>(diag_count),
+                                         cudaMemcpyHostToDevice));
+                }
+            }
             if (!sym_single_process_row)
             {
                 SymV2FactorProfileScope sym_v2_lfrag_scope(
@@ -491,7 +537,9 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 symStatAdd(SYM_GPU3D_S_PANEL_BCASTS);
                 symStatAdd(SYM_GPU3D_S_PANEL_BCAST_BYTES, l_bytes);
 #endif
-                if (grid3d->rscp.Np > 1)
+                if (pc_fragment_schur && !(Pr > 1 && Pc > 1))
+                    ABORT("GPU3DV2_PC_FRAGMENT_SCHUR requires Pr>1 and Pc>1 in this prototype.");
+                if (grid3d->rscp.Np > 1 && !pc_fragment_schur)
                 {
                     SYM_V2_TRACE_SCHED(grid3d, k, "before L panel rscp bcast");
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -929,6 +977,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             /* L o o k   A h e a d   P a n e l   U p d a t e */
             if (symGPU3DVersion == 2)
             {
+                const bool pc_fragment_schur =
+                    superlu_sym_v2_pc_fragment_schur();
                 if (Pr == 1 && LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -943,7 +993,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                     dSymLookAheadUpdateLLGPU(offset, k, k_parent,
                                              k_lpanel);
                 }
-                else if (LidxSendCounts[k] > 0)
+                else if (pc_fragment_schur || LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     if (sym_timing_enabled && sym_book_open)
@@ -1108,6 +1158,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             /*proceed with remaining SchurComplement update */
             if (symGPU3DVersion == 2)
             {
+                const bool pc_fragment_schur =
+                    superlu_sym_v2_pc_fragment_schur();
                 if (Pr == 1 && LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -1123,7 +1175,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                                                        k_parent,
                                                        k_lpanel);
                 }
-                else if (LidxSendCounts[k] > 0)
+                else if (pc_fragment_schur || LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     if (sym_timing_enabled && sym_book_open)
