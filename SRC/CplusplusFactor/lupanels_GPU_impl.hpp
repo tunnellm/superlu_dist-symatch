@@ -542,10 +542,6 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     const bool pooled_staging =
         !cuda_aware && superlu_sym_v2_pinned_staging() &&
         superlu_sym_v2_pinned_staging_pool();
-    const bool tiny_aggregate =
-        superlu_sym_v2_tiny_aggregate() &&
-        static_cast<size_t>(k) < symV2TinyAggregateEligible.size() &&
-        symV2TinyAggregateEligible[static_cast<size_t>(k)] != 0;
     std::vector<int> local_send_sizes;
     std::vector<int> &send_sizes = pooled_staging
         ? symV2ExchangeSendSizesScratch
@@ -757,40 +753,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         recv_offsets.assign(static_cast<size_t>(Pr), -1);
     }
     int recv_total = 0;
-    size_t tiny_plan_base =
-        static_cast<size_t>(k) * static_cast<size_t>(Pr);
-    if (tiny_aggregate &&
-        (tiny_plan_base + static_cast<size_t>(Pr) >
-             symV2TinyAggregateCounts.size() ||
-         tiny_plan_base + static_cast<size_t>(Pr) >
-             symV2TinyAggregateDispls.size() ||
-         static_cast<size_t>(k) >= symV2TinyAggregateTotals.size()))
-        ABORT("SymFact V2 tiny aggregate plan is truncated.");
-
     for (int pr = 0; pr < Pr; ++pr)
     {
         size_t pos = recv_count_base + static_cast<size_t>(pr);
         recv_sizes[pr] = symV2PartnerLRecvSizes[pos];
         int src = PNUM(pr, kcol_, grid);
-        if (tiny_aggregate)
-        {
-            recv_offsets[pr] =
-                symV2TinyAggregateDispls[tiny_plan_base +
-                                         static_cast<size_t>(pr)];
-            if (src != iam && recv_sizes[pr] > 0 &&
-                recv_sizes[pr] !=
-                    symV2TinyAggregateCounts[tiny_plan_base +
-                                             static_cast<size_t>(pr)])
-                ABORT("SymFact V2 tiny aggregate receive count mismatch.");
-        }
-        else if (recv_sizes[pr] > 0 && src != iam)
+        if (recv_sizes[pr] > 0 && src != iam)
         {
             recv_offsets[pr] = recv_total;
             recv_total += recv_sizes[pr];
         }
     }
-    if (tiny_aggregate)
-        recv_total = symV2TinyAggregateTotals[static_cast<size_t>(k)];
     if (recv_total > maxSymPartnerLvalCount)
         ABORT("SymFact V2 true symmetric L-fragment receive exceeds staging buffer.");
     if (recv_total > 0 && A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
@@ -832,38 +805,35 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double recv_post_t = SuperLU_timer_();
 #endif
-    if (!tiny_aggregate)
+    for (int pr = 0; pr < Pr; ++pr)
     {
-        for (int pr = 0; pr < Pr; ++pr)
+        int size = recv_sizes[pr];
+        if (size <= 0)
+            continue;
+        int src = PNUM(pr, kcol_, grid);
+        if (src == iam)
+            continue;
+        MPI_Request req;
+        double *recv_ptr = NULL;
+        long long recv_bytes =
+            static_cast<long long>(size) *
+            static_cast<long long>(sizeof(double));
+        sym_v2_partner_payload_bytes += recv_bytes;
+        symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
+                               recv_bytes);
+        if (cuda_aware)
         {
-            int size = recv_sizes[pr];
-            if (size <= 0)
-                continue;
-            int src = PNUM(pr, kcol_, grid);
-            if (src == iam)
-                continue;
-            MPI_Request req;
-            double *recv_ptr = NULL;
-            long long recv_bytes =
-                static_cast<long long>(size) *
-                static_cast<long long>(sizeof(double));
-            sym_v2_partner_payload_bytes += recv_bytes;
-            symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
-                                   recv_bytes);
-            if (cuda_aware)
-            {
-                recv_ptr = A_gpu.symPartnerLStageBufs[stream_offset] +
-                           recv_offsets[pr];
-            }
-            else
-            {
-                recv_ptr = recv_host_base + recv_offsets[pr];
-            }
-            MPI_Irecv(recv_ptr, size, MPI_DOUBLE, src,
-                      SLU_MPI_TAG(5, k), grid->comm, &req);
-            recv_reqs.push_back(req);
-        recv_request_peers.push_back(pr);
+            recv_ptr = A_gpu.symPartnerLStageBufs[stream_offset] +
+                       recv_offsets[pr];
         }
+        else
+        {
+            recv_ptr = recv_host_base + recv_offsets[pr];
+        }
+        MPI_Irecv(recv_ptr, size, MPI_DOUBLE, src,
+                  SLU_MPI_TAG(5, k), grid->comm, &req);
+        recv_reqs.push_back(req);
+        recv_request_peers.push_back(pr);
     }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     symTimingAdd(SYM_GPU3D_T_LFRAG_RECV_POST,
@@ -875,7 +845,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double send_post_t = SuperLU_timer_();
 #endif
-    if (!tiny_aggregate && mycol == kcol_)
+    if (mycol == kcol_)
     {
         int_t send_lk = symV2PanelIndex(k);
         send_reqs.reserve(static_cast<size_t>(Pr) * static_cast<size_t>(Pc));
@@ -942,99 +912,6 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
 
     bool recv_h2d_issued = false;
-    if (tiny_aggregate)
-    {
-        /* SymFact V2 tiny aggregate transport: one ordered collective replaces
-           the small point-to-point fan-out for this supernode. */
-        if (Pc != 1 || cuda_aware || !pooled_staging || async_factor)
-            ABORT("SymFact V2 tiny aggregate runtime invariants are invalid.");
-        if (recv_total <= 0 || recv_host_base == NULL)
-            ABORT("SymFact V2 tiny aggregate receive pool is missing.");
-
-        int local_send_count =
-            symV2TinyAggregateCounts[tiny_plan_base +
-                                     static_cast<size_t>(myrow)];
-        double *local_send_ptr = NULL;
-        if (local_send_count > 0)
-        {
-            if (mycol != kcol_)
-                ABORT("SymFact V2 tiny aggregate source column is invalid.");
-            int_t send_lk = symV2PanelIndex(k);
-            if (send_lk < 0)
-                ABORT("SymFact V2 tiny aggregate source panel is missing.");
-            size_t flat = static_cast<size_t>(send_lk) *
-                          static_cast<size_t>(Pc);
-            if (flat >= symV2PartnerLSendSizes.size() ||
-                send_sizes[0] != local_send_count)
-                ABORT("SymFact V2 tiny aggregate send count mismatch.");
-            if (flat >= symV2PartnerLHostSendBufsPinned.size() ||
-                symV2PartnerLHostSendBufsPinned[flat] == NULL)
-                ABORT("SymFact V2 tiny aggregate send staging is missing.");
-            local_send_ptr = symV2PartnerLHostSendBufsPinned[flat];
-
-            for (int pr = 0; pr < Pr; ++pr)
-            {
-                size_t active_pos = flat * static_cast<size_t>(Pr) +
-                                    static_cast<size_t>(pr);
-                if (active_pos >= symV2PartnerLSendRowActive.size())
-                    ABORT("SymFact V2 tiny aggregate activity map is truncated.");
-                if (!symV2PartnerLSendRowActive[active_pos] ||
-                    PNUM(pr, 0, grid) == iam)
-                    continue;
-                long long send_bytes =
-                    static_cast<long long>(local_send_count) *
-                    static_cast<long long>(sizeof(double));
-                sym_v2_partner_payload_bytes += send_bytes;
-                symV2PayloadProfileAdd(
-                    SYM_V2_PAYLOAD_PARTNER_MPI_SEND, send_bytes);
-            }
-        }
-
-        for (int pr = 0; pr < Pr; ++pr)
-        {
-            int src = PNUM(pr, kcol_, grid);
-            if (src == iam || recv_sizes[pr] <= 0)
-                continue;
-            long long recv_bytes =
-                static_cast<long long>(recv_sizes[pr]) *
-                static_cast<long long>(sizeof(double));
-            sym_v2_partner_payload_bytes += recv_bytes;
-            symV2PayloadProfileAdd(
-                SYM_V2_PAYLOAD_PARTNER_MPI_RECV, recv_bytes);
-        }
-
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        double tiny_collective_t = SuperLU_timer_();
-#endif
-        double *collective_send_ptr =
-            (local_send_count > 0) ? local_send_ptr : recv_host_base;
-        int mpi_rc = MPI_Allgatherv(
-            collective_send_ptr, local_send_count, MPI_DOUBLE,
-            recv_host_base,
-            &symV2TinyAggregateCounts[tiny_plan_base],
-            &symV2TinyAggregateDispls[tiny_plan_base],
-            MPI_DOUBLE, grid3d->cscp.comm);
-        if (mpi_rc != MPI_SUCCESS)
-            ABORT("SymFact V2 tiny aggregate MPI_Allgatherv failed.");
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        symTimingAdd(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
-                     SuperLU_timer_() - tiny_collective_t);
-#endif
-
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        double tiny_h2d_t = SuperLU_timer_();
-#endif
-        gpuErrchk(cudaMemcpyAsync(
-            A_gpu.symPartnerLStageBufs[stream_offset], recv_host_base,
-            sizeof(double) * static_cast<size_t>(recv_total),
-            cudaMemcpyHostToDevice, stream));
-        recv_h2d_issued = true;
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        symTimingAdd(SYM_GPU3D_T_LFRAG_H2D_STAGE_ISSUE,
-                     SuperLU_timer_() - tiny_h2d_t);
-#endif
-    }
-
     bool pipeline_large_receives = false;
     if (superlu_sym_v2_large_recv_pipeline())
     {
