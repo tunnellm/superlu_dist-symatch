@@ -323,7 +323,12 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
         "partner_call",
         "partner_mpi_send",
         "partner_mpi_recv",
-        "partner_self"
+        "partner_self",
+        "rowfrag_call",
+        "rowfrag_mpi_send",
+        "rowfrag_mpi_recv",
+        "rowfrag_host_staging",
+        "rowfrag_self"
     };
     static const char *payload_bin_labels[SYM_V2_PAYLOAD_BIN_COUNT] = {
         "0",
@@ -761,6 +766,10 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
 {
     if (options->SymFact != YES || symGPU3DVersion != 2)
         return 0;
+    maxSymV2RowFragStageCount = 0;
+    maxSymV2RowFragValRecvCount = 0;
+    maxSymV2RowFragIdxRecvCount = 0;
+    maxSymV2RowFragValSendCount = 0;
     if (Pr <= 1)
     {
         /* No partner-row fragment exchange is needed with one process row, but
@@ -778,11 +787,23 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
     if (partner_count_size >
         static_cast<size_t>(std::numeric_limits<int>::max()))
         ABORT("SymFact V2 partner-L count table is too large for MPI.");
+    size_t row_source_count_size = xlu_checked_product(
+        static_cast<size_t>(nsupers), static_cast<size_t>(Pr),
+        "SymFact V2 row-fragment source count table");
+    if (row_source_count_size >
+        static_cast<size_t>(std::numeric_limits<int>::max()))
+        ABORT("SymFact V2 row-fragment source count table is too large for MPI.");
 
     std::vector<long long> local_partner_val(partner_count_size, 0);
     std::vector<long long> global_partner_val(partner_count_size, 0);
     std::vector<long long> local_partner_meta(partner_count_size, 0);
     std::vector<long long> global_partner_meta(partner_count_size, 0);
+    std::vector<long long> local_row_val(row_source_count_size, 0);
+    std::vector<long long> global_row_val(row_source_count_size, 0);
+    std::vector<long long> local_row_meta(row_source_count_size, 0);
+    std::vector<long long> global_row_meta(row_source_count_size, 0);
+    long long local_row_send_val = 0;
+    long long max_row_send_val = 0;
     (void) LUstruct;
 
     for (int_t i = 0; i < symV2PanelCount(); ++i)
@@ -807,13 +828,21 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
             int_t len = lpanel.nbrow(lb);
             if (len <= 0)
                 continue;
-            size_t pos = static_cast<size_t>(k0) *
-                             static_cast<size_t>(Pc) +
-                         static_cast<size_t>(ikcol);
-            local_partner_val[pos] +=
+            long long block_values =
                 static_cast<long long>(len) *
                 static_cast<long long>(knsupc);
-            local_partner_meta[pos] += static_cast<long long>(len) + 2;
+            size_t col_pos = static_cast<size_t>(k0) *
+                                 static_cast<size_t>(Pc) +
+                             static_cast<size_t>(ikcol);
+            size_t row_pos = static_cast<size_t>(k0) *
+                                 static_cast<size_t>(Pr) +
+                             static_cast<size_t>(myrow);
+            local_partner_val[col_pos] += block_values;
+            local_row_val[row_pos] += block_values;
+            local_partner_meta[col_pos] += static_cast<long long>(len) + 2;
+            local_row_meta[row_pos] += static_cast<long long>(len) + 2;
+            local_row_send_val = SUPERLU_MAX(local_row_send_val,
+                                             block_values);
         }
     }
 
@@ -823,42 +852,69 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
     MPI_Allreduce(local_partner_meta.data(), global_partner_meta.data(),
                   static_cast<int>(partner_count_size), MPI_LONG_LONG,
                   MPI_SUM, grid->comm);
+    MPI_Allreduce(local_row_val.data(), global_row_val.data(),
+                  static_cast<int>(row_source_count_size), MPI_LONG_LONG,
+                  MPI_SUM, grid->comm);
+    MPI_Allreduce(local_row_meta.data(), global_row_meta.data(),
+                  static_cast<int>(row_source_count_size), MPI_LONG_LONG,
+                  MPI_SUM, grid->comm);
+    MPI_Allreduce(&local_row_send_val, &max_row_send_val, 1,
+                  MPI_LONG_LONG, MPI_MAX, grid->comm);
 
-    long long max_partner_val =
-        *std::max_element(global_partner_val.begin(),
-                          global_partner_val.end());
-    long long max_partner_meta =
-        *std::max_element(global_partner_meta.begin(),
-                          global_partner_meta.end());
-    if (superlu_sym_v2_pc_fragment_schur())
+    long long max_partner_val = 0;
+    long long max_partner_meta = 0;
+    long long max_row_val = 0;
+    long long max_row_meta = 0;
+    for (int_t k0 = 0; k0 < nsupers; ++k0)
     {
-        for (int_t k0 = 0; k0 < nsupers; ++k0)
+        for (int pc = 0; pc < Pc; ++pc)
         {
-            long long row_val = 0;
-            long long row_meta = 0;
-            for (int pc = 0; pc < Pc; ++pc)
+            size_t pos = static_cast<size_t>(k0) *
+                             static_cast<size_t>(Pc) +
+                         static_cast<size_t>(pc);
+            max_partner_val =
+                SUPERLU_MAX(max_partner_val, global_partner_val[pos]);
+            max_partner_meta =
+                SUPERLU_MAX(max_partner_meta, global_partner_meta[pos]);
+        }
+        if (superlu_sym_v2_pc_fragment_schur() && Pc > 1)
+        {
+            for (int pr = 0; pr < Pr; ++pr)
             {
                 size_t pos = static_cast<size_t>(k0) *
-                                 static_cast<size_t>(Pc) +
-                             static_cast<size_t>(pc);
-                row_val += global_partner_val[pos];
-                row_meta += global_partner_meta[pos];
+                                 static_cast<size_t>(Pr) +
+                             static_cast<size_t>(pr);
+                max_row_val =
+                    SUPERLU_MAX(max_row_val, global_row_val[pos]);
+                max_row_meta =
+                    SUPERLU_MAX(max_row_meta, global_row_meta[pos]);
             }
-            max_partner_val = SUPERLU_MAX(max_partner_val, row_val);
-            max_partner_meta = SUPERLU_MAX(max_partner_meta, row_meta);
         }
     }
     long long max_partner_idx = (max_partner_meta > 0)
                                     ? max_partner_meta + LPANEL_HEADER_SIZE + 1
                                     : 0;
+    long long max_row_idx = (max_row_meta > 0)
+                                ? max_row_meta + LPANEL_HEADER_SIZE + 1
+                                : 0;
     if (max_partner_val >
             static_cast<long long>(std::numeric_limits<int_t>::max()) ||
         max_partner_idx >
+            static_cast<long long>(std::numeric_limits<int_t>::max()) ||
+        max_row_val >
+            static_cast<long long>(std::numeric_limits<int_t>::max()) ||
+        max_row_idx >
+            static_cast<long long>(std::numeric_limits<int_t>::max()) ||
+        max_row_send_val >
             static_cast<long long>(std::numeric_limits<int_t>::max()))
         ABORT("SymFact V2 partner-L scratch size exceeds int_t range.");
 
     maxSymPartnerLvalCount = static_cast<int_t>(max_partner_val);
     maxSymPartnerLidxCount = static_cast<int_t>(max_partner_idx);
+    maxSymV2RowFragStageCount = static_cast<int_t>(max_row_val);
+    maxSymV2RowFragValRecvCount = static_cast<int_t>(max_row_val);
+    maxSymV2RowFragIdxRecvCount = static_cast<int_t>(max_row_idx);
+    maxSymV2RowFragValSendCount = static_cast<int_t>(max_row_send_val);
     return 0;
 }
 
@@ -985,6 +1041,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxLidxCount = 0;
     maxSymPartnerLvalCount = 0;
     maxSymPartnerLidxCount = 0;
+    maxSymV2RowFragStageCount = 0;
+    maxSymV2RowFragValRecvCount = 0;
+    maxSymV2RowFragIdxRecvCount = 0;
+    maxSymV2RowFragValSendCount = 0;
     maxUvalCount = 0;
     maxUidxCount = 0;
 
@@ -1118,14 +1178,17 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     symV2SetupProfileAdd(SYM_V2_SETUP_SEND_COUNT_EXCHANGE,
                          SuperLU_timer_() - tSetupSendCounts);
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
-    std::printf("[sym-gpu3d-trace] rank %d: constructor counts nsupers=%lld Pr=%lld Pc=%lld numLA=%d maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld maxSymPartnerLval=%lld maxSymPartnerLidx=%lld\n",
+    std::printf("[sym-gpu3d-trace] rank %d: constructor counts nsupers=%lld Pr=%lld Pc=%lld numLA=%d maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld maxSymPartnerLval=%lld maxSymPartnerLidx=%lld maxRowFragStage=%lld maxRowFragVal=%lld maxRowFragIdx=%lld\n",
                 (grid3d != NULL) ? grid3d->iam : -1,
                 (long long)nsupers, (long long)Pr, (long long)Pc,
                 options->num_lookaheads,
                 (long long)maxLvalCount, (long long)maxUvalCount,
                 (long long)maxLidxCount, (long long)maxUidxCount,
                 (long long)maxSymPartnerLvalCount,
-                (long long)maxSymPartnerLidxCount);
+                (long long)maxSymPartnerLidxCount,
+                (long long)maxSymV2RowFragStageCount,
+                (long long)maxSymV2RowFragValRecvCount,
+                (long long)maxSymV2RowFragIdxRecvCount);
     std::fflush(stdout);
 #endif
 
@@ -1167,7 +1230,8 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     int_t u_recv_val_count = sym_v2_mode ? 0 : maxUvalCount;
     int_t u_recv_idx_count = sym_v2_mode ? 0 : maxUidxCount;
     const bool sym_v2_pc_fragment_schur =
-        sym_v2_mode && superlu_sym_v2_pc_fragment_schur();
+        sym_v2_mode && superlu_sym_v2_pc_fragment_schur() &&
+        Pr > 1 && Pc > 1;
 
 #ifdef HAVE_CUDA
     const bool use_sym_v2_pooled_pinned_staging =
@@ -1191,15 +1255,21 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         symV2PartnerLHostRecvPoolPinnedCount =
             static_cast<size_t>(maxSymPartnerLvalCount);
         symV2PartnerLHostRecvPinned = 1;
-        if (sym_v2_pc_fragment_schur)
-        {
-            gpuErrchk(cudaMallocHost(
-                (void **)&symV2RowFragHostRecvPoolPinned,
-                pooled_recv_bytes));
-            symV2RowFragHostRecvPoolPinnedCount =
-                static_cast<size_t>(maxSymPartnerLvalCount);
-            symV2RowFragHostRecvPinned = 1;
-        }
+    }
+    if (use_sym_v2_pooled_pinned_staging &&
+        sym_v2_pc_fragment_schur &&
+        maxSymV2RowFragStageCount > 0 &&
+        options->num_lookaheads > 0)
+    {
+        const size_t pooled_row_recv_bytes = xlu_checked_alloc_bytes(
+            maxSymV2RowFragStageCount, sizeof(Ftype),
+            "SymFact V2 pooled pinned row-fragment receive staging");
+        gpuErrchk(cudaMallocHost(
+            (void **)&symV2RowFragHostRecvPoolPinned,
+            pooled_row_recv_bytes));
+        symV2RowFragHostRecvPoolPinnedCount =
+            static_cast<size_t>(maxSymV2RowFragStageCount);
+        symV2RowFragHostRecvPinned = 1;
     }
 #endif
 
@@ -1212,6 +1282,9 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         size_t sym_partner_lval_bytes =
             xlu_checked_alloc_bytes(maxSymPartnerLvalCount, sizeof(Ftype),
                                     "SymFact V2 partner-L value receive buffer");
+        size_t sym_row_frag_lval_bytes =
+            xlu_checked_alloc_bytes(maxSymV2RowFragStageCount, sizeof(Ftype),
+                                    "SymFact V2 row-fragment host receive buffer");
         size_t lidx_bytes = xlu_checked_alloc_bytes(maxLidxCount, sizeof(int_t),
                                                     "L index receive buffer");
         size_t uidx_bytes = xlu_checked_alloc_bytes(u_recv_idx_count, sizeof(int_t),
@@ -1246,7 +1319,22 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 #ifdef HAVE_CUDA
         if (symV2RowFragHostRecvPoolPinned != NULL)
             symV2RowFragHostRecvBufs[i] = symV2RowFragHostRecvPoolPinned;
+        else if (sym_row_frag_lval_bytes && sym_v2_pc_fragment_schur &&
+                 superlu_acc_offload &&
+                 superlu_sym_v2_pinned_staging())
+        {
+            gpuErrchk(cudaMallocHost(
+                (void **)&symV2RowFragHostRecvBufs[i],
+                sym_row_frag_lval_bytes));
+            symV2RowFragHostRecvPinned = 1;
+        }
+        else
 #endif
+        if (sym_row_frag_lval_bytes && sym_v2_pc_fragment_schur)
+        {
+            symV2RowFragHostRecvBufs[i] =
+                (Ftype *)SUPERLU_MALLOC(sym_row_frag_lval_bytes);
+        }
         LidxRecvBufs[i] = lidx_bytes ? (int_t *)SUPERLU_MALLOC(lidx_bytes) : NULL;
         UidxRecvBufs[i] = uidx_bytes ? (int_t *)SUPERLU_MALLOC(uidx_bytes) : NULL;
         symPartnerLidxRecvBufs[i] =
@@ -1260,8 +1348,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             (sym_partner_lidx_bytes != 0 &&
              symPartnerLidxRecvBufs[i] == NULL) ||
             (sym_v2_pc_fragment_schur &&
-             sym_partner_lval_bytes != 0 &&
-             use_sym_v2_pooled_pinned_staging &&
+             sym_row_frag_lval_bytes != 0 &&
              symV2RowFragHostRecvBufs[i] == NULL))
             ABORT("Malloc fails for panel receive buffers.");
 
@@ -2150,7 +2237,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 static_cast<size_t>(nsupers), static_cast<size_t>(Pr),
                 "SymFact V2 partner-L compact receive count table");
             const bool pc_fragment_schur_setup =
-                superlu_sym_v2_pc_fragment_schur();
+                superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1;
             std::vector<unsigned char> local_receive_demand(compact_count, 0);
             std::vector<std::vector<int_t> > row_blocks_by_panel(nsupers);
             std::vector<std::vector<int_t> > needed_row_blocks_by_panel(nsupers);
@@ -2784,11 +2871,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         static_cast<int_t>(row_blocks[rb].cols.size());
                 int_t row_index_size =
                     LPANEL_HEADER_SIZE + 2 * row_nblocks + 1 + row_nrows;
-                if (row_index_size > maxSymPartnerLidxCount)
+                if (row_index_size > maxSymV2RowFragIdxRecvCount)
                     ABORT("SymFact V2 row-fragment cached index exceeds receive buffer.");
                 if (static_cast<int64_t>(row_nrows) *
                         static_cast<int64_t>(SuperSize(k0)) >
-                    static_cast<int64_t>(maxSymPartnerLvalCount))
+                    static_cast<int64_t>(maxSymV2RowFragValRecvCount))
                     ABORT("SymFact V2 row-fragment cached values exceed receive buffer.");
 
                 std::vector<int_t> &row_index = symV2RowFragRecvIndex[k0];

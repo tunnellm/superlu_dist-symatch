@@ -501,6 +501,11 @@ struct xLUstruct_t
         SYM_V2_PAYLOAD_PARTNER_MPI_SEND,
         SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
         SYM_V2_PAYLOAD_PARTNER_SELF,
+        SYM_V2_PAYLOAD_ROWFRAG_CALL,
+        SYM_V2_PAYLOAD_ROWFRAG_MPI_SEND,
+        SYM_V2_PAYLOAD_ROWFRAG_MPI_RECV,
+        SYM_V2_PAYLOAD_ROWFRAG_HOST_STAGING,
+        SYM_V2_PAYLOAD_ROWFRAG_SELF,
         SYM_V2_PAYLOAD_COUNT
     };
 
@@ -802,6 +807,10 @@ struct xLUstruct_t
     int_t maxLidxCount = 0;
     int_t maxSymPartnerLvalCount = 0;
     int_t maxSymPartnerLidxCount = 0;
+    int_t maxSymV2RowFragStageCount = 0;
+    int_t maxSymV2RowFragValRecvCount = 0;
+    int_t maxSymV2RowFragIdxRecvCount = 0;
+    int_t maxSymV2RowFragValSendCount = 0;
     int_t maxUvalCount = 0;
     int_t maxUidxCount = 0;
     std::vector<Ftype *> diagFactBufs; /* stores diagonal blocks,

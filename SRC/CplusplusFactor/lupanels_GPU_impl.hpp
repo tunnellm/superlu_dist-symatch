@@ -521,6 +521,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     double lfrag_total_t = SuperLU_timer_();
 #endif
     long long sym_v2_partner_payload_bytes = 0;
+    long long sym_v2_rowfrag_payload_bytes = 0;
 
     SYM_V2_TRACE_EXCHANGE(grid3d, k,
                           "enter L-fragment exchange myrow=%d mycol=%d krow=%d kcol=%d Lidx=%d",
@@ -539,11 +540,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     int_t ksupc = SuperSize(k);
     int tag_ub = symFactTagUb;
     bool cuda_aware = superlu_cuda_aware_mpi();
-    const bool pc_fragment_schur = superlu_sym_v2_pc_fragment_schur();
+    const bool pc_fragment_schur =
+        superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1;
     if (pc_fragment_schur)
     {
-        if (!(Pr > 1 && Pc > 1))
-            ABORT("GPU3DV2_PC_FRAGMENT_SCHUR requires Pr>1 and Pc>1.");
         if (cuda_aware)
             ABORT("GPU3DV2_PC_FRAGMENT_SCHUR prototype currently requires SUPERLU_CUDA_AWARE_MPI=0.");
         if (async_factor)
@@ -1186,10 +1186,11 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         int_t row_index_size = row_index.empty()
                                    ? LPANEL_HEADER_SIZE
                                    : static_cast<int_t>(row_index.size());
-        if (row_index_size > maxSymPartnerLidxCount)
+        if (row_index_size > maxSymV2RowFragIdxRecvCount)
             ABORT("SymFact V2 row-fragment index exceeds device buffer.");
         if (A_gpu.symV2RowFragIdxRecvBufs[stream_offset] == NULL ||
-            A_gpu.symV2RowFragValRecvBufs[stream_offset] == NULL)
+            A_gpu.symV2RowFragValRecvBufs[stream_offset] == NULL ||
+            A_gpu.symV2RowFragStageBufs[stream_offset] == NULL)
             ABORT("SymFact V2 row-fragment GPU buffers are missing.");
 
         int_t row_send_lk = symV2PanelIndex(k);
@@ -1299,6 +1300,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                static_cast<long long>(size) *
                                    static_cast<long long>(sizeof(double)));
 #endif
+                    symV2PayloadProfileAdd(
+                        SYM_V2_PAYLOAD_ROWFRAG_HOST_STAGING,
+                        static_cast<long long>(size) *
+                            static_cast<long long>(sizeof(double)));
                     gpuErrchk(cudaMemcpyAsync(
                         host_stage, symV2PartnerLSendBufsGPU[flat],
                         sizeof(double) * static_cast<size_t>(size),
@@ -1357,8 +1362,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     long long send_bytes =
                         static_cast<long long>(size) *
                         static_cast<long long>(sizeof(double));
-                    sym_v2_partner_payload_bytes += send_bytes;
-                    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_SEND,
+                    sym_v2_rowfrag_payload_bytes += send_bytes;
+                    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_MPI_SEND,
                                            send_bytes);
                     MPI_Isend(hostbuf, size, MPI_DOUBLE, pc_dest,
                               SLU_MPI_TAG(5, k), grid3d->rscp.comm, &req);
@@ -1397,7 +1402,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             if (row_nrows <= 0 ||
                 static_cast<int64_t>(row_nrows) *
                         static_cast<int64_t>(ksupc) >
-                    static_cast<int64_t>(maxSymPartnerLvalCount))
+                    static_cast<int64_t>(maxSymV2RowFragValRecvCount))
                 ABORT("SymFact V2 row-fragment value buffer is too small.");
 
             std::vector<int> row_recv_offsets(static_cast<size_t>(Pc), -1);
@@ -1423,7 +1428,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     row_recv_total += count;
                 }
             }
-            if (row_recv_total > maxSymPartnerLvalCount)
+            if (row_recv_total > maxSymV2RowFragStageCount)
                 ABORT("SymFact V2 row-fragment receive exceeds staging buffer.");
             double *row_recv_host_base = NULL;
             std::vector<MPI_Request> row_recv_reqs;
@@ -1448,8 +1453,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     long long recv_bytes =
                         static_cast<long long>(count) *
                         static_cast<long long>(sizeof(double));
-                    sym_v2_partner_payload_bytes += recv_bytes;
-                    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
+                    sym_v2_rowfrag_payload_bytes += recv_bytes;
+                    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_MPI_RECV,
                                            recv_bytes);
                     MPI_Irecv(row_recv_host_base + offset, count, MPI_DOUBLE,
                               row_src_pc, SLU_MPI_TAG(5, k),
@@ -1463,7 +1468,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             if (row_recv_total > 0)
             {
                 gpuErrchk(cudaMemcpyAsync(
-                    A_gpu.symPartnerLStageBufs[stream_offset],
+                    A_gpu.symV2RowFragStageBufs[stream_offset],
                     row_recv_host_base,
                     sizeof(double) * static_cast<size_t>(row_recv_total),
                     cudaMemcpyHostToDevice, stream));
@@ -1505,13 +1510,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                         symV2PartnerLSendSizes[self_flat] != count)
                         ABORT("SymFact V2 row-fragment self L buffer is invalid.");
                     stage = symV2PartnerLSendBufsGPU[self_flat];
+                    long long self_bytes =
+                        static_cast<long long>(count) *
+                        static_cast<long long>(sizeof(double));
+                    sym_v2_rowfrag_payload_bytes += self_bytes;
+                    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_SELF,
+                                           self_bytes);
                 }
                 else
                 {
                     int offset = row_recv_offsets[static_cast<size_t>(pc)];
                     if (offset < 0)
                         ABORT("SymFact V2 row-fragment remote offset is invalid.");
-                    stage = A_gpu.symPartnerLStageBufs[stream_offset] +
+                    stage = A_gpu.symV2RowFragStageBufs[stream_offset] +
                             offset;
                 }
                 sym_lfrag_assemble_kernel<<<pieces, 256, 0, stream>>>(
@@ -1547,6 +1558,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
     symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_CALL,
                            sym_v2_partner_payload_bytes);
+    if (pc_fragment_schur)
+        symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_CALL,
+                               sym_v2_rowfrag_payload_bytes);
     SYM_V2_TRACE_EXCHANGE(grid3d, k, "leave L-fragment exchange");
     return 0;
 }
