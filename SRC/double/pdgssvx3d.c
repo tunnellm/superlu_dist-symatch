@@ -2586,7 +2586,7 @@ if (get_acc_solve()){
 			the Solve data & communication structures, unless a new
 			factorization with Fact == DOFACT or SamePattern is asked for. */
 			{
-				if (use_symldl_solve && !options->IterRefine)
+				if (use_symldl_solve)
 				{
 					if (getenv("GPU3DV2_TRACE")) {
 						fprintf(stderr,

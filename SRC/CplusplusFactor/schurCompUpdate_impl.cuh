@@ -3511,11 +3511,6 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         maxSymPartnerLvalCount)),
-                sizeof(Ftype), "SymFact V2 arena row fragment stage");
-        if (sym_v2_mode && superlu_sym_v2_pc_fragment_schur())
-            offset = superlu_sym_v2_arena_advance(
-                offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                        maxSymPartnerLvalCount)),
                 sizeof(Ftype), "SymFact V2 arena row fragment values");
         if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
             offset = superlu_sym_v2_arena_advance(
@@ -3619,13 +3614,6 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                                 maxSymPartnerLvalCount)),
                 sizeof(Ftype), "SymFact V2 arena partner staging"));
             if (sym_v2_mode && superlu_sym_v2_pc_fragment_schur())
-                A_gpu.symV2RowFragStageBufs[stream] =
-                    static_cast<Ftype *>(take(
-                        static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                        maxSymPartnerLvalCount)),
-                        sizeof(Ftype),
-                        "SymFact V2 arena row fragment stage"));
-            if (sym_v2_mode && superlu_sym_v2_pc_fragment_schur())
                 A_gpu.symV2RowFragValRecvBufs[stream] =
                     static_cast<Ftype *>(take(
                         static_cast<size_t>(SUPERLU_MAX((int_t)1,
@@ -3691,11 +3679,6 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                                  maxSymPartnerLvalCount))));
             if (sym_v2_mode && superlu_sym_v2_pc_fragment_schur())
             {
-                gpuErrchk(cudaMalloc(&A_gpu.symV2RowFragStageBufs[stream],
-                                     sizeof(Ftype) *
-                                         static_cast<size_t>(SUPERLU_MAX(
-                                             (int_t)1,
-                                             maxSymPartnerLvalCount))));
                 gpuErrchk(cudaMalloc(&A_gpu.symV2RowFragValRecvBufs[stream],
                                      sizeof(Ftype) *
                                          static_cast<size_t>(SUPERLU_MAX(

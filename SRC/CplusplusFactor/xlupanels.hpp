@@ -394,7 +394,6 @@ struct xLUstruct_t
     long long symV2ProbeFlops = 0;
     long long symV2ProbeDirectFlops = 0;
     std::vector<Ftype *> symV2DiagBlocks;
-    std::vector<Ftype *> symV2InvDiagBlocks;
     std::vector<Ftype *> symV2DiagBlocksGPU;
     enum SymV2SetupProfileId
     {
@@ -1042,9 +1041,6 @@ struct xLUstruct_t
         for (size_t i = 0; i < symV2DiagBlocks.size(); ++i)
             if (symV2DiagBlocks[i] != NULL)
                 SUPERLU_FREE(symV2DiagBlocks[i]);
-        for (size_t i = 0; i < symV2InvDiagBlocks.size(); ++i)
-            if (symV2InvDiagBlocks[i] != NULL)
-                SUPERLU_FREE(symV2InvDiagBlocks[i]);
 #ifdef HAVE_CUDA
         for (size_t i = 0; i < symV2DiagBlocksGPU.size(); ++i)
             if (symV2DiagBlocksGPU[i] != NULL)

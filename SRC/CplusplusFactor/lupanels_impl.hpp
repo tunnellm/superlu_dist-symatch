@@ -959,7 +959,6 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             if (options->batchCount > 0)
                 ABORT("SymFact GPU3DVERSION=2 does not support batchCount>0 until LDL-native batch sizing is implemented.");
             symV2DiagBlocks.assign(nsupers, NULL);
-            symV2InvDiagBlocks.assign(nsupers, NULL);
 #ifdef HAVE_CUDA
             symV2DiagBlocksGPU.assign(nsupers, NULL);
 #endif
@@ -4879,25 +4878,6 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
     symTimingAdd(SYM_GPU3D_T_DIAG_BCAST, SuperLU_timer_() - sym_bcast_t);
 #endif
 
-    if (symGPU3DVersion == 2 && superlu_sym_v2_pc_fragment_schur() &&
-        mycol == sym_panel_root)
-    {
-        if (symV2InvDiagBlocks.size() != static_cast<size_t>(nsupers))
-            ABORT("SymFact V2 inverse diagonal block vector has invalid size.");
-        if (symV2InvDiagBlocks[k] == NULL)
-        {
-            symV2InvDiagBlocks[k] = (double *)SUPERLU_MALLOC(
-                xlu_checked_square_alloc_bytes(
-                    ksupc, sizeof(double),
-                    "SymFact V2 inverse diagonal block"));
-            if (symV2InvDiagBlocks[k] == NULL)
-                ABORT("Malloc fails for SymFact V2 inverse diagonal block.");
-        }
-        for (int_t j = 0; j < ksupc; ++j)
-            memcpy(&symV2InvDiagBlocks[k][j * ksupc],
-                   &invDiag[j * ksupc], ksupc * sizeof(double));
-    }
-
     if (mycol == sym_panel_root)
     {
         xlpanel_t<double> &lpanel = lPanelVec[symV2PanelIndex(k)];
@@ -4949,8 +4929,7 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(int_t k, int_t handle
                                           ksupc, dInvDiag, ksupc,
                                           A_gpu.lookAheadLGemmBuffer[handle_offset],
                                           lpanel.nzrows());
-            if (symGPU3DVersion == 2 &&
-                !superlu_sym_v2_pc_fragment_schur())
+            if (symGPU3DVersion == 2)
             {
                 gpuErrchk(cudaMemcpyAsync(dInvDiag, symV2DiagBlocks[k],
                                           ksupc * ksupc * sizeof(double),

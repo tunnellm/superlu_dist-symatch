@@ -449,49 +449,6 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             bool sym_single_process_row = (Pr == 1);
             const bool pc_fragment_schur =
                 superlu_sym_v2_pc_fragment_schur();
-            if (!sym_single_process_row && pc_fragment_schur)
-            {
-                if (superlu_cuda_aware_mpi())
-                    ABORT("GPU3DV2_PC_FRAGMENT_SCHUR currently requires non-CUDA-aware MPI for inverse-diagonal row broadcast.");
-                int local_row_frag_need =
-                    (k >= 0 &&
-                     static_cast<size_t>(k) < symV2RowFragRecvIndex.size() &&
-                     !symV2RowFragRecvIndex[static_cast<size_t>(k)].empty())
-                        ? 1
-                        : 0;
-                int row_frag_need = 0;
-                MPI_Allreduce(&local_row_frag_need, &row_frag_need, 1,
-                              MPI_INT, MPI_MAX, grid3d->rscp.comm);
-                if (row_frag_need)
-                {
-                    int_t ksupc = SuperSize(k);
-                    long long diag_count =
-                        static_cast<long long>(ksupc) *
-                        static_cast<long long>(ksupc);
-                    if (diag_count > INT_MAX)
-                        ABORT("SymFact V2 Pc-fragment inverse diagonal broadcast is too large for MPI.");
-                    ensureSymFactWorkSize(diag_count);
-                    int row_rank = -1;
-                    MPI_Comm_rank(grid3d->rscp.comm, &row_rank);
-                    if (row_rank == sym_panel_root)
-                    {
-                        if (symV2InvDiagBlocks.size() !=
-                                static_cast<size_t>(nsupers) ||
-                            symV2InvDiagBlocks[k] == NULL)
-                            ABORT("SymFact V2 Pc-fragment inverse diagonal source block is missing.");
-                        memcpy(symFactWork, symV2InvDiagBlocks[k],
-                               sizeof(Ftype) *
-                                   static_cast<size_t>(diag_count));
-                    }
-                    MPI_Bcast(symFactWork, static_cast<int>(diag_count),
-                              get_mpi_type<Ftype>(), sym_panel_root,
-                              grid3d->rscp.comm);
-                    gpuErrchk(cudaMemcpy(A_gpu.dFBufs[offset], symFactWork,
-                                         sizeof(Ftype) *
-                                             static_cast<size_t>(diag_count),
-                                         cudaMemcpyHostToDevice));
-                }
-            }
             if (!sym_single_process_row)
             {
                 SymV2FactorProfileScope sym_v2_lfrag_scope(

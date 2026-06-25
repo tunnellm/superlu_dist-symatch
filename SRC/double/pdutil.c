@@ -1464,7 +1464,9 @@ int dSymV2SolveInit(superlu_dist_options_t *options, SuperMatrix *A,
                        grid3d, LUstruct->Glu_persist, trf3Dpartition,
                        SOLVEstruct);
 
-    SOLVEstruct->gsmv_comm = NULL;
+    if ( !(SOLVEstruct->gsmv_comm = (pdgsmv_comm_t *)
+           SUPERLU_MALLOC(sizeof(pdgsmv_comm_t))) )
+        ABORT("Malloc fails for gsmv_comm[]");
     SOLVEstruct->A_colind_gsmv = NULL;
     pdgstrs3d_symldl_init_meta(options, A->ncol, nrhs, LUstruct,
                                trf3Dpartition, grid3d, SOLVEstruct);
