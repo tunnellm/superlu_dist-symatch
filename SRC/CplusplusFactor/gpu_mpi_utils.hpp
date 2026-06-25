@@ -202,6 +202,24 @@ static inline bool superlu_sym_v2_pc_fragment_schur()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_hybrid_row_bcast()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_HYBRID_ROW_BCAST");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_HYBRID_ROW_BCAST must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
 static inline bool superlu_sym_v2_row_l_source_pack()
 {
     static int cached = -1;

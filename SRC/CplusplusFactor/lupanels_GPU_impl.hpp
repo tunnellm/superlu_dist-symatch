@@ -541,7 +541,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     int tag_ub = symFactTagUb;
     bool cuda_aware = superlu_cuda_aware_mpi();
     const bool pc_fragment_schur =
-        superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1;
+        symV2UsePcFragmentSchurPanel(k);
     const bool exact_fragment_demand =
         pc_fragment_schur && superlu_sym_v2_exact_fragment_demand();
     const bool exact_partner_fragment_demand =

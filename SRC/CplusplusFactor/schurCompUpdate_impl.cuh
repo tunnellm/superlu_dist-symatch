@@ -2703,7 +2703,7 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateDualFragmentsGPU(
     int streamId, int_t k, int_t laIdx)
 {
-    if (!(superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1))
+    if (!symV2UsePcFragmentSchurPanel(k))
         ABORT("SymFact V2 Pc-fragment lookahead called while disabled.");
     if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
         ABORT("SymFact V2 Pc-fragment metadata is missing.");
@@ -2766,7 +2766,7 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneDualFragmentsGPU(
     int streamId, int_t k, int_t ex)
 {
-    if (!(superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1))
+    if (!symV2UsePcFragmentSchurPanel(k))
         ABORT("SymFact V2 Pc-fragment exclude called while disabled.");
     if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
         ABORT("SymFact V2 Pc-fragment metadata is missing.");
@@ -2818,7 +2818,7 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLFragmentsGPU(
     int streamId,
     int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel)
 {
-    if (superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1)
+    if (symV2UsePcFragmentSchurPanel(k))
         return dSymLookAheadUpdateDualFragmentsGPU(streamId, k, laIdx);
     if (lpanel.isEmpty())
         return 0;
@@ -2895,7 +2895,7 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(
     int streamId,
     int_t k, int_t ex, xlpanel_t<Ftype> &lpanel)
 {
-    if (superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1)
+    if (symV2UsePcFragmentSchurPanel(k))
         return dSymSchurCompUpdateExcludeOneDualFragmentsGPU(streamId, k, ex);
     if (lpanel.isEmpty())
         return 0;

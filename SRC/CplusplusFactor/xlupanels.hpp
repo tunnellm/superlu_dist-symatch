@@ -801,6 +801,7 @@ struct xLUstruct_t
     std::vector<int_t *> symV2RowFragRecvMapsGPU;
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
+    std::vector<unsigned char> symV2UsePcFragmentSchur;
     std::vector<int_t> symV2RawPanelNodes;
     void *symV2LPanelArenaGPU = NULL;
     void *symV2StreamArenaGPU = NULL;
@@ -1394,6 +1395,7 @@ struct xLUstruct_t
     int_t dSymV2ComputePartnerScratchSize(LUStruct_type<Ftype> *LUstruct);
     int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
+    bool symV2UsePcFragmentSchurPanel(int_t k) const;
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);

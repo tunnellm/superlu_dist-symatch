@@ -448,8 +448,7 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
 
             bool sym_single_process_row = (Pr == 1);
             const bool pc_fragment_schur =
-                superlu_sym_v2_pc_fragment_schur() &&
-                Pr > 1 && Pc > 1;
+                symV2UsePcFragmentSchurPanel(k);
             if (!sym_single_process_row)
             {
                 SymV2FactorProfileScope sym_v2_lfrag_scope(
@@ -934,8 +933,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             if (symGPU3DVersion == 2)
             {
                 const bool pc_fragment_schur =
-                    superlu_sym_v2_pc_fragment_schur() &&
-                    Pr > 1 && Pc > 1;
+                    symV2UsePcFragmentSchurPanel(k);
                 if (Pr == 1 && LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -1116,8 +1114,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             if (symGPU3DVersion == 2)
             {
                 const bool pc_fragment_schur =
-                    superlu_sym_v2_pc_fragment_schur() &&
-                    Pr > 1 && Pc > 1;
+                    symV2UsePcFragmentSchurPanel(k);
                 if (Pr == 1 && LidxSendCounts[k] > 0)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING

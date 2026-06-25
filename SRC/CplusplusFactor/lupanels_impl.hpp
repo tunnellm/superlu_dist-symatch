@@ -1627,6 +1627,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symV2RowDirectSendMapsHost.clear();
         symV2PartnerLPrepacked.assign(static_cast<size_t>(local_cols), 0);
         symPanelReadyEventIds.assign(nsupers, -1);
+        symV2UsePcFragmentSchur.assign(
+            static_cast<size_t>(nsupers),
+            (symGPU3DVersion == 2 && Pr > 1 && Pc > 1 &&
+             superlu_sym_v2_pc_fragment_schur())
+                ? 1
+                : 0);
         symDiagPrefetchEventIds.assign(nsupers, -1);
         std::vector<size_t> symV2PartnerLMapOffsets(l2u_slots, 0);
         std::vector<int_t> symV2PartnerLPackedMaps;
@@ -3785,6 +3791,70 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         SYM_V2_SETUP_EXACT_SEND_MAP_BUILD,
                         SuperLU_timer_() - tDirectRowMapBuild);
             }
+
+            if (pc_fragment_schur_setup &&
+                superlu_sym_v2_hybrid_row_bcast())
+            {
+                double ratio =
+                    xlu_env_double("GPU3DV2_HYBRID_ROW_BCAST_RATIO", 0.90);
+                if (ratio <= 0.0)
+                    ABORT("GPU3DV2_HYBRID_ROW_BCAST_RATIO must be positive.");
+                std::vector<long long> local_row_fragment_values(
+                    static_cast<size_t>(nsupers), 0);
+                std::vector<long long> global_row_fragment_values(
+                    static_cast<size_t>(nsupers), 0);
+                for (int_t k0 = 0; k0 < nsupers; ++k0)
+                {
+                    size_t row_recv_base =
+                        static_cast<size_t>(k0) *
+                        static_cast<size_t>(Pc);
+                    for (int pc = 0; pc < Pc; ++pc)
+                    {
+                        size_t pos = row_recv_base + static_cast<size_t>(pc);
+                        if (pos >= symV2RowFragRecvSizes.size())
+                            ABORT("SymFact V2 hybrid row-fragment receive size is missing.");
+                        int count = symV2RowFragRecvSizes[pos];
+                        if (count > 0)
+                            local_row_fragment_values[static_cast<size_t>(k0)] +=
+                                static_cast<long long>(count);
+                    }
+                }
+                MPI_Allreduce(local_row_fragment_values.data(),
+                              global_row_fragment_values.data(),
+                              static_cast<int>(nsupers), MPI_LONG_LONG,
+                              MPI_SUM, grid->comm);
+                for (int_t k0 = 0; k0 < nsupers; ++k0)
+                {
+                    long long full_row_values = 0;
+                    for (int pr = 0; pr < Pr; ++pr)
+                    {
+                        for (int pc = 0; pc < Pc; ++pc)
+                        {
+                            size_t pos =
+                                (static_cast<size_t>(k0) *
+                                     static_cast<size_t>(Pc) +
+                                 static_cast<size_t>(pc)) *
+                                    static_cast<size_t>(Pr) +
+                                static_cast<size_t>(pr);
+                            if (pos >= global_recv_sizes.size())
+                                ABORT("SymFact V2 hybrid row source size is missing.");
+                            if (global_recv_sizes[pos] > 0)
+                                full_row_values +=
+                                    static_cast<long long>(
+                                        global_recv_sizes[pos]);
+                        }
+                    }
+                    full_row_values *= static_cast<long long>(Pc - 1);
+                    long long fragment_values =
+                        global_row_fragment_values[static_cast<size_t>(k0)];
+                    bool use_fragments =
+                        fragment_values > 0 && full_row_values > 0 &&
+                        static_cast<double>(fragment_values) <
+                            ratio * static_cast<double>(full_row_values);
+                    symV2UsePcFragmentSchur[static_cast<size_t>(k0)] =
+                        use_fragments ? 1 : 0;
+                }
+            }
             if (profile_setup)
                 symV2SetupProfileAdd(
                     SYM_V2_SETUP_PARTNER_RECV_MAP_BUILD,
@@ -3879,6 +3949,22 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
     xlu_sym_gpu3d_trace(grid3d, "exit initSymFactWorkspace");
     return 0;
+}
+
+template <typename Ftype>
+bool xLUstruct_t<Ftype>::symV2UsePcFragmentSchurPanel(int_t k) const
+{
+#ifdef HAVE_CUDA
+    if (!(superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1))
+        return false;
+    if (k < 0 || k >= nsupers)
+        return false;
+    if (static_cast<size_t>(k) >= symV2UsePcFragmentSchur.size())
+        return true;
+    return symV2UsePcFragmentSchur[static_cast<size_t>(k)] != 0;
+#else
+    return false;
+#endif
 }
 
 template <>
@@ -4033,6 +4119,7 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2RowFragRecvMapsGPU.clear();
     symL2ULocalMapsGPU.clear();
     symPanelReadyEventIds.clear();
+    symV2UsePcFragmentSchur.clear();
     symV2RawPanelNodes.clear();
     for (size_t i = 0; i < symDiagPrefetchBufs.size(); ++i)
         if (symDiagPrefetchBufs[i] != NULL)
