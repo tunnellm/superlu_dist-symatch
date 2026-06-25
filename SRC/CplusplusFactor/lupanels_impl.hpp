@@ -940,10 +940,18 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 #ifdef HAVE_CUDA
     symV2PartnerLSendBufPoolGPU = NULL;
     symL2LSendMapPoolGPU = NULL;
+    symV2PartnerLExactSendBufPoolGPU = NULL;
+    symV2PartnerLExactSendMapPoolGPU = NULL;
+    symV2RowFragExactSendBufPoolGPU = NULL;
+    symV2RowFragExactSendMapPoolGPU = NULL;
     symV2PartnerLRecvMapPoolGPU = NULL;
     symV2RowFragRecvMapPoolGPU = NULL;
     symV2PartnerLSendBufPoolCount = 0;
     symL2LSendMapPoolCount = 0;
+    symV2PartnerLExactSendBufPoolCount = 0;
+    symV2PartnerLExactSendMapPoolCount = 0;
+    symV2RowFragExactSendBufPoolCount = 0;
+    symV2RowFragExactSendMapPoolCount = 0;
     symV2PartnerLRecvMapPoolCount = 0;
     symV2RowFragRecvMapPoolCount = 0;
 #endif
@@ -1591,6 +1599,24 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             xlu_checked_product(l2u_slots, static_cast<size_t>(Pc),
                                 "SymFact V2 row-fragment send activity"),
             0);
+        size_t partner_exact_slots = xlu_checked_product(
+            l2u_slots, static_cast<size_t>(Pr),
+            "SymFact V2 exact partner-L send slots");
+        size_t row_exact_slots = xlu_checked_product(
+            l2u_slots, static_cast<size_t>(Pc),
+            "SymFact V2 exact row-fragment send slots");
+        symV2PartnerLExactSendSizes.assign(partner_exact_slots, 0);
+        symV2PartnerLExactSendBufsGPU.assign(partner_exact_slots, NULL);
+        symV2PartnerLExactSendMapsGPU.assign(partner_exact_slots, NULL);
+        symV2PartnerLExactHostSendBufs.assign(
+            partner_exact_slots, std::vector<double>());
+        symV2PartnerLExactHostSendBufsPinned.assign(partner_exact_slots, NULL);
+        symV2RowFragExactSendSizes.assign(row_exact_slots, 0);
+        symV2RowFragExactSendBufsGPU.assign(row_exact_slots, NULL);
+        symV2RowFragExactSendMapsGPU.assign(row_exact_slots, NULL);
+        symV2RowFragExactHostSendBufs.assign(
+            row_exact_slots, std::vector<double>());
+        symV2RowFragExactHostSendBufsPinned.assign(row_exact_slots, NULL);
         symV2PartnerLPrepacked.assign(static_cast<size_t>(local_cols), 0);
         symPanelReadyEventIds.assign(nsupers, -1);
         symDiagPrefetchEventIds.assign(nsupers, -1);
@@ -2238,7 +2264,18 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 "SymFact V2 partner-L compact receive count table");
             const bool pc_fragment_schur_setup =
                 superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1;
+            const bool exact_fragment_demand_setup =
+                pc_fragment_schur_setup &&
+                superlu_sym_v2_exact_fragment_demand();
+            const bool exact_partner_fragment_demand_setup =
+                exact_fragment_demand_setup &&
+                superlu_sym_v2_exact_partner_fragment_demand();
+            const bool exact_row_fragment_demand_setup =
+                exact_fragment_demand_setup &&
+                superlu_sym_v2_exact_row_fragment_demand();
             std::vector<unsigned char> local_receive_demand(compact_count, 0);
+            std::vector<std::vector<int_t> >
+                local_partner_block_demand(compact_count);
             std::vector<std::vector<int_t> > row_blocks_by_panel(nsupers);
             std::vector<std::vector<int_t> > needed_row_blocks_by_panel(nsupers);
 
@@ -2317,6 +2354,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     size_t block_pos = meta_pos;
                     size_t block_end =
                         meta_pos + static_cast<size_t>(meta_len);
+                    size_t demand_pos =
+                        static_cast<size_t>(k0) *
+                            static_cast<size_t>(Pr) +
+                        static_cast<size_t>(source_pr);
                     bool demand_chunk = false;
                     if (target_pc == mycol)
                     {
@@ -2332,6 +2373,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 block_pos + static_cast<size_t>(len) >
                                     block_end)
                                 ABORT("SymFact V2 partner-L metadata block has invalid length.");
+                            bool demand_block = false;
                             if (!row_blocks.empty() &&
                                 symV2PanelRoot(gj) == mycol)
                             {
@@ -2351,6 +2393,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                             if (dst_panel.find(*it) !=
                                                 GLOBAL_BLOCK_NOT_FOUND)
                                             {
+                                                demand_block = true;
                                                 demand_chunk = true;
                                                 if (pc_fragment_schur_setup)
                                                     needed_row_blocks_by_panel[k0]
@@ -2360,15 +2403,15 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                     }
                                 }
                             }
+                            if (demand_block &&
+                                exact_partner_fragment_demand_setup)
+                                local_partner_block_demand[demand_pos]
+                                    .push_back(gj);
                             block_pos += static_cast<size_t>(len);
                         }
                     }
                     if (demand_chunk)
                     {
-                        size_t demand_pos =
-                            static_cast<size_t>(k0) *
-                                static_cast<size_t>(Pr) +
-                            static_cast<size_t>(source_pr);
                         local_receive_demand[demand_pos] = 1;
                     }
                     meta_pos = block_end;
@@ -2376,6 +2419,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             }
 
             std::vector<unsigned char> local_row_chunk_demand(table_count, 0);
+            std::vector<std::vector<int_t> > local_row_block_demand(table_count);
             for (int_t k0 = 0; k0 < nsupers; ++k0)
             {
                 std::vector<int_t> &needed =
@@ -2396,6 +2440,31 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             static_cast<size_t>(Pr) +
                         static_cast<size_t>(myrow);
                     local_row_chunk_demand[row_chunk_pos] = 1;
+                    if (exact_row_fragment_demand_setup)
+                        local_row_block_demand[row_chunk_pos]
+                            .push_back(needed[ig]);
+                }
+            }
+            if (exact_partner_fragment_demand_setup)
+            {
+                for (size_t pos = 0; pos < local_partner_block_demand.size(); ++pos)
+                {
+                    std::vector<int_t> &blocks =
+                        local_partner_block_demand[pos];
+                    if (blocks.empty())
+                        continue;
+                    std::sort(blocks.begin(), blocks.end());
+                    blocks.erase(std::unique(blocks.begin(), blocks.end()),
+                                 blocks.end());
+                }
+                for (size_t pos = 0; pos < local_row_block_demand.size(); ++pos)
+                {
+                    std::vector<int_t> &blocks = local_row_block_demand[pos];
+                    if (blocks.empty())
+                        continue;
+                    std::sort(blocks.begin(), blocks.end());
+                    blocks.erase(std::unique(blocks.begin(), blocks.end()),
+                                 blocks.end());
                 }
             }
             std::vector<int_t> local_demand_payload;
@@ -2409,10 +2478,23 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         static_cast<size_t>(pr);
                     if (!local_receive_demand[demand_pos])
                         continue;
+                    if (exact_partner_fragment_demand_setup &&
+                        local_partner_block_demand[demand_pos].empty())
+                        ABORT("SymFact V2 exact partner-L demand has no blocks.");
                     local_demand_payload.push_back(mycol);
                     local_demand_payload.push_back(myrow);
                     local_demand_payload.push_back(k0);
                     local_demand_payload.push_back(pr);
+                    if (exact_partner_fragment_demand_setup)
+                    {
+                        const std::vector<int_t> &blocks =
+                            local_partner_block_demand[demand_pos];
+                        local_demand_payload.push_back(
+                            static_cast<int_t>(blocks.size()));
+                        local_demand_payload.insert(local_demand_payload.end(),
+                                                    blocks.begin(),
+                                                    blocks.end());
+                    }
                 }
             }
             if (local_demand_payload.size() >
@@ -2453,6 +2535,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                            demand_counts.data(), demand_displs.data(),
                            mpi_int_t, grid->comm);
 
+            std::vector<std::vector<int_t> > partner_exact_send_block_gids(
+                symV2PartnerLSendRowActive.size());
             for (size_t pos = 0; pos < all_demand_payload.size();)
             {
                 if (pos + 4 > all_demand_payload.size())
@@ -2461,6 +2545,20 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t dest_pr = all_demand_payload[pos++];
                 int_t k0 = all_demand_payload[pos++];
                 int_t source_pr = all_demand_payload[pos++];
+                int_t block_count = 0;
+                size_t block_pos = pos;
+                if (exact_partner_fragment_demand_setup)
+                {
+                    if (pos >= all_demand_payload.size())
+                        ABORT("SymFact V2 exact partner-L demand payload is truncated.");
+                    block_count = all_demand_payload[pos++];
+                    if (block_count <= 0 ||
+                        pos + static_cast<size_t>(block_count) >
+                            all_demand_payload.size())
+                        ABORT("SymFact V2 exact partner-L demand payload is invalid.");
+                    block_pos = pos;
+                    pos += static_cast<size_t>(block_count);
+                }
                 if (target_pc < 0 || target_pc >= Pc ||
                     dest_pr < 0 || dest_pr >= Pr ||
                     k0 < 0 || k0 >= nsupers ||
@@ -2480,6 +2578,29 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 if (active_pos >= symV2PartnerLSendRowActive.size())
                     ABORT("SymFact V2 partner-L send demand index is invalid.");
                 symV2PartnerLSendRowActive[active_pos] = 1;
+                if (exact_partner_fragment_demand_setup)
+                {
+                    std::vector<int_t> &blocks =
+                        partner_exact_send_block_gids[active_pos];
+                    blocks.insert(blocks.end(),
+                                  all_demand_payload.begin() + block_pos,
+                                  all_demand_payload.begin() + block_pos +
+                                      block_count);
+                }
+            }
+            if (exact_row_fragment_demand_setup)
+            {
+                for (size_t pos = 0;
+                     pos < partner_exact_send_block_gids.size(); ++pos)
+                {
+                    std::vector<int_t> &blocks =
+                        partner_exact_send_block_gids[pos];
+                    if (blocks.empty())
+                        continue;
+                    std::sort(blocks.begin(), blocks.end());
+                    blocks.erase(std::unique(blocks.begin(), blocks.end()),
+                                 blocks.end());
+                }
             }
 
             std::vector<int_t> local_row_demand_payload;
@@ -2494,10 +2615,23 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         static_cast<size_t>(myrow);
                     if (!local_row_chunk_demand[row_chunk_pos])
                         continue;
+                    if (exact_row_fragment_demand_setup &&
+                        local_row_block_demand[row_chunk_pos].empty())
+                        ABORT("SymFact V2 exact row-fragment demand has no blocks.");
                     local_row_demand_payload.push_back(mycol);
                     local_row_demand_payload.push_back(myrow);
                     local_row_demand_payload.push_back(k0);
                     local_row_demand_payload.push_back(pc);
+                    if (exact_row_fragment_demand_setup)
+                    {
+                        const std::vector<int_t> &blocks =
+                            local_row_block_demand[row_chunk_pos];
+                        local_row_demand_payload.push_back(
+                            static_cast<int_t>(blocks.size()));
+                        local_row_demand_payload.insert(
+                            local_row_demand_payload.end(),
+                            blocks.begin(), blocks.end());
+                    }
                 }
             }
             if (local_row_demand_payload.size() >
@@ -2539,6 +2673,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                            row_demand_counts.data(),
                            row_demand_displs.data(), mpi_int_t, grid->comm);
 
+            std::vector<std::vector<int_t> > row_exact_send_block_gids(
+                symV2RowFragSendActive.size());
             for (size_t pos = 0; pos < all_row_demand_payload.size();)
             {
                 if (pos + 4 > all_row_demand_payload.size())
@@ -2547,6 +2683,20 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t dest_pr = all_row_demand_payload[pos++];
                 int_t k0 = all_row_demand_payload[pos++];
                 int_t chunk_pc = all_row_demand_payload[pos++];
+                int_t block_count = 0;
+                size_t block_pos = pos;
+                if (exact_row_fragment_demand_setup)
+                {
+                    if (pos >= all_row_demand_payload.size())
+                        ABORT("SymFact V2 exact row-fragment demand payload is truncated.");
+                    block_count = all_row_demand_payload[pos++];
+                    if (block_count <= 0 ||
+                        pos + static_cast<size_t>(block_count) >
+                            all_row_demand_payload.size())
+                        ABORT("SymFact V2 exact row-fragment demand payload is invalid.");
+                    block_pos = pos;
+                    pos += static_cast<size_t>(block_count);
+                }
                 if (dest_pc < 0 || dest_pc >= Pc ||
                     dest_pr < 0 || dest_pr >= Pr ||
                     k0 < 0 || k0 >= nsupers ||
@@ -2566,6 +2716,28 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 if (active_pos >= symV2RowFragSendActive.size())
                     ABORT("SymFact V2 row-fragment send demand index is invalid.");
                 symV2RowFragSendActive[active_pos] = 1;
+                if (exact_row_fragment_demand_setup)
+                {
+                    std::vector<int_t> &blocks =
+                        row_exact_send_block_gids[active_pos];
+                    blocks.insert(blocks.end(),
+                                  all_row_demand_payload.begin() + block_pos,
+                                  all_row_demand_payload.begin() + block_pos +
+                                      block_count);
+                }
+            }
+            if (exact_row_fragment_demand_setup)
+            {
+                for (size_t pos = 0; pos < row_exact_send_block_gids.size(); ++pos)
+                {
+                    std::vector<int_t> &blocks =
+                        row_exact_send_block_gids[pos];
+                    if (blocks.empty())
+                        continue;
+                    std::sort(blocks.begin(), blocks.end());
+                    blocks.erase(std::unique(blocks.begin(), blocks.end()),
+                                 blocks.end());
+                }
             }
 
             double tPartnerRecvMapBuild =
@@ -2614,6 +2786,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     if (target_pc == mycol &&
                         local_receive_demand[demand_pos])
                     {
+                        const std::vector<int_t> &exact_blocks =
+                            local_partner_block_demand[demand_pos];
                         while (block_pos < block_end)
                         {
                             if (block_pos + 2 > block_end)
@@ -2629,6 +2803,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 all_meta_payload.begin() + block_pos,
                                 all_meta_payload.begin() + block_pos + len);
                             block_pos += static_cast<size_t>(len);
+                            if (exact_partner_fragment_demand_setup &&
+                                !std::binary_search(exact_blocks.begin(),
+                                                    exact_blocks.end(),
+                                                    block.gid))
+                                continue;
                             cached_partner_blocks[k0].push_back(block);
                             size_t recv_pos = static_cast<size_t>(k0) *
                                                   static_cast<size_t>(Pr) +
@@ -2646,6 +2825,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             static_cast<size_t>(myrow);
                         if (local_row_chunk_demand[row_chunk_pos])
                         {
+                            const std::vector<int_t> &exact_blocks =
+                                local_row_block_demand[row_chunk_pos];
                             size_t row_block_pos = meta_pos;
                             while (row_block_pos < block_end)
                             {
@@ -2662,6 +2843,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                     all_meta_payload.begin() + row_block_pos,
                                     all_meta_payload.begin() + row_block_pos + len);
                                 row_block_pos += static_cast<size_t>(len);
+                                if (exact_row_fragment_demand_setup &&
+                                    !std::binary_search(exact_blocks.begin(),
+                                                        exact_blocks.end(),
+                                                        block.gid))
+                                    continue;
                                 cached_row_blocks[k0].push_back(block);
                                 size_t row_recv_pos =
                                     static_cast<size_t>(k0) *
@@ -2698,9 +2884,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                          static_cast<size_t>(Pr) +
                                      static_cast<size_t>(pr);
                     symV2PartnerLRecvSizes[dst_pos] =
-                        local_receive_demand[dst_pos]
-                            ? global_recv_sizes[src_pos]
-                            : 0;
+                        (exact_partner_fragment_demand_setup ||
+                         !local_receive_demand[dst_pos])
+                            ? 0
+                            : global_recv_sizes[src_pos];
                 }
                 for (int pc = 0; pc < Pc; ++pc)
                 {
@@ -2713,9 +2900,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         static_cast<size_t>(k0) * static_cast<size_t>(Pc) +
                         static_cast<size_t>(pc);
                     symV2RowFragRecvSizes[row_dst_pos] =
-                        local_row_chunk_demand[row_src_pos]
-                            ? global_recv_sizes[row_src_pos]
-                            : 0;
+                        (exact_row_fragment_demand_setup ||
+                         !local_row_chunk_demand[row_src_pos])
+                            ? 0
+                            : global_recv_sizes[row_src_pos];
                 }
 
                 std::vector<SymV2CachedPartnerBlock> &blocks =
@@ -2837,10 +3025,21 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             static_cast<long long>(nrows) *
                             static_cast<long long>(SuperSize(k0));
                     }
-                    if (expected_values !=
-                        static_cast<long long>(
-                            symV2PartnerLRecvSizes[recv_pos]))
+                    if (exact_partner_fragment_demand_setup)
+                    {
+                        if (expected_values >
+                            static_cast<long long>(
+                                std::numeric_limits<int>::max()))
+                            ABORT("SymFact V2 exact partner-L receive size is too large.");
+                        symV2PartnerLRecvSizes[recv_pos] =
+                            static_cast<int>(expected_values);
+                    }
+                    else if (expected_values !=
+                             static_cast<long long>(
+                                 symV2PartnerLRecvSizes[recv_pos]))
+                    {
                         ABORT("SymFact V2 partner-L receive map size mismatch.");
+                    }
                 }
 
                 std::vector<SymV2CachedPartnerBlock> &row_blocks =
@@ -2932,11 +3131,196 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             static_cast<long long>(nrows) *
                             static_cast<long long>(SuperSize(k0));
                     }
-                    if (expected_values !=
-                        static_cast<long long>(
-                            symV2RowFragRecvSizes[recv_pos]))
+                    if (exact_row_fragment_demand_setup)
+                    {
+                        if (expected_values >
+                            static_cast<long long>(
+                                std::numeric_limits<int>::max()))
+                            ABORT("SymFact V2 exact row-fragment receive size is too large.");
+                        symV2RowFragRecvSizes[recv_pos] =
+                            static_cast<int>(expected_values);
+                    }
+                    else if (expected_values !=
+                             static_cast<long long>(
+                                 symV2RowFragRecvSizes[recv_pos]))
+                    {
                         ABORT("SymFact V2 row-fragment receive map size mismatch.");
+                    }
                 }
+            }
+            if (exact_partner_fragment_demand_setup ||
+                exact_row_fragment_demand_setup)
+            {
+                auto append_exact_send_map =
+                    [&](size_t flat, const std::vector<int_t> &requested,
+                        std::vector<int_t> &out)
+                {
+                    if (flat >= symL2LSendMeta.size() ||
+                        flat >= symV2PartnerLSendSizes.size() ||
+                        flat >= symV2PartnerLMapOffsets.size())
+                        ABORT("SymFact V2 exact send map source is invalid.");
+                    if (requested.empty())
+                        ABORT("SymFact V2 exact send map has no requested blocks.");
+                    int_t lk = static_cast<int_t>(
+                        flat / static_cast<size_t>(Pc));
+                    int_t k0 = symV2PanelGid(lk);
+                    if (k0 < 0 || k0 >= nsupers)
+                        ABORT("SymFact V2 exact send map has invalid panel.");
+                    int_t ksupc = SuperSize(k0);
+                    const std::vector<int_t> &meta = symL2LSendMeta[flat];
+                    if (meta.empty())
+                        ABORT("SymFact V2 exact send map source metadata is empty.");
+
+                    size_t map_pos = symV2PartnerLMapOffsets[flat];
+                    size_t map_end = map_pos +
+                        static_cast<size_t>(symV2PartnerLSendSizes[flat]);
+                    if (map_end > symV2PartnerLPackedMaps.size() ||
+                        map_end < map_pos)
+                        ABORT("SymFact V2 exact send map source size is invalid.");
+
+                    size_t meta_pos = 0;
+                    while (meta_pos < meta.size())
+                    {
+                        if (meta_pos + 2 > meta.size())
+                            ABORT("SymFact V2 exact send metadata is truncated.");
+                        int_t gid = meta[meta_pos++];
+                        int_t len = meta[meta_pos++];
+                        if (len < 0 ||
+                            meta_pos + static_cast<size_t>(len) > meta.size())
+                            ABORT("SymFact V2 exact send metadata block is invalid.");
+                        size_t value_count = xlu_checked_product(
+                            static_cast<size_t>(len),
+                            static_cast<size_t>(ksupc),
+                            "SymFact V2 exact send map segment");
+                        if (map_pos + value_count > map_end ||
+                            map_pos + value_count < map_pos)
+                            ABORT("SymFact V2 exact send map segment is invalid.");
+                        if (std::binary_search(requested.begin(),
+                                               requested.end(), gid))
+                        {
+                            out.insert(out.end(),
+                                       symV2PartnerLPackedMaps.begin() +
+                                           map_pos,
+                                       symV2PartnerLPackedMaps.begin() +
+                                           map_pos + value_count);
+                        }
+                        map_pos += value_count;
+                        meta_pos += static_cast<size_t>(len);
+                    }
+                    if (map_pos != map_end)
+                        ABORT("SymFact V2 exact send map source size mismatch.");
+                };
+
+                auto build_exact_send_maps =
+                    [&](const std::vector<std::vector<int_t> > &block_gids,
+                        int dest_dim,
+                        std::vector<int> &sizes,
+                        std::vector<double *> &bufs_gpu,
+                        std::vector<int_t *> &maps_gpu,
+                        double **buf_pool_gpu,
+                        int_t **map_pool_gpu,
+                        size_t *buf_pool_count,
+                        size_t *map_pool_count,
+                        std::vector<std::vector<double> > &host_bufs,
+                        std::vector<double *> &host_bufs_pinned,
+                        const char *what)
+                {
+                    if (block_gids.size() != sizes.size() ||
+                        block_gids.size() != bufs_gpu.size() ||
+                        block_gids.size() != maps_gpu.size())
+                        ABORT("SymFact V2 exact send slot table is invalid.");
+                    std::vector<size_t> offsets(block_gids.size(), 0);
+                    std::vector<int_t> packed_maps;
+                    for (size_t slot = 0; slot < block_gids.size(); ++slot)
+                    {
+                        if (block_gids[slot].empty())
+                            continue;
+                        size_t flat = slot / static_cast<size_t>(dest_dim);
+                        std::vector<int_t> exact_map;
+                        append_exact_send_map(flat, block_gids[slot],
+                                              exact_map);
+                        if (exact_map.empty())
+                            ABORT("SymFact V2 exact send demand produced no data.");
+                        if (exact_map.size() >
+                            static_cast<size_t>(std::numeric_limits<int>::max()))
+                            ABORT("SymFact V2 exact send map is too large for MPI.");
+                        offsets[slot] = packed_maps.size();
+                        sizes[slot] = static_cast<int>(exact_map.size());
+                        packed_maps.insert(packed_maps.end(),
+                                           exact_map.begin(), exact_map.end());
+                    }
+
+                    *buf_pool_count = packed_maps.size();
+                    *map_pool_count = packed_maps.size();
+                    if (!packed_maps.empty())
+                    {
+                        gpuErrchk(cudaMalloc(
+                            (void **)buf_pool_gpu,
+                            xlu_checked_product(packed_maps.size(),
+                                                sizeof(double), what)));
+                        gpuErrchk(cudaMalloc(
+                            (void **)map_pool_gpu,
+                            xlu_checked_product(packed_maps.size(),
+                                                sizeof(int_t), what)));
+                        gpuErrchk(cudaMemcpy(
+                            *map_pool_gpu, packed_maps.data(),
+                            sizeof(int_t) * packed_maps.size(),
+                            cudaMemcpyHostToDevice));
+                    }
+
+                    bool use_pinned_host =
+                        !superlu_cuda_aware_mpi() &&
+                        superlu_sym_v2_pinned_staging();
+                    for (size_t slot = 0; slot < sizes.size(); ++slot)
+                    {
+                        if (sizes[slot] <= 0)
+                            continue;
+                        bufs_gpu[slot] = *buf_pool_gpu + offsets[slot];
+                        maps_gpu[slot] = *map_pool_gpu + offsets[slot];
+                        if (superlu_cuda_aware_mpi())
+                            continue;
+                        if (use_pinned_host)
+                        {
+                            gpuErrchk(cudaMallocHost(
+                                (void **)&host_bufs_pinned[slot],
+                                xlu_checked_product(
+                                    static_cast<size_t>(sizes[slot]),
+                                    sizeof(double), what)));
+                        }
+                        else
+                        {
+                            host_bufs[slot].resize(
+                                static_cast<size_t>(sizes[slot]));
+                        }
+                    }
+                };
+
+                if (exact_partner_fragment_demand_setup)
+                    build_exact_send_maps(
+                        partner_exact_send_block_gids, Pr,
+                        symV2PartnerLExactSendSizes,
+                        symV2PartnerLExactSendBufsGPU,
+                        symV2PartnerLExactSendMapsGPU,
+                        &symV2PartnerLExactSendBufPoolGPU,
+                        &symV2PartnerLExactSendMapPoolGPU,
+                        &symV2PartnerLExactSendBufPoolCount,
+                        &symV2PartnerLExactSendMapPoolCount,
+                        symV2PartnerLExactHostSendBufs,
+                        symV2PartnerLExactHostSendBufsPinned,
+                        "SymFact V2 exact partner-L send map");
+                if (exact_row_fragment_demand_setup)
+                    build_exact_send_maps(
+                        row_exact_send_block_gids, Pc,
+                        symV2RowFragExactSendSizes,
+                        symV2RowFragExactSendBufsGPU,
+                        symV2RowFragExactSendMapsGPU,
+                        &symV2RowFragExactSendBufPoolGPU,
+                        &symV2RowFragExactSendMapPoolGPU,
+                        &symV2RowFragExactSendBufPoolCount,
+                        &symV2RowFragExactSendMapPoolCount,
+                        symV2RowFragExactHostSendBufs,
+                        symV2RowFragExactHostSendBufsPinned,
+                        "SymFact V2 exact row-fragment send map");
             }
             if (profile_setup)
                 symV2SetupProfileAdd(
@@ -3084,6 +3468,26 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
             if (symL2LSendMapsGPU[i] != NULL)
                 gpuErrchk(cudaFree(symL2LSendMapsGPU[i]));
     }
+    if (symV2PartnerLExactSendBufPoolGPU != NULL)
+    {
+        gpuErrchk(cudaFree(symV2PartnerLExactSendBufPoolGPU));
+        symV2PartnerLExactSendBufPoolGPU = NULL;
+    }
+    if (symV2PartnerLExactSendMapPoolGPU != NULL)
+    {
+        gpuErrchk(cudaFree(symV2PartnerLExactSendMapPoolGPU));
+        symV2PartnerLExactSendMapPoolGPU = NULL;
+    }
+    if (symV2RowFragExactSendBufPoolGPU != NULL)
+    {
+        gpuErrchk(cudaFree(symV2RowFragExactSendBufPoolGPU));
+        symV2RowFragExactSendBufPoolGPU = NULL;
+    }
+    if (symV2RowFragExactSendMapPoolGPU != NULL)
+    {
+        gpuErrchk(cudaFree(symV2RowFragExactSendMapPoolGPU));
+        symV2RowFragExactSendMapPoolGPU = NULL;
+    }
     if (symV2PartnerLRecvMapPoolGPU != NULL)
     {
         gpuErrchk(cudaFree(symV2PartnerLRecvMapPoolGPU));
@@ -3096,6 +3500,10 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     }
     symV2PartnerLSendBufPoolCount = 0;
     symL2LSendMapPoolCount = 0;
+    symV2PartnerLExactSendBufPoolCount = 0;
+    symV2PartnerLExactSendMapPoolCount = 0;
+    symV2RowFragExactSendBufPoolCount = 0;
+    symV2RowFragExactSendMapPoolCount = 0;
     symV2PartnerLRecvMapPoolCount = 0;
     symV2RowFragRecvMapPoolCount = 0;
     for (size_t i = 0; i < symL2ULocalMapsGPU.size(); ++i)
@@ -3105,6 +3513,10 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symL2USendMapsGPU.clear();
     symV2PartnerLSendBufsGPU.clear();
     symL2LSendMapsGPU.clear();
+    symV2PartnerLExactSendBufsGPU.clear();
+    symV2PartnerLExactSendMapsGPU.clear();
+    symV2RowFragExactSendBufsGPU.clear();
+    symV2RowFragExactSendMapsGPU.clear();
     symL2LSendMeta.clear();
     if (symV2PartnerLHostSendPoolPinned != NULL)
     {
@@ -3119,6 +3531,14 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     }
     symV2PartnerLHostSendPoolPinnedCount = 0;
     symV2PartnerLHostSendBufsPinned.clear();
+    for (size_t i = 0; i < symV2PartnerLExactHostSendBufsPinned.size(); ++i)
+        if (symV2PartnerLExactHostSendBufsPinned[i] != NULL)
+            gpuErrchk(cudaFreeHost(symV2PartnerLExactHostSendBufsPinned[i]));
+    for (size_t i = 0; i < symV2RowFragExactHostSendBufsPinned.size(); ++i)
+        if (symV2RowFragExactHostSendBufsPinned[i] != NULL)
+            gpuErrchk(cudaFreeHost(symV2RowFragExactHostSendBufsPinned[i]));
+    symV2PartnerLExactHostSendBufsPinned.clear();
+    symV2RowFragExactHostSendBufsPinned.clear();
     symV2PartnerLHostSendScratchOffsets.clear();
     symV2ExchangeSendSizesScratch.clear();
     symV2ExchangeRecvSizesScratch.clear();
@@ -3126,7 +3546,11 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2ExchangeRecvReqsScratch.clear();
     symV2ExchangeSendReqsScratch.clear();
     symV2PartnerLHostSendBufs.clear();
+    symV2PartnerLExactHostSendBufs.clear();
+    symV2RowFragExactHostSendBufs.clear();
     symV2PartnerLSendSizes.clear();
+    symV2PartnerLExactSendSizes.clear();
+    symV2RowFragExactSendSizes.clear();
     symV2PartnerLSendRowActive.clear();
     symV2RowFragSendActive.clear();
     symV2PartnerLPrepacked.clear();

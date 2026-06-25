@@ -220,6 +220,60 @@ static inline bool superlu_sym_v2_rowfrag_dest_pack()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_exact_fragment_demand()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_EXACT_FRAGMENT_DEMAND");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_EXACT_FRAGMENT_DEMAND must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline bool superlu_sym_v2_exact_partner_fragment_demand()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_EXACT_PARTNER_FRAGMENT_DEMAND");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_EXACT_PARTNER_FRAGMENT_DEMAND must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline bool superlu_sym_v2_exact_row_fragment_demand()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_EXACT_ROW_FRAGMENT_DEMAND");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 1;
+        return true;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_EXACT_ROW_FRAGMENT_DEMAND must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
 static inline bool superlu_cuda_aware_mpi()
 {
     static int cached = -1;
