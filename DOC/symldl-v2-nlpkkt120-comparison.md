@@ -1032,6 +1032,132 @@ remaining factor-loop bucket is panel broadcast/advance, and about half of that
 is partner-L exchange. Diagonal panel solve is secondary, around 3.4 s max rank
 in the best run. Lookahead update and final sync are small by comparison.
 
+## V2 Pc-Fragment Scratch Split
+
+Recorded: 2026-06-24
+
+Updated SymLDL v2 code commit:
+
+```text
+0401954d Split SymLDL V2 row fragment scratch sizing
+```
+
+This run tested the first low-risk Pc>1 dual-fragment follow-up. The code keeps
+the Pc-fragment Schur candidate behind:
+
+```text
+GPU3DV2_PC_FRAGMENT_SCHUR=1
+```
+
+The change separates partner-column scratch sizing from row-fragment scratch
+sizing and keeps the candidate disabled on Pc=1 shapes. It does not yet include
+exact destination-oriented row-L planning, sparse row-local handshake, hybrid
+full-broadcast/fragment selection, async restoration, or CUDA-aware MPI
+restoration.
+
+The Perlmutter worktree used for this run was isolated from the dirty
+development worktree:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-dual-frag-debug-0401954d
+```
+
+Run directories:
+
+```text
+first job, completed 2x2x2 off/on and 4x2x1 off:
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-dual-frag-debug-0401954d/results/nlpkkt120-pcfrag-debug/54991789-scratchsplit
+
+follow-up job, completed 4x2x1 on and Pc=1 guard:
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-dual-frag-debug-0401954d/results/nlpkkt120-pcfrag-debug/54991965-scratchsplit-rem
+```
+
+Local copies:
+
+```text
+/tmp/superlu-nlpkkt120-pcfrag-debug-54991789
+/tmp/superlu-nlpkkt120-pcfrag-debug-54991965
+```
+
+Common setup:
+
+```text
+matrix: nlpkkt120
+matrix file: /pscratch/sd/m/mtunnell/matrices_large/nlpkkt120/nlpkkt120.i32.bin
+ranks: 4 MPI ranks per node
+threads: 8 OMP threads per rank
+rank order: Z
+lookahead: 32
+RowPerm: MC80
+GPU3DVERSION: 2
+GPU3DCONTRACT: 0
+GPU3DV2_BATCH_SCHUR: 1
+GPU3DV2_LOWER_ENVELOPE: 1
+GPU3DV2_ASYNC_FACTOR: 0
+GPU3DV2_CTA_SCATTER: 0
+GPU3DV2_BATCH_ANCESTOR_REDUCE: 0
+GPU3DV2_PINNED_STAGING: 1
+GPU3DV2_PINNED_STAGING_POOL: 1
+GPU3DV2_PANEL_ARENA: 1
+GPU3DV2_WORKSPACE_ARENA: 1
+GPU3DV2_WPANEL_CACHE: 1
+GPU3DV2_OWNER_AFFINITY: 0.05
+GPU3DV2_FACTOR_TIMING: 1
+GPU3DV2_SYM_SOLVE_GPU: 1
+GPU3DV2_SYM_SOLVE_TIMING: 1
+GPU3DV2_PROFILE: 1
+GPU3DV2_FACTOR_PROFILE: 0
+SUPERLU_CUDA_AWARE_MPI: 0
+SUPERLU_LBS: GD
+SUPERLU_ACC_OFFLOAD: 1
+SUPERLU_BIND_MPI_GPU: 1
+SUPERLU_MAXSUP: 256
+SUPERLU_RELAX: 64
+SUPERLU_MAX_BUFFER_SIZE: 256000000
+SUPERLU_N_GEMM: 6000
+SUPERLU_MPI_PROCESS_PER_GPU: 1
+MPI_PROCESS_PER_GPU: 1
+```
+
+Top-level timing:
+
+| Grid | Nodes | Pc-fragment Schur | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 0 | 33.742 s | 30.02 s | 1.974 s |
+| 2x2x2 | 2 | 1 | 28.830 s | 24.46 s | 1.971 s |
+| 4x2x1 | 2 | 0 | 55.242 s | 51.18 s | 2.693 s |
+| 4x2x1 | 2 | 1 | 49.826 s | 45.08 s | 2.716 s |
+| 2x1x4 | 2 | 1, Pc=1 guard | 18.877 s | 14.64 s | 1.927 s |
+
+Speedup versus Pc-fragment disabled:
+
+| Grid | FACTOR speedup | Factorization_Time speedup | FACTOR reduction |
+|---|---:|---:|---:|
+| 2x2x2 | 1.17x | 1.23x | 14.56% |
+| 4x2x1 | 1.11x | 1.14x | 9.80% |
+
+Correctness:
+
+| Grid | Pc-fragment Schur | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 0 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 2x2x2 | 1 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 4x2x1 | 0 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 4x2x1 | 1 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 2x1x4 | 1, Pc=1 guard | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+
+The first 10-minute debug job timed out while running `4x2x1` with
+`GPU3DV2_PC_FRAGMENT_SCHUR=1`, after factorization had already reached
+`info=0`. A follow-up 15-minute debug job ran only the unfinished
+`4x2x1` candidate and the `2x1x4` Pc=1 guard; both completed cleanly.
+
+Interpretation: this commit turns the earlier `4x2x1` regression into a speedup
+while preserving the stronger `2x2x2` result and leaving the Pc=1 guard clean.
+The remaining optimization work should focus on reducing row-fragment metadata
+and staging costs further: exact destination-oriented row-L planning, sparse
+row-local handshake, hybrid full-broadcast/fragment selection, async
+restoration, and CUDA-aware MPI restoration.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
