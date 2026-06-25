@@ -1170,11 +1170,16 @@ Updated SymLDL v2 code commit:
 
 This run tested a Pc>1 candidate change that packs transformed row-L fragments
 directly into one contiguous payload per destination process column. The path
-still uses the existing coarse row-fragment metadata and stays behind:
+still uses the existing coarse row-fragment metadata and requires:
 
 ```text
 GPU3DV2_PC_FRAGMENT_SCHUR=1
+GPU3DV2_ROWFRAG_DEST_PACK=1
 ```
+
+`GPU3DV2_ROWFRAG_DEST_PACK` defaults to off, so the normal Pc-fragment
+candidate remains the scratch-split transport unless destination packing is
+explicitly enabled.
 
 The Perlmutter worktree remained the isolated debug clone:
 
@@ -1197,6 +1202,7 @@ Local copy:
 Common setup matched the scratch-split debug run above: `nlpkkt120`, 2 GPU
 nodes, 4 ranks per node, 8 OpenMP threads per rank, rank order `Z`, MC80,
 lookahead 32, `GPU3DVERSION=2`, `GPU3DCONTRACT=0`,
+`GPU3DV2_PC_FRAGMENT_SCHUR=1`, `GPU3DV2_ROWFRAG_DEST_PACK=1`,
 `SUPERLU_CUDA_AWARE_MPI=0`, and the same current V2 options.
 
 Top-level timing:
@@ -1231,12 +1237,13 @@ Correctness:
 | 2x1x4 | 1, Pc=1 guard | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
 
 Interpretation: the destination-packed transport is correctness-clean and keeps
-the Pc=1 guard unchanged, but it does not improve timing over the previous
-scratch-split candidate. It reduces row-fragment MPI message granularity, but
-with the current coarse demand metadata it also repacks by destination and
-leaves send-map construction and receive-map construction as significant setup
-costs. The next useful slice is the sparse row-local handshake / exact demand
-plan, followed by the hybrid full-broadcast versus fragment selector.
+the Pc=1 guard unchanged, but it does not improve timing over the default
+scratch-split Pc-fragment candidate. It reduces row-fragment MPI message
+granularity, but with the current coarse demand metadata it also repacks by
+destination and leaves send-map construction and receive-map construction as
+significant setup costs. Keep it opt-in for A/B testing. The next useful slice
+is the sparse row-local handshake / exact demand plan, followed by the hybrid
+full-broadcast versus fragment selector.
 
 ## Incomplete Or Failed Runs
 
