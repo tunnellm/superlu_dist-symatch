@@ -1158,6 +1158,86 @@ and staging costs further: exact destination-oriented row-L planning, sparse
 row-local handshake, hybrid full-broadcast/fragment selection, async
 restoration, and CUDA-aware MPI restoration.
 
+## V2 Destination-Packed Row Fragment Transport
+
+Recorded: 2026-06-24
+
+Updated SymLDL v2 code commit:
+
+```text
+0b9448ba Send SymLDL V2 row fragments by destination
+```
+
+This run tested a Pc>1 candidate change that packs transformed row-L fragments
+directly into one contiguous payload per destination process column. The path
+still uses the existing coarse row-fragment metadata and stays behind:
+
+```text
+GPU3DV2_PC_FRAGMENT_SCHUR=1
+```
+
+The Perlmutter worktree remained the isolated debug clone:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-dual-frag-debug-0401954d
+```
+
+Run directory:
+
+```text
+/pscratch/sd/m/mtunnell/superlu_dist-symatch-dual-frag-debug-0401954d/results/nlpkkt120-direct-row-debug/54992537-direct-row-20260624-210040
+```
+
+Local copy:
+
+```text
+/tmp/superlu-nlpkkt120-direct-row-54992537
+```
+
+Common setup matched the scratch-split debug run above: `nlpkkt120`, 2 GPU
+nodes, 4 ranks per node, 8 OpenMP threads per rank, rank order `Z`, MC80,
+lookahead 32, `GPU3DVERSION=2`, `GPU3DCONTRACT=0`,
+`SUPERLU_CUDA_AWARE_MPI=0`, and the same current V2 options.
+
+Top-level timing:
+
+| Grid | Nodes | Pc-fragment Schur | FACTOR | Factorization_Time | SOLVE |
+|---|---:|---:|---:|---:|---:|
+| 2x2x2 | 2 | 1 | 29.751 s | 25.36 s | 1.972 s |
+| 4x2x1 | 2 | 1 | 50.120 s | 45.39 s | 2.717 s |
+| 2x1x4 | 2 | 1, Pc=1 guard | 18.834 s | 14.64 s | 1.886 s |
+
+Speedup versus the scratch-split Pc-fragment-disabled baselines:
+
+| Grid | FACTOR speedup | Factorization_Time speedup | FACTOR reduction |
+|---|---:|---:|---:|
+| 2x2x2 | 1.13x | 1.18x | 11.83% |
+| 4x2x1 | 1.10x | 1.13x | 9.27% |
+
+Delta versus the previous scratch-split candidate:
+
+| Grid | FACTOR delta | Factorization_Time delta | Interpretation |
+|---|---:|---:|---|
+| 2x2x2 | +0.921 s | +0.90 s | Slower |
+| 4x2x1 | +0.294 s | +0.31 s | Slightly slower |
+| 2x1x4 | -0.043 s | 0.00 s | Noise / unchanged Pc=1 guard |
+
+Correctness:
+
+| Grid | Pc-fragment Schur | Exit | Info | Tiny pivots | sytrf 2x2 pivots | Solution error | Inertia `(pos,neg,zero)` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x2x2 | 1 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 4x2x1 | 1 | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+| 2x1x4 | 1, Pc=1 guard | 0 | 0 | 0 | 0 | 2.273737e-13 | `(1814400, 1728000, 0)` |
+
+Interpretation: the destination-packed transport is correctness-clean and keeps
+the Pc=1 guard unchanged, but it does not improve timing over the previous
+scratch-split candidate. It reduces row-fragment MPI message granularity, but
+with the current coarse demand metadata it also repacks by destination and
+leaves send-map construction and receive-map construction as significant setup
+costs. The next useful slice is the sparse row-local handshake / exact demand
+plan, followed by the hybrid full-broadcast versus fragment selector.
+
 ## Incomplete Or Failed Runs
 
 The following saved runs are not valid timing comparisons:
