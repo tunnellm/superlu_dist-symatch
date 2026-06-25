@@ -2341,9 +2341,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             const bool exact_partner_fragment_demand_setup =
                 exact_fragment_demand_setup &&
                 superlu_sym_v2_exact_partner_fragment_demand();
+            // Post-solve row-L sends intentionally use the coarse aggregated
+            // row-fragment demand to avoid exact/direct maps.
             const bool exact_row_fragment_demand_setup =
                 exact_fragment_demand_setup &&
-                superlu_sym_v2_exact_row_fragment_demand();
+                superlu_sym_v2_exact_row_fragment_demand() &&
+                !superlu_sym_v2_row_l_postsolve_send();
             if (exact_row_fragment_demand_setup &&
                 !superlu_sym_v2_rowfrag_destination_path())
                 ABORT("GPU3DV2_EXACT_ROW_FRAGMENT_DEMAND requires GPU3DV2_ROW_L_SOURCE_PACK=1, GPU3DV2_ROW_L_DIRECT_RECV=1, or GPU3DV2_ROWFRAG_DEST_PACK=1.");
@@ -3560,7 +3563,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             }
 
             if (pc_fragment_schur_setup &&
-                superlu_sym_v2_row_l_direct_recv())
+                superlu_sym_v2_row_l_direct_recv() &&
+                !superlu_sym_v2_row_l_postsolve_send())
             {
                 struct SymV2DirectRowBlock
                 {
@@ -3793,7 +3797,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             }
 
             if (pc_fragment_schur_setup &&
-                superlu_sym_v2_hybrid_row_bcast())
+                superlu_sym_v2_hybrid_row_bcast() &&
+                !superlu_sym_v2_row_l_postsolve_send())
             {
                 double ratio =
                     xlu_env_double("GPU3DV2_HYBRID_ROW_BCAST_RATIO", 0.90);

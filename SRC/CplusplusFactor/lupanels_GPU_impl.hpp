@@ -549,9 +549,11 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         superlu_sym_v2_exact_partner_fragment_demand();
     const bool exact_row_fragment_demand =
         exact_fragment_demand &&
-        superlu_sym_v2_exact_row_fragment_demand();
+        superlu_sym_v2_exact_row_fragment_demand() &&
+        !superlu_sym_v2_row_l_postsolve_send();
     const bool row_l_direct_recv =
-        pc_fragment_schur && superlu_sym_v2_row_l_direct_recv();
+        pc_fragment_schur && superlu_sym_v2_row_l_direct_recv() &&
+        !superlu_sym_v2_row_l_postsolve_send();
     if (pc_fragment_schur)
     {
         if (cuda_aware)
