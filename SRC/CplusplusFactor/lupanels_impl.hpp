@@ -1617,6 +1617,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symV2RowFragExactHostSendBufs.assign(
             row_exact_slots, std::vector<double>());
         symV2RowFragExactHostSendBufsPinned.assign(row_exact_slots, NULL);
+        symV2RowFragExactSendMapsHost.clear();
+        symV2RowFragExactSendMapOffsets.assign(row_exact_slots, 0);
         symV2PartnerLPrepacked.assign(static_cast<size_t>(local_cols), 0);
         symPanelReadyEventIds.assign(nsupers, -1);
         symDiagPrefetchEventIds.assign(nsupers, -1);
@@ -2273,6 +2275,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             const bool exact_row_fragment_demand_setup =
                 exact_fragment_demand_setup &&
                 superlu_sym_v2_exact_row_fragment_demand();
+            if (exact_row_fragment_demand_setup &&
+                !superlu_sym_v2_rowfrag_dest_pack())
+                ABORT("GPU3DV2_EXACT_ROW_FRAGMENT_DEMAND requires GPU3DV2_ROWFRAG_DEST_PACK=1.");
             std::vector<unsigned char> local_receive_demand(compact_count, 0);
             std::vector<std::vector<int_t> >
                 local_partner_block_demand(compact_count);
@@ -2457,6 +2462,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     blocks.erase(std::unique(blocks.begin(), blocks.end()),
                                  blocks.end());
                 }
+            }
+            if (exact_row_fragment_demand_setup)
+            {
                 for (size_t pos = 0; pos < local_row_block_demand.size(); ++pos)
                 {
                     std::vector<int_t> &blocks = local_row_block_demand[pos];
@@ -3295,6 +3303,36 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     }
                 };
 
+                auto build_exact_send_host_maps =
+                    [&](const std::vector<std::vector<int_t> > &block_gids,
+                        int dest_dim, std::vector<int> &sizes,
+                        std::vector<size_t> &offsets,
+                        std::vector<int_t> &packed_maps)
+                {
+                    if (block_gids.size() != sizes.size())
+                        ABORT("SymFact V2 exact send host slot table is invalid.");
+                    offsets.assign(block_gids.size(), 0);
+                    packed_maps.clear();
+                    for (size_t slot = 0; slot < block_gids.size(); ++slot)
+                    {
+                        if (block_gids[slot].empty())
+                            continue;
+                        size_t flat = slot / static_cast<size_t>(dest_dim);
+                        std::vector<int_t> exact_map;
+                        append_exact_send_map(flat, block_gids[slot],
+                                              exact_map);
+                        if (exact_map.empty())
+                            ABORT("SymFact V2 exact send demand produced no data.");
+                        if (exact_map.size() >
+                            static_cast<size_t>(std::numeric_limits<int>::max()))
+                            ABORT("SymFact V2 exact send map is too large for MPI.");
+                        offsets[slot] = packed_maps.size();
+                        sizes[slot] = static_cast<int>(exact_map.size());
+                        packed_maps.insert(packed_maps.end(),
+                                           exact_map.begin(), exact_map.end());
+                    }
+                };
+
                 if (exact_partner_fragment_demand_setup)
                     build_exact_send_maps(
                         partner_exact_send_block_gids, Pr,
@@ -3309,18 +3347,16 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         symV2PartnerLExactHostSendBufsPinned,
                         "SymFact V2 exact partner-L send map");
                 if (exact_row_fragment_demand_setup)
-                    build_exact_send_maps(
+                {
+                    build_exact_send_host_maps(
                         row_exact_send_block_gids, Pc,
                         symV2RowFragExactSendSizes,
-                        symV2RowFragExactSendBufsGPU,
-                        symV2RowFragExactSendMapsGPU,
-                        &symV2RowFragExactSendBufPoolGPU,
-                        &symV2RowFragExactSendMapPoolGPU,
-                        &symV2RowFragExactSendBufPoolCount,
-                        &symV2RowFragExactSendMapPoolCount,
-                        symV2RowFragExactHostSendBufs,
-                        symV2RowFragExactHostSendBufsPinned,
-                        "SymFact V2 exact row-fragment send map");
+                        symV2RowFragExactSendMapOffsets,
+                        symV2RowFragExactSendMapsHost);
+                    symV2RowFragExactSendBufPoolCount = 0;
+                    symV2RowFragExactSendMapPoolCount =
+                        symV2RowFragExactSendMapsHost.size();
+                }
             }
             if (profile_setup)
                 symV2SetupProfileAdd(
@@ -3548,6 +3584,8 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLHostSendBufs.clear();
     symV2PartnerLExactHostSendBufs.clear();
     symV2RowFragExactHostSendBufs.clear();
+    symV2RowFragExactSendMapsHost.clear();
+    symV2RowFragExactSendMapOffsets.clear();
     symV2PartnerLSendSizes.clear();
     symV2PartnerLExactSendSizes.clear();
     symV2RowFragExactSendSizes.clear();

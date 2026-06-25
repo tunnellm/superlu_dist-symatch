@@ -759,6 +759,8 @@ struct xLUstruct_t
     std::vector<double *> symV2PartnerLExactHostSendBufsPinned;
     std::vector<std::vector<double> > symV2RowFragExactHostSendBufs;
     std::vector<double *> symV2RowFragExactHostSendBufsPinned;
+    std::vector<int_t> symV2RowFragExactSendMapsHost;
+    std::vector<size_t> symV2RowFragExactSendMapOffsets;
     double *symV2PartnerLHostSendPoolPinned = NULL;
     Ftype *symV2PartnerLHostRecvPoolPinned = NULL;
     Ftype *symV2RowFragHostRecvPoolPinned = NULL;
@@ -1113,6 +1115,9 @@ struct xLUstruct_t
                 if (A_gpu.symV2RowFragIdxRecvBufs[stream] != NULL &&
                     symV2StreamArenaGPU == NULL)
                     cudaFree(A_gpu.symV2RowFragIdxRecvBufs[stream]);
+                if (A_gpu.symV2RowFragSendMapStageBufs[stream] != NULL &&
+                    symV2StreamArenaGPU == NULL)
+                    cudaFree(A_gpu.symV2RowFragSendMapStageBufs[stream]);
                 if (A_gpu.symV2RawPanelReadyEvents[stream] != NULL)
                     cudaEventDestroy(A_gpu.symV2RawPanelReadyEvents[stream]);
                 if (A_gpu.symV2RawPanelBufs[stream] != NULL &&

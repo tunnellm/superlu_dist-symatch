@@ -562,10 +562,13 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
              symV2PartnerLExactSendMapsGPU.empty()))
             ABORT("GPU3DV2_EXACT_FRAGMENT_DEMAND partner buffers are not allocated.");
         if (exact_row_fragment_demand &&
+            !superlu_sym_v2_rowfrag_dest_pack())
+            ABORT("GPU3DV2_EXACT_ROW_FRAGMENT_DEMAND requires GPU3DV2_ROWFRAG_DEST_PACK=1.");
+        if (exact_row_fragment_demand &&
             (symV2RowFragExactSendSizes.empty() ||
-             symV2RowFragExactSendBufsGPU.empty() ||
-             symV2RowFragExactSendMapsGPU.empty()))
-            ABORT("GPU3DV2_EXACT_FRAGMENT_DEMAND buffers are not allocated.");
+             symV2RowFragExactSendMapOffsets.empty() ||
+             symV2RowFragExactSendMapsHost.empty()))
+            ABORT("GPU3DV2_EXACT_FRAGMENT_DEMAND row maps are not allocated.");
     }
     const bool pooled_staging =
         !cuda_aware && superlu_sym_v2_pinned_staging() &&
@@ -1918,6 +1921,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 ABORT("SymFact V2 row-fragment pack called on a non-source rank.");
             if (A_gpu.symV2RowFragStageBufs[stream_offset] == NULL)
                 ABORT("SymFact V2 row-fragment device staging buffer is missing.");
+            if (exact_row_fragment_demand &&
+                A_gpu.symV2RowFragSendMapStageBufs[stream_offset] == NULL)
+                ABORT("SymFact V2 exact row-fragment map staging buffer is missing.");
 
             std::fill(row_dest_offsets.begin(), row_dest_offsets.end(), -1);
             int total = 0;
@@ -1939,7 +1945,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     continue;
                 if (exact_row_fragment_demand &&
                     (active_pos >= symV2RowFragExactSendSizes.size() ||
-                     active_pos >= symV2RowFragExactSendMapsGPU.size()))
+                     active_pos >= symV2RowFragExactSendMapOffsets.size()))
                     ABORT("SymFact V2 exact row-fragment destination slot is invalid.");
                 int size = exact_row_fragment_demand
                     ? symV2RowFragExactSendSizes[active_pos]
@@ -1974,16 +1980,37 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     static_cast<size_t>(pc_dest);
                 if (exact_row_fragment_demand &&
                     (active_pos >= symV2RowFragExactSendSizes.size() ||
-                     active_pos >= symV2RowFragExactSendMapsGPU.size()))
+                     active_pos >= symV2RowFragExactSendMapOffsets.size()))
                     ABORT("SymFact V2 exact row-fragment destination slot is invalid.");
                 int size = exact_row_fragment_demand
                     ? symV2RowFragExactSendSizes[active_pos]
                     : symV2PartnerLSendSizes[flat];
-                int_t *sendmap = exact_row_fragment_demand
-                    ? symV2RowFragExactSendMapsGPU[active_pos]
-                    : symL2LSendMapsGPU[flat];
-	                if (sendmap == NULL)
-	                    ABORT("SymFact V2 row-fragment send map is missing.");
+                int_t *sendmap = NULL;
+                if (exact_row_fragment_demand)
+                {
+                    if (active_pos >= symV2RowFragExactSendMapOffsets.size())
+                        ABORT("SymFact V2 exact row-fragment destination slot is invalid.");
+                    size_t map_offset =
+                        symV2RowFragExactSendMapOffsets[active_pos];
+                    if (map_offset + static_cast<size_t>(size) >
+                            symV2RowFragExactSendMapsHost.size() ||
+                        map_offset + static_cast<size_t>(size) < map_offset)
+                        ABORT("SymFact V2 exact row-fragment host map is invalid.");
+                    sendmap =
+                        A_gpu.symV2RowFragSendMapStageBufs[stream_offset] +
+                        dst_offset;
+                    gpuErrchk(cudaMemcpyAsync(
+                        sendmap,
+                        symV2RowFragExactSendMapsHost.data() + map_offset,
+                        sizeof(int_t) * static_cast<size_t>(size),
+                        cudaMemcpyHostToDevice, stream));
+                }
+                else
+                {
+                    sendmap = symL2LSendMapsGPU[flat];
+                }
+                if (sendmap == NULL)
+                    ABORT("SymFact V2 row-fragment send map is missing.");
 
                 int threads = 256;
                 int blocks = (size + threads - 1) / threads;

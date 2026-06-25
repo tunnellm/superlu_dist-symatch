@@ -3550,6 +3550,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         maxSymV2RowFragIdxRecvCount)),
                 sizeof(int_t), "SymFact V2 arena row fragment indices");
+        if (sym_v2_pc_fragment_schur)
+            offset = superlu_sym_v2_arena_advance(
+                offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                        maxSymV2RowFragStageCount)),
+                sizeof(int_t), "SymFact V2 arena row fragment send maps");
         if (needGpuDiagFactor)
         {
             offset = superlu_sym_v2_arena_advance(
@@ -3587,6 +3592,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         A_gpu.symV2RowFragStageBufs[stream] = NULL;
         A_gpu.symV2RowFragValRecvBufs[stream] = NULL;
         A_gpu.symV2RowFragIdxRecvBufs[stream] = NULL;
+        A_gpu.symV2RowFragSendMapStageBufs[stream] = NULL;
         A_gpu.symV2RawPanelBufs[stream] = NULL;
         A_gpu.symV2RawPanelReadyEvents[stream] = NULL;
         A_gpu.LidxRecvBufs[stream] = NULL;
@@ -3666,6 +3672,13 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                                         maxSymV2RowFragIdxRecvCount)),
                         sizeof(int_t),
                         "SymFact V2 arena row fragment indices"));
+            if (sym_v2_pc_fragment_schur)
+                A_gpu.symV2RowFragSendMapStageBufs[stream] =
+                    static_cast<int_t *>(take(
+                        static_cast<size_t>(SUPERLU_MAX((int_t)1,
+                                                        maxSymV2RowFragStageCount)),
+                        sizeof(int_t),
+                        "SymFact V2 arena row fragment send maps"));
             if (needGpuDiagFactor)
             {
                 A_gpu.diagFactWork[stream] = static_cast<Ftype *>(take(
@@ -3718,6 +3731,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                          static_cast<size_t>(SUPERLU_MAX(
                                              (int_t)1,
                                              maxSymV2RowFragIdxRecvCount))));
+                gpuErrchk(cudaMalloc(
+                    &A_gpu.symV2RowFragSendMapStageBufs[stream],
+                    sizeof(int_t) *
+                        static_cast<size_t>(SUPERLU_MAX(
+                            (int_t)1, maxSymV2RowFragStageCount))));
             }
             if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
                 gpuErrchk(cudaMalloc(&A_gpu.symV2RawPanelBufs[stream],
