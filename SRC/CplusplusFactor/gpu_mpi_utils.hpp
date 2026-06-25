@@ -274,6 +274,24 @@ static inline bool superlu_sym_v2_exact_row_fragment_demand()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_exact_map_index()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_EXACT_MAP_INDEX");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 1;
+        return true;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_EXACT_MAP_INDEX must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
 static inline bool superlu_cuda_aware_mpi()
 {
     static int cached = -1;
