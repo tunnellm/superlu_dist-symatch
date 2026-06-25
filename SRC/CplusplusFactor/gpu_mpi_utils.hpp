@@ -202,6 +202,42 @@ static inline bool superlu_sym_v2_pc_fragment_schur()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_row_l_source_pack()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_ROW_L_SOURCE_PACK");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_ROW_L_SOURCE_PACK must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline bool superlu_sym_v2_row_l_direct_recv()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_ROW_L_DIRECT_RECV");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_ROW_L_DIRECT_RECV must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
 static inline bool superlu_sym_v2_rowfrag_dest_pack()
 {
     static int cached = -1;
@@ -218,6 +254,13 @@ static inline bool superlu_sym_v2_rowfrag_dest_pack()
         ABORT("GPU3DV2_ROWFRAG_DEST_PACK must be a boolean value.");
     cached = parsed;
     return cached != 0;
+}
+
+static inline bool superlu_sym_v2_rowfrag_destination_path()
+{
+    return superlu_sym_v2_rowfrag_dest_pack() ||
+           superlu_sym_v2_row_l_source_pack() ||
+           superlu_sym_v2_row_l_direct_recv();
 }
 
 static inline bool superlu_sym_v2_exact_fragment_demand()

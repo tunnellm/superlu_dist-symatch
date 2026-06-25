@@ -764,6 +764,9 @@ struct xLUstruct_t
     std::vector<double *> symV2RowFragExactHostSendBufsPinned;
     std::vector<int_t> symV2RowFragExactSendMapsHost;
     std::vector<size_t> symV2RowFragExactSendMapOffsets;
+    std::vector<int> symV2RowDirectSendSizes;
+    std::vector<size_t> symV2RowDirectSendMapOffsets;
+    std::vector<int_t> symV2RowDirectSendMapsHost;
     double *symV2PartnerLHostSendPoolPinned = NULL;
     Ftype *symV2PartnerLHostRecvPoolPinned = NULL;
     Ftype *symV2RowFragHostRecvPoolPinned = NULL;
