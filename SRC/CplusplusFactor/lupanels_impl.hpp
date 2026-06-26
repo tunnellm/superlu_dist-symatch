@@ -247,6 +247,30 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
         "diag_prefetch_alloc",
         "device_struct_copy"
     };
+    static const char *scalar_labels[SYM_V2_PROFILE_COUNT] = {
+        "gpu_usable_bytes",
+        "gpu_persistent_bytes",
+        "gpu_per_stream_base_bytes",
+        "gpu_per_stream_bytes",
+        "gpu_gemm_buffer_bytes",
+        "gpu_gemm_shrink_bytes",
+        "gpu_streams",
+        "gpu_raw_w_cache_bytes",
+        "gpu_partner_value_bytes",
+        "gpu_partner_index_bytes",
+        "gpu_row_stage_bytes",
+        "gpu_row_recv_value_bytes",
+        "gpu_row_index_bytes",
+        "gpu_row_send_stage_bytes",
+        "gpu_diag_bytes",
+        "row_current_recv_values",
+        "row_sparse_send_values",
+        "row_sparse_recv_values",
+        "row_saved_recv_values",
+        "row_demand_records",
+        "row_send_messages",
+        "row_recv_messages"
+    };
 
     if (!symV2SetupProfileActive() || symV2SetupProfilePrinted ||
         grid3d == NULL)
@@ -263,6 +287,8 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
     double sum_time[SYM_V2_SETUP_COUNT] = {};
     double max_time[SYM_V2_SETUP_COUNT] = {};
     long long sum_count[SYM_V2_SETUP_COUNT] = {};
+    long long scalar_sum[SYM_V2_PROFILE_COUNT] = {};
+    long long scalar_max[SYM_V2_PROFILE_COUNT] = {};
     struct { double val; int rank; } local_max_time[SYM_V2_SETUP_COUNT];
     struct { double val; int rank; } global_max_time[SYM_V2_SETUP_COUNT];
     int nranks = 1;
@@ -282,6 +308,10 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
                MPI_DOUBLE_INT, MPI_MAXLOC, 0, grid3d->comm);
     MPI_Reduce(symV2SetupProfileCount, sum_count, SYM_V2_SETUP_COUNT,
                MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(symV2ProfileScalar, scalar_sum, SYM_V2_PROFILE_COUNT,
+               MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(symV2ProfileScalar, scalar_max, SYM_V2_PROFILE_COUNT,
+               MPI_LONG_LONG_INT, MPI_MAX, 0, grid3d->comm);
 
     if (grid3d->iam != 0)
         return;
@@ -297,6 +327,15 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
         printf("  %-32s %12.6f %12.6f %12.6f %9d %12lld\n",
                labels[i], sum_time[i], avg, max_time[i],
                global_max_time[i].rank, sum_count[i]);
+    }
+    printf("SymFact GPU3D V2 scalar profile:\n");
+    printf("  %-32s %18s %18s\n", "metric", "sum", "max_rank");
+    for (int i = 0; i < SYM_V2_PROFILE_COUNT; ++i)
+    {
+        if (scalar_sum[i] == 0 && scalar_max[i] == 0)
+            continue;
+        printf("  %-32s %18lld %18lld\n",
+               scalar_labels[i], scalar_sum[i], scalar_max[i]);
     }
     fflush(stdout);
 }
@@ -469,6 +508,24 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "lfrag_send_post",
         "lfrag_send_wait",
         "lfrag_stream_sync",
+        "partner_lfrag_pack_issue",
+        "partner_lfrag_d2h_stage_issue",
+        "partner_lfrag_pack_stage_sync",
+        "partner_lfrag_recv_post",
+        "partner_lfrag_mpi_recv_wait",
+        "partner_lfrag_h2d_stage_issue",
+        "partner_lfrag_assemble_issue",
+        "partner_lfrag_send_post",
+        "partner_lfrag_send_wait",
+        "row_lfrag_pack_issue",
+        "row_lfrag_d2h_stage_issue",
+        "row_lfrag_pack_stage_sync",
+        "row_lfrag_recv_post",
+        "row_lfrag_mpi_recv_wait",
+        "row_lfrag_h2d_stage_issue",
+        "row_lfrag_assemble_issue",
+        "row_lfrag_send_post",
+        "row_lfrag_send_wait",
         "panel_bcast",
         "panel_bcast_mpi",
         "panel_index_d2h",
@@ -519,6 +576,24 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "lfrag_send_post",
         "lfrag_send_wait",
         "lfrag_stream_sync",
+        "partner_lfrag_pack_issue",
+        "partner_lfrag_d2h_stage_issue",
+        "partner_lfrag_pack_stage_sync",
+        "partner_lfrag_recv_post",
+        "partner_lfrag_mpi_recv_wait",
+        "partner_lfrag_h2d_stage_issue",
+        "partner_lfrag_assemble_issue",
+        "partner_lfrag_send_post",
+        "partner_lfrag_send_wait",
+        "row_lfrag_pack_issue",
+        "row_lfrag_d2h_stage_issue",
+        "row_lfrag_pack_stage_sync",
+        "row_lfrag_recv_post",
+        "row_lfrag_mpi_recv_wait",
+        "row_lfrag_h2d_stage_issue",
+        "row_lfrag_assemble_issue",
+        "row_lfrag_send_post",
+        "row_lfrag_send_wait",
         "panel_bcast",
         "panel_bcast_mpi",
         "panel_index_d2h",
@@ -4455,6 +4530,113 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     if (!needed_row_blocks_by_panel[k0].empty())
                         symV2RowDownPlanReady[static_cast<size_t>(k0)] = 1;
                 symV2RowDownSetupSeconds = SuperLU_timer_() - row_down_setup_t;
+                if (!row_down_dryrun &&
+                    superlu_sym_v2_row_l_plan_v2_exchange())
+                {
+                    long long exact_max_row_stage = 0;
+                    long long exact_max_row_values = 0;
+                    long long exact_max_row_index = LPANEL_HEADER_SIZE;
+                    long long exact_max_row_send = 0;
+                    for (int_t k0 = 0; k0 < nsupers; ++k0)
+                    {
+                        long long stage_values = 0;
+                        size_t row_recv_base =
+                            static_cast<size_t>(k0) *
+                            static_cast<size_t>(Pc);
+                        for (int pc = 0; pc < Pc; ++pc)
+                        {
+                            size_t pos = row_recv_base +
+                                         static_cast<size_t>(pc);
+                            if (pos < symV2RowFragRecvSizes.size())
+                                stage_values +=
+                                    static_cast<long long>(
+                                        symV2RowFragRecvSizes[pos]);
+                        }
+                        exact_max_row_stage =
+                            SUPERLU_MAX(exact_max_row_stage, stage_values);
+                        if (static_cast<size_t>(k0) <
+                                symV2RowFragRecvIndex.size() &&
+                            !symV2RowFragRecvIndex[k0].empty())
+                        {
+                            const std::vector<int_t> &row_index =
+                                symV2RowFragRecvIndex[k0];
+                            long long row_values =
+                                static_cast<long long>(row_index[1]) *
+                                static_cast<long long>(SuperSize(k0));
+                            exact_max_row_values =
+                                SUPERLU_MAX(exact_max_row_values, row_values);
+                            exact_max_row_index = SUPERLU_MAX(
+                                exact_max_row_index,
+                                static_cast<long long>(row_index.size()));
+                        }
+                    }
+                    for (int_t lk = 0; lk < local_cols; ++lk)
+                    {
+                        long long send_values = 0;
+                        for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
+                        {
+                            size_t slot =
+                                static_cast<size_t>(lk) *
+                                    static_cast<size_t>(Pc) +
+                                static_cast<size_t>(pc_dest);
+                            long long dest_values = 0;
+                            if (slot < symV2RowDownSendSizes.size())
+                                dest_values = static_cast<long long>(
+                                    symV2RowDownSendSizes[slot]);
+                            exact_max_row_send =
+                                SUPERLU_MAX(exact_max_row_send,
+                                            dest_values);
+                            if (pc_dest != mycol)
+                                send_values += dest_values;
+                        }
+                        exact_max_row_send =
+                            SUPERLU_MAX(exact_max_row_send, send_values);
+                    }
+                    if (exact_max_row_stage >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()) ||
+                        exact_max_row_values >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()) ||
+                        exact_max_row_index >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()) ||
+                        exact_max_row_send >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()))
+                        ABORT("SymFact V2 exact row-down staging size exceeds int_t range.");
+                    maxSymV2RowFragStageCount =
+                        static_cast<int_t>(exact_max_row_stage);
+                    maxSymV2RowFragValRecvCount =
+                        static_cast<int_t>(exact_max_row_values);
+                    maxSymV2RowFragIdxRecvCount =
+                        static_cast<int_t>(exact_max_row_index);
+                    maxSymV2RowFragValSendCount =
+                        static_cast<int_t>(exact_max_row_send);
+                }
+                symV2ProfileScalarSet(
+                    SYM_V2_PROFILE_ROW_CURRENT_RECV_VALUES,
+                    symV2RowDownCurrentRecvValues);
+                symV2ProfileScalarSet(
+                    SYM_V2_PROFILE_ROW_SPARSE_SEND_VALUES,
+                    symV2RowDownSparseSendValues);
+                symV2ProfileScalarSet(
+                    SYM_V2_PROFILE_ROW_SPARSE_RECV_VALUES,
+                    symV2RowDownSparseRecvValues);
+                symV2ProfileScalarSet(
+                    SYM_V2_PROFILE_ROW_SAVED_RECV_VALUES,
+                    SUPERLU_MAX((long long)0,
+                                symV2RowDownCurrentRecvValues -
+                                    symV2RowDownSparseRecvValues));
+                symV2ProfileScalarSet(
+                    SYM_V2_PROFILE_ROW_DEMAND_RECORDS,
+                    symV2RowDownDemandRecords);
+                symV2ProfileScalarSet(
+                    SYM_V2_PROFILE_ROW_SEND_MESSAGES,
+                    symV2RowDownSendMessages);
+                symV2ProfileScalarSet(
+                    SYM_V2_PROFILE_ROW_RECV_MESSAGES,
+                    symV2RowDownRecvMessages);
 
                 if (superlu_sym_v2_row_l_plan_v2_verify())
                 {

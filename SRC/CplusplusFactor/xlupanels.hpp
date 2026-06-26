@@ -534,6 +534,49 @@ struct xLUstruct_t
     long long symV2PayloadProfileMaxBytes
         [SYM_V2_PAYLOAD_COUNT][SYM_V2_PAYLOAD_BIN_COUNT] = {};
 
+    enum SymV2ProfileScalarId
+    {
+        SYM_V2_PROFILE_GPU_USABLE_BYTES = 0,
+        SYM_V2_PROFILE_GPU_PERSISTENT_BYTES,
+        SYM_V2_PROFILE_GPU_PER_STREAM_BASE_BYTES,
+        SYM_V2_PROFILE_GPU_PER_STREAM_BYTES,
+        SYM_V2_PROFILE_GPU_GEMM_BUFFER_BYTES,
+        SYM_V2_PROFILE_GPU_GEMM_SHRINK_BYTES,
+        SYM_V2_PROFILE_GPU_STREAMS,
+        SYM_V2_PROFILE_GPU_RAW_W_CACHE_BYTES,
+        SYM_V2_PROFILE_GPU_PARTNER_VALUE_BYTES,
+        SYM_V2_PROFILE_GPU_PARTNER_INDEX_BYTES,
+        SYM_V2_PROFILE_GPU_ROW_STAGE_BYTES,
+        SYM_V2_PROFILE_GPU_ROW_RECV_VALUE_BYTES,
+        SYM_V2_PROFILE_GPU_ROW_INDEX_BYTES,
+        SYM_V2_PROFILE_GPU_ROW_SEND_STAGE_BYTES,
+        SYM_V2_PROFILE_GPU_DIAG_BYTES,
+        SYM_V2_PROFILE_ROW_CURRENT_RECV_VALUES,
+        SYM_V2_PROFILE_ROW_SPARSE_SEND_VALUES,
+        SYM_V2_PROFILE_ROW_SPARSE_RECV_VALUES,
+        SYM_V2_PROFILE_ROW_SAVED_RECV_VALUES,
+        SYM_V2_PROFILE_ROW_DEMAND_RECORDS,
+        SYM_V2_PROFILE_ROW_SEND_MESSAGES,
+        SYM_V2_PROFILE_ROW_RECV_MESSAGES,
+        SYM_V2_PROFILE_COUNT
+    };
+
+    long long symV2ProfileScalar[SYM_V2_PROFILE_COUNT] = {};
+
+    void symV2ProfileScalarSet(SymV2ProfileScalarId id, long long value)
+    {
+        if (id < 0 || id >= SYM_V2_PROFILE_COUNT)
+            return;
+        symV2ProfileScalar[id] = value;
+    }
+
+    void symV2ProfileScalarAdd(SymV2ProfileScalarId id, long long value)
+    {
+        if (id < 0 || id >= SYM_V2_PROFILE_COUNT)
+            return;
+        symV2ProfileScalar[id] += value;
+    }
+
     bool symV2FactorProfileActive() const
     {
         return symV2FactorProfileEnabled != 0;
@@ -636,6 +679,24 @@ struct xLUstruct_t
         SYM_GPU3D_T_LFRAG_SEND_POST,
         SYM_GPU3D_T_LFRAG_SEND_WAIT,
         SYM_GPU3D_T_LFRAG_STREAM_SYNC,
+        SYM_GPU3D_T_PARTNER_LFRAG_PACK_ISSUE,
+        SYM_GPU3D_T_PARTNER_LFRAG_D2H_STAGE_ISSUE,
+        SYM_GPU3D_T_PARTNER_LFRAG_PACK_STAGE_SYNC,
+        SYM_GPU3D_T_PARTNER_LFRAG_RECV_POST,
+        SYM_GPU3D_T_PARTNER_LFRAG_MPI_RECV_WAIT,
+        SYM_GPU3D_T_PARTNER_LFRAG_H2D_STAGE_ISSUE,
+        SYM_GPU3D_T_PARTNER_LFRAG_ASSEMBLE_ISSUE,
+        SYM_GPU3D_T_PARTNER_LFRAG_SEND_POST,
+        SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
+        SYM_GPU3D_T_ROW_LFRAG_PACK_ISSUE,
+        SYM_GPU3D_T_ROW_LFRAG_D2H_STAGE_ISSUE,
+        SYM_GPU3D_T_ROW_LFRAG_PACK_STAGE_SYNC,
+        SYM_GPU3D_T_ROW_LFRAG_RECV_POST,
+        SYM_GPU3D_T_ROW_LFRAG_MPI_RECV_WAIT,
+        SYM_GPU3D_T_ROW_LFRAG_H2D_STAGE_ISSUE,
+        SYM_GPU3D_T_ROW_LFRAG_ASSEMBLE_ISSUE,
+        SYM_GPU3D_T_ROW_LFRAG_SEND_POST,
+        SYM_GPU3D_T_ROW_LFRAG_SEND_WAIT,
         SYM_GPU3D_T_PANEL_BCAST,
         SYM_GPU3D_T_PANEL_BCAST_MPI,
         SYM_GPU3D_T_PANEL_INDEX_D2H,
@@ -699,6 +760,14 @@ struct xLUstruct_t
     {
         symGPU3DTime[id] += elapsed;
         symGPU3DCount[id] += 1;
+    }
+
+    void symTimingAddBoth(SymGPU3DTimingId aggregate,
+                          SymGPU3DTimingId specific,
+                          double elapsed)
+    {
+        symTimingAdd(aggregate, elapsed);
+        symTimingAdd(specific, elapsed);
     }
 
     void symStatAdd(SymGPU3DStatId id, long long value = 1)

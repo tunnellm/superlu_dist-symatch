@@ -3123,6 +3123,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
  #else
     A_gpu.gemmBufferSize = SUPERLU_MIN(maxBuffSize, SUPERLU_MAX(max_gemmCsize,totalNzvalSize)); /* Yang added 10/20/2023 */
  #endif
+    const size_t initial_gemm_buffer_size = A_gpu.gemmBufferSize;
 
     int_t u_recv_val_count = sym_v2_mode ? 0 : maxUvalCount;
     int_t u_recv_idx_count = sym_v2_mode ? 0 : maxUidxCount;
@@ -3137,6 +3138,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         sym_v2_mode && superlu_sym_v2_pc_fragment_schur() &&
         Pr > 1 && Pc > 1;
 // SYM_V2_PC2_PHASE2_ROW_STAGE_CAPACITY_BEGIN
+    int_t sym_v2_pc_frag_row_stage_count_int = 0;
     size_t sym_v2_pc_frag_row_stage_count = 0;
     if (sym_v2_pc_fragment_schur)
     {
@@ -3145,8 +3147,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             superlu_sym_v2_row_l_plan_v2_exchange())
             row_stage_count = SUPERLU_MAX(row_stage_count,
                                           maxSymV2RowFragValSendCount);
+        sym_v2_pc_frag_row_stage_count_int =
+            SUPERLU_MAX((int_t)0, row_stage_count);
         sym_v2_pc_frag_row_stage_count =
-            static_cast<size_t>(SUPERLU_MAX((int_t)0, row_stage_count));
+            static_cast<size_t>(sym_v2_pc_frag_row_stage_count_int);
     }
 // SYM_V2_PC2_PHASE2_ROW_STAGE_CAPACITY_END
     size_t sym_v2_pc_frag_row_val_count =
@@ -3278,6 +3282,78 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     if (rNumberOfStreams < 1)
         ABORT("GPU workspace estimate left no usable CUDA streams.");
     A_gpu.numCudaStreams = rNumberOfStreams;
+    {
+        auto size_to_ll = [](size_t value) -> long long
+        {
+            const size_t limit = static_cast<size_t>(
+                std::numeric_limits<long long>::max());
+            return value > limit ? std::numeric_limits<long long>::max()
+                                 : static_cast<long long>(value);
+        };
+        auto count_bytes_to_ll = [&](size_t count, size_t elem_size) -> long long
+        {
+            size_t bytes = xlu_checked_product(
+                count, elem_size, "SymFact V2 profile byte count");
+            return size_to_ll(bytes);
+        };
+        size_t final_gemm_buffer_size = A_gpu.gemmBufferSize;
+        size_t gemm_shrink_elems =
+            initial_gemm_buffer_size > final_gemm_buffer_size
+                ? initial_gemm_buffer_size - final_gemm_buffer_size
+                : 0;
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_USABLE_BYTES,
+                              size_to_ll(useableGPUMem));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PERSISTENT_BYTES,
+                              size_to_ll(memReqData));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PER_STREAM_BASE_BYTES,
+                              size_to_ll(dataPerStreamBase));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PER_STREAM_BYTES,
+                              size_to_ll(dataPerStream));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_GEMM_BUFFER_BYTES,
+                              count_bytes_to_ll(final_gemm_buffer_size,
+                                                sizeof(Ftype)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_GEMM_SHRINK_BYTES,
+                              count_bytes_to_ll(gemm_shrink_elems,
+                                                sizeof(Ftype)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_STREAMS,
+                              static_cast<long long>(rNumberOfStreams));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_RAW_W_CACHE_BYTES,
+                              count_bytes_to_ll(sym_v2_raw_panel_count,
+                                                sizeof(Ftype)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PARTNER_VALUE_BYTES,
+                              count_bytes_to_ll(
+                                  2 * static_cast<size_t>(
+                                          SUPERLU_MAX((int_t)0,
+                                                      maxSymPartnerLvalCount)),
+                                  sizeof(Ftype)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PARTNER_INDEX_BYTES,
+                              count_bytes_to_ll(
+                                  static_cast<size_t>(
+                                      SUPERLU_MAX((int_t)0,
+                                                  maxSymPartnerLidxCount)),
+                                  sizeof(int_t)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_ROW_STAGE_BYTES,
+                              count_bytes_to_ll(
+                                  sym_v2_pc_frag_row_stage_count,
+                                  sizeof(Ftype)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_ROW_RECV_VALUE_BYTES,
+                              count_bytes_to_ll(
+                                  sym_v2_pc_frag_row_val_count,
+                                  sizeof(Ftype)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_ROW_INDEX_BYTES,
+                              count_bytes_to_ll(
+                                  sym_v2_pc_frag_idx_count,
+                                  sizeof(int_t)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_ROW_SEND_STAGE_BYTES,
+                              count_bytes_to_ll(
+                                  static_cast<size_t>(
+                                      SUPERLU_MAX((int_t)0,
+                                                  maxSymV2RowFragValSendCount)),
+                                  sizeof(Ftype)));
+        symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_DIAG_BYTES,
+                              count_bytes_to_ll(sym_diag_buf_elems,
+                                                sizeof(Ftype)));
+    }
 // SYM_V2_PC2_PHASE6_ALLOC_EXCHANGE_STATES_BEGIN
     if (sym_v2_mode)
     {
@@ -3603,7 +3679,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                        maxSymV2RowFragStageCount)),
+                                                        sym_v2_pc_frag_row_stage_count_int)),
                 sizeof(Ftype), "SymFact V2 arena row fragment staging");
         if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
@@ -3634,7 +3710,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                        maxSymV2RowFragStageCount)),
+                                                        sym_v2_pc_frag_row_stage_count_int)),
                 sizeof(int_t), "SymFact V2 arena row fragment send maps");
         if (needGpuDiagFactor)
         {
@@ -3721,7 +3797,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 A_gpu.symV2RowFragStageBufs[stream] =
                     static_cast<Ftype *>(take(
                         static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                        maxSymV2RowFragStageCount)),
+                                                        sym_v2_pc_frag_row_stage_count_int)),
                         sizeof(Ftype),
                         "SymFact V2 arena row fragment staging"));
             if (sym_v2_pc_fragment_schur)
@@ -3757,7 +3833,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 A_gpu.symV2RowFragSendMapStageBufs[stream] =
                     static_cast<int_t *>(take(
                         static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                        maxSymV2RowFragStageCount)),
+                                                        sym_v2_pc_frag_row_stage_count_int)),
                         sizeof(int_t),
                         "SymFact V2 arena row fragment send maps"));
             if (needGpuDiagFactor)
@@ -3801,7 +3877,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                      sizeof(Ftype) *
                                          static_cast<size_t>(SUPERLU_MAX(
                                              (int_t)1,
-                                             maxSymV2RowFragStageCount))));
+                                             sym_v2_pc_frag_row_stage_count_int))));
                 gpuErrchk(cudaMalloc(&A_gpu.symV2RowFragValRecvBufs[stream],
                                      sizeof(Ftype) *
                                          static_cast<size_t>(SUPERLU_MAX(
@@ -3816,7 +3892,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                     &A_gpu.symV2RowFragSendMapStageBufs[stream],
                     sizeof(int_t) *
                         static_cast<size_t>(SUPERLU_MAX(
-                            (int_t)1, maxSymV2RowFragStageCount))));
+                            (int_t)1, sym_v2_pc_frag_row_stage_count_int))));
             }
             if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
                 gpuErrchk(cudaMalloc(&A_gpu.symV2RawPanelBufs[stream],
