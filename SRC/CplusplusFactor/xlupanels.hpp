@@ -542,6 +542,7 @@ struct xLUstruct_t
     {
         SYM_V2_PROFILE_GPU_USABLE_BYTES = 0,
         SYM_V2_PROFILE_GPU_PERSISTENT_BYTES,
+        SYM_V2_PROFILE_GPU_DELAYED_METADATA_BYTES,
         SYM_V2_PROFILE_GPU_PER_STREAM_BASE_BYTES,
         SYM_V2_PROFILE_GPU_PER_STREAM_BYTES,
         SYM_V2_PROFILE_GPU_GEMM_BUFFER_BYTES,
@@ -846,6 +847,12 @@ struct xLUstruct_t
     std::vector<double *> symV2PartnerLExactHostSendBufsPinned;
     std::vector<std::vector<double> > symV2RowFragExactHostSendBufs;
     std::vector<double *> symV2RowFragExactHostSendBufsPinned;
+    std::vector<std::vector<int_t> > symL2USendMapsHost;
+    std::vector<std::vector<int_t> > symL2ULocalMapsHost;
+    std::vector<size_t> symV2PartnerLMapOffsets;
+    std::vector<int_t> symV2PartnerLPackedMaps;
+    std::vector<int_t> symV2PartnerLExactSendMapsHost;
+    std::vector<size_t> symV2PartnerLExactSendMapOffsets;
     std::vector<int_t> symV2RowFragExactSendMapsHost;
     std::vector<size_t> symV2RowFragExactSendMapOffsets;
     std::vector<int> symV2RowDirectSendSizes;
@@ -922,10 +929,12 @@ struct xLUstruct_t
     std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
     std::vector<std::vector<int_t> > symV2PartnerLRecvIndexBySrc;
     std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
+    std::vector<size_t> symV2PartnerLRecvMapOffsets;
     std::vector<int_t *> symV2PartnerLRecvMapsGPU;
     std::vector<int> symV2RowFragRecvSizes;
     std::vector<std::vector<int_t> > symV2RowFragRecvIndex;
     std::vector<std::vector<int_t> > symV2RowFragRecvMap;
+    std::vector<size_t> symV2RowFragRecvMapOffsets;
     std::vector<int_t *> symV2RowFragRecvMapsGPU;
     std::vector<int_t *> symL2ULocalMapsGPU;
     std::vector<int> symPanelReadyEventIds;
@@ -1450,6 +1459,8 @@ struct xLUstruct_t
     // GPU related functions
 #ifdef HAVE_CUDA
     int_t setLUstruct_GPU();
+    size_t symV2DelayedGpuMetadataBytes() const;
+    int materializeSymFactGpuMetadata();
     int_t dsparseTreeFactorGPU(
         sForest_t *sforest,
         diagFactBufs_type<Ftype> **dFBufs, // size maxEtree level

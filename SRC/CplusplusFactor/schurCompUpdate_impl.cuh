@@ -3112,6 +3112,13 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 
     memReqData += sizeof(xLUstructGPU_t<Ftype>);
 
+    size_t sym_v2_delayed_gpu_metadata_bytes =
+        sym_v2_mode ? symV2DelayedGpuMetadataBytes() : 0;
+    if (memReqData > static_cast<size_t>(-1) -
+                         sym_v2_delayed_gpu_metadata_bytes)
+        ABORT("SymFact V2 delayed GPU metadata memory estimate overflows.");
+    memReqData += sym_v2_delayed_gpu_metadata_bytes;
+
     // Per stream data
     // TODO: estimate based on ancestor size
     int_t maxBuffSize = sp_ienv_dist (8, options);
@@ -3333,6 +3340,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                               size_to_ll(useableGPUMem));
         symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PERSISTENT_BYTES,
                               size_to_ll(memReqData));
+        symV2ProfileScalarSet(
+            SYM_V2_PROFILE_GPU_DELAYED_METADATA_BYTES,
+            size_to_ll(sym_v2_delayed_gpu_metadata_bytes));
         symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PER_STREAM_BASE_BYTES,
                               size_to_ll(dataPerStreamBase));
         symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_PER_STREAM_BYTES,
@@ -3389,6 +3399,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                               count_bytes_to_ll(sym_diag_buf_elems,
                                                 sizeof(Ftype)));
     }
+    if (sym_v2_mode)
+        materializeSymFactGpuMetadata();
 // SYM_V2_PC2_PHASE6_ALLOC_EXCHANGE_STATES_BEGIN
     if (sym_v2_mode)
     {

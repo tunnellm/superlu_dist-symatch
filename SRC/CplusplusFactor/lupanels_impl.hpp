@@ -254,6 +254,7 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
     static const char *scalar_labels[SYM_V2_PROFILE_COUNT] = {
         "gpu_usable_bytes",
         "gpu_persistent_bytes",
+        "gpu_delayed_metadata_bytes",
         "gpu_per_stream_base_bytes",
         "gpu_per_stream_bytes",
         "gpu_gemm_buffer_bytes",
@@ -1756,7 +1757,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         {
             symL2USendBufsGPU.assign(l2u_slots, NULL);
             symL2USendMapsGPU.assign(l2u_slots, NULL);
+            symL2USendMapsHost.assign(l2u_slots, std::vector<int_t>());
             symL2ULocalMapsGPU.assign(CEILING(nsupers, Pr), NULL);
+            symL2ULocalMapsHost.assign(CEILING(nsupers, Pr),
+                                       std::vector<int_t>());
         }
         symV2PartnerLSendBufsGPU.assign(l2u_slots, NULL);
         symL2LSendMapsGPU.assign(l2u_slots, NULL);
@@ -1795,6 +1799,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symV2PartnerLExactSendSizes.assign(partner_exact_slots, 0);
         symV2PartnerLExactSendBufsGPU.assign(partner_exact_slots, NULL);
         symV2PartnerLExactSendMapsGPU.assign(partner_exact_slots, NULL);
+        symV2PartnerLExactSendMapsHost.clear();
+        symV2PartnerLExactSendMapOffsets.assign(partner_exact_slots, 0);
         symV2PartnerLExactHostSendBufs.assign(
             partner_exact_slots, std::vector<double>());
         symV2PartnerLExactHostSendBufsPinned.assign(partner_exact_slots, NULL);
@@ -1856,8 +1862,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 ? 1
                 : 0);
         symDiagPrefetchEventIds.assign(nsupers, -1);
-        std::vector<size_t> symV2PartnerLMapOffsets(l2u_slots, 0);
-        std::vector<int_t> symV2PartnerLPackedMaps;
+        symV2PartnerLMapOffsets.assign(l2u_slots, 0);
+        symV2PartnerLPackedMaps.clear();
+        symV2PartnerLRecvMapOffsets.clear();
+        symV2RowFragRecvMapOffsets.clear();
         struct SymV2ExactSendSegment
         {
             int_t gid;
@@ -1954,13 +1962,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 if (dst_col != upanel.nzcols())
                     ABORT("SymFact local GPU L2U map has an invalid U column count.");
 
-                gpuErrchk(cudaMalloc((void **)&symL2ULocalMapsGPU[lk],
-                                     xlu_checked_product(static_cast<size_t>(upanel.nzvalSize()),
-                                                         sizeof(int_t),
-                                                         "SymFact local GPU L2U map")));
-                gpuErrchk(cudaMemcpy(symL2ULocalMapsGPU[lk], local_map.data(),
-                                     sizeof(int_t) * static_cast<size_t>(upanel.nzvalSize()),
-                                     cudaMemcpyHostToDevice));
+                if (lk < 0 ||
+                    static_cast<size_t>(lk) >= symL2ULocalMapsHost.size())
+                    ABORT("SymFact local GPU L2U host map slot is invalid.");
+                symL2ULocalMapsHost[static_cast<size_t>(lk)].swap(local_map);
             }
             xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after local GPU L2U map setup");
         }
@@ -2078,11 +2083,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     if (superlu_sym_v2_pinned_staging() &&
                         !superlu_sym_v2_pinned_staging_pool())
                     {
-                        /* Original R2 mode: one pinned allocation per chunk. */
-                        gpuErrchk(cudaMallocHost(
-                            (void **)&symV2PartnerLHostSendBufsPinned[flat],
-                            xlu_checked_product(map_counts[flat], sizeof(double),
-                                                "SymFact V2 pinned send staging")));
+                        /* Allocated after stream sizing. */
                     }
                     else if (!superlu_sym_v2_pinned_staging())
                     {
@@ -2098,26 +2099,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 !superlu_cuda_aware_mpi() &&
                 max_partner_host_send_scratch > 0)
             {
-                gpuErrchk(cudaMallocHost(
-                    (void **)&symV2PartnerLHostSendPoolPinned,
-                    xlu_checked_product(max_partner_host_send_scratch,
-                                        sizeof(double),
-                                        "SymFact V2 pooled pinned send staging")));
                 symV2PartnerLHostSendPoolPinnedCount =
                     max_partner_host_send_scratch;
-                for (size_t flat = 0; flat < l2u_slots; ++flat)
-                {
-                    if (map_counts[flat] == 0)
-                        continue;
-                    size_t offset =
-                        symV2PartnerLHostSendScratchOffsets[flat];
-                    if (offset + map_counts[flat] >
-                            symV2PartnerLHostSendPoolPinnedCount ||
-                        offset + map_counts[flat] < offset)
-                        ABORT("SymFact V2 pooled send staging map is invalid.");
-                    symV2PartnerLHostSendBufsPinned[flat] =
-                        symV2PartnerLHostSendPoolPinned + offset;
-                }
             }
 
             std::vector<size_t> map_write_offsets =
@@ -2362,20 +2345,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     if (host_maps[pc].size() !=
                         static_cast<size_t>(l2u_size))
                         ABORT("SymFact GPU L2U send map size mismatch.");
-                    gpuErrchk(cudaMalloc(
-                        (void **)&symL2USendBufsGPU[flat],
-                        xlu_checked_product(static_cast<size_t>(l2u_size),
-                                            sizeof(double),
-                                            "SymFact GPU L2U send buffer")));
-                    gpuErrchk(cudaMalloc(
-                        (void **)&symL2USendMapsGPU[flat],
-                        xlu_checked_product(static_cast<size_t>(l2u_size),
-                                            sizeof(int_t),
-                                            "SymFact GPU L2U send map")));
-                    gpuErrchk(cudaMemcpy(
-                        symL2USendMapsGPU[flat], host_maps[pc].data(),
-                        sizeof(int_t) * static_cast<size_t>(l2u_size),
-                        cudaMemcpyHostToDevice));
+                    if (flat >= symL2USendMapsHost.size())
+                        ABORT("SymFact GPU L2U host map slot is invalid.");
+                    symL2USendMapsHost[flat].swap(host_maps[pc]);
                 }
             }
         }
@@ -2399,33 +2371,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
             symV2PartnerLSendBufPoolCount = total_partner_send;
             symL2LSendMapPoolCount = total_partner_send;
-            if (total_partner_send > 0)
-            {
-                gpuErrchk(cudaMalloc(
-                    (void **)&symV2PartnerLSendBufPoolGPU,
-                    xlu_checked_product(total_partner_send, sizeof(double),
-                                        "SymFact V2 partner-L send buffer pool")));
-                gpuErrchk(cudaMalloc(
-                    (void **)&symL2LSendMapPoolGPU,
-                    xlu_checked_product(total_partner_send, sizeof(int_t),
-                                        "SymFact GPU L2L send map pool")));
-
-                for (size_t flat = 0; flat < l2u_slots; ++flat)
-                {
-                    int size = symV2PartnerLSendSizes[flat];
-                    if (size <= 0)
-                        continue;
-                    size_t offset = symV2PartnerLMapOffsets[flat];
-                    symV2PartnerLSendBufsGPU[flat] =
-                        symV2PartnerLSendBufPoolGPU + offset;
-                    symL2LSendMapsGPU[flat] =
-                        symL2LSendMapPoolGPU + offset;
-                }
-                gpuErrchk(cudaMemcpy(
-                    symL2LSendMapPoolGPU, symV2PartnerLPackedMaps.data(),
-                    sizeof(int_t) * total_partner_send,
-                    cudaMemcpyHostToDevice));
-            }
             if (profile_setup)
                 symV2SetupProfileAdd(
                     SYM_V2_SETUP_PARTNER_SEND_GPU_ALLOC_COPY,
@@ -3196,8 +3141,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             symV2RowFragRecvSizes.assign(row_chunk_count, 0);
             symV2RowFragRecvIndex.assign(nsupers, std::vector<int_t>());
             symV2RowFragRecvMap.assign(row_chunk_count, std::vector<int_t>());
-            std::vector<size_t> symV2PartnerLRecvMapOffsets(compact_count, 0);
-            std::vector<size_t> symV2RowFragRecvMapOffsets(row_chunk_count, 0);
+            symV2PartnerLRecvMapOffsets.assign(compact_count, 0);
+            symV2RowFragRecvMapOffsets.assign(row_chunk_count, 0);
             for (int_t k0 = 0; k0 < nsupers; ++k0)
             {
                 for (int pr = 0; pr < Pr; ++pr)
@@ -3598,26 +3543,23 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         append_exact_send_map_scan(flat, requested, out);
                 };
 
-                auto build_exact_send_maps =
+                auto build_exact_send_host_maps =
                     [&](const std::vector<std::vector<int_t> > &block_gids,
                         int dest_dim,
                         std::vector<int> &sizes,
-                        std::vector<double *> &bufs_gpu,
-                        std::vector<int_t *> &maps_gpu,
-                        double **buf_pool_gpu,
-                        int_t **map_pool_gpu,
-                        size_t *buf_pool_count,
-                        size_t *map_pool_count,
+                        std::vector<size_t> &offsets,
+                        std::vector<int_t> &packed_maps,
                         std::vector<std::vector<double> > &host_bufs,
                         std::vector<double *> &host_bufs_pinned,
                         const char *what)
                 {
+                    (void)what;
                     if (block_gids.size() != sizes.size() ||
-                        block_gids.size() != bufs_gpu.size() ||
-                        block_gids.size() != maps_gpu.size())
+                        block_gids.size() != host_bufs.size() ||
+                        block_gids.size() != host_bufs_pinned.size())
                         ABORT("SymFact V2 exact send slot table is invalid.");
-                    std::vector<size_t> offsets(block_gids.size(), 0);
-                    std::vector<int_t> packed_maps;
+                    offsets.assign(block_gids.size(), 0);
+                    packed_maps.clear();
                     for (size_t slot = 0; slot < block_gids.size(); ++slot)
                     {
                         if (block_gids[slot].empty())
@@ -3637,24 +3579,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                            exact_map.begin(), exact_map.end());
                     }
 
-                    *buf_pool_count = packed_maps.size();
-                    *map_pool_count = packed_maps.size();
-                    if (!packed_maps.empty())
-                    {
-                        gpuErrchk(cudaMalloc(
-                            (void **)buf_pool_gpu,
-                            xlu_checked_product(packed_maps.size(),
-                                                sizeof(double), what)));
-                        gpuErrchk(cudaMalloc(
-                            (void **)map_pool_gpu,
-                            xlu_checked_product(packed_maps.size(),
-                                                sizeof(int_t), what)));
-                        gpuErrchk(cudaMemcpy(
-                            *map_pool_gpu, packed_maps.data(),
-                            sizeof(int_t) * packed_maps.size(),
-                            cudaMemcpyHostToDevice));
-                    }
-
                     bool use_pinned_host =
                         !superlu_cuda_aware_mpi() &&
                         superlu_sym_v2_pinned_staging();
@@ -3662,17 +3586,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     {
                         if (sizes[slot] <= 0)
                             continue;
-                        bufs_gpu[slot] = *buf_pool_gpu + offsets[slot];
-                        maps_gpu[slot] = *map_pool_gpu + offsets[slot];
                         if (superlu_cuda_aware_mpi())
                             continue;
                         if (use_pinned_host)
                         {
-                            gpuErrchk(cudaMallocHost(
-                                (void **)&host_bufs_pinned[slot],
-                                xlu_checked_product(
-                                    static_cast<size_t>(sizes[slot]),
-                                    sizeof(double), what)));
+                            /* Allocated after stream sizing. */
                         }
                         else
                         {
@@ -3761,18 +3679,20 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 double tExactSendMapBuild =
                     profile_setup ? SuperLU_timer_() : 0.0;
                 if (exact_partner_fragment_demand_setup)
-                    build_exact_send_maps(
+                {
+                    build_exact_send_host_maps(
                         partner_exact_send_block_gids, Pr,
                         symV2PartnerLExactSendSizes,
-                        symV2PartnerLExactSendBufsGPU,
-                        symV2PartnerLExactSendMapsGPU,
-                        &symV2PartnerLExactSendBufPoolGPU,
-                        &symV2PartnerLExactSendMapPoolGPU,
-                        &symV2PartnerLExactSendBufPoolCount,
-                        &symV2PartnerLExactSendMapPoolCount,
+                        symV2PartnerLExactSendMapOffsets,
+                        symV2PartnerLExactSendMapsHost,
                         symV2PartnerLExactHostSendBufs,
                         symV2PartnerLExactHostSendBufsPinned,
                         "SymFact V2 exact partner-L send map");
+                    symV2PartnerLExactSendBufPoolCount =
+                        symV2PartnerLExactSendMapsHost.size();
+                    symV2PartnerLExactSendMapPoolCount =
+                        symV2PartnerLExactSendMapsHost.size();
+                }
                 if (exact_row_fragment_demand_setup)
                 {
                     if (superlu_sym_v2_rowfrag_destination_path() &&
@@ -4757,30 +4677,15 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         ABORT("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE requires GPU3DV2_ROW_L_PLAN_V2_DRYRUN=0.");
                     symV2RowDownSendMapPoolCount = symV2RowDownSendMapsHost.size();
                     symV2RowDownSendMapsGPU.assign(l2u_slots, NULL);
-                    if (symV2RowDownSendMapPoolCount > 0)
+                    for (size_t slot = 0; slot < symV2RowDownSendSizes.size(); ++slot)
                     {
-                        gpuErrchk(cudaMalloc(
-                            (void **)&symV2RowDownSendMapPoolGPU,
-                            xlu_checked_product(symV2RowDownSendMapPoolCount,
-                                                sizeof(int_t),
-                                                "SymFact V2 row-down send map pool")));
-                        gpuErrchk(cudaMemcpy(
-                            symV2RowDownSendMapPoolGPU,
-                            symV2RowDownSendMapsHost.data(),
-                            sizeof(int_t) * symV2RowDownSendMapPoolCount,
-                            cudaMemcpyHostToDevice));
-                        for (size_t slot = 0; slot < symV2RowDownSendSizes.size(); ++slot)
-                        {
-                            if (symV2RowDownSendSizes[slot] <= 0)
-                                continue;
-                            size_t off = symV2RowDownSendMapOffsets[slot];
-                            if (off + static_cast<size_t>(symV2RowDownSendSizes[slot]) >
-                                    symV2RowDownSendMapPoolCount ||
-                                off + static_cast<size_t>(symV2RowDownSendSizes[slot]) < off)
-                                ABORT("SymFact V2 row-down send map offset is invalid.");
-                            symV2RowDownSendMapsGPU[slot] =
-                                symV2RowDownSendMapPoolGPU + off;
-                        }
+                        if (symV2RowDownSendSizes[slot] <= 0)
+                            continue;
+                        size_t off = symV2RowDownSendMapOffsets[slot];
+                        if (off + static_cast<size_t>(symV2RowDownSendSizes[slot]) >
+                                symV2RowDownSendMapPoolCount ||
+                            off + static_cast<size_t>(symV2RowDownSendSizes[slot]) < off)
+                            ABORT("SymFact V2 row-down send map offset is invalid.");
                     }
                 }
 // SYM_V2_PC2_PHASE4_ALLOC_ROW_DOWN_GPU_MAPS_END
@@ -4982,34 +4887,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             }
             symV2PartnerLRecvMapPoolCount = total_recv_map;
             symV2PartnerLRecvMapsGPU.assign(compact_count, NULL);
-            if (total_recv_map > 0)
-            {
-                std::vector<int_t> packed_recv_maps(total_recv_map, 0);
-                for (size_t pos = 0; pos < symV2PartnerLRecvMap.size(); ++pos)
-                {
-                    if (symV2PartnerLRecvMap[pos].empty())
-                        continue;
-                    std::copy(symV2PartnerLRecvMap[pos].begin(),
-                              symV2PartnerLRecvMap[pos].end(),
-                              packed_recv_maps.begin() +
-                                  symV2PartnerLRecvMapOffsets[pos]);
-                }
-                gpuErrchk(cudaMalloc(
-                    (void **)&symV2PartnerLRecvMapPoolGPU,
-                    xlu_checked_product(total_recv_map, sizeof(int_t),
-                                        "SymFact V2 partner-L receive map pool")));
-                gpuErrchk(cudaMemcpy(
-                    symV2PartnerLRecvMapPoolGPU, packed_recv_maps.data(),
-                    sizeof(int_t) * total_recv_map,
-                    cudaMemcpyHostToDevice));
-                for (size_t pos = 0; pos < symV2PartnerLRecvMap.size(); ++pos)
-                {
-                    if (!symV2PartnerLRecvMap[pos].empty())
-                        symV2PartnerLRecvMapsGPU[pos] =
-                            symV2PartnerLRecvMapPoolGPU +
-                            symV2PartnerLRecvMapOffsets[pos];
-                }
-            }
 
             size_t total_row_recv_map = 0;
             for (size_t pos = 0; pos < symV2RowFragRecvMap.size(); ++pos)
@@ -5023,35 +4900,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             }
             symV2RowFragRecvMapPoolCount = total_row_recv_map;
             symV2RowFragRecvMapsGPU.assign(row_chunk_count, NULL);
-            if (total_row_recv_map > 0)
-            {
-                std::vector<int_t> packed_row_recv_maps(total_row_recv_map, 0);
-                for (size_t pos = 0; pos < symV2RowFragRecvMap.size(); ++pos)
-                {
-                    if (symV2RowFragRecvMap[pos].empty())
-                        continue;
-                    std::copy(symV2RowFragRecvMap[pos].begin(),
-                              symV2RowFragRecvMap[pos].end(),
-                              packed_row_recv_maps.begin() +
-                                  symV2RowFragRecvMapOffsets[pos]);
-                }
-                gpuErrchk(cudaMalloc(
-                    (void **)&symV2RowFragRecvMapPoolGPU,
-                    xlu_checked_product(total_row_recv_map, sizeof(int_t),
-                                        "SymFact V2 row-fragment receive map pool")));
-                gpuErrchk(cudaMemcpy(
-                    symV2RowFragRecvMapPoolGPU,
-                    packed_row_recv_maps.data(),
-                    sizeof(int_t) * total_row_recv_map,
-                    cudaMemcpyHostToDevice));
-                for (size_t pos = 0; pos < symV2RowFragRecvMap.size(); ++pos)
-                {
-                    if (!symV2RowFragRecvMap[pos].empty())
-                        symV2RowFragRecvMapsGPU[pos] =
-                            symV2RowFragRecvMapPoolGPU +
-                            symV2RowFragRecvMapOffsets[pos];
-                }
-            }
         }
         xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after send GPU L2U map setup");
     }
@@ -5246,11 +5094,24 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLHostSendBufs.clear();
     symV2PartnerLExactHostSendBufs.clear();
     symV2RowFragExactHostSendBufs.clear();
+    symL2USendMapsHost.clear();
+    symL2ULocalMapsHost.clear();
+    symV2PartnerLMapOffsets.clear();
+    symV2PartnerLPackedMaps.clear();
+    symV2PartnerLExactSendMapsHost.clear();
+    symV2PartnerLExactSendMapOffsets.clear();
     symV2RowFragExactSendMapsHost.clear();
     symV2RowFragExactSendMapOffsets.clear();
     symV2RowDirectSendSizes.clear();
     symV2RowDirectSendMapOffsets.clear();
     symV2RowDirectSendMapsHost.clear();
+    symV2RowDownSendSizes.clear();
+    symV2RowDownSendMapOffsets.clear();
+    symV2RowDownSendMapsHost.clear();
+    symV2RowDownSegOffsets.clear();
+    symV2RowDownSegs.clear();
+    symV2RowDownRecvSizes.clear();
+    symV2RowDownPlanReady.clear();
     symV2PartnerLSendSizes.clear();
     symV2PartnerLExactSendSizes.clear();
     symV2RowFragExactSendSizes.clear();
@@ -5261,10 +5122,12 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2PartnerLRecvIndex.clear();
     symV2PartnerLRecvIndexBySrc.clear();
     symV2PartnerLRecvMap.clear();
+    symV2PartnerLRecvMapOffsets.clear();
     symV2PartnerLRecvMapsGPU.clear();
     symV2RowFragRecvSizes.clear();
     symV2RowFragRecvIndex.clear();
     symV2RowFragRecvMap.clear();
+    symV2RowFragRecvMapOffsets.clear();
     symV2RowFragRecvMapsGPU.clear();
     symL2ULocalMapsGPU.clear();
     symPanelReadyEventIds.clear();
@@ -5301,6 +5164,449 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symFactWorkSize = 0;
     return 0;
 }
+
+#ifdef HAVE_CUDA
+template <typename Ftype>
+size_t xLUstruct_t<Ftype>::symV2DelayedGpuMetadataBytes() const
+{
+    return 0;
+}
+
+template <>
+inline size_t xLUstruct_t<double>::symV2DelayedGpuMetadataBytes() const
+{
+    if (options->SymFact != YES || !superlu_acc_offload)
+        return 0;
+
+    size_t total = 0;
+    auto add_bytes = [&](size_t count, size_t elem_size, const char *what)
+    {
+        if (count == 0)
+            return;
+        size_t bytes = xlu_checked_product(count, elem_size, what);
+        if (total > std::numeric_limits<size_t>::max() - bytes)
+            ABORT("SymFact V2 delayed GPU metadata byte count overflows.");
+        total += bytes;
+    };
+    auto add_host_maps = [&](const std::vector<std::vector<int_t> > &maps,
+                             size_t elem_size,
+                             const char *what)
+    {
+        for (size_t i = 0; i < maps.size(); ++i)
+            add_bytes(maps[i].size(), elem_size, what);
+    };
+
+    add_host_maps(symL2ULocalMapsHost, sizeof(int_t),
+                  "SymFact local GPU L2U map");
+    add_host_maps(symL2USendMapsHost, sizeof(int_t),
+                  "SymFact GPU L2U send map");
+    add_host_maps(symL2USendMapsHost, sizeof(double),
+                  "SymFact GPU L2U send buffer");
+
+    add_bytes(symV2PartnerLSendBufPoolCount, sizeof(double),
+              "SymFact V2 partner-L send buffer pool");
+    add_bytes(symL2LSendMapPoolCount, sizeof(int_t),
+              "SymFact GPU L2L send map pool");
+    add_bytes(symV2PartnerLExactSendBufPoolCount, sizeof(double),
+              "SymFact V2 exact partner-L send buffer pool");
+    add_bytes(symV2PartnerLExactSendMapPoolCount, sizeof(int_t),
+              "SymFact V2 exact partner-L send map pool");
+    if (!superlu_sym_v2_rowfrag_destination_path())
+    {
+        add_bytes(symV2RowFragExactSendBufPoolCount, sizeof(double),
+                  "SymFact V2 exact row-fragment send buffer pool");
+        add_bytes(symV2RowFragExactSendMapPoolCount, sizeof(int_t),
+                  "SymFact V2 exact row-fragment send map pool");
+    }
+    add_bytes(symV2PartnerLRecvMapPoolCount, sizeof(int_t),
+              "SymFact V2 partner-L receive map pool");
+    add_bytes(symV2RowFragRecvMapPoolCount, sizeof(int_t),
+              "SymFact V2 row-fragment receive map pool");
+    add_bytes(symV2RowDownSendMapPoolCount, sizeof(int_t),
+              "SymFact V2 row-down send map pool");
+
+    return total;
+}
+
+template <typename Ftype>
+int xLUstruct_t<Ftype>::materializeSymFactGpuMetadata()
+{
+    return 0;
+}
+
+template <>
+inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
+{
+    if (options->SymFact != YES || !superlu_acc_offload)
+        return 0;
+
+    int profile_setup = symV2SetupProfileActive() ? 1 : 0;
+    double tPartnerSendGPU = profile_setup ? SuperLU_timer_() : 0.0;
+
+    auto copy_int_pool = [&](int_t **dst,
+                             const std::vector<int_t> &host,
+                             size_t count,
+                             const char *what)
+    {
+        if (count == 0)
+            return;
+        if (*dst != NULL)
+            ABORT("SymFact V2 delayed GPU metadata pool was already allocated.");
+        if (host.size() != count)
+            ABORT("SymFact V2 delayed GPU metadata host map size mismatch.");
+        gpuErrchk(cudaMalloc(
+            (void **)dst,
+            xlu_checked_product(count, sizeof(int_t), what)));
+        gpuErrchk(cudaMemcpy(*dst, host.data(), sizeof(int_t) * count,
+                             cudaMemcpyHostToDevice));
+    };
+
+    if (!symL2ULocalMapsHost.empty())
+    {
+        if (symL2ULocalMapsGPU.size() != symL2ULocalMapsHost.size())
+            ABORT("SymFact local GPU L2U map table size mismatch.");
+        for (size_t lk = 0; lk < symL2ULocalMapsHost.size(); ++lk)
+        {
+            const std::vector<int_t> &map = symL2ULocalMapsHost[lk];
+            if (map.empty())
+                continue;
+            if (symL2ULocalMapsGPU[lk] != NULL)
+                ABORT("SymFact local GPU L2U map was already allocated.");
+            gpuErrchk(cudaMalloc(
+                (void **)&symL2ULocalMapsGPU[lk],
+                xlu_checked_product(map.size(), sizeof(int_t),
+                                    "SymFact local GPU L2U map")));
+            gpuErrchk(cudaMemcpy(symL2ULocalMapsGPU[lk], map.data(),
+                                 sizeof(int_t) * map.size(),
+                                 cudaMemcpyHostToDevice));
+        }
+        symL2ULocalMapsHost.clear();
+    }
+
+    if (!symL2USendMapsHost.empty())
+    {
+        if (symL2USendBufsGPU.size() != symL2USendMapsHost.size() ||
+            symL2USendMapsGPU.size() != symL2USendMapsHost.size())
+            ABORT("SymFact GPU L2U send map table size mismatch.");
+        for (size_t flat = 0; flat < symL2USendMapsHost.size(); ++flat)
+        {
+            const std::vector<int_t> &map = symL2USendMapsHost[flat];
+            if (map.empty())
+                continue;
+            if (symL2USendBufsGPU[flat] != NULL ||
+                symL2USendMapsGPU[flat] != NULL)
+                ABORT("SymFact GPU L2U send map was already allocated.");
+            gpuErrchk(cudaMalloc(
+                (void **)&symL2USendBufsGPU[flat],
+                xlu_checked_product(map.size(), sizeof(double),
+                                    "SymFact GPU L2U send buffer")));
+            gpuErrchk(cudaMalloc(
+                (void **)&symL2USendMapsGPU[flat],
+                xlu_checked_product(map.size(), sizeof(int_t),
+                                    "SymFact GPU L2U send map")));
+            gpuErrchk(cudaMemcpy(symL2USendMapsGPU[flat], map.data(),
+                                 sizeof(int_t) * map.size(),
+                                 cudaMemcpyHostToDevice));
+        }
+        symL2USendMapsHost.clear();
+    }
+
+    if (symV2PartnerLSendBufPoolCount > 0)
+    {
+        if (symV2PartnerLPackedMaps.size() != symL2LSendMapPoolCount ||
+            symV2PartnerLSendBufPoolCount != symL2LSendMapPoolCount)
+            ABORT("SymFact V2 partner-L send pool size mismatch.");
+        if (symV2PartnerLSendBufPoolGPU != NULL ||
+            symL2LSendMapPoolGPU != NULL)
+            ABORT("SymFact V2 partner-L send pool was already allocated.");
+        gpuErrchk(cudaMalloc(
+            (void **)&symV2PartnerLSendBufPoolGPU,
+            xlu_checked_product(symV2PartnerLSendBufPoolCount,
+                                sizeof(double),
+                                "SymFact V2 partner-L send buffer pool")));
+        copy_int_pool(&symL2LSendMapPoolGPU, symV2PartnerLPackedMaps,
+                      symL2LSendMapPoolCount,
+                      "SymFact GPU L2L send map pool");
+        for (size_t flat = 0; flat < symV2PartnerLSendSizes.size(); ++flat)
+        {
+            int size = symV2PartnerLSendSizes[flat];
+            if (size <= 0)
+                continue;
+            if (flat >= symV2PartnerLMapOffsets.size())
+                ABORT("SymFact V2 partner-L send offset is missing.");
+            size_t offset = symV2PartnerLMapOffsets[flat];
+            if (offset + static_cast<size_t>(size) >
+                    symV2PartnerLSendBufPoolCount ||
+                offset + static_cast<size_t>(size) < offset)
+                ABORT("SymFact V2 partner-L send offset is invalid.");
+            symV2PartnerLSendBufsGPU[flat] =
+                symV2PartnerLSendBufPoolGPU + offset;
+            symL2LSendMapsGPU[flat] = symL2LSendMapPoolGPU + offset;
+        }
+    }
+
+    if (symV2PartnerLExactSendBufPoolCount > 0)
+    {
+        if (symV2PartnerLExactSendMapsHost.size() !=
+                symV2PartnerLExactSendMapPoolCount ||
+            symV2PartnerLExactSendBufPoolCount !=
+                symV2PartnerLExactSendMapPoolCount)
+            ABORT("SymFact V2 exact partner-L send pool size mismatch.");
+        if (symV2PartnerLExactSendBufPoolGPU != NULL ||
+            symV2PartnerLExactSendMapPoolGPU != NULL)
+            ABORT("SymFact V2 exact partner-L send pool was already allocated.");
+        gpuErrchk(cudaMalloc(
+            (void **)&symV2PartnerLExactSendBufPoolGPU,
+            xlu_checked_product(symV2PartnerLExactSendBufPoolCount,
+                                sizeof(double),
+                                "SymFact V2 exact partner-L send buffer pool")));
+        copy_int_pool(&symV2PartnerLExactSendMapPoolGPU,
+                      symV2PartnerLExactSendMapsHost,
+                      symV2PartnerLExactSendMapPoolCount,
+                      "SymFact V2 exact partner-L send map pool");
+        for (size_t slot = 0; slot < symV2PartnerLExactSendSizes.size();
+             ++slot)
+        {
+            int size = symV2PartnerLExactSendSizes[slot];
+            if (size <= 0)
+                continue;
+            if (slot >= symV2PartnerLExactSendMapOffsets.size())
+                ABORT("SymFact V2 exact partner-L send offset is missing.");
+            size_t offset = symV2PartnerLExactSendMapOffsets[slot];
+            if (offset + static_cast<size_t>(size) >
+                    symV2PartnerLExactSendBufPoolCount ||
+                offset + static_cast<size_t>(size) < offset)
+                ABORT("SymFact V2 exact partner-L send offset is invalid.");
+            symV2PartnerLExactSendBufsGPU[slot] =
+                symV2PartnerLExactSendBufPoolGPU + offset;
+            symV2PartnerLExactSendMapsGPU[slot] =
+                symV2PartnerLExactSendMapPoolGPU + offset;
+        }
+    }
+
+    if (!superlu_sym_v2_rowfrag_destination_path() &&
+        symV2RowFragExactSendMapPoolCount > 0)
+    {
+        if (symV2RowFragExactSendMapsHost.size() !=
+                symV2RowFragExactSendMapPoolCount ||
+            symV2RowFragExactSendBufPoolCount !=
+                symV2RowFragExactSendMapPoolCount)
+            ABORT("SymFact V2 exact row-fragment send pool size mismatch.");
+        if (symV2RowFragExactSendBufPoolGPU != NULL ||
+            symV2RowFragExactSendMapPoolGPU != NULL)
+            ABORT("SymFact V2 exact row-fragment send pool was already allocated.");
+        gpuErrchk(cudaMalloc(
+            (void **)&symV2RowFragExactSendBufPoolGPU,
+            xlu_checked_product(symV2RowFragExactSendBufPoolCount,
+                                sizeof(double),
+                                "SymFact V2 exact row-fragment send buffer pool")));
+        copy_int_pool(&symV2RowFragExactSendMapPoolGPU,
+                      symV2RowFragExactSendMapsHost,
+                      symV2RowFragExactSendMapPoolCount,
+                      "SymFact V2 exact row-fragment send map pool");
+        for (size_t slot = 0; slot < symV2RowFragExactSendSizes.size();
+             ++slot)
+        {
+            int size = symV2RowFragExactSendSizes[slot];
+            if (size <= 0)
+                continue;
+            if (slot >= symV2RowFragExactSendMapOffsets.size())
+                ABORT("SymFact V2 exact row-fragment send offset is missing.");
+            size_t offset = symV2RowFragExactSendMapOffsets[slot];
+            if (offset + static_cast<size_t>(size) >
+                    symV2RowFragExactSendBufPoolCount ||
+                offset + static_cast<size_t>(size) < offset)
+                ABORT("SymFact V2 exact row-fragment send offset is invalid.");
+            symV2RowFragExactSendBufsGPU[slot] =
+                symV2RowFragExactSendBufPoolGPU + offset;
+            symV2RowFragExactSendMapsGPU[slot] =
+                symV2RowFragExactSendMapPoolGPU + offset;
+        }
+    }
+
+    if (symV2RowDownSendMapPoolCount > 0)
+    {
+        copy_int_pool(&symV2RowDownSendMapPoolGPU,
+                      symV2RowDownSendMapsHost,
+                      symV2RowDownSendMapPoolCount,
+                      "SymFact V2 row-down send map pool");
+        if (symV2RowDownSendMapsGPU.size() !=
+            symV2RowDownSendSizes.size())
+            ABORT("SymFact V2 row-down send map table size mismatch.");
+        for (size_t slot = 0; slot < symV2RowDownSendSizes.size(); ++slot)
+        {
+            int size = symV2RowDownSendSizes[slot];
+            if (size <= 0)
+                continue;
+            size_t offset = symV2RowDownSendMapOffsets[slot];
+            if (offset + static_cast<size_t>(size) >
+                    symV2RowDownSendMapPoolCount ||
+                offset + static_cast<size_t>(size) < offset)
+                ABORT("SymFact V2 row-down send map offset is invalid.");
+            symV2RowDownSendMapsGPU[slot] =
+                symV2RowDownSendMapPoolGPU + offset;
+        }
+    }
+
+    auto materialize_recv_maps =
+        [&](const std::vector<std::vector<int_t> > &maps,
+            const std::vector<size_t> &offsets,
+            std::vector<int_t *> &gpu_maps,
+            int_t **pool_gpu,
+            size_t pool_count,
+            const char *what)
+    {
+        if (pool_count == 0)
+            return;
+        if (maps.size() != offsets.size() || maps.size() != gpu_maps.size())
+            ABORT("SymFact V2 receive map table size mismatch.");
+        std::vector<int_t> packed(pool_count, 0);
+        for (size_t pos = 0; pos < maps.size(); ++pos)
+        {
+            if (maps[pos].empty())
+                continue;
+            size_t offset = offsets[pos];
+            if (offset + maps[pos].size() > pool_count ||
+                offset + maps[pos].size() < offset)
+                ABORT("SymFact V2 receive map offset is invalid.");
+            std::copy(maps[pos].begin(), maps[pos].end(),
+                      packed.begin() + offset);
+        }
+        copy_int_pool(pool_gpu, packed, pool_count, what);
+        for (size_t pos = 0; pos < maps.size(); ++pos)
+        {
+            if (!maps[pos].empty())
+                gpu_maps[pos] = *pool_gpu + offsets[pos];
+        }
+    };
+
+    materialize_recv_maps(symV2PartnerLRecvMap,
+                          symV2PartnerLRecvMapOffsets,
+                          symV2PartnerLRecvMapsGPU,
+                          &symV2PartnerLRecvMapPoolGPU,
+                          symV2PartnerLRecvMapPoolCount,
+                          "SymFact V2 partner-L receive map pool");
+    materialize_recv_maps(symV2RowFragRecvMap,
+                          symV2RowFragRecvMapOffsets,
+                          symV2RowFragRecvMapsGPU,
+                          &symV2RowFragRecvMapPoolGPU,
+                          symV2RowFragRecvMapPoolCount,
+                          "SymFact V2 row-fragment receive map pool");
+
+    if (!superlu_cuda_aware_mpi())
+    {
+        if (superlu_sym_v2_pinned_staging())
+        {
+            if (superlu_sym_v2_pinned_staging_pool() &&
+                symV2PartnerLHostSendPoolPinnedCount > 0)
+            {
+                if (symV2PartnerLHostSendPoolPinned != NULL)
+                    ABORT("SymFact V2 pooled pinned send staging was already allocated.");
+                gpuErrchk(cudaMallocHost(
+                    (void **)&symV2PartnerLHostSendPoolPinned,
+                    xlu_checked_product(symV2PartnerLHostSendPoolPinnedCount,
+                                        sizeof(double),
+                                        "SymFact V2 pooled pinned send staging")));
+                for (size_t flat = 0; flat < symV2PartnerLSendSizes.size();
+                     ++flat)
+                {
+                    int size = symV2PartnerLSendSizes[flat];
+                    if (size <= 0)
+                        continue;
+                    size_t offset =
+                        symV2PartnerLHostSendScratchOffsets[flat];
+                    if (offset + static_cast<size_t>(size) >
+                            symV2PartnerLHostSendPoolPinnedCount ||
+                        offset + static_cast<size_t>(size) < offset)
+                        ABORT("SymFact V2 pooled send staging map is invalid.");
+                    symV2PartnerLHostSendBufsPinned[flat] =
+                        symV2PartnerLHostSendPoolPinned + offset;
+                }
+            }
+            else if (!superlu_sym_v2_pinned_staging_pool())
+            {
+                for (size_t flat = 0; flat < symV2PartnerLSendSizes.size();
+                     ++flat)
+                {
+                    if (symV2PartnerLSendSizes[flat] <= 0)
+                        continue;
+                    if (symV2PartnerLHostSendBufsPinned[flat] != NULL)
+                        ABORT("SymFact V2 pinned send staging was already allocated.");
+                    gpuErrchk(cudaMallocHost(
+                        (void **)&symV2PartnerLHostSendBufsPinned[flat],
+                        xlu_checked_product(
+                            static_cast<size_t>(symV2PartnerLSendSizes[flat]),
+                            sizeof(double),
+                            "SymFact V2 pinned send staging")));
+                }
+            }
+
+            for (size_t slot = 0;
+                 slot < symV2PartnerLExactSendSizes.size(); ++slot)
+            {
+                if (symV2PartnerLExactSendSizes[slot] <= 0)
+                    continue;
+                if (symV2PartnerLExactHostSendBufsPinned[slot] != NULL)
+                    ABORT("SymFact V2 exact pinned send staging was already allocated.");
+                gpuErrchk(cudaMallocHost(
+                    (void **)&symV2PartnerLExactHostSendBufsPinned[slot],
+                    xlu_checked_product(
+                        static_cast<size_t>(
+                            symV2PartnerLExactSendSizes[slot]),
+                        sizeof(double),
+                        "SymFact V2 exact partner-L pinned send staging")));
+            }
+            for (size_t slot = 0;
+                 slot < symV2RowFragExactSendSizes.size(); ++slot)
+            {
+                if (symV2RowFragExactSendSizes[slot] <= 0)
+                    continue;
+                if (symV2RowFragExactHostSendBufsPinned[slot] != NULL)
+                    ABORT("SymFact V2 exact row-fragment pinned send staging was already allocated.");
+                gpuErrchk(cudaMallocHost(
+                    (void **)&symV2RowFragExactHostSendBufsPinned[slot],
+                    xlu_checked_product(
+                        static_cast<size_t>(
+                            symV2RowFragExactSendSizes[slot]),
+                        sizeof(double),
+                        "SymFact V2 exact row-fragment pinned send staging")));
+            }
+        }
+        else
+        {
+            for (size_t slot = 0;
+                 slot < symV2PartnerLExactSendSizes.size(); ++slot)
+            {
+                if (symV2PartnerLExactSendSizes[slot] > 0 &&
+                    symV2PartnerLExactHostSendBufs[slot].empty())
+                    symV2PartnerLExactHostSendBufs[slot].resize(
+                        static_cast<size_t>(
+                            symV2PartnerLExactSendSizes[slot]));
+            }
+            for (size_t slot = 0;
+                 slot < symV2RowFragExactSendSizes.size(); ++slot)
+            {
+                if (symV2RowFragExactSendSizes[slot] > 0 &&
+                    symV2RowFragExactHostSendBufs[slot].empty())
+                    symV2RowFragExactHostSendBufs[slot].resize(
+                        static_cast<size_t>(
+                            symV2RowFragExactSendSizes[slot]));
+            }
+        }
+    }
+
+    if (profile_setup)
+        symV2SetupProfileAdd(SYM_V2_SETUP_PARTNER_SEND_GPU_ALLOC_COPY,
+                             SuperLU_timer_() - tPartnerSendGPU);
+
+    std::vector<int_t>().swap(symV2PartnerLPackedMaps);
+    std::vector<int_t>().swap(symV2PartnerLExactSendMapsHost);
+    if (symV2RowDownSendMapPoolGPU != NULL)
+        std::vector<int_t>().swap(symV2RowDownSendMapsHost);
+
+    return 0;
+}
+#endif
 
 template <>
 inline int xLUstruct_t<double>::ensureSymFactWorkSize(int64_t minSize)
