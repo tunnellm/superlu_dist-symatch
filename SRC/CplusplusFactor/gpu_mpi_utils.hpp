@@ -363,6 +363,11 @@ static inline bool superlu_sym_v2_row_l_plan_v2_aggregate_dest()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_AGGREGATE_DEST", 1);
 }
 
+static inline bool superlu_sym_v2_row_l_plan_v2_compact()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_COMPACT", 0);
+}
+
 static inline bool superlu_sym_v2_row_hybrid_cost()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_HYBRID_COST", 0);

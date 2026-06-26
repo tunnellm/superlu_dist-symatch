@@ -3137,16 +3137,25 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     const bool sym_v2_pc_fragment_schur =
         sym_v2_mode && superlu_sym_v2_pc_fragment_schur() &&
         Pr > 1 && Pc > 1;
+    const bool sym_v2_row_plan_v2_compact =
+        sym_v2_pc_fragment_schur &&
+        superlu_sym_v2_row_l_plan_v2_compact();
+    const bool sym_v2_row_stage_reuse =
+        sym_v2_pc_fragment_schur &&
+        (superlu_sym_v2_row_l_pack_all_dest() ||
+         superlu_sym_v2_row_l_plan_v2_exchange());
 // SYM_V2_PC2_PHASE2_ROW_STAGE_CAPACITY_BEGIN
     int_t sym_v2_pc_frag_row_stage_count_int = 0;
     size_t sym_v2_pc_frag_row_stage_count = 0;
     if (sym_v2_pc_fragment_schur)
     {
-        int_t row_stage_count = maxSymV2RowFragStageCount;
-        if (superlu_sym_v2_row_l_pack_all_dest() ||
-            superlu_sym_v2_row_l_plan_v2_exchange())
-            row_stage_count = SUPERLU_MAX(row_stage_count,
-                                          maxSymV2RowFragValSendCount);
+        int_t row_stage_count =
+            SUPERLU_MAX((int_t)0, maxSymV2RowFragStageCount);
+        int_t row_send_stage_count =
+            SUPERLU_MAX((int_t)0, maxSymV2RowFragValSendCount);
+        if (sym_v2_row_stage_reuse)
+            row_stage_count =
+                SUPERLU_MAX(row_stage_count, row_send_stage_count);
         sym_v2_pc_frag_row_stage_count_int =
             SUPERLU_MAX((int_t)0, row_stage_count);
         sym_v2_pc_frag_row_stage_count =
@@ -3281,6 +3290,25 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                   MPI_INT, MPI_MIN, grid3d->comm);
     if (rNumberOfStreams < 1)
         ABORT("GPU workspace estimate left no usable CUDA streams.");
+    if (sym_v2_row_plan_v2_compact)
+    {
+        int targetStreams = SUPERLU_MIN(getNumLookAhead(options),
+                                        MAX_CUDA_STREAMS);
+        if (rNumberOfStreams < targetStreams && grid3d->iam == 0)
+        {
+            std::printf("SymFact V2 compact row plan limited CUDA streams: "
+                        "streams=%d target=%d usable=%zu persistent=%zu "
+                        "per_stream_base=%zu per_stream=%zu gemm=%zu "
+                        "row_stage=%lld row_recv_values=%lld row_send_stage=%lld\n",
+                        rNumberOfStreams, targetStreams, useableGPUMem,
+                        memReqData, dataPerStreamBase, dataPerStream,
+                        A_gpu.gemmBufferSize,
+                        (long long)sym_v2_pc_frag_row_stage_count_int,
+                        (long long)maxSymV2RowFragValRecvCount,
+                        (long long)maxSymV2RowFragValSendCount);
+            std::fflush(stdout);
+        }
+    }
     A_gpu.numCudaStreams = rNumberOfStreams;
     {
         auto size_to_ll = [](size_t value) -> long long
@@ -3350,6 +3378,13 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                       SUPERLU_MAX((int_t)0,
                                                   maxSymV2RowFragValSendCount)),
                                   sizeof(Ftype)));
+        symV2ProfileScalarSet(
+            SYM_V2_PROFILE_GPU_ROW_STAGE_REUSE,
+            (sym_v2_row_stage_reuse && sym_v2_row_plan_v2_compact) ? 1 : 0);
+        symV2ProfileScalarSet(
+            SYM_V2_PROFILE_GPU_ROW_STAGE_CHOSEN_BYTES,
+            count_bytes_to_ll(sym_v2_pc_frag_row_stage_count,
+                              sizeof(Ftype)));
         symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_DIAG_BYTES,
                               count_bytes_to_ll(sym_diag_buf_elems,
                                                 sizeof(Ftype)));

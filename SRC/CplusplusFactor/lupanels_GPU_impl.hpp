@@ -580,6 +580,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         if (!superlu_sym_v2_row_l_separate_send_staging())
             ABORT("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE requires GPU3DV2_ROW_L_SEPARATE_SEND_STAGING=1.");
     }
+    if (pc_fragment_schur && superlu_sym_v2_row_l_plan_v2_compact())
+    {
+        if (!superlu_sym_v2_row_l_plan_v2())
+            ABORT("GPU3DV2_ROW_L_PLAN_V2_COMPACT requires GPU3DV2_ROW_L_PLAN_V2=1.");
+        if (superlu_sym_v2_row_l_plan_v2_dryrun())
+            ABORT("GPU3DV2_ROW_L_PLAN_V2_COMPACT requires GPU3DV2_ROW_L_PLAN_V2_DRYRUN=0.");
+        if (!superlu_sym_v2_row_l_plan_v2_exchange())
+            ABORT("GPU3DV2_ROW_L_PLAN_V2_COMPACT requires GPU3DV2_ROW_L_PLAN_V2_EXCHANGE=1.");
+        if (!superlu_sym_v2_row_l_pack_all_dest())
+            ABORT("GPU3DV2_ROW_L_PLAN_V2_COMPACT requires GPU3DV2_ROW_L_PACK_ALL_DEST=1.");
+    }
 // SYM_V2_PC2_PHASE4_PLAN_EXCHANGE_GUARD_END
 
 
