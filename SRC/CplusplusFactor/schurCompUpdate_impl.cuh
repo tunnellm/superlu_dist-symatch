@@ -3184,18 +3184,15 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 (long long)maxSymV2RowFragIdxRecvCount);
     std::fflush(stdout);
 #endif
-    size_t two_stream_bytes =
-        xlu_checked_product(2, dataPerStream,
-                            "GPU two-stream buffer estimate");
-    if (memReqData > static_cast<size_t>(-1) - two_stream_bytes)
-        ABORT("GPU two-stream memory estimate overflows allocation size.");
-    size_t required_two_stream_bytes = memReqData + two_stream_bytes;
-    if (required_two_stream_bytes > useableGPUMem)
+    if (memReqData > static_cast<size_t>(-1) - dataPerStream)
+        ABORT("GPU one-stream memory estimate overflows allocation size.");
+    size_t required_one_stream_bytes = memReqData + dataPerStream;
+    if (required_one_stream_bytes > useableGPUMem)
     {
-        printf("Not enough memory on GPU: available=%zu required_for_2_streams=%zu "
+        printf("Not enough memory on GPU: available=%zu required_for_1_stream=%zu "
                "memReqData=%zu dataPerStream=%zu gemmBuffer=%zu diagDim=%zu "
                "diagElems=%zu maxLval=%lld maxUval=%lld maxSymPartnerLval=%lld maxRowFragStage=%lld maxRowFragVal=%lld, exiting\n",
-               useableGPUMem, required_two_stream_bytes, memReqData,
+               useableGPUMem, required_one_stream_bytes, memReqData,
                dataPerStream, A_gpu.gemmBufferSize, sym_diag_buf_dim,
                sym_diag_buf_elems, (long long)maxLvalCount,
                (long long)maxUvalCount, (long long)maxSymPartnerLvalCount,
@@ -3228,6 +3225,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     int rNumberOfStreams;
     MPI_Allreduce(&numberOfStreams, &rNumberOfStreams, 1,
                   MPI_INT, MPI_MIN, grid3d->comm);
+    if (rNumberOfStreams < 1)
+        ABORT("GPU workspace estimate left no usable CUDA streams.");
     A_gpu.numCudaStreams = rNumberOfStreams;
 // SYM_V2_PC2_PHASE6_ALLOC_EXCHANGE_STATES_BEGIN
     if (sym_v2_mode)
