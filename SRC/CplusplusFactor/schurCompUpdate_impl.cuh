@@ -3157,19 +3157,28 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         sym_v2_pc_fragment_schur
             ? static_cast<size_t>(maxSymV2RowFragIdxRecvCount)
             : 0;
-    size_t dataPerStream = (3 * sizeof(Ftype) * maxLvalCount +
-                            sizeof(Ftype) * sym_v2_raw_panel_count +
-                            sizeof(Ftype) * sym_v2_pc_frag_row_stage_count +
-                            sizeof(Ftype) * sym_v2_pc_frag_row_val_count +
-                            2 * sizeof(Ftype) * maxSymPartnerLvalCount +
-                            sizeof(Ftype) * u_recv_val_count +
-                            sizeof(Ftype) * lookahead_u_val_count +
-                            2 * sizeof(int_t) * maxLidxCount +
-                            sizeof(int_t) * maxSymPartnerLidxCount +
-                            sizeof(int_t) * sym_v2_pc_frag_idx_count +
-                            sizeof(int_t) * u_recv_idx_count +
-                            A_gpu.gemmBufferSize * sizeof(Ftype) +
-                            sym_diag_buf_elems * sizeof(Ftype));
+    size_t dataPerStreamBase =
+        (3 * sizeof(Ftype) * maxLvalCount +
+         sizeof(Ftype) * sym_v2_raw_panel_count +
+         sizeof(Ftype) * sym_v2_pc_frag_row_stage_count +
+         sizeof(Ftype) * sym_v2_pc_frag_row_val_count +
+         2 * sizeof(Ftype) * maxSymPartnerLvalCount +
+         sizeof(Ftype) * u_recv_val_count +
+         sizeof(Ftype) * lookahead_u_val_count +
+         2 * sizeof(int_t) * maxLidxCount +
+         sizeof(int_t) * maxSymPartnerLidxCount +
+         sizeof(int_t) * sym_v2_pc_frag_idx_count +
+         sizeof(int_t) * u_recv_idx_count +
+         sym_diag_buf_elems * sizeof(Ftype));
+    auto compute_data_per_stream = [&]() -> size_t
+    {
+        size_t gemm_bytes = xlu_checked_product(
+            A_gpu.gemmBufferSize, sizeof(Ftype), "GPU GEMM buffer estimate");
+        if (dataPerStreamBase > static_cast<size_t>(-1) - gemm_bytes)
+            ABORT("GPU per-stream memory estimate overflows allocation size.");
+        return dataPerStreamBase + gemm_bytes;
+    };
+    size_t dataPerStream = compute_data_per_stream();
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
     std::printf("[sym-gpu3d-trace] rank %d: GPU memory estimate free_per_rank=%zu memReqData=%zu dataPerStream=%zu totalNzval=%zu gemmBuffer=%zu diagDim=%zu diagElems=%zu maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld maxSymPartnerLval=%lld maxSymPartnerLidx=%lld maxRowFragStage=%lld maxRowFragVal=%lld maxRowFragIdx=%lld\n",
                 (grid3d != NULL) ? grid3d->iam : -1,
@@ -3184,6 +3193,47 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 (long long)maxSymV2RowFragIdxRecvCount);
     std::fflush(stdout);
 #endif
+    if (memReqData <= static_cast<size_t>(-1) - dataPerStream &&
+        memReqData + dataPerStream > useableGPUMem)
+    {
+        if (memReqData > static_cast<size_t>(-1) - dataPerStreamBase)
+            ABORT("GPU one-stream base memory estimate overflows allocation size.");
+        size_t required_without_gemm = memReqData + dataPerStreamBase;
+        size_t min_gemm_elems = xlu_checked_product(
+            static_cast<size_t>(SUPERLU_MAX(1, maxsup)),
+            static_cast<size_t>(SUPERLU_MAX(1, maxsup)),
+            "minimum GPU GEMM buffer estimate");
+        min_gemm_elems = SUPERLU_MIN(
+            min_gemm_elems, static_cast<size_t>(A_gpu.gemmBufferSize));
+        min_gemm_elems = SUPERLU_MAX(static_cast<size_t>(1), min_gemm_elems);
+        size_t min_gemm_bytes = xlu_checked_product(
+            min_gemm_elems, sizeof(Ftype), "minimum GPU GEMM buffer estimate");
+        if (required_without_gemm > useableGPUMem ||
+            useableGPUMem - required_without_gemm < min_gemm_bytes)
+        {
+            dataPerStream = compute_data_per_stream();
+        }
+        else
+        {
+            size_t available_for_gemm = useableGPUMem - required_without_gemm;
+            const size_t safety_bytes = 64u * 1024u * 1024u;
+            if (available_for_gemm > min_gemm_bytes + safety_bytes)
+                available_for_gemm -= safety_bytes;
+            size_t reduced_gemm_elems = available_for_gemm / sizeof(Ftype);
+            reduced_gemm_elems =
+                SUPERLU_MAX(min_gemm_elems, reduced_gemm_elems);
+            if (reduced_gemm_elems < A_gpu.gemmBufferSize)
+            {
+                std::printf("Reducing GPU GEMM buffer on rank %d from %zu to %zu "
+                            "doubles to fit one CUDA stream\n",
+                            (grid3d != NULL) ? grid3d->iam : -1,
+                            A_gpu.gemmBufferSize, reduced_gemm_elems);
+                A_gpu.gemmBufferSize = reduced_gemm_elems;
+                dataPerStream = compute_data_per_stream();
+            }
+        }
+    }
+
     if (memReqData > static_cast<size_t>(-1) - dataPerStream)
         ABORT("GPU one-stream memory estimate overflows allocation size.");
     size_t required_one_stream_bytes = memReqData + dataPerStream;
