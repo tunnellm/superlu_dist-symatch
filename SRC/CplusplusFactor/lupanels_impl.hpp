@@ -232,6 +232,11 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
         "lfrag_recv_count_allreduce",
         "lfrag_meta_allgather",
         "lfrag_recv_map_build",
+        "recv_cache_build",
+        "partner_recv_index_build",
+        "partner_recv_lookup_build",
+        "row_recv_index_build",
+        "row_recv_lookup_build",
         "exact_demand_build",
         "exact_send_map_index",
         "exact_send_map_build",
@@ -3014,10 +3019,33 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
             double tPartnerRecvMapBuild =
                 profile_setup ? SuperLU_timer_() : 0.0;
+            const bool recv_map_index_setup =
+                symGPU3DVersion == 2 && Pr > 1 && Pc > 1 &&
+                superlu_sym_v2_recv_map_index();
+            const bool recv_map_index_verify =
+                recv_map_index_setup &&
+                superlu_sym_v2_recv_map_index_verify();
             struct SymV2CachedPartnerBlock
             {
                 int_t gid;
+                size_t cols_begin;
+                int_t len;
                 std::vector<int_t> cols;
+            };
+            auto cached_block_len =
+                [&](const SymV2CachedPartnerBlock &block) -> int_t
+            {
+                return recv_map_index_setup
+                           ? block.len
+                           : static_cast<int_t>(block.cols.size());
+            };
+            auto cached_block_col =
+                [&](const SymV2CachedPartnerBlock &block,
+                    size_t pos) -> int_t
+            {
+                return recv_map_index_setup
+                           ? all_meta_payload[block.cols_begin + pos]
+                           : block.cols[pos];
             };
             std::vector<std::vector<SymV2CachedPartnerBlock> >
                 cached_partner_blocks(nsupers);
@@ -3031,6 +3059,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             std::vector<std::vector<SymV2CachedPartnerBlock> >
                 cached_row_recv_blocks(row_chunk_count);
 
+            double tRecvCacheBuild =
+                profile_setup ? SuperLU_timer_() : 0.0;
             for (int r = 0; r < comm_size; ++r)
             {
                 size_t meta_pos = static_cast<size_t>(meta_displs[r]);
@@ -3071,9 +3101,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 block_pos + static_cast<size_t>(len) >
                                     block_end)
                                 ABORT("SymFact V2 partner-L metadata block has invalid length.");
-                            block.cols.assign(
-                                all_meta_payload.begin() + block_pos,
-                                all_meta_payload.begin() + block_pos + len);
+                            block.cols_begin = block_pos;
+                            block.len = len;
+                            if (!recv_map_index_setup)
+                                block.cols.assign(
+                                    all_meta_payload.begin() + block_pos,
+                                    all_meta_payload.begin() + block_pos + len);
                             block_pos += static_cast<size_t>(len);
                             if (exact_partner_fragment_demand_setup &&
                                 !std::binary_search(exact_blocks.begin(),
@@ -3111,9 +3144,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                     row_block_pos + static_cast<size_t>(len) >
                                         block_end)
                                     ABORT("SymFact V2 row-fragment metadata block has invalid length.");
-                                block.cols.assign(
-                                    all_meta_payload.begin() + row_block_pos,
-                                    all_meta_payload.begin() + row_block_pos + len);
+                                block.cols_begin = row_block_pos;
+                                block.len = len;
+                                if (!recv_map_index_setup)
+                                    block.cols.assign(
+                                        all_meta_payload.begin() + row_block_pos,
+                                        all_meta_payload.begin() + row_block_pos + len);
                                 row_block_pos += static_cast<size_t>(len);
                                 if (exact_row_fragment_demand_setup &&
                                     !std::binary_search(exact_blocks.begin(),
@@ -3133,6 +3169,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     meta_pos = block_end;
                 }
             }
+            if (profile_setup)
+                symV2SetupProfileAdd(SYM_V2_SETUP_RECV_CACHE_BUILD,
+                                     SuperLU_timer_() - tRecvCacheBuild);
 
             symV2PartnerLRecvSizes.assign(compact_count, 0);
             symV2PartnerLRecvIndex.assign(nsupers, std::vector<int_t>());
@@ -3182,6 +3221,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     cached_partner_blocks[k0];
                 if (blocks.empty())
                     continue;
+                double tPartnerRecvIndexBuild =
+                    profile_setup ? SuperLU_timer_() : 0.0;
                 std::sort(blocks.begin(), blocks.end(),
                           [](const SymV2CachedPartnerBlock &a,
                              const SymV2CachedPartnerBlock &b)
@@ -3192,7 +3233,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t partner_nblocks = static_cast<int_t>(blocks.size());
                 int_t partner_nrows = 0;
                 for (size_t ib = 0; ib < blocks.size(); ++ib)
-                    partner_nrows += static_cast<int_t>(blocks[ib].cols.size());
+                    partner_nrows += cached_block_len(blocks[ib]);
                 int_t partner_index_size =
                     LPANEL_HEADER_SIZE + 2 * partner_nblocks + 1 +
                     partner_nrows;
@@ -3218,11 +3259,61 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     index[gid_ptr + ib] = blocks[ib].gid;
                     index[px_ptr + ib + 1] =
                         index[px_ptr + ib] +
-                        static_cast<int_t>(blocks[ib].cols.size());
-                    for (size_t j = 0; j < blocks[ib].cols.size(); ++j)
-                        index[row_ptr++] = blocks[ib].cols[j];
+                        cached_block_len(blocks[ib]);
+                    for (int_t j = 0; j < cached_block_len(blocks[ib]); ++j)
+                        index[row_ptr++] =
+                            cached_block_col(blocks[ib], static_cast<size_t>(j));
                 }
 
+                std::vector<std::pair<int_t, int_t> > partner_lookup;
+                if (recv_map_index_setup)
+                {
+                    partner_lookup.reserve(static_cast<size_t>(partner_nblocks));
+                    for (int_t ib = 0; ib < partner_nblocks; ++ib)
+                    {
+                        if (!partner_lookup.empty() &&
+                            partner_lookup.back().first == blocks[ib].gid)
+                            continue;
+                        partner_lookup.push_back(std::make_pair(
+                            blocks[ib].gid, index[px_ptr + ib]));
+                    }
+                }
+                auto partner_linear_offset = [&](int_t gid) -> int_t
+                {
+                    for (int_t probe = 0; probe < partner_nblocks; ++probe)
+                        if (blocks[probe].gid == gid)
+                            return index[px_ptr + probe];
+                    return GLOBAL_BLOCK_NOT_FOUND;
+                };
+                auto partner_indexed_offset = [&](int_t gid) -> int_t
+                {
+                    if (!recv_map_index_setup)
+                        return partner_linear_offset(gid);
+                    std::vector<std::pair<int_t, int_t> >::const_iterator it =
+                        std::lower_bound(
+                            partner_lookup.begin(), partner_lookup.end(),
+                            std::make_pair(gid, static_cast<int_t>(0)),
+                            [](const std::pair<int_t, int_t> &a,
+                               const std::pair<int_t, int_t> &b)
+                            {
+                                return a.first < b.first;
+                            });
+                    int_t indexed =
+                        (it != partner_lookup.end() && it->first == gid)
+                            ? it->second
+                            : GLOBAL_BLOCK_NOT_FOUND;
+                    if (recv_map_index_verify &&
+                        indexed != partner_linear_offset(gid))
+                        ABORT("SymFact V2 indexed partner-L receive lookup mismatch.");
+                    return indexed;
+                };
+                if (profile_setup)
+                    symV2SetupProfileAdd(
+                        SYM_V2_SETUP_PARTNER_RECV_INDEX_BUILD,
+                        SuperLU_timer_() - tPartnerRecvIndexBuild);
+
+                double tPartnerRecvLookupBuild =
+                    profile_setup ? SuperLU_timer_() : 0.0;
                 for (int pr = 0; pr < Pr; ++pr)
                 {
                     size_t recv_pos = static_cast<size_t>(k0) *
@@ -3241,7 +3332,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         int_t src_nrows = 0;
                         for (size_t rb = 0; rb < recv_blocks.size(); ++rb)
                             src_nrows +=
-                                static_cast<int_t>(recv_blocks[rb].cols.size());
+                                cached_block_len(recv_blocks[rb]);
                         int_t src_index_size =
                             LPANEL_HEADER_SIZE + 2 * src_nblocks + 1 +
                             src_nrows;
@@ -3263,33 +3354,28 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 recv_blocks[static_cast<size_t>(rb)].gid;
                             src_index[src_px_ptr + rb + 1] =
                                 src_index[src_px_ptr + rb] +
-                                static_cast<int_t>(
-                                    recv_blocks[static_cast<size_t>(rb)].cols.size());
-                            for (size_t rc = 0;
-                                 rc < recv_blocks[static_cast<size_t>(rb)].cols.size();
+                                cached_block_len(
+                                    recv_blocks[static_cast<size_t>(rb)]);
+                            for (int_t rc = 0;
+                                 rc < cached_block_len(
+                                          recv_blocks[static_cast<size_t>(rb)]);
                                  ++rc)
                                 src_index[src_row_ptr++] =
-                                    recv_blocks[static_cast<size_t>(rb)].cols[rc];
+                                    cached_block_col(
+                                        recv_blocks[static_cast<size_t>(rb)],
+                                        static_cast<size_t>(rc));
                         }
                     }
                     long long expected_values = 0;
                     int_t src_offset = 0;
                     for (size_t rb = 0; rb < recv_blocks.size(); ++rb)
                     {
-                        int_t ib = GLOBAL_BLOCK_NOT_FOUND;
-                        for (int_t probe = 0; probe < partner_nblocks; ++probe)
-                        {
-                            if (blocks[probe].gid == recv_blocks[rb].gid)
-                            {
-                                ib = probe;
-                                break;
-                            }
-                        }
-                        if (ib == GLOBAL_BLOCK_NOT_FOUND)
+                        int_t recv_offset =
+                            partner_indexed_offset(recv_blocks[rb].gid);
+                        if (recv_offset == GLOBAL_BLOCK_NOT_FOUND)
                             ABORT("SymFact V2 partner-L receive map cannot find a block.");
-                        int_t nrows =
-                            static_cast<int_t>(recv_blocks[rb].cols.size());
-                        recv_map.push_back(index[px_ptr + ib]);
+                        int_t nrows = cached_block_len(recv_blocks[rb]);
+                        recv_map.push_back(recv_offset);
                         recv_map.push_back(nrows);
                         recv_map.push_back(src_offset);
                         src_offset += nrows * SuperSize(k0);
@@ -3313,11 +3399,17 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         ABORT("SymFact V2 partner-L receive map size mismatch.");
                     }
                 }
+                if (profile_setup)
+                    symV2SetupProfileAdd(
+                        SYM_V2_SETUP_PARTNER_RECV_LOOKUP_BUILD,
+                        SuperLU_timer_() - tPartnerRecvLookupBuild);
 
                 std::vector<SymV2CachedPartnerBlock> &row_blocks =
                     cached_row_blocks[k0];
                 if (row_blocks.empty())
                     continue;
+                double tRowRecvIndexBuild =
+                    profile_setup ? SuperLU_timer_() : 0.0;
                 std::sort(row_blocks.begin(), row_blocks.end(),
                           [](const SymV2CachedPartnerBlock &a,
                              const SymV2CachedPartnerBlock &b)
@@ -3338,8 +3430,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t row_nblocks = static_cast<int_t>(row_blocks.size());
                 int_t row_nrows = 0;
                 for (size_t rb = 0; rb < row_blocks.size(); ++rb)
-                    row_nrows +=
-                        static_cast<int_t>(row_blocks[rb].cols.size());
+                    row_nrows += cached_block_len(row_blocks[rb]);
                 int_t row_index_size =
                     LPANEL_HEADER_SIZE + 2 * row_nblocks + 1 + row_nrows;
                 if (row_index_size > maxSymV2RowFragIdxRecvCount)
@@ -3364,11 +3455,57 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     row_index[row_gid_ptr + rb] = row_blocks[rb].gid;
                     row_index[row_px_ptr + rb + 1] =
                         row_index[row_px_ptr + rb] +
-                        static_cast<int_t>(row_blocks[rb].cols.size());
-                    for (size_t rc = 0; rc < row_blocks[rb].cols.size(); ++rc)
-                        row_index[row_data_ptr++] = row_blocks[rb].cols[rc];
+                        cached_block_len(row_blocks[rb]);
+                    for (int_t rc = 0; rc < cached_block_len(row_blocks[rb]); ++rc)
+                        row_index[row_data_ptr++] =
+                            cached_block_col(row_blocks[rb],
+                                             static_cast<size_t>(rc));
                 }
 
+                std::vector<std::pair<int_t, int_t> > row_lookup;
+                if (recv_map_index_setup)
+                {
+                    row_lookup.reserve(static_cast<size_t>(row_nblocks));
+                    for (int_t rb = 0; rb < row_nblocks; ++rb)
+                        row_lookup.push_back(std::make_pair(
+                            row_blocks[rb].gid, row_index[row_px_ptr + rb]));
+                }
+                auto row_linear_offset = [&](int_t gid) -> int_t
+                {
+                    for (int_t probe = 0; probe < row_nblocks; ++probe)
+                        if (row_blocks[probe].gid == gid)
+                            return row_index[row_px_ptr + probe];
+                    return GLOBAL_BLOCK_NOT_FOUND;
+                };
+                auto row_indexed_offset = [&](int_t gid) -> int_t
+                {
+                    if (!recv_map_index_setup)
+                        return row_linear_offset(gid);
+                    std::vector<std::pair<int_t, int_t> >::const_iterator it =
+                        std::lower_bound(
+                            row_lookup.begin(), row_lookup.end(),
+                            std::make_pair(gid, static_cast<int_t>(0)),
+                            [](const std::pair<int_t, int_t> &a,
+                               const std::pair<int_t, int_t> &b)
+                            {
+                                return a.first < b.first;
+                            });
+                    int_t indexed =
+                        (it != row_lookup.end() && it->first == gid)
+                            ? it->second
+                            : GLOBAL_BLOCK_NOT_FOUND;
+                    if (recv_map_index_verify &&
+                        indexed != row_linear_offset(gid))
+                        ABORT("SymFact V2 indexed row-fragment receive lookup mismatch.");
+                    return indexed;
+                };
+                if (profile_setup)
+                    symV2SetupProfileAdd(
+                        SYM_V2_SETUP_ROW_RECV_INDEX_BUILD,
+                        SuperLU_timer_() - tRowRecvIndexBuild);
+
+                double tRowRecvLookupBuild =
+                    profile_setup ? SuperLU_timer_() : 0.0;
                 for (int pc = 0; pc < Pc; ++pc)
                 {
                     size_t recv_pos =
@@ -3382,20 +3519,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     int_t src_offset = 0;
                     for (size_t rb = 0; rb < recv_blocks.size(); ++rb)
                     {
-                        int_t ib = GLOBAL_BLOCK_NOT_FOUND;
-                        for (int_t probe = 0; probe < row_nblocks; ++probe)
-                        {
-                            if (row_blocks[probe].gid == recv_blocks[rb].gid)
-                            {
-                                ib = probe;
-                                break;
-                            }
-                        }
-                        if (ib == GLOBAL_BLOCK_NOT_FOUND)
+                        int_t recv_offset =
+                            row_indexed_offset(recv_blocks[rb].gid);
+                        if (recv_offset == GLOBAL_BLOCK_NOT_FOUND)
                             ABORT("SymFact V2 row-fragment receive map cannot find a block.");
-                        int_t nrows =
-                            static_cast<int_t>(recv_blocks[rb].cols.size());
-                        recv_map.push_back(row_index[row_px_ptr + ib]);
+                        int_t nrows = cached_block_len(recv_blocks[rb]);
+                        recv_map.push_back(recv_offset);
                         recv_map.push_back(nrows);
                         recv_map.push_back(src_offset);
                         src_offset += nrows * SuperSize(k0);
@@ -3419,6 +3548,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         ABORT("SymFact V2 row-fragment receive map size mismatch.");
                     }
                 }
+                if (profile_setup)
+                    symV2SetupProfileAdd(
+                        SYM_V2_SETUP_ROW_RECV_LOOKUP_BUILD,
+                        SuperLU_timer_() - tRowRecvLookupBuild);
             }
             if (exact_partner_fragment_demand_setup ||
                 exact_row_fragment_demand_setup)

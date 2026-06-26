@@ -432,6 +432,16 @@ static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_CUDA_AWARE_EXPERIMENT", 0);
 }
+
+static inline bool superlu_sym_v2_recv_map_index()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_RECV_MAP_INDEX", 0);
+}
+
+static inline bool superlu_sym_v2_recv_map_index_verify()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_RECV_MAP_INDEX_VERIFY", 0);
+}
 // SYM_V2_PC2_PHASE1_FLAGS_END
 static inline bool superlu_sym_v2_rowfrag_destination_path()
 {
