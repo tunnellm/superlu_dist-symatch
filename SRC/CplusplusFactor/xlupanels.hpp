@@ -747,6 +747,10 @@ struct xLUstruct_t
     int_t *symV2RowFragExactSendMapPoolGPU;
     int_t *symV2PartnerLRecvMapPoolGPU;
     int_t *symV2RowFragRecvMapPoolGPU;
+// SYM_V2_PC2_PHASE4_XLU_ROW_DOWN_GPU_POOL_BEGIN
+    int_t *symV2RowDownSendMapPoolGPU;
+// SYM_V2_PC2_PHASE4_XLU_ROW_DOWN_GPU_POOL_END
+
     size_t symV2PartnerLSendBufPoolCount;
     size_t symL2LSendMapPoolCount;
     size_t symV2PartnerLExactSendBufPoolCount;
@@ -755,6 +759,11 @@ struct xLUstruct_t
     size_t symV2RowFragExactSendMapPoolCount;
     size_t symV2PartnerLRecvMapPoolCount;
     size_t symV2RowFragRecvMapPoolCount;
+// SYM_V2_PC2_PHASE4_XLU_ROW_DOWN_GPU_COUNT_BEGIN
+    size_t symV2RowDownSendMapPoolCount;
+    std::vector<int_t *> symV2RowDownSendMapsGPU;
+// SYM_V2_PC2_PHASE4_XLU_ROW_DOWN_GPU_COUNT_END
+
     std::vector<std::vector<int_t> > symL2LSendMeta;
     std::vector<std::vector<double> > symV2PartnerLHostSendBufs;
     std::vector<double *> symV2PartnerLHostSendBufsPinned;
@@ -767,14 +776,52 @@ struct xLUstruct_t
     std::vector<int> symV2RowDirectSendSizes;
     std::vector<size_t> symV2RowDirectSendMapOffsets;
     std::vector<int_t> symV2RowDirectSendMapsHost;
+// SYM_V2_PC2_PHASE3_XLU_ROW_DOWN_PLAN_BEGIN
+    struct SymV2RowDownSeg
+    {
+        int_t gid;
+        int_t chunk_pc;
+        int_t nrows;
+        int_t dst_row_offset;
+        int_t value_count;
+        size_t map_offset;
+    };
+    std::vector<int> symV2RowDownSendSizes;
+    std::vector<size_t> symV2RowDownSendMapOffsets;
+    std::vector<int_t> symV2RowDownSendMapsHost;
+    std::vector<size_t> symV2RowDownSegOffsets;
+    std::vector<SymV2RowDownSeg> symV2RowDownSegs;
+    std::vector<int> symV2RowDownRecvSizes;
+    std::vector<unsigned char> symV2RowDownPlanReady;
+    long long symV2RowDownSparseSendValues = 0;
+    long long symV2RowDownSparseRecvValues = 0;
+    long long symV2RowDownCurrentRecvValues = 0;
+    long long symV2RowDownDemandRecords = 0;
+    long long symV2RowDownSendMessages = 0;
+    long long symV2RowDownRecvMessages = 0;
+    double symV2RowDownSetupSeconds = 0.0;
+// SYM_V2_PC2_PHASE3_XLU_ROW_DOWN_PLAN_END
+
     double *symV2PartnerLHostSendPoolPinned = NULL;
     Ftype *symV2PartnerLHostRecvPoolPinned = NULL;
     Ftype *symV2RowFragHostRecvPoolPinned = NULL;
+// SYM_V2_PC2_PHASE1_XLU_SEND_POOL_BEGIN
+    Ftype *symV2RowFragHostSendPoolPinned = NULL;
+// SYM_V2_PC2_PHASE1_XLU_SEND_POOL_END
+
     size_t symV2PartnerLHostSendPoolPinnedCount = 0;
     size_t symV2PartnerLHostRecvPoolPinnedCount = 0;
     size_t symV2RowFragHostRecvPoolPinnedCount = 0;
+// SYM_V2_PC2_PHASE1_XLU_SEND_POOL_COUNT_BEGIN
+    size_t symV2RowFragHostSendPoolPinnedCount = 0;
+// SYM_V2_PC2_PHASE1_XLU_SEND_POOL_COUNT_END
+
     int symV2PartnerLHostRecvPinned = 0;
     int symV2RowFragHostRecvPinned = 0;
+// SYM_V2_PC2_PHASE1_XLU_SEND_PINNED_BEGIN
+    int symV2RowFragHostSendPinned = 0;
+// SYM_V2_PC2_PHASE1_XLU_SEND_PINNED_END
+
     std::vector<size_t> symV2PartnerLHostSendScratchOffsets;
     std::vector<int> symV2ExchangeSendSizesScratch;
     std::vector<int> symV2ExchangeRecvSizesScratch;
@@ -784,6 +831,12 @@ struct xLUstruct_t
     std::vector<int> symV2ExchangeRecvPeersScratch;
     std::vector<int> symV2ExchangeWaitIndicesScratch;
     std::vector<MPI_Status> symV2ExchangeWaitStatusesScratch;
+// SYM_V2_PC2_PHASE1_XLU_SEND_SCRATCH_BEGIN
+    std::vector<int> symV2RowFragSendCountsScratch;
+    std::vector<int> symV2RowFragSendOffsetsScratch;
+    std::vector<MPI_Request> symV2RowFragSendReqsScratch;
+// SYM_V2_PC2_PHASE1_XLU_SEND_SCRATCH_END
+
     std::vector<int> symV2PartnerLSendSizes;
     std::vector<int> symV2PartnerLExactSendSizes;
     std::vector<int> symV2RowFragExactSendSizes;
@@ -803,6 +856,33 @@ struct xLUstruct_t
     std::vector<int> symPanelReadyEventIds;
     std::vector<unsigned char> symV2UsePcFragmentSchur;
     std::vector<int_t> symV2RawPanelNodes;
+// SYM_V2_PC2_PHASE6_XLU_EXCHANGE_STATE_BEGIN
+    struct SymV2RowExchangeState
+    {
+        std::vector<MPI_Request> send_reqs;
+        std::vector<MPI_Request> recv_reqs;
+        std::vector<int> send_counts;
+        std::vector<int> send_offsets;
+        std::vector<int> recv_counts;
+        std::vector<int> recv_offsets;
+#ifdef HAVE_CUDA
+        cudaEvent_t pack_done;
+        cudaEvent_t d2h_done;
+        cudaEvent_t h2d_done;
+#endif
+        int_t active_k;
+        int active;
+        SymV2RowExchangeState()
+#ifdef HAVE_CUDA
+            : pack_done(NULL), d2h_done(NULL), h2d_done(NULL),
+              active_k(-1), active(0) {}
+#else
+            : active_k(-1), active(0) {}
+#endif
+    };
+    std::vector<SymV2RowExchangeState> symV2RowExchangeStates;
+// SYM_V2_PC2_PHASE6_XLU_EXCHANGE_STATE_END
+
     void *symV2LPanelArenaGPU = NULL;
     void *symV2StreamArenaGPU = NULL;
     void *symV2GemmArenaGPU = NULL;
@@ -847,6 +927,10 @@ struct xLUstruct_t
     std::vector<Ftype *> UvalRecvBufs;
     std::vector<Ftype *> symPartnerLvalRecvBufs;
     std::vector<Ftype *> symV2RowFragHostRecvBufs;
+// SYM_V2_PC2_PHASE1_XLU_SEND_BUFS_BEGIN
+    std::vector<Ftype *> symV2RowFragHostSendBufs;
+// SYM_V2_PC2_PHASE1_XLU_SEND_BUFS_END
+
     std::vector<int_t *> LidxRecvBufs;
     std::vector<int_t *> UidxRecvBufs;
     std::vector<int_t *> symPartnerLidxRecvBufs;

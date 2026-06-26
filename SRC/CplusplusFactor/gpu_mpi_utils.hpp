@@ -292,12 +292,151 @@ static inline bool superlu_sym_v2_rowfrag_dest_pack()
     return cached != 0;
 }
 
+
+// SYM_V2_PC2_PHASE1_FLAGS_BEGIN
+static inline bool superlu_sym_v2_env_bool_flag(const char *name, int fallback)
+{
+    const char *env = std::getenv(name);
+    if (env == NULL || env[0] == '\0')
+        return fallback != 0;
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("Invalid boolean GPU3DV2 row-L environment value.");
+    return parsed != 0;
+}
+
+static inline double superlu_sym_v2_env_double_flag(
+    const char *name, double fallback)
+{
+    const char *env = std::getenv(name);
+    if (env == NULL || env[0] == '\0')
+        return fallback;
+    char *end = NULL;
+    double value = std::strtod(env, &end);
+    if (end == env || *end != '\0' || value <= 0.0)
+        ABORT("Invalid positive GPU3DV2 row-L floating-point environment value.");
+    return value;
+}
+
+static inline bool superlu_sym_v2_row_l_separate_send_staging()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_SEPARATE_SEND_STAGING", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_pack_all_dest()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PACK_ALL_DEST", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_one_sync()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_ONE_SYNC", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_plan_v2()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_plan_v2_dryrun()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_DRYRUN", 1);
+}
+
+static inline bool superlu_sym_v2_row_l_plan_v2_block()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_BLOCK", 1);
+}
+
+static inline bool superlu_sym_v2_row_l_plan_v2_verify()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_VERIFY", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_plan_v2_exchange()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_plan_v2_aggregate_dest()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_AGGREGATE_DEST", 1);
+}
+
+static inline bool superlu_sym_v2_row_hybrid_cost()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_HYBRID_COST", 0);
+}
+
+static inline bool superlu_sym_v2_row_hybrid_trace()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_HYBRID_TRACE", 0);
+}
+
+static inline double superlu_sym_v2_row_hybrid_margin()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_ROW_HYBRID_MARGIN", 0.75);
+}
+
+static inline double superlu_sym_v2_cost_lat_us()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_COST_LAT_US", 3.0);
+}
+
+static inline double superlu_sym_v2_cost_net_gbps()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_COST_NET_GBPS", 25.0);
+}
+
+static inline double superlu_sym_v2_cost_pcie_gbps()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_COST_PCIE_GBPS", 20.0);
+}
+
+static inline double superlu_sym_v2_cost_pack_gbps()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_COST_PACK_GBPS", 250.0);
+}
+
+static inline double superlu_sym_v2_cost_asm_gbps()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_COST_ASM_GBPS", 250.0);
+}
+
+static inline double superlu_sym_v2_cost_kernel_us()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_COST_KERNEL_US", 5.0);
+}
+
+static inline double superlu_sym_v2_cost_setup_weight()
+{
+    return superlu_sym_v2_env_double_flag("GPU3DV2_COST_SETUP_WEIGHT", 1.0);
+}
+
+static inline bool superlu_sym_v2_row_l_exchange_issue_complete()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_EXCHANGE_ISSUE_COMPLETE", 0);
+}
+
+static inline bool superlu_sym_v2_pcfrag_async_experiment()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_ASYNC_EXPERIMENT", 0);
+}
+
+static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_CUDA_AWARE_EXPERIMENT", 0);
+}
+// SYM_V2_PC2_PHASE1_FLAGS_END
 static inline bool superlu_sym_v2_rowfrag_destination_path()
 {
+// SYM_V2_PC2_PHASE4_DEST_PATH_FLAG_BEGIN
     return superlu_sym_v2_rowfrag_dest_pack() ||
            superlu_sym_v2_row_l_source_pack() ||
            superlu_sym_v2_row_l_direct_recv() ||
-           superlu_sym_v2_row_l_postsolve_send();
+           superlu_sym_v2_row_l_postsolve_send() ||
+           superlu_sym_v2_row_l_plan_v2_exchange();
+// SYM_V2_PC2_PHASE4_DEST_PATH_FLAG_END
 }
 
 static inline bool superlu_sym_v2_exact_fragment_demand()

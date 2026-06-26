@@ -3136,10 +3136,19 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     const bool sym_v2_pc_fragment_schur =
         sym_v2_mode && superlu_sym_v2_pc_fragment_schur() &&
         Pr > 1 && Pc > 1;
-    size_t sym_v2_pc_frag_row_stage_count =
-        sym_v2_pc_fragment_schur
-            ? static_cast<size_t>(maxSymV2RowFragStageCount)
-            : 0;
+// SYM_V2_PC2_PHASE2_ROW_STAGE_CAPACITY_BEGIN
+    size_t sym_v2_pc_frag_row_stage_count = 0;
+    if (sym_v2_pc_fragment_schur)
+    {
+        int_t row_stage_count = maxSymV2RowFragStageCount;
+        if (superlu_sym_v2_row_l_pack_all_dest() ||
+            superlu_sym_v2_row_l_plan_v2_exchange())
+            row_stage_count = SUPERLU_MAX(row_stage_count,
+                                          maxSymV2RowFragValSendCount);
+        sym_v2_pc_frag_row_stage_count =
+            static_cast<size_t>(SUPERLU_MAX((int_t)0, row_stage_count));
+    }
+// SYM_V2_PC2_PHASE2_ROW_STAGE_CAPACITY_END
     size_t sym_v2_pc_frag_row_val_count =
         sym_v2_pc_fragment_schur
             ? static_cast<size_t>(maxSymV2RowFragValRecvCount)
@@ -3220,6 +3229,29 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     MPI_Allreduce(&numberOfStreams, &rNumberOfStreams, 1,
                   MPI_INT, MPI_MIN, grid3d->comm);
     A_gpu.numCudaStreams = rNumberOfStreams;
+// SYM_V2_PC2_PHASE6_ALLOC_EXCHANGE_STATES_BEGIN
+    if (sym_v2_mode)
+    {
+        symV2RowExchangeStates.resize(static_cast<size_t>(rNumberOfStreams));
+        for (size_t sx = 0; sx < symV2RowExchangeStates.size(); ++sx)
+        {
+#ifdef HAVE_CUDA
+            gpuErrchk(cudaEventCreateWithFlags(
+                &symV2RowExchangeStates[sx].pack_done,
+                cudaEventDisableTiming));
+            gpuErrchk(cudaEventCreateWithFlags(
+                &symV2RowExchangeStates[sx].d2h_done,
+                cudaEventDisableTiming));
+            gpuErrchk(cudaEventCreateWithFlags(
+                &symV2RowExchangeStates[sx].h2d_done,
+                cudaEventDisableTiming));
+#endif
+            symV2RowExchangeStates[sx].active_k = -1;
+            symV2RowExchangeStates[sx].active = 0;
+        }
+    }
+// SYM_V2_PC2_PHASE6_ALLOC_EXCHANGE_STATES_END
+
     if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
         symV2RawPanelNodes.assign(static_cast<size_t>(rNumberOfStreams), -1);
 
