@@ -3199,6 +3199,82 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         return dataPerStreamBase + gemm_bytes;
     };
     size_t dataPerStream = compute_data_per_stream();
+    const bool sym_v2_40gb_stream_tune =
+        sym_v2_pc_fragment_schur &&
+        superlu_sym_v2_pc_fragment_ldl_native() &&
+        superlu_sym_v2_40gb_stream_tune();
+    int sym_v2_40gb_stream_target = 0;
+    if (sym_v2_40gb_stream_tune)
+    {
+        sym_v2_40gb_stream_target =
+            SUPERLU_MIN(superlu_sym_v2_40gb_stream_target(),
+                        getNumLookAhead(options));
+        sym_v2_40gb_stream_target =
+            SUPERLU_MIN(sym_v2_40gb_stream_target, MAX_CUDA_STREAMS);
+        sym_v2_40gb_stream_target =
+            SUPERLU_MAX(sym_v2_40gb_stream_target, 1);
+        size_t target_streams =
+            static_cast<size_t>(sym_v2_40gb_stream_target);
+        size_t target_base_bytes = xlu_checked_product(
+            dataPerStreamBase, target_streams,
+            "SymFact V2 40GB stream target base estimate");
+        size_t safety_bytes = 64u * 1024u * 1024u;
+        size_t required_without_gemm = memReqData;
+        if (required_without_gemm >
+            static_cast<size_t>(-1) - target_base_bytes)
+            ABORT("SymFact V2 40GB stream target memory estimate overflows.");
+        required_without_gemm += target_base_bytes;
+        size_t min_gemm_elems = xlu_checked_product(
+            static_cast<size_t>(SUPERLU_MAX(1, maxsup)),
+            static_cast<size_t>(SUPERLU_MAX(1, maxsup)),
+            "minimum GPU GEMM buffer estimate");
+        min_gemm_elems = SUPERLU_MIN(
+            min_gemm_elems, static_cast<size_t>(A_gpu.gemmBufferSize));
+        min_gemm_elems = SUPERLU_MAX(static_cast<size_t>(1), min_gemm_elems);
+        size_t min_gemm_bytes_per_stream = xlu_checked_product(
+            min_gemm_elems, sizeof(Ftype),
+            "minimum GPU GEMM buffer estimate");
+        size_t min_gemm_bytes_total = xlu_checked_product(
+            min_gemm_bytes_per_stream, target_streams,
+            "SymFact V2 40GB stream target GEMM estimate");
+        if (required_without_gemm <= useableGPUMem &&
+            useableGPUMem - required_without_gemm > min_gemm_bytes_total)
+        {
+            size_t available = useableGPUMem - required_without_gemm;
+            if (available > min_gemm_bytes_total + safety_bytes)
+                available -= safety_bytes;
+            size_t tuned_gemm_elems =
+                (available / target_streams) / sizeof(Ftype);
+            tuned_gemm_elems =
+                SUPERLU_MAX(min_gemm_elems, tuned_gemm_elems);
+            if (tuned_gemm_elems < A_gpu.gemmBufferSize)
+            {
+                if (grid3d != NULL && grid3d->iam == 0)
+                {
+                    std::printf("SymFact V2 40GB stream tune: target=%d "
+                                "gemmBuffer %zu -> %zu doubles usable=%zu "
+                                "persistent=%zu per_stream_base=%zu\n",
+                                sym_v2_40gb_stream_target,
+                                A_gpu.gemmBufferSize, tuned_gemm_elems,
+                                useableGPUMem, memReqData,
+                                dataPerStreamBase);
+                    std::fflush(stdout);
+                }
+                A_gpu.gemmBufferSize = tuned_gemm_elems;
+                dataPerStream = compute_data_per_stream();
+            }
+        }
+        else if (grid3d != NULL && grid3d->iam == 0)
+        {
+            std::printf("SymFact V2 40GB stream tune cannot satisfy target=%d "
+                        "usable=%zu persistent=%zu per_stream_base=%zu "
+                        "min_gemm_total=%zu\n",
+                        sym_v2_40gb_stream_target, useableGPUMem,
+                        memReqData, dataPerStreamBase,
+                        min_gemm_bytes_total);
+            std::fflush(stdout);
+        }
+    }
 #ifdef SLU_SYM_GPU3D_DEBUG_TRACE
     std::printf("[sym-gpu3d-trace] rank %d: GPU memory estimate free_per_rank=%zu memReqData=%zu dataPerStream=%zu totalNzval=%zu gemmBuffer=%zu diagDim=%zu diagElems=%zu maxLval=%lld maxUval=%lld maxLidx=%lld maxUidx=%lld maxSymPartnerLval=%lld maxSymPartnerLidx=%lld maxRowFragStage=%lld maxRowFragVal=%lld maxRowFragIdx=%lld\n",
                 (grid3d != NULL) ? grid3d->iam : -1,
@@ -3355,6 +3431,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                                 sizeof(Ftype)));
         symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_STREAMS,
                               static_cast<long long>(rNumberOfStreams));
+        symV2ProfileScalarSet(
+            SYM_V2_PROFILE_GPU_STREAM_TUNE_ACTIVE,
+            sym_v2_40gb_stream_tune ? 1 : 0);
+        symV2ProfileScalarSet(
+            SYM_V2_PROFILE_GPU_STREAM_TUNE_TARGET,
+            static_cast<long long>(sym_v2_40gb_stream_target));
         symV2ProfileScalarSet(SYM_V2_PROFILE_GPU_RAW_W_CACHE_BYTES,
                               count_bytes_to_ll(sym_v2_raw_panel_count,
                                                 sizeof(Ftype)));

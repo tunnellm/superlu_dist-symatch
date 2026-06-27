@@ -340,6 +340,30 @@ static inline double superlu_sym_v2_env_double_flag(
     return value;
 }
 
+static inline int superlu_sym_v2_env_int_flag(
+    const char *name, int fallback)
+{
+    const char *env = std::getenv(name);
+    if (env == NULL || env[0] == '\0')
+        return fallback;
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value <= 0 ||
+        value > static_cast<long>(std::numeric_limits<int>::max()))
+        ABORT("Invalid positive GPU3DV2 integer environment value.");
+    return static_cast<int>(value);
+}
+
+static inline bool superlu_sym_v2_40gb_stream_tune()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_40GB_STREAM_TUNE", 0);
+}
+
+static inline int superlu_sym_v2_40gb_stream_target()
+{
+    return superlu_sym_v2_env_int_flag("GPU3DV2_40GB_STREAM_TARGET", 8);
+}
+
 static inline bool superlu_sym_v2_row_l_separate_send_staging()
 {
     if (superlu_sym_v2_pc_fragment_ldl_native())

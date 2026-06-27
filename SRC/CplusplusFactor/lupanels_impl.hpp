@@ -265,6 +265,8 @@ void xLUstruct_t<Ftype>::printSymV2SetupProfile()
         "gpu_gemm_buffer_bytes",
         "gpu_gemm_shrink_bytes",
         "gpu_streams",
+        "gpu_stream_tune_active",
+        "gpu_stream_tune_target",
         "gpu_raw_w_cache_bytes",
         "gpu_partner_value_bytes",
         "gpu_partner_index_bytes",
