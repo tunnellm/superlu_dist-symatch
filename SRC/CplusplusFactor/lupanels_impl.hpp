@@ -1826,6 +1826,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symV2RowDirectSendSizes.assign(l2u_slots, 0);
         symV2RowDirectSendMapOffsets.assign(l2u_slots, 0);
         symV2RowDirectSendMapsHost.clear();
+        symV2RowDirectSendBlocksHost.assign(
+            l2u_slots, std::vector<int_t>());
+        symV2RowDirectSendMapScratchHost.clear();
 // SYM_V2_PC2_PHASE3_FREE_ROW_DOWN_PLAN_BEGIN
     symV2RowDownSendSizes.clear();
     symV2RowDownSendMapOffsets.clear();
@@ -3832,7 +3835,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     symV2PartnerLExactSendMapPoolCount =
                         symV2PartnerLExactSendMapsHost.size();
                 }
-                if (exact_row_fragment_demand_setup)
+                if (exact_row_fragment_demand_setup &&
+                    !superlu_sym_v2_pc_fragment_ldl_native())
                 {
                     if (superlu_sym_v2_rowfrag_destination_path() &&
                         superlu_sym_v2_exact_map_index())
@@ -3953,13 +3957,79 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         ABORT("SymFact V2 direct row-L source map cannot find a requested block.");
                 };
 
+                auto source_value_count_for_gid =
+                    [&](size_t flat, int_t gid) -> size_t
+                {
+                    if (flat >= symL2LSendMeta.size() ||
+                        flat >= symV2PartnerLSendSizes.size())
+                        ABORT("SymFact V2 direct row-L source count is invalid.");
+                    if (symV2PartnerLSendSizes[flat] < 0)
+                        ABORT("SymFact V2 direct row-L source count size is invalid.");
+                    int_t lk = static_cast<int_t>(
+                        flat / static_cast<size_t>(Pc));
+                    int_t k0 = symV2PanelGid(lk);
+                    if (k0 < 0 || k0 >= nsupers)
+                        ABORT("SymFact V2 direct row-L count panel is invalid.");
+                    int_t ksupc = SuperSize(k0);
+                    if (ksupc <= 0)
+                        ABORT("SymFact V2 direct row-L count panel width is invalid.");
+                    const std::vector<int_t> &meta = symL2LSendMeta[flat];
+                    bool found = false;
+                    size_t count = 0;
+                    size_t scanned = 0;
+                    size_t meta_pos = 0;
+                    while (meta_pos < meta.size())
+                    {
+                        if (meta_pos + 2 > meta.size())
+                            ABORT("SymFact V2 direct row-L count metadata is truncated.");
+                        int_t block_gid = meta[meta_pos++];
+                        int_t len = meta[meta_pos++];
+                        if (len < 0 ||
+                            meta_pos + static_cast<size_t>(len) >
+                                meta.size())
+                            ABORT("SymFact V2 direct row-L count metadata block is invalid.");
+                        size_t value_count = xlu_checked_product(
+                            static_cast<size_t>(len),
+                            static_cast<size_t>(ksupc),
+                            "SymFact V2 direct row-L count segment");
+                        if (block_gid == gid)
+                        {
+                            if (count >
+                                std::numeric_limits<size_t>::max() -
+                                    value_count)
+                                ABORT("SymFact V2 direct row-L count overflows.");
+                            count += value_count;
+                            found = true;
+                        }
+                        if (scanned >
+                            std::numeric_limits<size_t>::max() - value_count)
+                            ABORT("SymFact V2 direct row-L scanned count overflows.");
+                        scanned += value_count;
+                        meta_pos += static_cast<size_t>(len);
+                    }
+                    if (scanned !=
+                        static_cast<size_t>(symV2PartnerLSendSizes[flat]))
+                        ABORT("SymFact V2 direct row-L count size mismatch.");
+                    if (!found)
+                        ABORT("SymFact V2 direct row-L source count cannot find a requested block.");
+                    return count;
+                };
+
                 double tDirectRowMapBuild =
                     profile_setup ? SuperLU_timer_() : 0.0;
+                const bool ldl_native_direct_row =
+                    superlu_sym_v2_pc_fragment_ldl_native();
                 std::fill(symV2RowDirectSendSizes.begin(),
                           symV2RowDirectSendSizes.end(), 0);
                 std::fill(symV2RowDirectSendMapOffsets.begin(),
                           symV2RowDirectSendMapOffsets.end(), 0);
                 symV2RowDirectSendMapsHost.clear();
+                if (ldl_native_direct_row)
+                    symV2RowDirectSendBlocksHost.assign(
+                        symV2RowDirectSendSizes.size(),
+                        std::vector<int_t>());
+                else
+                    symV2RowDirectSendBlocksHost.clear();
 
                 std::vector<SymV2DirectRowBlock> direct_blocks;
                 for (int_t lk = 0; lk < local_cols; ++lk)
@@ -4032,12 +4102,49 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         if (slot >= symV2RowDirectSendSizes.size() ||
                             slot >= symV2RowDirectSendMapOffsets.size())
                             ABORT("SymFact V2 direct row-L send slot is invalid.");
-                        symV2RowDirectSendMapOffsets[slot] =
-                            symV2RowDirectSendMapsHost.size();
                         int_t k0 = symV2PanelGid(lk);
                         if (k0 < 0 || k0 >= nsupers)
                             ABORT("SymFact V2 direct row-L panel is invalid.");
                         int_t ksupc = SuperSize(k0);
+                        if (ldl_native_direct_row)
+                        {
+                            if (slot >= symV2RowDirectSendBlocksHost.size())
+                                ABORT("SymFact V2 direct row-L block descriptor slot is invalid.");
+                            std::vector<int_t> &block_desc =
+                                symV2RowDirectSendBlocksHost[slot];
+                            block_desc.clear();
+                            block_desc.reserve(unique_blocks.size() * 2);
+                            size_t map_count = 0;
+                            for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
+                            {
+                                if (unique_blocks[bi].chunk_pc < 0 ||
+                                    unique_blocks[bi].chunk_pc >= Pc)
+                                    ABORT("SymFact V2 direct row-L block source column is invalid.");
+                                size_t flat =
+                                    static_cast<size_t>(lk) *
+                                        static_cast<size_t>(Pc) +
+                                    static_cast<size_t>(
+                                        unique_blocks[bi].chunk_pc);
+                                size_t value_count = source_value_count_for_gid(
+                                    flat, unique_blocks[bi].gid);
+                                if (map_count >
+                                    std::numeric_limits<size_t>::max() -
+                                        value_count)
+                                    ABORT("SymFact V2 direct row-L compact send count overflows.");
+                                map_count += value_count;
+                                block_desc.push_back(unique_blocks[bi].gid);
+                                block_desc.push_back(static_cast<int_t>(
+                                    unique_blocks[bi].chunk_pc));
+                            }
+                            if (map_count >
+                                static_cast<size_t>(std::numeric_limits<int>::max()))
+                                ABORT("SymFact V2 direct row-L compact send map is too large for MPI.");
+                            symV2RowDirectSendSizes[slot] =
+                                static_cast<int>(map_count);
+                            continue;
+                        }
+                        symV2RowDirectSendMapOffsets[slot] =
+                            symV2RowDirectSendMapsHost.size();
                         std::vector<std::vector<int_t> > block_maps(
                             unique_blocks.size());
                         std::vector<int_t> block_nrows(unique_blocks.size(), 0);
@@ -5336,6 +5443,8 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2RowDirectSendSizes.clear();
     symV2RowDirectSendMapOffsets.clear();
     symV2RowDirectSendMapsHost.clear();
+    symV2RowDirectSendBlocksHost.clear();
+    symV2RowDirectSendMapScratchHost.clear();
     symV2RowDownSendSizes.clear();
     symV2RowDownSendMapOffsets.clear();
     symV2RowDownSendMapsHost.clear();
@@ -5830,7 +5939,8 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
         symV2SetupProfileAdd(SYM_V2_SETUP_PARTNER_SEND_GPU_ALLOC_COPY,
                              SuperLU_timer_() - tPartnerSendGPU);
 
-    std::vector<int_t>().swap(symV2PartnerLPackedMaps);
+    if (!superlu_sym_v2_pc_fragment_ldl_native())
+        std::vector<int_t>().swap(symV2PartnerLPackedMaps);
     std::vector<int_t>().swap(symV2PartnerLExactSendMapsHost);
     if (symV2RowDownSendMapPoolGPU != NULL)
         std::vector<int_t>().swap(symV2RowDownSendMapsHost);

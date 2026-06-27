@@ -863,6 +863,8 @@ struct xLUstruct_t
     std::vector<int> symV2RowDirectSendSizes;
     std::vector<size_t> symV2RowDirectSendMapOffsets;
     std::vector<int_t> symV2RowDirectSendMapsHost;
+    std::vector<std::vector<int_t> > symV2RowDirectSendBlocksHost;
+    std::vector<std::vector<int_t> > symV2RowDirectSendMapScratchHost;
 // SYM_V2_PC2_PHASE3_XLU_ROW_DOWN_PLAN_BEGIN
     struct SymV2RowDownSeg
     {

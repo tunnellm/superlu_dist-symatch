@@ -558,6 +558,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     const bool row_l_direct_recv =
         pc_fragment_schur && superlu_sym_v2_row_l_direct_recv() &&
         !superlu_sym_v2_row_l_postsolve_send();
+    const bool ldl_native_direct_row =
+        row_l_direct_recv && superlu_sym_v2_pc_fragment_ldl_native();
 // SYM_V2_PC2_PHASE2_COMBO_GUARD_BEGIN
     if (pc_fragment_schur && superlu_sym_v2_row_l_one_sync() &&
         !superlu_sym_v2_row_l_pack_all_dest())
@@ -617,6 +619,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             !superlu_sym_v2_rowfrag_destination_path())
             ABORT("GPU3DV2_EXACT_ROW_FRAGMENT_DEMAND requires GPU3DV2_ROW_L_SOURCE_PACK=1, GPU3DV2_ROW_L_DIRECT_RECV=1, or GPU3DV2_ROWFRAG_DEST_PACK=1.");
         if (exact_row_fragment_demand &&
+            !ldl_native_direct_row &&
             (symV2RowFragExactSendSizes.empty() ||
              symV2RowFragExactSendMapOffsets.empty() ||
              symV2RowFragExactSendMapsHost.empty()))
@@ -2146,17 +2149,167 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     ABORT("SymFact V2 direct row-L source panel is missing.");
                 if (total > maxSymV2RowFragStageCount)
                     ABORT("SymFact V2 direct row-L packed destination exceeds staging buffer.");
-                size_t map_offset = symV2RowDirectSendMapOffsets[slot];
-                if (map_offset + static_cast<size_t>(total) >
-                        symV2RowDirectSendMapsHost.size() ||
-                    map_offset + static_cast<size_t>(total) < map_offset)
-                    ABORT("SymFact V2 direct row-L host map is invalid.");
+                if (ldl_native_direct_row)
+                {
+                    if (slot >= symV2RowDirectSendBlocksHost.size())
+                        ABORT("SymFact V2 direct row-L block descriptors are missing.");
+                    const std::vector<int_t> &block_desc =
+                        symV2RowDirectSendBlocksHost[slot];
+                    if (block_desc.empty() || block_desc.size() % 2 != 0)
+                        ABORT("SymFact V2 direct row-L block descriptors are invalid.");
+                    if (ksupc <= 0)
+                        ABORT("SymFact V2 direct row-L panel width is invalid.");
+                    int stream_count = A_gpu.numCudaStreams > 0
+                                           ? A_gpu.numCudaStreams
+                                           : 1;
+                    size_t scratch_slots =
+                        static_cast<size_t>(stream_count) *
+                        static_cast<size_t>(Pc);
+                    if (Pc <= 0 ||
+                        scratch_slots / static_cast<size_t>(Pc) !=
+                            static_cast<size_t>(stream_count))
+                        ABORT("SymFact V2 direct row-L scratch slot count overflows.");
+                    if (symV2RowDirectSendMapScratchHost.size() <
+                        scratch_slots)
+                        symV2RowDirectSendMapScratchHost.resize(
+                            scratch_slots);
+                    size_t scratch_slot =
+                        static_cast<size_t>(stream_offset) *
+                            static_cast<size_t>(Pc) +
+                        static_cast<size_t>(pc_dest);
+                    if (scratch_slot >=
+                        symV2RowDirectSendMapScratchHost.size())
+                        ABORT("SymFact V2 direct row-L scratch slot is invalid.");
+                    std::vector<int_t> &direct_map =
+                        symV2RowDirectSendMapScratchHost[scratch_slot];
+                    direct_map.clear();
+                    direct_map.reserve(static_cast<size_t>(total));
 
-                gpuErrchk(cudaMemcpyAsync(
-                    A_gpu.symV2RowFragSendMapStageBufs[stream_offset],
-                    symV2RowDirectSendMapsHost.data() + map_offset,
-                    sizeof(int_t) * static_cast<size_t>(total),
-                    cudaMemcpyHostToDevice, stream));
+                    auto append_direct_source_map =
+                        [&](size_t flat, int_t gid,
+                            std::vector<int_t> &out)
+                    {
+                        if (flat >= symL2LSendMeta.size() ||
+                            flat >= symV2PartnerLSendSizes.size() ||
+                            flat >= symV2PartnerLMapOffsets.size())
+                            ABORT("SymFact V2 direct row-L source map is invalid.");
+                        if (symV2PartnerLSendSizes[flat] < 0)
+                            ABORT("SymFact V2 direct row-L source map size is invalid.");
+                        const std::vector<int_t> &meta =
+                            symL2LSendMeta[flat];
+                        size_t map_pos = symV2PartnerLMapOffsets[flat];
+                        size_t map_end =
+                            map_pos +
+                            static_cast<size_t>(
+                                symV2PartnerLSendSizes[flat]);
+                        if (map_end > symV2PartnerLPackedMaps.size() ||
+                            map_end < map_pos)
+                            ABORT("SymFact V2 direct row-L source map bounds are invalid.");
+                        bool found = false;
+                        size_t meta_pos = 0;
+                        while (meta_pos < meta.size())
+                        {
+                            if (meta_pos + 2 > meta.size())
+                                ABORT("SymFact V2 direct row-L metadata is truncated.");
+                            int_t block_gid = meta[meta_pos++];
+                            int_t len = meta[meta_pos++];
+                            if (len < 0 ||
+                                meta_pos + static_cast<size_t>(len) >
+                                    meta.size())
+                                ABORT("SymFact V2 direct row-L metadata block is invalid.");
+                            if (ksupc <= 0 ||
+                                static_cast<size_t>(len) >
+                                    std::numeric_limits<size_t>::max() /
+                                        static_cast<size_t>(ksupc))
+                                ABORT("SymFact V2 direct row-L source map segment overflows.");
+                            size_t value_count =
+                                static_cast<size_t>(len) *
+                                static_cast<size_t>(ksupc);
+                            if (map_pos + value_count > map_end ||
+                                map_pos + value_count < map_pos)
+                                ABORT("SymFact V2 direct row-L source map segment is invalid.");
+                            if (block_gid == gid)
+                            {
+                                out.insert(out.end(),
+                                           symV2PartnerLPackedMaps.begin() +
+                                               map_pos,
+                                           symV2PartnerLPackedMaps.begin() +
+                                               map_pos + value_count);
+                                found = true;
+                            }
+                            map_pos += value_count;
+                            meta_pos += static_cast<size_t>(len);
+                        }
+                        if (map_pos != map_end)
+                            ABORT("SymFact V2 direct row-L source map size mismatch.");
+                        if (!found)
+                            ABORT("SymFact V2 direct row-L source map cannot find a requested block.");
+                    };
+
+                    size_t nblocks = block_desc.size() / 2;
+                    std::vector<std::vector<int_t> > block_maps(nblocks);
+                    std::vector<int_t> block_nrows(nblocks, 0);
+                    for (size_t bi = 0; bi < nblocks; ++bi)
+                    {
+                        int_t gid = block_desc[2 * bi];
+                        int_t chunk_pc = block_desc[2 * bi + 1];
+                        if (chunk_pc < 0 || chunk_pc >= Pc)
+                            ABORT("SymFact V2 direct row-L block source column is invalid.");
+                        size_t flat =
+                            static_cast<size_t>(row_send_lk) *
+                                static_cast<size_t>(Pc) +
+                            static_cast<size_t>(chunk_pc);
+                        append_direct_source_map(flat, gid, block_maps[bi]);
+                        if (block_maps[bi].empty() ||
+                            block_maps[bi].size() %
+                                    static_cast<size_t>(ksupc) !=
+                                0)
+                            ABORT("SymFact V2 direct row-L block map has invalid width.");
+                        size_t nrows =
+                            block_maps[bi].size() /
+                            static_cast<size_t>(ksupc);
+                        if (nrows >
+                            static_cast<size_t>(
+                                std::numeric_limits<int_t>::max()))
+                            ABORT("SymFact V2 direct row-L block is too large.");
+                        block_nrows[bi] = static_cast<int_t>(nrows);
+                    }
+                    for (int_t col = 0; col < ksupc; ++col)
+                    {
+                        for (size_t bi = 0; bi < nblocks; ++bi)
+                        {
+                            size_t src =
+                                static_cast<size_t>(col) *
+                                static_cast<size_t>(block_nrows[bi]);
+                            direct_map.insert(
+                                direct_map.end(),
+                                block_maps[bi].begin() + src,
+                                block_maps[bi].begin() + src +
+                                    block_nrows[bi]);
+                        }
+                    }
+                    if (direct_map.size() != static_cast<size_t>(total))
+                        ABORT("SymFact V2 direct row-L compact map size mismatch.");
+                    gpuErrchk(cudaMemcpyAsync(
+                        A_gpu.symV2RowFragSendMapStageBufs[stream_offset],
+                        direct_map.data(),
+                        sizeof(int_t) * static_cast<size_t>(total),
+                        cudaMemcpyHostToDevice, stream));
+                }
+                else
+                {
+                    size_t map_offset = symV2RowDirectSendMapOffsets[slot];
+                    if (map_offset + static_cast<size_t>(total) >
+                            symV2RowDirectSendMapsHost.size() ||
+                        map_offset + static_cast<size_t>(total) < map_offset)
+                        ABORT("SymFact V2 direct row-L host map is invalid.");
+
+                    gpuErrchk(cudaMemcpyAsync(
+                        A_gpu.symV2RowFragSendMapStageBufs[stream_offset],
+                        symV2RowDirectSendMapsHost.data() + map_offset,
+                        sizeof(int_t) * static_cast<size_t>(total),
+                        cudaMemcpyHostToDevice, stream));
+                }
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 double row_pack_issue_t = SuperLU_timer_();
