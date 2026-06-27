@@ -402,6 +402,8 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
 
     /* A retained handle may execute another numerical factorization. */
     symV2PartnerLPrepacked[static_cast<size_t>(lk)] = 0;
+    if (superlu_sym_v2_pc_fragment_ldl_native())
+        return 0;
 
     if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
         stream_offset = 0;
@@ -611,6 +613,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             ABORT("Pc-fragment async/CUDA-aware experiment is fail-closed.");
 // SYM_V2_PC2_PHASE6_ASYNC_CUDA_AWARE_GUARD_END
         if (exact_partner_fragment_demand &&
+            superlu_sym_v2_pc_fragment_ldl_native())
+            ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE does not support exact partner-fragment demand with stream-staged partner sends.");
+        if (exact_partner_fragment_demand &&
             (symV2PartnerLExactSendSizes.empty() ||
              symV2PartnerLExactSendBufsGPU.empty() ||
              symV2PartnerLExactSendMapsGPU.empty()))
@@ -644,6 +649,30 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     {
         send_sizes.assign(static_cast<size_t>(Pc), 0);
     }
+
+    auto partner_send_buffer = [&](size_t flat, int size) -> double *
+    {
+        if (flat >= symV2PartnerLSendBufsGPU.size())
+            ABORT("SymFact V2 partner-L send buffer slot is invalid.");
+        double *sendbuf = symV2PartnerLSendBufsGPU[flat];
+        if (superlu_sym_v2_pc_fragment_ldl_native())
+        {
+            if (A_gpu.symPartnerLSendStageBufs[stream_offset] == NULL)
+                ABORT("SymFact V2 partner-L stream send stage is missing.");
+            if (flat >= symV2PartnerLHostSendScratchOffsets.size())
+                ABORT("SymFact V2 partner-L send staging offset is missing.");
+            size_t send_offset =
+                symV2PartnerLHostSendScratchOffsets[flat];
+            size_t count = size > 0 ? static_cast<size_t>(size) : 0;
+            if (send_offset + count >
+                    static_cast<size_t>(maxSymPartnerLSendStageCount) ||
+                send_offset + count < send_offset)
+                ABORT("SymFact V2 partner-L stream send stage is too small.");
+            sendbuf = A_gpu.symPartnerLSendStageBufs[stream_offset] +
+                      send_offset;
+        }
+        return sendbuf;
+    };
 
     if (mycol == kcol_)
     {
@@ -774,7 +803,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                            static_cast<long long>(size) *
                                static_cast<long long>(sizeof(double)));
 #endif
-                double *sendbuf = symV2PartnerLSendBufsGPU[flat];
+                double *sendbuf = partner_send_buffer(flat, size);
                 int_t *sendmap = symL2LSendMapsGPU[flat];
                 if (sendbuf == NULL || sendmap == NULL)
                     ABORT("SymFact V2 true symmetric L-fragment buffer is missing.");
@@ -894,9 +923,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                    static_cast<long long>(size) *
                                        static_cast<long long>(sizeof(double)));
 #endif
+                        double *d2h_src =
+                            partner_send_buffer(flat, size);
+                        if (d2h_src == NULL)
+                            ABORT("SymFact V2 true symmetric L-fragment send buffer is missing.");
                         gpuErrchk(cudaMemcpyAsync(
-                            host_stage,
-                            symV2PartnerLSendBufsGPU[flat],
+                            host_stage, d2h_src,
                             sizeof(double) * static_cast<size_t>(size),
                             cudaMemcpyDeviceToHost, stream));
                     }
@@ -1117,7 +1149,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                               static_cast<size_t>(pc);
                 if (size <= 0)
                     continue;
-                double *sendbuf = symV2PartnerLSendBufsGPU[flat];
+                double *sendbuf = partner_send_buffer(flat, size);
                 double *hostbuf = NULL;
                 if (!cuda_aware)
                 {
@@ -1372,12 +1404,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 }
                 else
                 {
-                    if (self_flat >= symV2PartnerLSendBufsGPU.size() ||
-                        self_flat >= symV2PartnerLSendSizes.size() ||
-                        symV2PartnerLSendBufsGPU[self_flat] == NULL ||
+                    if (self_flat >= symV2PartnerLSendSizes.size() ||
                         symV2PartnerLSendSizes[self_flat] != count)
                         ABORT("SymFact V2 self fragment buffer is invalid.");
-                    stage = symV2PartnerLSendBufsGPU[self_flat];
+                    stage = partner_send_buffer(self_flat, count);
+                    if (stage == NULL)
+                        ABORT("SymFact V2 self fragment buffer is invalid.");
                 }
             }
             else

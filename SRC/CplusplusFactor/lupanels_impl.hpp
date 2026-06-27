@@ -1178,6 +1178,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxLidxCount = 0;
     maxSymPartnerLvalCount = 0;
     maxSymPartnerLidxCount = 0;
+    maxSymPartnerLSendStageCount = 0;
     maxSymV2RowFragStageCount = 0;
     maxSymV2RowFragValRecvCount = 0;
     maxSymV2RowFragIdxRecvCount = 0;
@@ -1311,6 +1312,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxLidxCount = *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end());
     maxSymPartnerLvalCount = sym_v2_mode ? 0 : maxLvalCount;
     maxSymPartnerLidxCount = sym_v2_mode ? 0 : maxLidxCount;
+    maxSymPartnerLSendStageCount = 0;
     dSymV2ComputePartnerScratchSize(LUstruct);
     symV2SetupProfileAdd(SYM_V2_SETUP_SEND_COUNT_EXCHANGE,
                          SuperLU_timer_() - tSetupSendCounts);
@@ -2051,31 +2053,31 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
             size_t total_partner_send = 0;
             size_t max_partner_host_send_scratch = 0;
-            if (superlu_sym_v2_pinned_staging() &&
-                superlu_sym_v2_pinned_staging_pool() &&
-                !superlu_cuda_aware_mpi())
+            for (int_t lk = 0; lk < local_cols; ++lk)
             {
-                for (int_t lk = 0; lk < local_cols; ++lk)
+                size_t panel_scratch_count = 0;
+                for (int pc = 0; pc < Pc; ++pc)
                 {
-                    size_t panel_scratch_count = 0;
-                    for (int pc = 0; pc < Pc; ++pc)
-                    {
-                        size_t flat = static_cast<size_t>(lk) *
-                                          static_cast<size_t>(Pc) +
-                                      static_cast<size_t>(pc);
-                        symV2PartnerLHostSendScratchOffsets[flat] =
-                            panel_scratch_count;
-                        if (panel_scratch_count >
-                            std::numeric_limits<size_t>::max() -
-                                map_counts[flat])
-                            ABORT("SymFact V2 pooled send staging size overflows.");
-                        panel_scratch_count += map_counts[flat];
-                    }
-                    max_partner_host_send_scratch = SUPERLU_MAX(
-                        max_partner_host_send_scratch,
-                        panel_scratch_count);
+                    size_t flat = static_cast<size_t>(lk) *
+                                      static_cast<size_t>(Pc) +
+                                  static_cast<size_t>(pc);
+                    symV2PartnerLHostSendScratchOffsets[flat] =
+                        panel_scratch_count;
+                    if (panel_scratch_count >
+                        std::numeric_limits<size_t>::max() -
+                            map_counts[flat])
+                        ABORT("SymFact V2 pooled send staging size overflows.");
+                    panel_scratch_count += map_counts[flat];
                 }
+                max_partner_host_send_scratch = SUPERLU_MAX(
+                    max_partner_host_send_scratch,
+                    panel_scratch_count);
             }
+            if (max_partner_host_send_scratch >
+                static_cast<size_t>(std::numeric_limits<int_t>::max()))
+                ABORT("SymFact V2 partner-L send staging size exceeds int_t range.");
+            maxSymPartnerLSendStageCount =
+                static_cast<int_t>(max_partner_host_send_scratch);
 
             for (size_t flat = 0; flat < l2u_slots; ++flat)
             {
@@ -2383,7 +2385,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     ABORT("SymFact V2 partner-L host map size mismatch.");
             }
 
-            symV2PartnerLSendBufPoolCount = total_partner_send;
+            symV2PartnerLSendBufPoolCount =
+                superlu_sym_v2_pc_fragment_ldl_native()
+                    ? 0
+                    : total_partner_send;
             symL2LSendMapPoolCount = total_partner_send;
             if (profile_setup)
                 symV2SetupProfileAdd(
@@ -5543,8 +5548,9 @@ inline size_t xLUstruct_t<double>::symV2DelayedGpuMetadataBytes() const
     add_host_maps(symL2USendMapsHost, sizeof(double),
                   "SymFact GPU L2U send buffer");
 
-    add_bytes(symV2PartnerLSendBufPoolCount, sizeof(double),
-              "SymFact V2 partner-L send buffer pool");
+    if (!superlu_sym_v2_pc_fragment_ldl_native())
+        add_bytes(symV2PartnerLSendBufPoolCount, sizeof(double),
+                  "SymFact V2 partner-L send buffer pool");
     add_bytes(symL2LSendMapPoolCount, sizeof(int_t),
               "SymFact GPU L2L send map pool");
     add_bytes(symV2PartnerLExactSendBufPoolCount, sizeof(double),
@@ -5651,7 +5657,33 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
         symL2USendMapsHost.clear();
     }
 
-    if (symV2PartnerLSendBufPoolCount > 0)
+    if (symL2LSendMapPoolCount > 0 &&
+        superlu_sym_v2_pc_fragment_ldl_native())
+    {
+        if (symV2PartnerLPackedMaps.size() != symL2LSendMapPoolCount)
+            ABORT("SymFact V2 partner-L send map pool size mismatch.");
+        if (symV2PartnerLSendBufPoolGPU != NULL ||
+            symL2LSendMapPoolGPU != NULL)
+            ABORT("SymFact V2 partner-L send map pool was already allocated.");
+        copy_int_pool(&symL2LSendMapPoolGPU, symV2PartnerLPackedMaps,
+                      symL2LSendMapPoolCount,
+                      "SymFact GPU L2L send map pool");
+        for (size_t flat = 0; flat < symV2PartnerLSendSizes.size(); ++flat)
+        {
+            int size = symV2PartnerLSendSizes[flat];
+            if (size <= 0)
+                continue;
+            if (flat >= symV2PartnerLMapOffsets.size())
+                ABORT("SymFact V2 partner-L send offset is missing.");
+            size_t offset = symV2PartnerLMapOffsets[flat];
+            if (offset + static_cast<size_t>(size) >
+                    symL2LSendMapPoolCount ||
+                offset + static_cast<size_t>(size) < offset)
+                ABORT("SymFact V2 partner-L send offset is invalid.");
+            symL2LSendMapsGPU[flat] = symL2LSendMapPoolGPU + offset;
+        }
+    }
+    else if (symV2PartnerLSendBufPoolCount > 0)
     {
         if (symV2PartnerLPackedMaps.size() != symL2LSendMapPoolCount ||
             symV2PartnerLSendBufPoolCount != symL2LSendMapPoolCount)

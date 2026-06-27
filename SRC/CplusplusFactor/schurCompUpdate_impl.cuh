@@ -3144,6 +3144,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     const bool sym_v2_pc_fragment_schur =
         sym_v2_mode && superlu_sym_v2_pc_fragment_schur() &&
         Pr > 1 && Pc > 1;
+    const bool sym_v2_partner_send_stream_stage =
+        sym_v2_pc_fragment_schur &&
+        superlu_sym_v2_pc_fragment_ldl_native();
     const bool sym_v2_row_plan_v2_compact =
         sym_v2_pc_fragment_schur &&
         superlu_sym_v2_row_l_plan_v2_compact();
@@ -3183,6 +3186,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
          sizeof(Ftype) * sym_v2_pc_frag_row_stage_count +
          sizeof(Ftype) * sym_v2_pc_frag_row_val_count +
          2 * sizeof(Ftype) * maxSymPartnerLvalCount +
+         sizeof(Ftype) *
+             (sym_v2_partner_send_stream_stage
+                  ? maxSymPartnerLSendStageCount
+                  : 0) +
          sizeof(Ftype) * u_recv_val_count +
          sizeof(Ftype) * lookahead_u_val_count +
          2 * sizeof(int_t) * maxLidxCount +
@@ -3793,6 +3800,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         A_gpu.UvalRecvBufs[stream] = NULL;
         A_gpu.symPartnerLvalRecvBufs[stream] = NULL;
         A_gpu.symPartnerLStageBufs[stream] = NULL;
+        A_gpu.symPartnerLSendStageBufs[stream] = NULL;
         A_gpu.symV2RowFragStageBufs[stream] = NULL;
         A_gpu.symV2RowFragValRecvBufs[stream] = NULL;
         A_gpu.symV2RowFragIdxRecvBufs[stream] = NULL;
@@ -3840,6 +3848,13 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                 maxSymPartnerLvalCount)),
                 sizeof(Ftype), "SymFact V2 arena partner staging"));
+            if (sym_v2_partner_send_stream_stage)
+                A_gpu.symPartnerLSendStageBufs[stream] =
+                    static_cast<Ftype *>(take(
+                        static_cast<size_t>(SUPERLU_MAX(
+                            (int_t)1, maxSymPartnerLSendStageCount)),
+                        sizeof(Ftype),
+                        "SymFact V2 arena partner send staging"));
             if (sym_v2_pc_fragment_schur)
                 A_gpu.symV2RowFragStageBufs[stream] =
                     static_cast<Ftype *>(take(
@@ -3918,6 +3933,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                  sizeof(Ftype) * static_cast<size_t>(
                                      SUPERLU_MAX((int_t)1,
                                                  maxSymPartnerLvalCount))));
+            if (sym_v2_partner_send_stream_stage)
+                gpuErrchk(cudaMalloc(
+                    &A_gpu.symPartnerLSendStageBufs[stream],
+                    sizeof(Ftype) * static_cast<size_t>(
+                        SUPERLU_MAX((int_t)1,
+                                    maxSymPartnerLSendStageCount))));
             if (sym_v2_pc_fragment_schur)
             {
                 gpuErrchk(cudaMalloc(&A_gpu.symV2RowFragStageBufs[stream],

@@ -1005,6 +1005,7 @@ struct xLUstruct_t
     int_t maxLidxCount = 0;
     int_t maxSymPartnerLvalCount = 0;
     int_t maxSymPartnerLidxCount = 0;
+    int_t maxSymPartnerLSendStageCount = 0;
     int_t maxSymV2RowFragStageCount = 0;
     int_t maxSymV2RowFragValRecvCount = 0;
     int_t maxSymV2RowFragIdxRecvCount = 0;
