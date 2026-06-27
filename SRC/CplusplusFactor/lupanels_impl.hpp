@@ -868,8 +868,6 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
         maxSymPartnerLidxCount = 0;
         return 0;
     }
-    const bool need_row_frag_scratch =
-        superlu_sym_v2_pc_fragment_schur() && Pc > 1;
     SymV2SetupProfileScope profile_scope(
         this, SYM_V2_SETUP_PARTNER_SCRATCH_SIZE);
 
@@ -930,14 +928,11 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
                                  static_cast<size_t>(Pr) +
                              static_cast<size_t>(myrow);
             local_partner_val[col_pos] += block_values;
+            local_row_val[row_pos] += block_values;
             local_partner_meta[col_pos] += static_cast<long long>(len) + 2;
-            if (need_row_frag_scratch)
-            {
-                local_row_val[row_pos] += block_values;
-                local_row_meta[row_pos] += static_cast<long long>(len) + 2;
-                local_row_send_val = SUPERLU_MAX(local_row_send_val,
-                                                 block_values);
-            }
+            local_row_meta[row_pos] += static_cast<long long>(len) + 2;
+            local_row_send_val = SUPERLU_MAX(local_row_send_val,
+                                             block_values);
         }
     }
 
@@ -947,17 +942,14 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
     MPI_Allreduce(local_partner_meta.data(), global_partner_meta.data(),
                   static_cast<int>(partner_count_size), MPI_LONG_LONG,
                   MPI_SUM, grid->comm);
-    if (need_row_frag_scratch)
-    {
-        MPI_Allreduce(local_row_val.data(), global_row_val.data(),
-                      static_cast<int>(row_source_count_size), MPI_LONG_LONG,
-                      MPI_SUM, grid->comm);
-        MPI_Allreduce(local_row_meta.data(), global_row_meta.data(),
-                      static_cast<int>(row_source_count_size), MPI_LONG_LONG,
-                      MPI_SUM, grid->comm);
-        MPI_Allreduce(&local_row_send_val, &max_row_send_val, 1,
-                      MPI_LONG_LONG, MPI_MAX, grid->comm);
-    }
+    MPI_Allreduce(local_row_val.data(), global_row_val.data(),
+                  static_cast<int>(row_source_count_size), MPI_LONG_LONG,
+                  MPI_SUM, grid->comm);
+    MPI_Allreduce(local_row_meta.data(), global_row_meta.data(),
+                  static_cast<int>(row_source_count_size), MPI_LONG_LONG,
+                  MPI_SUM, grid->comm);
+    MPI_Allreduce(&local_row_send_val, &max_row_send_val, 1,
+                  MPI_LONG_LONG, MPI_MAX, grid->comm);
 
     long long max_partner_val = 0;
     long long max_partner_meta = 0;
@@ -975,7 +967,7 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
             max_partner_meta =
                 SUPERLU_MAX(max_partner_meta, global_partner_meta[pos]);
         }
-        if (need_row_frag_scratch)
+        if (superlu_sym_v2_pc_fragment_schur() && Pc > 1)
         {
             for (int pr = 0; pr < Pr; ++pr)
             {
@@ -1001,7 +993,7 @@ inline int_t xLUstruct_t<double>::dSymV2ComputePartnerScratchSize(
        row-send staging capacity.  The base branch only tracked a single
        block; pack-all-dest and sparse row-down need room for all remote
        destination process columns for one panel. */
-    if (need_row_frag_scratch)
+    if (superlu_sym_v2_pc_fragment_schur() && Pc > 1)
     {
         const long long row_send_multiplier =
             static_cast<long long>(Pc - 1);
@@ -1375,7 +1367,6 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     const bool sym_v2_pc_fragment_schur =
         sym_v2_mode && superlu_sym_v2_pc_fragment_schur() &&
         Pr > 1 && Pc > 1;
-    const bool sym_v2_need_row_frag = sym_v2_pc_fragment_schur;
 
 #ifdef HAVE_CUDA
     const bool use_sym_v2_pooled_pinned_staging =
@@ -1401,7 +1392,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         symV2PartnerLHostRecvPinned = 1;
     }
     if (use_sym_v2_pooled_pinned_staging &&
-        sym_v2_need_row_frag &&
+        sym_v2_pc_fragment_schur &&
         maxSymV2RowFragStageCount > 0 &&
         options->num_lookaheads > 0)
     {
@@ -1421,7 +1412,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 // SYM_V2_PC2_PHASE1_INIT_SEND_POOL_ALLOC_BEGIN
 #ifdef HAVE_CUDA
     if (use_sym_v2_pooled_pinned_staging &&
-        sym_v2_need_row_frag &&
+        sym_v2_pc_fragment_schur &&
         superlu_sym_v2_row_l_separate_send_staging() &&
         (maxSymV2RowFragStageCount > 0 ||
          maxSymV2RowFragValSendCount > 0) &&
@@ -1499,7 +1490,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 #ifdef HAVE_CUDA
         if (symV2RowFragHostRecvPoolPinned != NULL)
             symV2RowFragHostRecvBufs[i] = symV2RowFragHostRecvPoolPinned;
-        else if (sym_row_frag_lval_bytes && sym_v2_need_row_frag &&
+        else if (sym_row_frag_lval_bytes && sym_v2_pc_fragment_schur &&
                  superlu_acc_offload &&
                  superlu_sym_v2_pinned_staging())
         {
@@ -1510,7 +1501,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         }
         else
 #endif
-        if (sym_row_frag_lval_bytes && sym_v2_need_row_frag)
+        if (sym_row_frag_lval_bytes && sym_v2_pc_fragment_schur)
         {
             symV2RowFragHostRecvBufs[i] =
                 (Ftype *)SUPERLU_MALLOC(sym_row_frag_lval_bytes);
@@ -1520,7 +1511,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 #ifdef HAVE_CUDA
         if (symV2RowFragHostSendPoolPinned != NULL)
             symV2RowFragHostSendBufs[i] = symV2RowFragHostSendPoolPinned;
-        else if (sym_row_frag_send_lval_bytes && sym_v2_need_row_frag &&
+        else if (sym_row_frag_send_lval_bytes && sym_v2_pc_fragment_schur &&
                  superlu_sym_v2_row_l_separate_send_staging() &&
                  superlu_acc_offload &&
                  superlu_sym_v2_pinned_staging())
@@ -1532,7 +1523,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         }
         else
 #endif
-        if (sym_row_frag_send_lval_bytes && sym_v2_need_row_frag &&
+        if (sym_row_frag_send_lval_bytes && sym_v2_pc_fragment_schur &&
             superlu_sym_v2_row_l_separate_send_staging())
         {
             symV2RowFragHostSendBufs[i] =
@@ -1552,10 +1543,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             (sym_partner_lidx_bytes != 0 &&
              symPartnerLidxRecvBufs[i] == NULL) ||
 // SYM_V2_PC2_PHASE1_INIT_SEND_MALLOC_CHECK_BEGIN
-            (sym_v2_need_row_frag &&
+            (sym_v2_pc_fragment_schur &&
              sym_row_frag_lval_bytes != 0 &&
              symV2RowFragHostRecvBufs[i] == NULL) ||
-            (sym_v2_need_row_frag &&
+            (sym_v2_pc_fragment_schur &&
              superlu_sym_v2_row_l_separate_send_staging() &&
              sym_row_frag_send_lval_bytes != 0 &&
              symV2RowFragHostSendBufs[i] == NULL))
@@ -2516,17 +2507,15 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 "SymFact V2 partner-L compact receive count table");
             const bool pc_fragment_schur_setup =
                 superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1;
-            const bool need_row_frag_setup = pc_fragment_schur_setup;
             const bool exact_fragment_demand_setup =
                 pc_fragment_schur_setup &&
                 superlu_sym_v2_exact_fragment_demand();
             const bool exact_partner_fragment_demand_setup =
                 exact_fragment_demand_setup &&
                 superlu_sym_v2_exact_partner_fragment_demand();
-            // Post-solve row-L sends use the row-down plan instead of the
-            // older exact row-fragment maps.
+            // Post-solve row-L sends intentionally use the coarse aggregated
+            // row-fragment demand to avoid exact/direct maps.
             const bool exact_row_fragment_demand_setup =
-                need_row_frag_setup &&
                 exact_fragment_demand_setup &&
                 superlu_sym_v2_exact_row_fragment_demand() &&
                 !superlu_sym_v2_row_l_postsolve_send() &&
@@ -2662,7 +2651,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                             {
                                                 demand_block = true;
                                                 demand_chunk = true;
-                                                if (need_row_frag_setup)
+                                                if (pc_fragment_schur_setup)
                                                     needed_row_blocks_by_panel[k0]
                                                         .push_back(*it);
                                             }
@@ -2875,8 +2864,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
 // SYM_V2_PC2_PHASE3_SKIP_DENSE_ROW_DEMAND_BEGIN
             std::vector<int_t> all_row_demand_payload;
-            if (need_row_frag_setup &&
-                superlu_sym_v2_row_l_plan_v2() &&
+            if (superlu_sym_v2_row_l_plan_v2() &&
                 !superlu_sym_v2_row_l_plan_v2_dryrun())
             {
                 /* Active sparse row-down uses a row-communicator Alltoallv
@@ -3132,7 +3120,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             cached_partner_recv_blocks[recv_pos].push_back(block);
                         }
                     }
-                    if (need_row_frag_setup && source_pr == myrow)
+                    if (source_pr == myrow)
                     {
                         size_t row_chunk_pos =
                             (static_cast<size_t>(k0) *
@@ -3223,8 +3211,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         static_cast<size_t>(k0) * static_cast<size_t>(Pc) +
                         static_cast<size_t>(pc);
                     symV2RowFragRecvSizes[row_dst_pos] =
-                        (!need_row_frag_setup ||
-                         exact_row_fragment_demand_setup ||
+                        (exact_row_fragment_demand_setup ||
                          !local_row_chunk_demand[row_src_pos])
                             ? 0
                             : global_recv_sizes[row_src_pos];
@@ -3416,9 +3403,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     symV2SetupProfileAdd(
                         SYM_V2_SETUP_PARTNER_RECV_LOOKUP_BUILD,
                         SuperLU_timer_() - tPartnerRecvLookupBuild);
-
-                if (!need_row_frag_setup)
-                    continue;
 
                 std::vector<SymV2CachedPartnerBlock> &row_blocks =
                     cached_row_blocks[k0];
@@ -3871,7 +3855,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         SuperLU_timer_() - tExactSendMapBuild);
             }
 
-            if (need_row_frag_setup &&
+            if (pc_fragment_schur_setup &&
                 superlu_sym_v2_row_l_direct_recv() &&
                 !superlu_sym_v2_row_l_postsolve_send())
             {
@@ -4107,7 +4091,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
 
 // SYM_V2_PC2_PHASE3_SPARSE_ROW_DOWN_PLAN_BEGIN
-            if (need_row_frag_setup && superlu_sym_v2_row_l_plan_v2())
+            if (pc_fragment_schur_setup && superlu_sym_v2_row_l_plan_v2())
             {
                 const double row_down_setup_t = SuperLU_timer_();
                 if (!superlu_sym_v2_row_l_plan_v2_block())
@@ -4472,72 +4456,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                               recv_counts.data(), recv_displs.data(), mpi_int_t,
                               grid3d->rscp.comm);
 
-                struct SymV2RowDownSourceBlock
-                {
-                    int_t gid;
-                    int chunk_pc;
-                };
-                const bool row_down_direct_layout =
-                    superlu_sym_v2_row_l_postsolve_send();
                 std::vector<std::vector<int_t> > slot_maps(l2u_slots);
-                std::vector<std::vector<SymV2RowDownSourceBlock> >
-                    slot_blocks(row_down_direct_layout ? l2u_slots : 0);
-                auto append_row_down_source_map_for_gid =
-                    [&](int_t k0, int chunk_pc, int_t gid,
-                        std::vector<int_t> &out)
-                {
-                    int_t lk = symV2PanelIndex(k0);
-                    if (lk < 0)
-                        return;
-                    size_t flat =
-                        static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
-                        static_cast<size_t>(chunk_pc);
-                    if (flat >= symL2LSendMeta.size() ||
-                        flat >= symV2PartnerLSendSizes.size() ||
-                        flat >= symV2PartnerLMapOffsets.size())
-                        ABORT("SymFact V2 row-down source metadata is invalid.");
-                    const std::vector<int_t> &meta = symL2LSendMeta[flat];
-                    size_t map_pos = symV2PartnerLMapOffsets[flat];
-                    size_t map_end = map_pos +
-                        static_cast<size_t>(symV2PartnerLSendSizes[flat]);
-                    if (map_end > symV2PartnerLPackedMaps.size() ||
-                        map_end < map_pos)
-                        ABORT("SymFact V2 row-down source map range is invalid.");
-                    int_t ksupc = SuperSize(k0);
-                    bool found = false;
-                    size_t meta_pos = 0;
-                    while (meta_pos < meta.size())
-                    {
-                        if (meta_pos + 2 > meta.size())
-                            ABORT("SymFact V2 row-down source metadata is truncated.");
-                        int_t block_gid = meta[meta_pos++];
-                        int_t len = meta[meta_pos++];
-                        if (len < 0 ||
-                            meta_pos + static_cast<size_t>(len) > meta.size())
-                            ABORT("SymFact V2 row-down source metadata block is invalid.");
-                        size_t value_count = xlu_checked_product(
-                            static_cast<size_t>(len),
-                            static_cast<size_t>(ksupc),
-                            "SymFact V2 row-down source map segment");
-                        if (map_pos + value_count > map_end ||
-                            map_pos + value_count < map_pos)
-                            ABORT("SymFact V2 row-down source map segment is invalid.");
-                        if (block_gid == gid)
-                        {
-                            out.insert(out.end(),
-                                       symV2PartnerLPackedMaps.begin() + map_pos,
-                                       symV2PartnerLPackedMaps.begin() +
-                                           map_pos + value_count);
-                            found = true;
-                        }
-                        map_pos += value_count;
-                        meta_pos += static_cast<size_t>(len);
-                    }
-                    if (map_pos != map_end)
-                        ABORT("SymFact V2 row-down source map range size mismatch.");
-                    if (!found)
-                        ABORT("SymFact V2 row-down source map cannot find a requested block.");
-                };
                 auto append_row_down_map_for_record =
                     [&](int_t k0, int chunk_pc,
                         const int_t *requested_begin,
@@ -4571,8 +4490,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             ABORT("SymFact V2 row-down source metadata is truncated.");
                         int_t gid = meta[meta_pos++];
                         int_t len = meta[meta_pos++];
-                        if (len < 0 ||
-                            meta_pos + static_cast<size_t>(len) > meta.size())
+                        if (len < 0 || meta_pos + static_cast<size_t>(len) > meta.size())
                             ABORT("SymFact V2 row-down source metadata block is invalid.");
                         size_t value_count = xlu_checked_product(
                             static_cast<size_t>(len),
@@ -4585,30 +4503,14 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                                requested_end, gid))
                         {
                             out.insert(out.end(),
-                                       symV2PartnerLPackedMaps.begin() +
-                                           map_pos,
-                                       symV2PartnerLPackedMaps.begin() +
-                                           map_pos + value_count);
+                                       symV2PartnerLPackedMaps.begin() + map_pos,
+                                       symV2PartnerLPackedMaps.begin() + map_pos + value_count);
                         }
                         map_pos += value_count;
                         meta_pos += static_cast<size_t>(len);
                     }
                     if (map_pos != map_end)
                         ABORT("SymFact V2 row-down source map range size mismatch.");
-                };
-                auto collect_row_down_blocks_for_record =
-                    [&](int chunk_pc, const int_t *requested_begin,
-                        const int_t *requested_end,
-                        std::vector<SymV2RowDownSourceBlock> &out)
-                {
-                    for (const int_t *it = requested_begin;
-                         it != requested_end; ++it)
-                    {
-                        SymV2RowDownSourceBlock block;
-                        block.gid = *it;
-                        block.chunk_pc = chunk_pc;
-                        out.push_back(block);
-                    }
                 };
 
                 for (int sender_pc = 0; sender_pc < Pc; ++sender_pc)
@@ -4639,35 +4541,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             static_cast<size_t>(dest_pc);
                         if (slot >= slot_maps.size())
                             ABORT("SymFact V2 row-down demand slot is invalid.");
-                        if (row_down_direct_layout)
-                        {
-                            if (slot >= slot_blocks.size())
-                                ABORT("SymFact V2 row-down direct slot is invalid.");
-                            if (row_down_compact)
-                            {
-                                collect_row_down_blocks_for_record(
-                                    chunk_pc,
-                                    recv_payload.data() + request_pos,
-                                    recv_payload.data() + pos,
-                                    slot_blocks[slot]);
-                            }
-                            else
-                            {
-                                std::vector<int_t> requested(
-                                    recv_payload.begin() + request_pos,
-                                    recv_payload.begin() + pos);
-                                std::sort(requested.begin(), requested.end());
-                                requested.erase(
-                                    std::unique(requested.begin(),
-                                                requested.end()),
-                                    requested.end());
-                                collect_row_down_blocks_for_record(
-                                    chunk_pc, requested.data(),
-                                    requested.data() + requested.size(),
-                                    slot_blocks[slot]);
-                            }
-                        }
-                        else if (row_down_compact)
+                        if (row_down_compact)
                         {
                             append_row_down_map_for_record(
                                 k0, chunk_pc, recv_payload.data() + request_pos,
@@ -4687,82 +4561,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 k0, chunk_pc, requested.data(),
                                 requested.data() + requested.size(),
                                 slot_maps[slot]);
-                        }
-                    }
-                }
-
-                if (row_down_direct_layout)
-                {
-                    for (size_t slot = 0; slot < slot_blocks.size(); ++slot)
-                    {
-                        std::vector<SymV2RowDownSourceBlock> &blocks =
-                            slot_blocks[slot];
-                        if (blocks.empty())
-                            continue;
-                        std::sort(blocks.begin(), blocks.end(),
-                                  [](const SymV2RowDownSourceBlock &a,
-                                     const SymV2RowDownSourceBlock &b)
-                                  {
-                                      if (a.gid != b.gid)
-                                          return a.gid < b.gid;
-                                      return a.chunk_pc < b.chunk_pc;
-                                  });
-                        std::vector<SymV2RowDownSourceBlock> unique_blocks;
-                        unique_blocks.reserve(blocks.size());
-                        for (size_t bi = 0; bi < blocks.size(); ++bi)
-                        {
-                            if (!unique_blocks.empty() &&
-                                unique_blocks.back().gid == blocks[bi].gid)
-                            {
-                                if (unique_blocks.back().chunk_pc !=
-                                    blocks[bi].chunk_pc)
-                                    ABORT("SymFact V2 row-down block has inconsistent source columns.");
-                                continue;
-                            }
-                            unique_blocks.push_back(blocks[bi]);
-                        }
-                        int_t lk = static_cast<int_t>(
-                            slot / static_cast<size_t>(Pc));
-                        int_t k0 = symV2PanelGid(lk);
-                        if (k0 < 0 || k0 >= nsupers)
-                            ABORT("SymFact V2 row-down direct panel is invalid.");
-                        int_t ksupc = SuperSize(k0);
-                        std::vector<std::vector<int_t> > block_maps(
-                            unique_blocks.size());
-                        std::vector<int_t> block_nrows(unique_blocks.size(), 0);
-                        for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
-                        {
-                            append_row_down_source_map_for_gid(
-                                k0, unique_blocks[bi].chunk_pc,
-                                unique_blocks[bi].gid, block_maps[bi]);
-                            if (ksupc <= 0 ||
-                                block_maps[bi].size() %
-                                        static_cast<size_t>(ksupc) !=
-                                    0)
-                                ABORT("SymFact V2 row-down direct block map has invalid width.");
-                            size_t nrows =
-                                block_maps[bi].size() /
-                                static_cast<size_t>(ksupc);
-                            if (nrows >
-                                static_cast<size_t>(
-                                    std::numeric_limits<int_t>::max()))
-                                ABORT("SymFact V2 row-down direct block is too large.");
-                            block_nrows[bi] = static_cast<int_t>(nrows);
-                        }
-                        std::vector<int_t> &slot_map = slot_maps[slot];
-                        for (int_t col = 0; col < ksupc; ++col)
-                        {
-                            for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
-                            {
-                                size_t src =
-                                    static_cast<size_t>(col) *
-                                    static_cast<size_t>(block_nrows[bi]);
-                                slot_map.insert(
-                                    slot_map.end(),
-                                    block_maps[bi].begin() + src,
-                                    block_maps[bi].begin() + src +
-                                        block_nrows[bi]);
-                            }
                         }
                     }
                 }
@@ -5006,8 +4804,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             }
 // SYM_V2_PC2_PHASE3_SPARSE_ROW_DOWN_PLAN_END
 // SYM_V2_PC2_PHASE4_ALLOC_ROW_DOWN_GPU_MAPS_BEGIN
-                if (need_row_frag_setup &&
-                    superlu_sym_v2_row_l_plan_v2_exchange())
+                if (superlu_sym_v2_row_l_plan_v2_exchange())
                 {
                     if (superlu_sym_v2_row_l_plan_v2_dryrun())
                         ABORT("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE requires GPU3DV2_ROW_L_PLAN_V2_DRYRUN=0.");
@@ -5026,7 +4823,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 }
 // SYM_V2_PC2_PHASE4_ALLOC_ROW_DOWN_GPU_MAPS_END
 
-            if (need_row_frag_setup &&
+            if (pc_fragment_schur_setup &&
                 superlu_sym_v2_row_hybrid_cost() &&
                 !superlu_sym_v2_row_l_postsolve_send())
             {
@@ -5142,7 +4939,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     std::fflush(stdout);
 // SYM_V2_PC2_PHASE5_COST_HYBRID_SELECTOR_END
             }
-            else if (need_row_frag_setup &&
+            else if (pc_fragment_schur_setup &&
                 superlu_sym_v2_hybrid_row_bcast() &&
                 !superlu_sym_v2_row_l_postsolve_send())
             {
@@ -5531,8 +5328,6 @@ inline size_t xLUstruct_t<double>::symV2DelayedGpuMetadataBytes() const
         for (size_t i = 0; i < maps.size(); ++i)
             add_bytes(maps[i].size(), elem_size, what);
     };
-    const bool need_row_frag_metadata =
-        superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1;
 
     add_host_maps(symL2ULocalMapsHost, sizeof(int_t),
                   "SymFact local GPU L2U map");
@@ -5549,8 +5344,7 @@ inline size_t xLUstruct_t<double>::symV2DelayedGpuMetadataBytes() const
               "SymFact V2 exact partner-L send buffer pool");
     add_bytes(symV2PartnerLExactSendMapPoolCount, sizeof(int_t),
               "SymFact V2 exact partner-L send map pool");
-    if (need_row_frag_metadata &&
-        !superlu_sym_v2_rowfrag_destination_path())
+    if (!superlu_sym_v2_rowfrag_destination_path())
     {
         add_bytes(symV2RowFragExactSendBufPoolCount, sizeof(double),
                   "SymFact V2 exact row-fragment send buffer pool");
@@ -5559,13 +5353,10 @@ inline size_t xLUstruct_t<double>::symV2DelayedGpuMetadataBytes() const
     }
     add_bytes(symV2PartnerLRecvMapPoolCount, sizeof(int_t),
               "SymFact V2 partner-L receive map pool");
-    if (need_row_frag_metadata)
-    {
-        add_bytes(symV2RowFragRecvMapPoolCount, sizeof(int_t),
-                  "SymFact V2 row-fragment receive map pool");
-        add_bytes(symV2RowDownSendMapPoolCount, sizeof(int_t),
-                  "SymFact V2 row-down send map pool");
-    }
+    add_bytes(symV2RowFragRecvMapPoolCount, sizeof(int_t),
+              "SymFact V2 row-fragment receive map pool");
+    add_bytes(symV2RowDownSendMapPoolCount, sizeof(int_t),
+              "SymFact V2 row-down send map pool");
 
     return total;
 }
@@ -5584,8 +5375,6 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
 
     int profile_setup = symV2SetupProfileActive() ? 1 : 0;
     double tPartnerSendGPU = profile_setup ? SuperLU_timer_() : 0.0;
-    const bool need_row_frag_metadata =
-        superlu_sym_v2_pc_fragment_schur() && Pr > 1 && Pc > 1;
 
     auto copy_int_pool = [&](int_t **dst,
                              const std::vector<int_t> &host,
@@ -5728,8 +5517,7 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
         }
     }
 
-    if (need_row_frag_metadata &&
-        !superlu_sym_v2_rowfrag_destination_path() &&
+    if (!superlu_sym_v2_rowfrag_destination_path() &&
         symV2RowFragExactSendMapPoolCount > 0)
     {
         if (symV2RowFragExactSendMapsHost.size() !=
@@ -5769,7 +5557,7 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
         }
     }
 
-    if (need_row_frag_metadata && symV2RowDownSendMapPoolCount > 0)
+    if (symV2RowDownSendMapPoolCount > 0)
     {
         copy_int_pool(&symV2RowDownSendMapPoolGPU,
                       symV2RowDownSendMapsHost,
@@ -5831,13 +5619,12 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
                           &symV2PartnerLRecvMapPoolGPU,
                           symV2PartnerLRecvMapPoolCount,
                           "SymFact V2 partner-L receive map pool");
-    if (need_row_frag_metadata)
-        materialize_recv_maps(symV2RowFragRecvMap,
-                              symV2RowFragRecvMapOffsets,
-                              symV2RowFragRecvMapsGPU,
-                              &symV2RowFragRecvMapPoolGPU,
-                              symV2RowFragRecvMapPoolCount,
-                              "SymFact V2 row-fragment receive map pool");
+    materialize_recv_maps(symV2RowFragRecvMap,
+                          symV2RowFragRecvMapOffsets,
+                          symV2RowFragRecvMapsGPU,
+                          &symV2RowFragRecvMapPoolGPU,
+                          symV2RowFragRecvMapPoolCount,
+                          "SymFact V2 row-fragment receive map pool");
 
     if (!superlu_cuda_aware_mpi())
     {

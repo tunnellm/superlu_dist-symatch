@@ -3144,18 +3144,17 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     const bool sym_v2_pc_fragment_schur =
         sym_v2_mode && superlu_sym_v2_pc_fragment_schur() &&
         Pr > 1 && Pc > 1;
-    const bool sym_v2_need_row_frag = sym_v2_pc_fragment_schur;
     const bool sym_v2_row_plan_v2_compact =
-        sym_v2_need_row_frag &&
+        sym_v2_pc_fragment_schur &&
         superlu_sym_v2_row_l_plan_v2_compact();
     const bool sym_v2_row_stage_reuse =
-        sym_v2_need_row_frag &&
+        sym_v2_pc_fragment_schur &&
         (superlu_sym_v2_row_l_pack_all_dest() ||
          superlu_sym_v2_row_l_plan_v2_exchange());
 // SYM_V2_PC2_PHASE2_ROW_STAGE_CAPACITY_BEGIN
     int_t sym_v2_pc_frag_row_stage_count_int = 0;
     size_t sym_v2_pc_frag_row_stage_count = 0;
-    if (sym_v2_need_row_frag)
+    if (sym_v2_pc_fragment_schur)
     {
         int_t row_stage_count =
             SUPERLU_MAX((int_t)0, maxSymV2RowFragStageCount);
@@ -3171,11 +3170,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     }
 // SYM_V2_PC2_PHASE2_ROW_STAGE_CAPACITY_END
     size_t sym_v2_pc_frag_row_val_count =
-        sym_v2_need_row_frag
+        sym_v2_pc_fragment_schur
             ? static_cast<size_t>(maxSymV2RowFragValRecvCount)
             : 0;
     size_t sym_v2_pc_frag_idx_count =
-        sym_v2_need_row_frag
+        sym_v2_pc_fragment_schur
             ? static_cast<size_t>(maxSymV2RowFragIdxRecvCount)
             : 0;
     size_t dataPerStreamBase =
@@ -3724,12 +3723,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                     maxSymPartnerLvalCount)),
             sizeof(Ftype), "SymFact V2 arena partner staging");
-        if (sym_v2_need_row_frag)
+        if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         sym_v2_pc_frag_row_stage_count_int)),
                 sizeof(Ftype), "SymFact V2 arena row fragment staging");
-        if (sym_v2_need_row_frag)
+        if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         maxSymV2RowFragValRecvCount)),
@@ -3750,12 +3749,12 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                     maxSymPartnerLidxCount)),
             sizeof(int_t), "SymFact V2 arena partner indices");
-        if (sym_v2_need_row_frag)
+        if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         maxSymV2RowFragIdxRecvCount)),
                 sizeof(int_t), "SymFact V2 arena row fragment indices");
-        if (sym_v2_need_row_frag)
+        if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         sym_v2_pc_frag_row_stage_count_int)),
@@ -3841,14 +3840,14 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                 maxSymPartnerLvalCount)),
                 sizeof(Ftype), "SymFact V2 arena partner staging"));
-            if (sym_v2_need_row_frag)
+            if (sym_v2_pc_fragment_schur)
                 A_gpu.symV2RowFragStageBufs[stream] =
                     static_cast<Ftype *>(take(
                         static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         sym_v2_pc_frag_row_stage_count_int)),
                         sizeof(Ftype),
                         "SymFact V2 arena row fragment staging"));
-            if (sym_v2_need_row_frag)
+            if (sym_v2_pc_fragment_schur)
                 A_gpu.symV2RowFragValRecvBufs[stream] =
                     static_cast<Ftype *>(take(
                         static_cast<size_t>(SUPERLU_MAX((int_t)1,
@@ -3870,14 +3869,14 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                 static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                 maxSymPartnerLidxCount)),
                 sizeof(int_t), "SymFact V2 arena partner indices"));
-            if (sym_v2_need_row_frag)
+            if (sym_v2_pc_fragment_schur)
                 A_gpu.symV2RowFragIdxRecvBufs[stream] =
                     static_cast<int_t *>(take(
                         static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                         maxSymV2RowFragIdxRecvCount)),
                         sizeof(int_t),
                         "SymFact V2 arena row fragment indices"));
-            if (sym_v2_need_row_frag)
+            if (sym_v2_pc_fragment_schur)
                 A_gpu.symV2RowFragSendMapStageBufs[stream] =
                     static_cast<int_t *>(take(
                         static_cast<size_t>(SUPERLU_MAX((int_t)1,
@@ -3919,7 +3918,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                                  sizeof(Ftype) * static_cast<size_t>(
                                      SUPERLU_MAX((int_t)1,
                                                  maxSymPartnerLvalCount))));
-            if (sym_v2_need_row_frag)
+            if (sym_v2_pc_fragment_schur)
             {
                 gpuErrchk(cudaMalloc(&A_gpu.symV2RowFragStageBufs[stream],
                                      sizeof(Ftype) *
