@@ -1145,6 +1145,12 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         {
             if (options->batchCount > 0)
                 ABORT("SymFact GPU3DVERSION=2 does not support batchCount>0 until LDL-native batch sizing is implemented.");
+            if (superlu_sym_v2_pc_fragment_ldl_native() &&
+                !superlu_sym_v2_pc_fragment_schur())
+                ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE requires GPU3DV2_PC_FRAGMENT_SCHUR=1.");
+            if (superlu_sym_v2_pc_fragment_ldl_native() &&
+                superlu_sym_v2_row_l_plan_v2())
+                ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE is incompatible with GPU3DV2_ROW_L_PLAN_V2.");
             symV2DiagBlocks.assign(nsupers, NULL);
 #ifdef HAVE_CUDA
             symV2DiagBlocksGPU.assign(nsupers, NULL);
@@ -4087,6 +4093,98 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     symV2SetupProfileAdd(
                         SYM_V2_SETUP_EXACT_SEND_MAP_BUILD,
                         SuperLU_timer_() - tDirectRowMapBuild);
+
+                if (superlu_sym_v2_pc_fragment_ldl_native())
+                {
+                    long long exact_max_row_stage = 0;
+                    long long exact_max_row_values = 0;
+                    long long exact_max_row_index = LPANEL_HEADER_SIZE;
+                    long long exact_max_row_send = 0;
+                    for (int_t k0 = 0; k0 < nsupers; ++k0)
+                    {
+                        long long stage_values = 0;
+                        size_t row_recv_base =
+                            static_cast<size_t>(k0) *
+                            static_cast<size_t>(Pc);
+                        for (int pc = 0; pc < Pc; ++pc)
+                        {
+                            size_t pos = row_recv_base +
+                                         static_cast<size_t>(pc);
+                            if (pos < symV2RowFragRecvSizes.size())
+                                stage_values +=
+                                    static_cast<long long>(
+                                        symV2RowFragRecvSizes[pos]);
+                        }
+                        exact_max_row_stage =
+                            SUPERLU_MAX(exact_max_row_stage, stage_values);
+
+                        if (static_cast<size_t>(k0) <
+                                symV2RowFragRecvIndex.size() &&
+                            !symV2RowFragRecvIndex[k0].empty())
+                        {
+                            const std::vector<int_t> &row_index =
+                                symV2RowFragRecvIndex[k0];
+                            if (row_index.size() < LPANEL_HEADER_SIZE)
+                                ABORT("SymFact V2 direct row-L exact index is truncated.");
+                            long long row_values =
+                                static_cast<long long>(row_index[1]) *
+                                static_cast<long long>(SuperSize(k0));
+                            exact_max_row_values =
+                                SUPERLU_MAX(exact_max_row_values,
+                                            row_values);
+                            exact_max_row_index = SUPERLU_MAX(
+                                exact_max_row_index,
+                                static_cast<long long>(row_index.size()));
+                        }
+                    }
+                    for (int_t lk = 0; lk < local_cols; ++lk)
+                    {
+                        long long aggregate_remote_send = 0;
+                        for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
+                        {
+                            size_t slot =
+                                static_cast<size_t>(lk) *
+                                    static_cast<size_t>(Pc) +
+                                static_cast<size_t>(pc_dest);
+                            long long dest_values = 0;
+                            if (slot < symV2RowDirectSendSizes.size())
+                                dest_values = static_cast<long long>(
+                                    symV2RowDirectSendSizes[slot]);
+                            exact_max_row_send =
+                                SUPERLU_MAX(exact_max_row_send,
+                                            dest_values);
+                            if (pc_dest != mycol)
+                                aggregate_remote_send += dest_values;
+                        }
+                        exact_max_row_send =
+                            SUPERLU_MAX(exact_max_row_send,
+                                        aggregate_remote_send);
+                    }
+                    exact_max_row_stage =
+                        SUPERLU_MAX(exact_max_row_stage,
+                                    exact_max_row_send);
+                    if (exact_max_row_stage >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()) ||
+                        exact_max_row_values >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()) ||
+                        exact_max_row_index >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()) ||
+                        exact_max_row_send >
+                            static_cast<long long>(
+                                std::numeric_limits<int_t>::max()))
+                        ABORT("SymFact V2 direct row-L exact staging size exceeds int_t range.");
+                    maxSymV2RowFragStageCount =
+                        static_cast<int_t>(exact_max_row_stage);
+                    maxSymV2RowFragValRecvCount =
+                        static_cast<int_t>(exact_max_row_values);
+                    maxSymV2RowFragIdxRecvCount =
+                        static_cast<int_t>(exact_max_row_index);
+                    maxSymV2RowFragValSendCount =
+                        static_cast<int_t>(exact_max_row_send);
+                }
             }
 
 

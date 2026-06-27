@@ -202,6 +202,24 @@ static inline bool superlu_sym_v2_pc_fragment_schur()
     return cached != 0;
 }
 
+static inline bool superlu_sym_v2_pc_fragment_ldl_native()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_PC_FRAGMENT_LDL_NATIVE");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
 static inline bool superlu_sym_v2_hybrid_row_bcast()
 {
     static int cached = -1;
@@ -240,6 +258,8 @@ static inline bool superlu_sym_v2_row_l_source_pack()
 
 static inline bool superlu_sym_v2_row_l_direct_recv()
 {
+    if (superlu_sym_v2_pc_fragment_ldl_native())
+        return true;
     static int cached = -1;
     if (cached >= 0)
         return cached != 0;
@@ -270,6 +290,8 @@ static inline bool superlu_sym_v2_row_l_postsolve_send()
     const int parsed = superlu_env_truthy(env);
     if (parsed < 0)
         ABORT("GPU3DV2_ROW_L_POSTSOLVE_SEND must be a boolean value.");
+    if (parsed != 0)
+        ABORT("GPU3DV2_ROW_L_POSTSOLVE_SEND was removed: the postsolve row-L transport experiment regressed memory and factor time.");
     cached = parsed;
     return cached != 0;
 }
@@ -320,11 +342,15 @@ static inline double superlu_sym_v2_env_double_flag(
 
 static inline bool superlu_sym_v2_row_l_separate_send_staging()
 {
+    if (superlu_sym_v2_pc_fragment_ldl_native())
+        return true;
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_SEPARATE_SEND_STAGING", 0);
 }
 
 static inline bool superlu_sym_v2_row_l_pack_all_dest()
 {
+    if (superlu_sym_v2_pc_fragment_ldl_native())
+        return true;
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PACK_ALL_DEST", 0);
 }
 
@@ -446,7 +472,8 @@ static inline bool superlu_sym_v2_recv_map_index_verify()
 static inline bool superlu_sym_v2_rowfrag_destination_path()
 {
 // SYM_V2_PC2_PHASE4_DEST_PATH_FLAG_BEGIN
-    return superlu_sym_v2_rowfrag_dest_pack() ||
+    return superlu_sym_v2_pc_fragment_ldl_native() ||
+           superlu_sym_v2_rowfrag_dest_pack() ||
            superlu_sym_v2_row_l_source_pack() ||
            superlu_sym_v2_row_l_direct_recv() ||
            superlu_sym_v2_row_l_postsolve_send() ||
@@ -456,6 +483,8 @@ static inline bool superlu_sym_v2_rowfrag_destination_path()
 
 static inline bool superlu_sym_v2_exact_fragment_demand()
 {
+    if (superlu_sym_v2_pc_fragment_ldl_native())
+        return true;
     static int cached = -1;
     if (cached >= 0)
         return cached != 0;
@@ -492,6 +521,8 @@ static inline bool superlu_sym_v2_exact_partner_fragment_demand()
 
 static inline bool superlu_sym_v2_exact_row_fragment_demand()
 {
+    if (superlu_sym_v2_pc_fragment_ldl_native())
+        return true;
     static int cached = -1;
     if (cached >= 0)
         return cached != 0;
