@@ -543,12 +543,16 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     bool cuda_aware = superlu_cuda_aware_mpi();
     const bool pc_fragment_schur =
         symV2UsePcFragmentSchurPanel(k);
+    const bool need_row_frag = pc_fragment_schur;
+    const bool postsolve_row_l =
+        need_row_frag && superlu_sym_v2_row_l_postsolve_send();
     const bool exact_fragment_demand =
         pc_fragment_schur && superlu_sym_v2_exact_fragment_demand();
     const bool exact_partner_fragment_demand =
         exact_fragment_demand &&
         superlu_sym_v2_exact_partner_fragment_demand();
     const bool exact_row_fragment_demand =
+        need_row_frag &&
         exact_fragment_demand &&
         superlu_sym_v2_exact_row_fragment_demand() &&
         !superlu_sym_v2_row_l_postsolve_send() &&
@@ -556,18 +560,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         !superlu_sym_v2_row_l_plan_v2_exchange();
 // SYM_V2_PC2_PHASE4_GPU_EXACT_ROW_GUARD_END
     const bool row_l_direct_recv =
-        pc_fragment_schur && superlu_sym_v2_row_l_direct_recv() &&
-        !superlu_sym_v2_row_l_postsolve_send();
+        need_row_frag &&
+        (superlu_sym_v2_row_l_direct_recv() ||
+         (postsolve_row_l && superlu_sym_v2_row_l_plan_v2_exchange()));
 // SYM_V2_PC2_PHASE2_COMBO_GUARD_BEGIN
-    if (pc_fragment_schur && superlu_sym_v2_row_l_one_sync() &&
+    if (need_row_frag && superlu_sym_v2_row_l_one_sync() &&
         !superlu_sym_v2_row_l_pack_all_dest())
         ABORT("GPU3DV2_ROW_L_ONE_SYNC requires GPU3DV2_ROW_L_PACK_ALL_DEST=1.");
-    if (pc_fragment_schur && superlu_sym_v2_row_l_pack_all_dest() &&
+    if (need_row_frag && superlu_sym_v2_row_l_pack_all_dest() &&
         !superlu_sym_v2_row_l_separate_send_staging())
         ABORT("GPU3DV2_ROW_L_PACK_ALL_DEST requires GPU3DV2_ROW_L_SEPARATE_SEND_STAGING=1.");
 // SYM_V2_PC2_PHASE2_COMBO_GUARD_END
 // SYM_V2_PC2_PHASE4_PLAN_EXCHANGE_GUARD_BEGIN
-    if (pc_fragment_schur && superlu_sym_v2_row_l_plan_v2_exchange())
+    if (need_row_frag && superlu_sym_v2_row_l_plan_v2_exchange())
     {
         if (!superlu_sym_v2_row_l_plan_v2())
             ABORT("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE requires GPU3DV2_ROW_L_PLAN_V2=1.");
@@ -580,7 +585,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         if (!superlu_sym_v2_row_l_separate_send_staging())
             ABORT("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE requires GPU3DV2_ROW_L_SEPARATE_SEND_STAGING=1.");
     }
-    if (pc_fragment_schur && superlu_sym_v2_row_l_plan_v2_compact())
+    if (need_row_frag && superlu_sym_v2_row_l_plan_v2_compact())
     {
         if (!superlu_sym_v2_row_l_plan_v2())
             ABORT("GPU3DV2_ROW_L_PLAN_V2_COMPACT requires GPU3DV2_ROW_L_PLAN_V2=1.");
@@ -597,12 +602,13 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     if (pc_fragment_schur)
     {
 // SYM_V2_PC2_PHASE6_ASYNC_CUDA_AWARE_GUARD_BEGIN
-        if (cuda_aware)
+        if (need_row_frag && cuda_aware)
             ABORT("Pc-fragment CUDA-aware MPI is still fail-closed.");
-        if (async_factor)
+        if (need_row_frag && async_factor)
             ABORT("Pc-fragment async factor is still fail-closed.");
-        if (superlu_sym_v2_pcfrag_cuda_aware_experiment() ||
-            superlu_sym_v2_pcfrag_async_experiment())
+        if (need_row_frag &&
+            (superlu_sym_v2_pcfrag_cuda_aware_experiment() ||
+             superlu_sym_v2_pcfrag_async_experiment()))
             ABORT("Pc-fragment async/CUDA-aware experiment is fail-closed.");
 // SYM_V2_PC2_PHASE6_ASYNC_CUDA_AWARE_GUARD_END
         if (exact_partner_fragment_demand &&
@@ -622,7 +628,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     const bool pooled_staging =
         !cuda_aware && superlu_sym_v2_pinned_staging() &&
         superlu_sym_v2_pinned_staging_pool();
-    if (pc_fragment_schur && !pooled_staging)
+    if (need_row_frag && !pooled_staging)
         ABORT("GPU3DV2_PC_FRAGMENT_SCHUR requires pooled pinned staging.");
     std::vector<int> local_send_sizes;
     std::vector<int> &send_sizes = pooled_staging
@@ -1444,7 +1450,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
             send_reqs.clear();
         }
+    }
 
+    if (need_row_frag)
+    {
         if (static_cast<size_t>(k) >= symV2RowFragRecvIndex.size())
             ABORT("SymFact V2 row-fragment cached index is missing.");
         const std::vector<int_t> &row_index = symV2RowFragRecvIndex[k];
@@ -2681,7 +2690,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
-                         pc_fragment_schur
+                         need_row_frag
                              ? SYM_GPU3D_T_ROW_LFRAG_SEND_WAIT
                              : SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
                          SuperLU_timer_() - send_wait_t);
@@ -2700,7 +2709,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
     symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_CALL,
                            sym_v2_partner_payload_bytes);
-    if (pc_fragment_schur)
+    if (need_row_frag)
         symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_CALL,
                                sym_v2_rowfrag_payload_bytes);
     SYM_V2_TRACE_EXCHANGE(grid3d, k, "leave L-fragment exchange");

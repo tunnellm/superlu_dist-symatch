@@ -320,12 +320,14 @@ static inline double superlu_sym_v2_env_double_flag(
 
 static inline bool superlu_sym_v2_row_l_separate_send_staging()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_SEPARATE_SEND_STAGING", 0);
+    return superlu_sym_v2_row_l_postsolve_send() ||
+           superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_SEPARATE_SEND_STAGING", 0);
 }
 
 static inline bool superlu_sym_v2_row_l_pack_all_dest()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PACK_ALL_DEST", 0);
+    return superlu_sym_v2_row_l_postsolve_send() ||
+           superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PACK_ALL_DEST", 0);
 }
 
 static inline bool superlu_sym_v2_row_l_one_sync()
@@ -335,12 +337,15 @@ static inline bool superlu_sym_v2_row_l_one_sync()
 
 static inline bool superlu_sym_v2_row_l_plan_v2()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2", 0);
+    return superlu_sym_v2_row_l_postsolve_send() ||
+           superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2", 0);
 }
 
 static inline bool superlu_sym_v2_row_l_plan_v2_dryrun()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_DRYRUN", 1);
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_ROW_L_PLAN_V2_DRYRUN",
+        superlu_sym_v2_row_l_postsolve_send() ? 0 : 1);
 }
 
 static inline bool superlu_sym_v2_row_l_plan_v2_block()
@@ -355,7 +360,8 @@ static inline bool superlu_sym_v2_row_l_plan_v2_verify()
 
 static inline bool superlu_sym_v2_row_l_plan_v2_exchange()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE", 0);
+    return superlu_sym_v2_row_l_postsolve_send() ||
+           superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE", 0);
 }
 
 static inline bool superlu_sym_v2_row_l_plan_v2_aggregate_dest()
@@ -442,6 +448,7 @@ static inline bool superlu_sym_v2_recv_map_index_verify()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_RECV_MAP_INDEX_VERIFY", 0);
 }
+
 // SYM_V2_PC2_PHASE1_FLAGS_END
 static inline bool superlu_sym_v2_rowfrag_destination_path()
 {
