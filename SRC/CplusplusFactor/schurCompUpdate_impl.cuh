@@ -3180,6 +3180,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         sym_v2_pc_fragment_schur
             ? static_cast<size_t>(maxSymV2RowFragIdxRecvCount)
             : 0;
+    size_t sym_v2_pc_frag_row_send_map_count =
+        sym_v2_pc_fragment_schur
+            ? static_cast<size_t>(sym_v2_pc_frag_row_stage_count_int)
+            : 0;
     size_t dataPerStreamBase =
         (3 * sizeof(Ftype) * maxLvalCount +
          sizeof(Ftype) * sym_v2_raw_panel_count +
@@ -3195,6 +3199,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
          2 * sizeof(int_t) * maxLidxCount +
          sizeof(int_t) * maxSymPartnerLidxCount +
          sizeof(int_t) * sym_v2_pc_frag_idx_count +
+         sizeof(int_t) * sym_v2_pc_frag_row_send_map_count +
          sizeof(int_t) * u_recv_idx_count +
          sym_diag_buf_elems * sizeof(Ftype));
     auto compute_data_per_stream = [&]() -> size_t
@@ -3730,6 +3735,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                     maxSymPartnerLvalCount)),
             sizeof(Ftype), "SymFact V2 arena partner staging");
+        if (sym_v2_partner_send_stream_stage)
+            offset = superlu_sym_v2_arena_advance(
+                offset, static_cast<size_t>(SUPERLU_MAX(
+                            (int_t)1, maxSymPartnerLSendStageCount)),
+                sizeof(Ftype), "SymFact V2 arena partner send staging");
         if (sym_v2_pc_fragment_schur)
             offset = superlu_sym_v2_arena_advance(
                 offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
