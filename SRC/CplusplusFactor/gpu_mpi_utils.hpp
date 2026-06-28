@@ -471,7 +471,9 @@ static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()
 
 static inline bool superlu_sym_v2_recv_map_index()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_RECV_MAP_INDEX", 0);
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_RECV_MAP_INDEX",
+        superlu_sym_v2_pc_fragment_ldl_native() ? 1 : 0);
 }
 
 static inline bool superlu_sym_v2_recv_map_index_verify()
@@ -487,6 +489,11 @@ static inline bool superlu_sym_v2_row_l_compressed_plan()
 static inline bool superlu_sym_v2_row_l_parallel_sendmap()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PARALLEL_SENDMAP", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_skip_legacy_recv_map()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_SKIP_LEGACY_RECV_MAP", 0);
 }
 // SYM_V2_PC2_PHASE1_FLAGS_END
 static inline bool superlu_sym_v2_rowfrag_destination_path()

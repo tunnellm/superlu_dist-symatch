@@ -2805,6 +2805,15 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 // SYM_V2_PC2_PHASE4_SETUP_EXACT_ROW_GUARD_BEGIN
                 !superlu_sym_v2_row_l_plan_v2_exchange();
 // SYM_V2_PC2_PHASE4_SETUP_EXACT_ROW_GUARD_END
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_FLAG_BEGIN
+            const bool skip_legacy_row_recv_map_setup =
+                pc_fragment_schur_setup &&
+                superlu_sym_v2_pc_fragment_ldl_native() &&
+                superlu_sym_v2_row_l_plan_v2() &&
+                superlu_sym_v2_row_l_plan_v2_exchange() &&
+                !superlu_sym_v2_row_l_plan_v2_dryrun() &&
+                superlu_sym_v2_row_l_skip_legacy_recv_map();
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_FLAG_END
             if (exact_row_fragment_demand_setup &&
                 !superlu_sym_v2_rowfrag_destination_path())
                 ABORT("GPU3DV2_EXACT_ROW_FRAGMENT_DEMAND requires GPU3DV2_ROW_L_SOURCE_PACK=1, GPU3DV2_ROW_L_DIRECT_RECV=1, or GPU3DV2_ROWFRAG_DEST_PACK=1.");
@@ -3337,10 +3346,19 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             size_t row_chunk_count = xlu_checked_product(
                 static_cast<size_t>(nsupers), static_cast<size_t>(Pc),
                 "SymFact V2 row-fragment receive table");
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_ALLOC_BEGIN
             std::vector<std::vector<SymV2CachedPartnerBlock> >
-                cached_row_blocks(nsupers);
+                cached_row_blocks;
             std::vector<std::vector<SymV2CachedPartnerBlock> >
-                cached_row_recv_blocks(row_chunk_count);
+                cached_row_recv_blocks;
+            if (!skip_legacy_row_recv_map_setup)
+            {
+                cached_row_blocks.assign(
+                    nsupers, std::vector<SymV2CachedPartnerBlock>());
+                cached_row_recv_blocks.assign(
+                    row_chunk_count, std::vector<SymV2CachedPartnerBlock>());
+            }
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_ALLOC_END
 
             double tRecvCacheBuild =
                 profile_setup ? SuperLU_timer_() : 0.0;
@@ -3403,8 +3421,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             cached_partner_recv_blocks[recv_pos].push_back(block);
                         }
                     }
-                    if (source_pr == myrow)
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_CACHE_BEGIN
+                    if (!skip_legacy_row_recv_map_setup &&
+                        source_pr == myrow)
                     {
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_CACHE_END
                         size_t row_chunk_pos =
                             (static_cast<size_t>(k0) *
                                  static_cast<size_t>(Pc) +
@@ -3687,6 +3708,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         SYM_V2_SETUP_PARTNER_RECV_LOOKUP_BUILD,
                         SuperLU_timer_() - tPartnerRecvLookupBuild);
 
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_BUILD_BEGIN
+                if (skip_legacy_row_recv_map_setup)
+                    continue;
+// SYM_V2_PC2_SKIP_LEGACY_ROW_RECV_BUILD_END
                 std::vector<SymV2CachedPartnerBlock> &row_blocks =
                     cached_row_blocks[k0];
                 if (row_blocks.empty())
