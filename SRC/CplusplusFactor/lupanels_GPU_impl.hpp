@@ -643,12 +643,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         superlu_sym_v2_row_l_compressed_plan() &&
         superlu_sym_v2_row_l_lazy_sendmap();
 // SYM_V2_PC2_ASYNC_EXCHANGE_FLAG_BEGIN
+    const bool pcfrag_async_pipeline =
+        pc_fragment_schur &&
+        async_factor &&
+        row_down_lazy_sendmap &&
+        superlu_sym_v2_pc_fragment_ldl_native() &&
+        superlu_sym_v2_pcfrag_async_pipeline();
     const bool pcfrag_async_exchange =
         pc_fragment_schur &&
         async_factor &&
         row_down_lazy_sendmap &&
         superlu_sym_v2_pc_fragment_ldl_native() &&
-        superlu_sym_v2_pcfrag_async_exchange();
+        (superlu_sym_v2_pcfrag_async_exchange() ||
+         pcfrag_async_pipeline);
 // SYM_V2_PC2_ASYNC_EXCHANGE_FLAG_END
     const bool row_down_lazy_warp_pack =
         row_down_lazy_sendmap &&
@@ -765,6 +772,149 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         }
         return sendbuf;
     };
+
+// SYM_V2_PC2_ASYNC_PIPELINE_EARLY_RECV_BEGIN
+    size_t recv_count_base =
+        static_cast<size_t>(k) * static_cast<size_t>(Pr);
+    std::vector<int> local_recv_sizes;
+    std::vector<int> local_recv_offsets;
+    std::vector<int> &recv_sizes = pooled_staging
+        ? symV2ExchangeRecvSizesScratch
+        : local_recv_sizes;
+    std::vector<int> &recv_offsets = pooled_staging
+        ? symV2ExchangeRecvOffsetsScratch
+        : local_recv_offsets;
+    std::vector<MPI_Request> local_recv_reqs;
+    std::vector<MPI_Request> local_send_reqs;
+    std::vector<int> local_recv_request_peers;
+    std::vector<int> local_wait_indices;
+    std::vector<MPI_Status> local_wait_statuses;
+    std::vector<MPI_Request> &recv_reqs = pooled_staging
+        ? symV2ExchangeRecvReqsScratch
+        : local_recv_reqs;
+    std::vector<MPI_Request> &send_reqs = pooled_staging
+        ? symV2ExchangeSendReqsScratch
+        : local_send_reqs;
+    std::vector<int> &recv_request_peers = pooled_staging
+        ? symV2ExchangeRecvPeersScratch
+        : local_recv_request_peers;
+    std::vector<int> &wait_indices = pooled_staging
+        ? symV2ExchangeWaitIndicesScratch
+        : local_wait_indices;
+    std::vector<MPI_Status> &wait_statuses = pooled_staging
+        ? symV2ExchangeWaitStatusesScratch
+        : local_wait_statuses;
+    int recv_total = 0;
+    double *recv_host_base = NULL;
+    bool partner_recvs_posted = false;
+    size_t deferred_partner_send_req_count = 0;
+
+    auto setup_partner_recv_metadata = [&]()
+    {
+        if (recv_count_base + static_cast<size_t>(Pr) >
+                symV2PartnerLRecvSizes.size() ||
+            recv_count_base + static_cast<size_t>(Pr) >
+                symV2PartnerLRecvMap.size())
+            ABORT("SymFact V2 true symmetric L-fragment receive sizes are missing.");
+
+        if (pooled_staging)
+        {
+            if (recv_sizes.size() != static_cast<size_t>(Pr) ||
+                recv_offsets.size() != static_cast<size_t>(Pr))
+                ABORT("SymFact V2 pooled receive scratch is invalid.");
+            std::fill(recv_sizes.begin(), recv_sizes.end(), 0);
+            std::fill(recv_offsets.begin(), recv_offsets.end(), -1);
+        }
+        else
+        {
+            recv_sizes.assign(static_cast<size_t>(Pr), 0);
+            recv_offsets.assign(static_cast<size_t>(Pr), -1);
+        }
+        recv_total = 0;
+        for (int pr = 0; pr < Pr; ++pr)
+        {
+            size_t pos = recv_count_base + static_cast<size_t>(pr);
+            recv_sizes[pr] = symV2PartnerLRecvSizes[pos];
+            int src = PNUM(pr, kcol_, grid);
+            if (recv_sizes[pr] > 0 && src != iam)
+            {
+                recv_offsets[pr] = recv_total;
+                recv_total += recv_sizes[pr];
+            }
+        }
+        if (recv_total > maxSymPartnerLvalCount)
+            ABORT("SymFact V2 true symmetric L-fragment receive exceeds staging buffer.");
+        if (recv_total > 0 && A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
+            ABORT("SymFact V2 true symmetric L-fragment staging buffer is missing.");
+
+        recv_reqs.clear();
+        send_reqs.clear();
+        recv_request_peers.clear();
+        recv_host_base = NULL;
+        if (!cuda_aware && recv_total > 0)
+        {
+            if (static_cast<size_t>(stream_offset) >=
+                    symPartnerLvalRecvBufs.size() ||
+                symPartnerLvalRecvBufs[stream_offset] == NULL)
+                ABORT("SymFact V2 host receive staging buffer is missing.");
+            recv_host_base = symPartnerLvalRecvBufs[stream_offset];
+        }
+    };
+
+    auto post_partner_recvs = [&]()
+    {
+        if (partner_recvs_posted)
+            return;
+        recv_reqs.reserve(Pr);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double recv_post_t = SuperLU_timer_();
+#endif
+        for (int pr = 0; pr < Pr; ++pr)
+        {
+            int size = recv_sizes[pr];
+            if (size <= 0)
+                continue;
+            int src = PNUM(pr, kcol_, grid);
+            if (src == iam)
+                continue;
+            MPI_Request req;
+            double *recv_ptr = NULL;
+            long long recv_bytes =
+                static_cast<long long>(size) *
+                static_cast<long long>(sizeof(double));
+            sym_v2_partner_payload_bytes += recv_bytes;
+            symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
+                                   recv_bytes);
+            if (cuda_aware)
+            {
+                recv_ptr = A_gpu.symPartnerLStageBufs[stream_offset] +
+                           recv_offsets[pr];
+            }
+            else
+            {
+                recv_ptr = recv_host_base + recv_offsets[pr];
+            }
+            MPI_Irecv(recv_ptr, size, MPI_DOUBLE, src,
+                      SLU_MPI_TAG(5, k), grid->comm, &req);
+            recv_reqs.push_back(req);
+            recv_request_peers.push_back(pr);
+        }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAddBoth(SYM_GPU3D_T_LFRAG_RECV_POST,
+                         SYM_GPU3D_T_PARTNER_LFRAG_RECV_POST,
+                         SuperLU_timer_() - recv_post_t);
+        symStatAdd(SYM_GPU3D_S_L2U_RECV_REQUESTS,
+                   static_cast<long long>(recv_reqs.size()));
+#endif
+        partner_recvs_posted = true;
+    };
+
+    if (pcfrag_async_pipeline)
+    {
+        setup_partner_recv_metadata();
+        post_partner_recvs();
+    }
+// SYM_V2_PC2_ASYNC_PIPELINE_EARLY_RECV_END
 
     if (mycol == kcol_)
     {
@@ -1043,125 +1193,14 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         }
     }
 
-    size_t recv_count_base =
-        static_cast<size_t>(k) * static_cast<size_t>(Pr);
-    if (recv_count_base + static_cast<size_t>(Pr) >
-            symV2PartnerLRecvSizes.size() ||
-        recv_count_base + static_cast<size_t>(Pr) >
-            symV2PartnerLRecvMap.size())
-        ABORT("SymFact V2 true symmetric L-fragment receive sizes are missing.");
+// SYM_V2_PC2_ASYNC_PIPELINE_LATE_RECV_BEGIN
+    if (!pcfrag_async_pipeline)
+    {
+        setup_partner_recv_metadata();
+        post_partner_recvs();
+    }
+// SYM_V2_PC2_ASYNC_PIPELINE_LATE_RECV_END
 
-    std::vector<int> local_recv_sizes;
-    std::vector<int> local_recv_offsets;
-    std::vector<int> &recv_sizes = pooled_staging
-        ? symV2ExchangeRecvSizesScratch
-        : local_recv_sizes;
-    std::vector<int> &recv_offsets = pooled_staging
-        ? symV2ExchangeRecvOffsetsScratch
-        : local_recv_offsets;
-    if (pooled_staging)
-    {
-        if (recv_sizes.size() != static_cast<size_t>(Pr) ||
-            recv_offsets.size() != static_cast<size_t>(Pr))
-            ABORT("SymFact V2 pooled receive scratch is invalid.");
-        std::fill(recv_sizes.begin(), recv_sizes.end(), 0);
-        std::fill(recv_offsets.begin(), recv_offsets.end(), -1);
-    }
-    else
-    {
-        recv_sizes.assign(static_cast<size_t>(Pr), 0);
-        recv_offsets.assign(static_cast<size_t>(Pr), -1);
-    }
-    int recv_total = 0;
-    for (int pr = 0; pr < Pr; ++pr)
-    {
-        size_t pos = recv_count_base + static_cast<size_t>(pr);
-        recv_sizes[pr] = symV2PartnerLRecvSizes[pos];
-        int src = PNUM(pr, kcol_, grid);
-        if (recv_sizes[pr] > 0 && src != iam)
-        {
-            recv_offsets[pr] = recv_total;
-            recv_total += recv_sizes[pr];
-        }
-    }
-    if (recv_total > maxSymPartnerLvalCount)
-        ABORT("SymFact V2 true symmetric L-fragment receive exceeds staging buffer.");
-    if (recv_total > 0 && A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
-        ABORT("SymFact V2 true symmetric L-fragment staging buffer is missing.");
-
-    std::vector<MPI_Request> local_recv_reqs;
-    std::vector<MPI_Request> local_send_reqs;
-    std::vector<int> local_recv_request_peers;
-    std::vector<int> local_wait_indices;
-    std::vector<MPI_Status> local_wait_statuses;
-    std::vector<MPI_Request> &recv_reqs = pooled_staging
-        ? symV2ExchangeRecvReqsScratch
-        : local_recv_reqs;
-    std::vector<MPI_Request> &send_reqs = pooled_staging
-        ? symV2ExchangeSendReqsScratch
-        : local_send_reqs;
-    std::vector<int> &recv_request_peers = pooled_staging
-        ? symV2ExchangeRecvPeersScratch
-        : local_recv_request_peers;
-    std::vector<int> &wait_indices = pooled_staging
-        ? symV2ExchangeWaitIndicesScratch
-        : local_wait_indices;
-    std::vector<MPI_Status> &wait_statuses = pooled_staging
-        ? symV2ExchangeWaitStatusesScratch
-        : local_wait_statuses;
-    recv_reqs.clear();
-    send_reqs.clear();
-    recv_request_peers.clear();
-    double *recv_host_base = NULL;
-    if (!cuda_aware && recv_total > 0)
-    {
-        if (static_cast<size_t>(stream_offset) >=
-                symPartnerLvalRecvBufs.size() ||
-            symPartnerLvalRecvBufs[stream_offset] == NULL)
-            ABORT("SymFact V2 host receive staging buffer is missing.");
-        recv_host_base = symPartnerLvalRecvBufs[stream_offset];
-    }
-    recv_reqs.reserve(Pr);
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-    double recv_post_t = SuperLU_timer_();
-#endif
-    for (int pr = 0; pr < Pr; ++pr)
-    {
-        int size = recv_sizes[pr];
-        if (size <= 0)
-            continue;
-        int src = PNUM(pr, kcol_, grid);
-        if (src == iam)
-            continue;
-        MPI_Request req;
-        double *recv_ptr = NULL;
-        long long recv_bytes =
-            static_cast<long long>(size) *
-            static_cast<long long>(sizeof(double));
-        sym_v2_partner_payload_bytes += recv_bytes;
-        symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
-                               recv_bytes);
-        if (cuda_aware)
-        {
-            recv_ptr = A_gpu.symPartnerLStageBufs[stream_offset] +
-                       recv_offsets[pr];
-        }
-        else
-        {
-            recv_ptr = recv_host_base + recv_offsets[pr];
-        }
-        MPI_Irecv(recv_ptr, size, MPI_DOUBLE, src,
-                  SLU_MPI_TAG(5, k), grid->comm, &req);
-        recv_reqs.push_back(req);
-        recv_request_peers.push_back(pr);
-    }
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-    symTimingAddBoth(SYM_GPU3D_T_LFRAG_RECV_POST,
-                     SYM_GPU3D_T_PARTNER_LFRAG_RECV_POST,
-                     SuperLU_timer_() - recv_post_t);
-    symStatAdd(SYM_GPU3D_S_L2U_RECV_REQUESTS,
-               static_cast<long long>(recv_reqs.size()));
-#endif
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double send_post_t = SuperLU_timer_();
@@ -1297,6 +1336,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     symStatAdd(SYM_GPU3D_S_L2U_SEND_REQUESTS,
                static_cast<long long>(send_reqs.size()));
 #endif
+    if (pcfrag_async_pipeline)
+        deferred_partner_send_req_count = send_reqs.size();
 
     bool recv_h2d_issued = false;
     bool pipeline_large_receives = false;
@@ -1560,7 +1601,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
     if (pc_fragment_schur)
     {
-        if (!send_reqs.empty())
+        if (!pcfrag_async_pipeline && !send_reqs.empty())
         {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double send_wait_t = SuperLU_timer_();
@@ -1573,7 +1614,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                              SuperLU_timer_() - send_wait_t);
 #endif
             send_reqs.clear();
-        }
+        } // SYM_V2_PC2_ASYNC_PIPELINE_DEFER_PARTNER_SEND_WAIT
 
         if (static_cast<size_t>(k) >= symV2RowFragRecvIndex.size())
             ABORT("SymFact V2 row-fragment cached index is missing.");
@@ -1922,8 +1963,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_POST,
                                  SYM_GPU3D_T_ROW_LFRAG_SEND_POST,
                                  SuperLU_timer_() - row_send_post_t);
+                if (send_reqs.size() < deferred_partner_send_req_count)
+                    ABORT("SymFact V2 row send request accounting is invalid.");
                 symStatAdd(SYM_GPU3D_S_L2U_SEND_REQUESTS,
-                           static_cast<long long>(send_reqs.size()));
+                           static_cast<long long>(
+                               send_reqs.size() -
+                               deferred_partner_send_req_count));
 #endif
             }
 
@@ -3104,18 +3149,40 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
     if (!send_reqs.empty())
     {
+        if (deferred_partner_send_req_count > send_reqs.size())
+            ABORT("SymFact V2 deferred partner send count is invalid.");
+        if (deferred_partner_send_req_count > 0)
+        {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        double send_wait_t = SuperLU_timer_();
+            double partner_send_wait_t = SuperLU_timer_();
 #endif
-        MPI_Waitall(static_cast<int>(send_reqs.size()), send_reqs.data(),
-                    MPI_STATUSES_IGNORE);
+            MPI_Waitall(static_cast<int>(deferred_partner_send_req_count),
+                        send_reqs.data(), MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
-                         pc_fragment_schur
-                             ? SYM_GPU3D_T_ROW_LFRAG_SEND_WAIT
-                             : SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
-                         SuperLU_timer_() - send_wait_t);
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
+                             SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
+                             SuperLU_timer_() - partner_send_wait_t);
 #endif
+        }
+        size_t row_send_req_count =
+            send_reqs.size() - deferred_partner_send_req_count;
+        if (row_send_req_count > 0)
+        {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double send_wait_t = SuperLU_timer_();
+#endif
+            MPI_Waitall(static_cast<int>(row_send_req_count),
+                        send_reqs.data() + deferred_partner_send_req_count,
+                        MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
+                             pc_fragment_schur
+                                 ? SYM_GPU3D_T_ROW_LFRAG_SEND_WAIT
+                                 : SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
+                             SuperLU_timer_() - send_wait_t);
+#endif
+        }
+        send_reqs.clear();
     }
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING

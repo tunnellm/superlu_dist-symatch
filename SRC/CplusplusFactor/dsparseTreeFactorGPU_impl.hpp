@@ -470,7 +470,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 !superlu_sym_v2_row_l_postsolve_send() &&
                 superlu_sym_v2_row_l_compressed_plan() &&
                 superlu_sym_v2_row_l_lazy_sendmap() &&
-                superlu_sym_v2_pcfrag_async_exchange();
+                (superlu_sym_v2_pcfrag_async_exchange() ||
+                 superlu_sym_v2_pcfrag_async_pipeline());
             if (superlu_sym_v2_async_factor() &&
                 pcfrag_async_exchange_panel_ready &&
                 mycol == sym_panel_root &&
