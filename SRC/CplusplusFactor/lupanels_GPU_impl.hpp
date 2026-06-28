@@ -86,6 +86,46 @@ static __global__ void sym_l2u_pack_segments_kernel(
     }
 }
 
+static __global__ void sym_l2u_pack_segments_warp_kernel(
+    const double *lpanel,
+    double *sendbuf,
+    const int_t *base_sendmap,
+    const SymV2RowDownSendSegmentGPU *segments,
+    int nsegments,
+    int_t ksupc,
+    int_t dst_lda)
+{
+    const int warp_size = 32;
+    int warps_per_block = blockDim.x / warp_size;
+    if (warps_per_block <= 0)
+        return;
+
+    int warp_in_block = threadIdx.x / warp_size;
+    int lane = threadIdx.x - warp_in_block * warp_size;
+    int seg_id = blockIdx.x * warps_per_block + warp_in_block;
+    if (seg_id >= nsegments)
+        return;
+
+    SymV2RowDownSendSegmentGPU seg = segments[seg_id];
+    int_t nrows = seg.nrows;
+    if (nrows <= 0 || ksupc <= 0 || dst_lda <= 0)
+        return;
+
+    int_t count = nrows * ksupc;
+    for (int_t idx = lane; idx < count; idx += warp_size)
+    {
+        int_t row = idx % nrows;
+        int_t col = idx / nrows;
+        size_t map_pos = seg.map_offset +
+                         static_cast<size_t>(row) +
+                         static_cast<size_t>(col) *
+                             static_cast<size_t>(nrows);
+        int_t src = base_sendmap[map_pos];
+        sendbuf[seg.dst_row_offset + row + col * dst_lda] =
+            (src < 0) ? (double)(-src - 1) : lpanel[src];
+    }
+}
+
 static __global__ void sym_l2u_pack_raw_kernel(const double *lpanel,
                                                double *sendbuf,
                                                const int_t *sendmap,
@@ -602,6 +642,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         ldl_native_direct_row &&
         superlu_sym_v2_row_l_compressed_plan() &&
         superlu_sym_v2_row_l_lazy_sendmap();
+// SYM_V2_PC2_ASYNC_EXCHANGE_FLAG_BEGIN
+    const bool pcfrag_async_exchange =
+        pc_fragment_schur &&
+        async_factor &&
+        row_down_lazy_sendmap &&
+        superlu_sym_v2_pc_fragment_ldl_native() &&
+        superlu_sym_v2_pcfrag_async_exchange();
+// SYM_V2_PC2_ASYNC_EXCHANGE_FLAG_END
+    const bool row_down_lazy_warp_pack =
+        row_down_lazy_sendmap &&
+        superlu_sym_v2_row_l_lazy_warp_pack();
 // SYM_V2_PC2_PHASE2_COMBO_GUARD_BEGIN
     if (pc_fragment_schur && superlu_sym_v2_row_l_one_sync() &&
         !superlu_sym_v2_row_l_pack_all_dest())
@@ -641,13 +692,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     if (pc_fragment_schur)
     {
 // SYM_V2_PC2_PHASE6_ASYNC_CUDA_AWARE_GUARD_BEGIN
+// SYM_V2_PC2_ASYNC_EXCHANGE_GUARD_BEGIN
         if (cuda_aware)
             ABORT("Pc-fragment CUDA-aware MPI is still fail-closed.");
-        if (async_factor)
-            ABORT("Pc-fragment async factor is still fail-closed.");
-        if (superlu_sym_v2_pcfrag_cuda_aware_experiment() ||
-            superlu_sym_v2_pcfrag_async_experiment())
-            ABORT("Pc-fragment async/CUDA-aware experiment is fail-closed.");
+        if (async_factor && !pcfrag_async_exchange)
+            ABORT("Pc-fragment async factor is fail-closed unless GPU3DV2_PCFRAG_ASYNC_EXCHANGE=1 with lazy LDL row-down.");
+        if (superlu_sym_v2_pcfrag_cuda_aware_experiment())
+            ABORT("Pc-fragment CUDA-aware experiment is fail-closed.");
+        if (superlu_sym_v2_pcfrag_async_experiment() &&
+            !pcfrag_async_exchange)
+            ABORT("Pc-fragment async experiment is fail-closed; use GPU3DV2_PCFRAG_ASYNC_EXCHANGE=1 for the guarded slice.");
+// SYM_V2_PC2_ASYNC_EXCHANGE_GUARD_END
 // SYM_V2_PC2_PHASE6_ASYNC_CUDA_AWARE_GUARD_END
         if (exact_partner_fragment_demand &&
             superlu_sym_v2_pc_fragment_ldl_native())
@@ -2199,10 +2254,29 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                         symL2LSendMapPoolGPU == NULL)
                         ABORT("SymFact V2 row-down lazy-sendmap descriptors are missing.");
                     int_t dst_lda = static_cast<int_t>(total / ksupc);
-                    sym_l2u_pack_segments_kernel<<<nsegments, threads, 0, stream>>>(
-                        row_lpanel_ptr->gpuPanel.val, dst_buf,
-                        symL2LSendMapPoolGPU, segments, nsegments,
-                        ksupc, dst_lda);
+// SYM_V2_PC2_LAZY_WARP_PACK_BRANCH_BEGIN
+                    if (row_down_lazy_warp_pack)
+                    {
+                        const int warp_size = 32;
+                        if (threads % warp_size != 0)
+                            ABORT("SymFact V2 row-down lazy warp-pack thread count is invalid.");
+                        int warps_per_block = threads / warp_size;
+                        int blocks =
+                            (nsegments + warps_per_block - 1) /
+                            warps_per_block;
+                        sym_l2u_pack_segments_warp_kernel<<<blocks, threads, 0, stream>>>(
+                            row_lpanel_ptr->gpuPanel.val, dst_buf,
+                            symL2LSendMapPoolGPU, segments, nsegments,
+                            ksupc, dst_lda);
+                    }
+                    else
+                    {
+                        sym_l2u_pack_segments_kernel<<<nsegments, threads, 0, stream>>>(
+                            row_lpanel_ptr->gpuPanel.val, dst_buf,
+                            symL2LSendMapPoolGPU, segments, nsegments,
+                            ksupc, dst_lda);
+                    }
+// SYM_V2_PC2_LAZY_WARP_PACK_BRANCH_END
                 }
                 else
                 {

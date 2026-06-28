@@ -464,6 +464,11 @@ static inline bool superlu_sym_v2_pcfrag_async_experiment()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_ASYNC_EXPERIMENT", 0);
 }
 
+static inline bool superlu_sym_v2_pcfrag_async_exchange()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_ASYNC_EXCHANGE", 0);
+}
+
 static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_CUDA_AWARE_EXPERIMENT", 0);
@@ -499,6 +504,16 @@ static inline bool superlu_sym_v2_row_l_skip_legacy_recv_map()
 static inline bool superlu_sym_v2_row_l_lazy_sendmap()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_LAZY_SENDMAP", 0);
+}
+
+static inline bool superlu_sym_v2_pcfrag_setup_opt()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_SETUP_OPT", 0);
+}
+
+static inline bool superlu_sym_v2_row_l_lazy_warp_pack()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_LAZY_WARP_PACK", 0);
 }
 // SYM_V2_PC2_PHASE1_FLAGS_END
 static inline bool superlu_sym_v2_rowfrag_destination_path()

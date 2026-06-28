@@ -460,7 +460,33 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             bool local_singleton_panel =
                 (Pr == 1 && Pc == 1 &&
                  grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1);
+// SYM_V2_PC2_ASYNC_PANEL_READY_SKIP_BEGIN
+            const bool pcfrag_async_exchange_panel_ready =
+                pc_fragment_schur && Pr > 1 && Pc > 1 &&
+                !superlu_cuda_aware_mpi() &&
+                superlu_sym_v2_pc_fragment_ldl_native() &&
+                superlu_sym_v2_row_l_plan_v2_exchange() &&
+                superlu_sym_v2_row_l_direct_recv() &&
+                !superlu_sym_v2_row_l_postsolve_send() &&
+                superlu_sym_v2_row_l_compressed_plan() &&
+                superlu_sym_v2_row_l_lazy_sendmap() &&
+                superlu_sym_v2_pcfrag_async_exchange();
             if (superlu_sym_v2_async_factor() &&
+                pcfrag_async_exchange_panel_ready &&
+                mycol == sym_panel_root &&
+                LidxSendCounts[k] > 0 && k >= 0 &&
+                static_cast<size_t>(k) < symPanelReadyEventIds.size() &&
+                symPanelReadyEventIds[k] >= 0)
+            {
+                /* dSymV2LFragmentExchangeGPU() already enqueues a stream wait
+                   on this event and returns after synchronizing that stream.
+                   Avoid a second host-side cudaEventSynchronize here. */
+                int event_id = symPanelReadyEventIds[k];
+                if (event_id >= A_gpu.numCudaStreams)
+                    ABORT("SymFact V2 panel-ready event is invalid.");
+                symPanelReadyEventIds[k] = -1;
+            }
+            else if (superlu_sym_v2_async_factor() &&
                 !local_singleton_panel && mycol == sym_panel_root &&
                 LidxSendCounts[k] > 0 && k >= 0 &&
                 static_cast<size_t>(k) < symPanelReadyEventIds.size() &&
@@ -480,6 +506,7 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
 #endif
                 symPanelReadyEventIds[k] = -1;
             }
+// SYM_V2_PC2_ASYNC_PANEL_READY_SKIP_END
 
             if (LidxSendCounts[k] > 0)
             {

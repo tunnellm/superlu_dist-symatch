@@ -1704,6 +1704,16 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
     symContract1Fallbacks = 0;
     symContract1MaxResid = 0.0;
     bool need_l2u_workspace = !useSymV2Solve();
+// SYM_V2_PC2_SETUP_OPT_L2U_BEGIN
+    const bool pcfrag_setup_opt =
+        superlu_acc_offload &&
+        symGPU3DVersion == 2 && Pr > 1 && Pc > 1 &&
+        superlu_sym_v2_pc_fragment_schur() &&
+        superlu_sym_v2_pc_fragment_ldl_native() &&
+        superlu_sym_v2_pcfrag_setup_opt();
+    if (pcfrag_setup_opt)
+        need_l2u_workspace = false;
+// SYM_V2_PC2_SETUP_OPT_L2U_END
 
     if (ldt < 0 || maxLvalCount < 0)
         ABORT("Negative SymFact workspace size.");
@@ -1772,6 +1782,16 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             symL2ULocalMapsHost.assign(CEILING(nsupers, Pr),
                                        std::vector<int_t>());
         }
+// SYM_V2_PC2_SETUP_OPT_L2U_ASSERT_BEGIN
+        else if (pcfrag_setup_opt)
+        {
+            symL2USendBufsGPU.clear();
+            symL2USendMapsGPU.clear();
+            symL2USendMapsHost.clear();
+            symL2ULocalMapsGPU.clear();
+            symL2ULocalMapsHost.clear();
+        }
+// SYM_V2_PC2_SETUP_OPT_L2U_ASSERT_END
         symV2PartnerLSendBufsGPU.assign(l2u_slots, NULL);
         symL2LSendMapsGPU.assign(l2u_slots, NULL);
         symL2LSendMeta.assign(l2u_slots, std::vector<int_t>());
