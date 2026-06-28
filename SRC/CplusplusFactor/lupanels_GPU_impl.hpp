@@ -53,6 +53,39 @@ static __global__ void sym_l2u_pack_kernel(const double *lpanel,
     sendbuf[idx] = (src < 0) ? (double)(-src - 1) : lpanel[src];
 }
 
+static __global__ void sym_l2u_pack_segments_kernel(
+    const double *lpanel,
+    double *sendbuf,
+    const int_t *base_sendmap,
+    const SymV2RowDownSendSegmentGPU *segments,
+    int nsegments,
+    int_t ksupc,
+    int_t dst_lda)
+{
+    int seg_id = blockIdx.x;
+    if (seg_id >= nsegments)
+        return;
+
+    SymV2RowDownSendSegmentGPU seg = segments[seg_id];
+    int_t nrows = seg.nrows;
+    if (nrows <= 0 || ksupc <= 0 || dst_lda <= 0)
+        return;
+
+    int_t count = nrows * ksupc;
+    for (int_t idx = threadIdx.x; idx < count; idx += blockDim.x)
+    {
+        int_t row = idx % nrows;
+        int_t col = idx / nrows;
+        size_t map_pos = seg.map_offset +
+                         static_cast<size_t>(row) +
+                         static_cast<size_t>(col) *
+                             static_cast<size_t>(nrows);
+        int_t src = base_sendmap[map_pos];
+        sendbuf[seg.dst_row_offset + row + col * dst_lda] =
+            (src < 0) ? (double)(-src - 1) : lpanel[src];
+    }
+}
+
 static __global__ void sym_l2u_pack_raw_kernel(const double *lpanel,
                                                double *sendbuf,
                                                const int_t *sendmap,
@@ -564,6 +597,11 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         !superlu_sym_v2_row_l_postsolve_send();
     const bool ldl_native_direct_row =
         row_l_direct_recv && superlu_sym_v2_pc_fragment_ldl_native();
+    const bool row_down_lazy_sendmap =
+        row_down_plan_exchange &&
+        ldl_native_direct_row &&
+        superlu_sym_v2_row_l_compressed_plan() &&
+        superlu_sym_v2_row_l_lazy_sendmap();
 // SYM_V2_PC2_PHASE2_COMBO_GUARD_BEGIN
     if (pc_fragment_schur && superlu_sym_v2_row_l_one_sync() &&
         !superlu_sym_v2_row_l_pack_all_dest())
@@ -2133,8 +2171,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     static_cast<size_t>(row_send_lk) *
                         static_cast<size_t>(Pc) +
                     static_cast<size_t>(pc_dest);
-                if (slot >= symV2RowDownSendSizes.size() ||
-                    slot >= symV2RowDownSendMapsGPU.size())
+                if (slot >= symV2RowDownSendSizes.size())
                     ABORT("SymFact V2 row-down plan send slot is invalid.");
                 int total = symV2RowDownSendSizes[slot];
                 if (total <= 0)
@@ -2143,16 +2180,42 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     ABORT("SymFact V2 row-down source L panel is missing.");
                 if (total > maxSymV2RowFragValSendCount)
                     ABORT("SymFact V2 row-down packed destination exceeds send staging capacity.");
-                int_t *sendmap = symV2RowDownSendMapsGPU[slot];
-                if (sendmap == NULL)
-                    ABORT("SymFact V2 row-down send map is missing.");
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 double row_pack_issue_t = SuperLU_timer_();
 #endif
                 int threads = 256;
-                int blocks = (total + threads - 1) / threads;
-                sym_l2u_pack_kernel<<<blocks, threads, 0, stream>>>(
-                    row_lpanel_ptr->gpuPanel.val, dst_buf, sendmap, total);
+// SYM_V2_PC2_LAZY_SENDMAP_GPU_PACK_BEGIN
+                if (row_down_lazy_sendmap)
+                {
+                    if (ksupc <= 0 || total % ksupc != 0)
+                        ABORT("SymFact V2 row-down lazy-sendmap total has invalid width.");
+                    if (slot >= symV2RowDownSendSegsGPU.size() ||
+                        slot >= symV2RowDownSendSegCounts.size())
+                        ABORT("SymFact V2 row-down lazy-sendmap slot is invalid.");
+                    int nsegments = symV2RowDownSendSegCounts[slot];
+                    SymV2RowDownSendSegmentGPU *segments =
+                        symV2RowDownSendSegsGPU[slot];
+                    if (nsegments <= 0 || segments == NULL ||
+                        symL2LSendMapPoolGPU == NULL)
+                        ABORT("SymFact V2 row-down lazy-sendmap descriptors are missing.");
+                    int_t dst_lda = static_cast<int_t>(total / ksupc);
+                    sym_l2u_pack_segments_kernel<<<nsegments, threads, 0, stream>>>(
+                        row_lpanel_ptr->gpuPanel.val, dst_buf,
+                        symL2LSendMapPoolGPU, segments, nsegments,
+                        ksupc, dst_lda);
+                }
+                else
+                {
+                    if (slot >= symV2RowDownSendMapsGPU.size())
+                        ABORT("SymFact V2 row-down plan send-map slot is invalid.");
+                    int_t *sendmap = symV2RowDownSendMapsGPU[slot];
+                    if (sendmap == NULL)
+                        ABORT("SymFact V2 row-down send map is missing.");
+                    int blocks = (total + threads - 1) / threads;
+                    sym_l2u_pack_kernel<<<blocks, threads, 0, stream>>>(
+                        row_lpanel_ptr->gpuPanel.val, dst_buf, sendmap, total);
+                }
+// SYM_V2_PC2_LAZY_SENDMAP_GPU_PACK_END
                 gpuErrchk(cudaGetLastError());
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_ISSUE,
@@ -2636,7 +2699,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             };
 
             if (superlu_sym_v2_row_l_plan_v2_exchange() &&
-                superlu_sym_v2_row_l_compressed_plan())
+                superlu_sym_v2_row_l_compressed_plan() &&
+                !row_down_lazy_sendmap) // SYM_V2_PC2_LAZY_SENDMAP_AGG_GUARD
             {
                 row_pack_plan_destination_range(0, mycol);
                 row_pack_plan_destination_range(mycol + 1, Pc);

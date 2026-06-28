@@ -16,6 +16,16 @@
 // class lpanelGPU_t;
 // class upanelGPU_t;
 #define GLOBAL_BLOCK_NOT_FOUND -1
+
+#ifdef HAVE_CUDA
+struct SymV2RowDownSendSegmentGPU
+{
+    size_t map_offset;
+    int_t nrows;
+    int_t dst_row_offset;
+};
+#endif
+
 // it can be templatized for Ftype and complex Ftype
 
 
@@ -878,6 +888,12 @@ struct xLUstruct_t
     std::vector<int> symV2RowDownSendSizes;
     std::vector<size_t> symV2RowDownSendMapOffsets;
     std::vector<int_t> symV2RowDownSendMapsHost;
+    SymV2RowDownSendSegmentGPU *symV2RowDownSendSegPoolGPU = NULL;
+    size_t symV2RowDownSendSegPoolCount = 0;
+    std::vector<SymV2RowDownSendSegmentGPU> symV2RowDownSendSegsHost;
+    std::vector<size_t> symV2RowDownSendSegOffsets;
+    std::vector<int> symV2RowDownSendSegCounts;
+    std::vector<SymV2RowDownSendSegmentGPU *> symV2RowDownSendSegsGPU;
     std::vector<size_t> symV2RowDownSegOffsets;
     std::vector<SymV2RowDownSeg> symV2RowDownSegs;
     std::vector<int> symV2RowDownRecvSizes;

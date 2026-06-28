@@ -495,6 +495,11 @@ static inline bool superlu_sym_v2_row_l_skip_legacy_recv_map()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_SKIP_LEGACY_RECV_MAP", 0);
 }
+
+static inline bool superlu_sym_v2_row_l_lazy_sendmap()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_LAZY_SENDMAP", 0);
+}
 // SYM_V2_PC2_PHASE1_FLAGS_END
 static inline bool superlu_sym_v2_rowfrag_destination_path()
 {

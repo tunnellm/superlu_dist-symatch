@@ -1832,6 +1832,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
     symV2RowDownSendSizes.clear();
     symV2RowDownSendMapOffsets.clear();
     symV2RowDownSendMapsHost.clear();
+// SYM_V2_PC2_LAZY_SENDMAP_CLEAR_BEGIN
+    symV2RowDownSendSegsHost.clear();
+    symV2RowDownSendSegOffsets.clear();
+    symV2RowDownSendSegCounts.clear();
+    symV2RowDownSendSegsGPU.clear();
+    symV2RowDownSendSegPoolCount = 0;
+// SYM_V2_PC2_LAZY_SENDMAP_CLEAR_END
     symV2RowDownSegOffsets.clear();
     symV2RowDownSegs.clear();
     symV2RowDownRecvSizes.clear();
@@ -1849,6 +1856,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
         symV2RowDownSendSizes.assign(l2u_slots, 0);
         symV2RowDownSendMapOffsets.assign(l2u_slots, 0);
         symV2RowDownSendMapsHost.clear();
+// SYM_V2_PC2_LAZY_SENDMAP_INIT_BEGIN
+        symV2RowDownSendSegPoolCount = 0;
+        symV2RowDownSendSegsHost.clear();
+        symV2RowDownSendSegOffsets.assign(l2u_slots, 0);
+        symV2RowDownSendSegCounts.assign(l2u_slots, 0);
+        symV2RowDownSendSegsGPU.assign(l2u_slots, NULL);
+// SYM_V2_PC2_LAZY_SENDMAP_INIT_END
         symV2RowDownSegOffsets.assign(l2u_slots + 1, 0);
         symV2RowDownSegs.clear();
         symV2RowDownRecvSizes.assign(
@@ -4616,6 +4630,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     !superlu_sym_v2_row_l_postsolve_send();
                 const bool row_down_compressed_plan =
                     superlu_sym_v2_row_l_compressed_plan();
+// SYM_V2_PC2_LAZY_SENDMAP_SETUP_FLAG_BEGIN
+                const bool row_down_lazy_sendmap =
+                    row_down_direct_recv &&
+                    row_down_compressed_plan &&
+                    superlu_sym_v2_pc_fragment_ldl_native() &&
+                    superlu_sym_v2_row_l_lazy_sendmap();
+// SYM_V2_PC2_LAZY_SENDMAP_SETUP_FLAG_END
                 if (row_down_compact)
                 {
                     if (row_down_dryrun)
@@ -5051,6 +5072,16 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     slot_direct_blocks;
                 std::vector<std::vector<SymV2RowDownDirectRange> >
                     slot_direct_ranges;
+// SYM_V2_PC2_LAZY_SENDMAP_SLOT_STORAGE_BEGIN
+                std::vector<std::vector<SymV2RowDownSendSegmentGPU> >
+                    slot_send_segments;
+                std::vector<int> slot_send_segment_values;
+                if (row_down_lazy_sendmap)
+                {
+                    slot_send_segments.resize(l2u_slots);
+                    slot_send_segment_values.assign(l2u_slots, 0);
+                }
+// SYM_V2_PC2_LAZY_SENDMAP_SLOT_STORAGE_END
                 if (row_down_direct_recv)
                 {
                     if (row_down_compressed_plan)
@@ -5683,6 +5714,222 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 };
 // SYM_V2_PC2_RANGE_NATIVE_DIRECT_BUILDER_END
 
+// SYM_V2_PC2_LAZY_SENDMAP_SEGMENT_BUILDER_BEGIN
+                auto build_direct_row_down_slot_range_segments =
+                    [&](size_t slot,
+                        std::vector<SymV2RowDownDirectRange> &ranges,
+                        std::vector<SymV2RowDownSendSegmentGPU> &out,
+                        int &value_count_out)
+                {
+                    value_count_out = 0;
+                    if (ranges.empty())
+                        return;
+                    int_t lk = static_cast<int_t>(
+                        slot / static_cast<size_t>(Pc));
+                    int_t k0 = symV2PanelGid(lk);
+                    if (k0 < 0 || k0 >= nsupers)
+                        ABORT("SymFact V2 row-down lazy-sendmap panel is invalid.");
+                    int_t ksupc = SuperSize(k0);
+                    if (ksupc <= 0)
+                        ABORT("SymFact V2 row-down lazy-sendmap panel width is invalid.");
+
+                    std::sort(ranges.begin(), ranges.end(),
+                              [](const SymV2RowDownDirectRange &a,
+                                 const SymV2RowDownDirectRange &b)
+                              {
+                                  if (a.start != b.start)
+                                      return a.start < b.start;
+                                  return a.chunk_pc < b.chunk_pc;
+                              });
+
+                    std::vector<SymV2RowDownDirectRange> merged_ranges;
+                    merged_ranges.reserve(ranges.size());
+                    size_t requested_blocks = 0;
+                    for (size_t ri = 0; ri < ranges.size(); ++ri)
+                    {
+                        SymV2RowDownDirectRange cur = ranges[ri];
+                        if (cur.chunk_pc < 0 || cur.chunk_pc >= Pc ||
+                            cur.start < 0 || cur.len <= 0 ||
+                            cur.start > std::numeric_limits<int_t>::max() - cur.len)
+                            ABORT("SymFact V2 row-down lazy-sendmap request is invalid.");
+                        int_t cur_end = cur.start + cur.len;
+                        if (!merged_ranges.empty())
+                        {
+                            SymV2RowDownDirectRange &prev = merged_ranges.back();
+                            int_t prev_end = prev.start + prev.len;
+                            if (cur.start < prev_end && cur.chunk_pc != prev.chunk_pc)
+                                ABORT("SymFact V2 row-down lazy-sendmap request overlaps across chunks.");
+                            if (cur.chunk_pc == prev.chunk_pc && cur.start <= prev_end)
+                            {
+                                if (cur_end > prev_end)
+                                    prev.len = cur_end - prev.start;
+                                continue;
+                            }
+                        }
+                        merged_ranges.push_back(cur);
+                    }
+                    ranges.swap(merged_ranges);
+                    for (size_t ri = 0; ri < ranges.size(); ++ri)
+                    {
+                        if (static_cast<size_t>(ranges[ri].len) >
+                            std::numeric_limits<size_t>::max() - requested_blocks)
+                            ABORT("SymFact V2 row-down lazy-sendmap request count overflows.");
+                        requested_blocks += static_cast<size_t>(ranges[ri].len);
+                    }
+                    if (requested_blocks == 0)
+                        return;
+
+                    std::vector<SymV2RowDownDirectRange> scan_ranges = ranges;
+                    std::sort(scan_ranges.begin(), scan_ranges.end(),
+                              [](const SymV2RowDownDirectRange &a,
+                                 const SymV2RowDownDirectRange &b)
+                              {
+                                  if (a.chunk_pc != b.chunk_pc)
+                                      return a.chunk_pc < b.chunk_pc;
+                                  return a.start < b.start;
+                              });
+
+                    struct SymV2RowDownDirectSegment
+                    {
+                        int_t gid;
+                        int_t nrows;
+                        size_t map_offset;
+                    };
+                    std::vector<SymV2RowDownDirectSegment> segments;
+                    segments.reserve(requested_blocks);
+
+                    size_t group_begin = 0;
+                    while (group_begin < scan_ranges.size())
+                    {
+                        int chunk_pc = scan_ranges[group_begin].chunk_pc;
+                        size_t group_end = group_begin + 1;
+                        while (group_end < scan_ranges.size() &&
+                               scan_ranges[group_end].chunk_pc == chunk_pc)
+                            ++group_end;
+
+                        size_t flat =
+                            static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                            static_cast<size_t>(chunk_pc);
+                        if (flat >= symL2LSendMeta.size() ||
+                            flat >= symV2PartnerLSendSizes.size() ||
+                            flat >= symV2PartnerLMapOffsets.size())
+                            ABORT("SymFact V2 row-down lazy-sendmap source map is invalid.");
+                        if (symV2PartnerLSendSizes[flat] < 0)
+                            ABORT("SymFact V2 row-down lazy-sendmap source map size is invalid.");
+                        const std::vector<int_t> &meta = symL2LSendMeta[flat];
+                        size_t map_pos = symV2PartnerLMapOffsets[flat];
+                        size_t map_end = map_pos +
+                            static_cast<size_t>(symV2PartnerLSendSizes[flat]);
+                        if (map_end > symV2PartnerLPackedMaps.size() ||
+                            map_end < map_pos)
+                            ABORT("SymFact V2 row-down lazy-sendmap source map bounds are invalid.");
+
+                        auto range_group_contains_gid = [&](int_t gid) -> bool
+                        {
+                            size_t lo = group_begin;
+                            size_t hi = group_end;
+                            while (lo < hi)
+                            {
+                                size_t mid = lo + (hi - lo) / 2;
+                                if (scan_ranges[mid].start <= gid)
+                                    lo = mid + 1;
+                                else
+                                    hi = mid;
+                            }
+                            if (lo == group_begin)
+                                return false;
+                            const SymV2RowDownDirectRange &r = scan_ranges[lo - 1];
+                            return gid >= r.start && gid < r.start + r.len;
+                        };
+
+                        size_t meta_pos = 0;
+                        while (meta_pos < meta.size())
+                        {
+                            if (meta_pos + 2 > meta.size())
+                                ABORT("SymFact V2 row-down lazy-sendmap metadata is truncated.");
+                            int_t block_gid = meta[meta_pos++];
+                            int_t len = meta[meta_pos++];
+                            if (len < 0 ||
+                                meta_pos + static_cast<size_t>(len) > meta.size())
+                                ABORT("SymFact V2 row-down lazy-sendmap metadata block is invalid.");
+                            size_t value_count = xlu_checked_product(
+                                static_cast<size_t>(len),
+                                static_cast<size_t>(ksupc),
+                                "SymFact V2 row-down lazy-sendmap source map segment");
+                            if (map_pos + value_count > map_end ||
+                                map_pos + value_count < map_pos)
+                                ABORT("SymFact V2 row-down lazy-sendmap source map segment is invalid.");
+                            if (range_group_contains_gid(block_gid))
+                            {
+                                SymV2RowDownDirectSegment seg;
+                                seg.gid = block_gid;
+                                seg.nrows = len;
+                                seg.map_offset = map_pos;
+                                segments.push_back(seg);
+                            }
+                            map_pos += value_count;
+                            meta_pos += static_cast<size_t>(len);
+                        }
+                        if (map_pos != map_end)
+                            ABORT("SymFact V2 row-down lazy-sendmap source map size mismatch.");
+                        group_begin = group_end;
+                    }
+
+                    if (segments.size() != requested_blocks)
+                        ABORT("SymFact V2 row-down lazy-sendmap did not find all requested blocks.");
+                    std::sort(segments.begin(), segments.end(),
+                              [](const SymV2RowDownDirectSegment &a,
+                                 const SymV2RowDownDirectSegment &b)
+                              { return a.gid < b.gid; });
+                    for (size_t si = 1; si < segments.size(); ++si)
+                    {
+                        if (segments[si - 1].gid == segments[si].gid)
+                            ABORT("SymFact V2 row-down lazy-sendmap duplicate source block.");
+                    }
+
+                    size_t row_count = 0;
+                    out.reserve(out.size() + segments.size());
+                    for (size_t si = 0; si < segments.size(); ++si)
+                    {
+                        if (segments[si].nrows <= 0 ||
+                            static_cast<size_t>(segments[si].nrows) >
+                                std::numeric_limits<size_t>::max() /
+                                    static_cast<size_t>(ksupc))
+                            ABORT("SymFact V2 row-down lazy-sendmap segment has invalid width.");
+                        size_t block_values =
+                            static_cast<size_t>(segments[si].nrows) *
+                            static_cast<size_t>(ksupc);
+                        if (segments[si].map_offset + block_values >
+                                symV2PartnerLPackedMaps.size() ||
+                            segments[si].map_offset + block_values <
+                                segments[si].map_offset)
+                            ABORT("SymFact V2 row-down lazy-sendmap segment map is invalid.");
+                        if (row_count >
+                            std::numeric_limits<size_t>::max() -
+                                static_cast<size_t>(segments[si].nrows))
+                            ABORT("SymFact V2 row-down lazy-sendmap row count overflows.");
+
+                        SymV2RowDownSendSegmentGPU gpu_seg;
+                        gpu_seg.map_offset = segments[si].map_offset;
+                        gpu_seg.nrows = segments[si].nrows;
+                        if (row_count >
+                            static_cast<size_t>(std::numeric_limits<int_t>::max()))
+                            ABORT("SymFact V2 row-down lazy-sendmap destination offset is too large.");
+                        gpu_seg.dst_row_offset = static_cast<int_t>(row_count);
+                        out.push_back(gpu_seg);
+                        row_count += static_cast<size_t>(segments[si].nrows);
+                    }
+                    size_t value_count =
+                        xlu_checked_product(row_count,
+                                            static_cast<size_t>(ksupc),
+                                            "SymFact V2 row-down lazy-sendmap value count");
+                    if (value_count >
+                        static_cast<size_t>(std::numeric_limits<int>::max()))
+                        ABORT("SymFact V2 row-down lazy-sendmap value count is too large.");
+                    value_count_out = static_cast<int>(value_count);
+                };
+// SYM_V2_PC2_LAZY_SENDMAP_SEGMENT_BUILDER_END
+
                 for (int sender_pc = 0; sender_pc < Pc; ++sender_pc)
                 {
                     size_t pos = static_cast<size_t>(recv_displs[static_cast<size_t>(sender_pc)]);
@@ -5879,10 +6126,29 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 {
                     if (row_down_compressed_plan)
                     {
-                        for (size_t slot = 0; slot < slot_direct_ranges.size();
-                             ++slot)
-                            build_direct_row_down_slot_range_map(
-                                slot, slot_direct_ranges[slot], slot_maps[slot]);
+// SYM_V2_PC2_LAZY_SENDMAP_BUILD_BRANCH_BEGIN
+                        if (row_down_lazy_sendmap)
+                        {
+                            for (size_t slot = 0;
+                                 slot < slot_direct_ranges.size(); ++slot)
+                            {
+                                if (slot >= slot_send_segments.size() ||
+                                    slot >= slot_send_segment_values.size())
+                                    ABORT("SymFact V2 row-down lazy-sendmap slot table is invalid.");
+                                build_direct_row_down_slot_range_segments(
+                                    slot, slot_direct_ranges[slot],
+                                    slot_send_segments[slot],
+                                    slot_send_segment_values[slot]);
+                            }
+                        }
+                        else
+                        {
+// SYM_V2_PC2_LAZY_SENDMAP_BUILD_BRANCH_END
+                            for (size_t slot = 0; slot < slot_direct_ranges.size();
+                                 ++slot)
+                                build_direct_row_down_slot_range_map(
+                                    slot, slot_direct_ranges[slot], slot_maps[slot]);
+                        }
                     }
                     else
                     {
@@ -5894,19 +6160,54 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 }
 
                 symV2RowDownSendMapsHost.clear();
+// SYM_V2_PC2_LAZY_SENDMAP_STORE_BEGIN
+                symV2RowDownSendSegsHost.clear();
                 symV2RowDownSparseSendValues = 0;
                 symV2RowDownSendMessages = 0;
                 std::vector<std::vector<int_t> > size_reply_payloads(static_cast<size_t>(Pc));
                 for (size_t slot = 0; slot < slot_maps.size(); ++slot)
                 {
-                    symV2RowDownSendMapOffsets[slot] = symV2RowDownSendMapsHost.size();
-                    if (slot_maps[slot].size() >
-                        static_cast<size_t>(std::numeric_limits<int>::max()))
-                        ABORT("SymFact V2 row-down send map is too large for MPI.");
-                    symV2RowDownSendSizes[slot] = static_cast<int>(slot_maps[slot].size());
+                    int slot_send_size = 0;
+                    if (row_down_lazy_sendmap)
+                    {
+                        if (slot >= slot_send_segment_values.size() ||
+                            slot >= slot_send_segments.size() ||
+                            slot >= symV2RowDownSendSegOffsets.size() ||
+                            slot >= symV2RowDownSendSegCounts.size())
+                            ABORT("SymFact V2 row-down lazy-sendmap slot metadata is invalid.");
+                        symV2RowDownSendMapOffsets[slot] = 0;
+                        symV2RowDownSendSegOffsets[slot] =
+                            symV2RowDownSendSegsHost.size();
+                        if (slot_send_segments[slot].size() >
+                            static_cast<size_t>(std::numeric_limits<int>::max()))
+                            ABORT("SymFact V2 row-down lazy-sendmap has too many segments.");
+                        symV2RowDownSendSegCounts[slot] =
+                            static_cast<int>(slot_send_segments[slot].size());
+                        slot_send_size = slot_send_segment_values[slot];
+                        symV2RowDownSendSegsHost.insert(
+                            symV2RowDownSendSegsHost.end(),
+                            slot_send_segments[slot].begin(),
+                            slot_send_segments[slot].end());
+                    }
+                    else
+                    {
+                        symV2RowDownSendMapOffsets[slot] =
+                            symV2RowDownSendMapsHost.size();
+                        if (slot_maps[slot].size() >
+                            static_cast<size_t>(std::numeric_limits<int>::max()))
+                            ABORT("SymFact V2 row-down send map is too large for MPI.");
+                        slot_send_size =
+                            static_cast<int>(slot_maps[slot].size());
+                        symV2RowDownSendMapsHost.insert(
+                            symV2RowDownSendMapsHost.end(),
+                            slot_maps[slot].begin(), slot_maps[slot].end());
+                    }
+                    if (slot_send_size < 0)
+                        ABORT("SymFact V2 row-down send size is invalid.");
+                    symV2RowDownSendSizes[slot] = slot_send_size;
                     symV2RowDownSparseSendValues +=
-                        static_cast<long long>(slot_maps[slot].size());
-                    if (symV2RowDownSendSizes[slot] > 0)
+                        static_cast<long long>(slot_send_size);
+                    if (slot_send_size > 0)
                     {
                         ++symV2RowDownSendMessages;
                         int_t lk = static_cast<int_t>(slot / static_cast<size_t>(Pc));
@@ -5914,12 +6215,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         int_t k0 = symV2PanelGid(lk);
                         size_reply_payloads[static_cast<size_t>(dest_pc)].push_back(k0);
                         size_reply_payloads[static_cast<size_t>(dest_pc)].push_back(
-                            static_cast<int_t>(symV2RowDownSendSizes[slot]));
+                            static_cast<int_t>(slot_send_size));
                     }
-                    symV2RowDownSendMapsHost.insert(
-                        symV2RowDownSendMapsHost.end(),
-                        slot_maps[slot].begin(), slot_maps[slot].end());
                 }
+// SYM_V2_PC2_LAZY_SENDMAP_STORE_END
                 if (row_down_compact && profile_setup)
                     symV2SetupProfileAdd(
                         SYM_V2_SETUP_ROW_COMPACT_SEND_MAP_BUILD,
@@ -6136,18 +6435,50 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 {
                     if (superlu_sym_v2_row_l_plan_v2_dryrun())
                         ABORT("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE requires GPU3DV2_ROW_L_PLAN_V2_DRYRUN=0.");
-                    symV2RowDownSendMapPoolCount = symV2RowDownSendMapsHost.size();
+// SYM_V2_PC2_LAZY_SENDMAP_ALLOC_BEGIN
+                    const bool row_down_lazy_sendmap_alloc =
+                        superlu_sym_v2_pc_fragment_ldl_native() &&
+                        superlu_sym_v2_row_l_direct_recv() &&
+                        superlu_sym_v2_row_l_compressed_plan() &&
+                        superlu_sym_v2_row_l_lazy_sendmap();
+                    symV2RowDownSendMapPoolCount =
+                        row_down_lazy_sendmap_alloc
+                            ? 0
+                            : symV2RowDownSendMapsHost.size();
+                    symV2RowDownSendSegPoolCount =
+                        row_down_lazy_sendmap_alloc
+                            ? symV2RowDownSendSegsHost.size()
+                            : 0;
                     symV2RowDownSendMapsGPU.assign(l2u_slots, NULL);
+                    symV2RowDownSendSegsGPU.assign(l2u_slots, NULL);
                     for (size_t slot = 0; slot < symV2RowDownSendSizes.size(); ++slot)
                     {
                         if (symV2RowDownSendSizes[slot] <= 0)
                             continue;
-                        size_t off = symV2RowDownSendMapOffsets[slot];
-                        if (off + static_cast<size_t>(symV2RowDownSendSizes[slot]) >
-                                symV2RowDownSendMapPoolCount ||
-                            off + static_cast<size_t>(symV2RowDownSendSizes[slot]) < off)
-                            ABORT("SymFact V2 row-down send map offset is invalid.");
+                        if (row_down_lazy_sendmap_alloc)
+                        {
+                            if (slot >= symV2RowDownSendSegOffsets.size() ||
+                                slot >= symV2RowDownSendSegCounts.size())
+                                ABORT("SymFact V2 row-down lazy-sendmap offset table is invalid.");
+                            size_t off = symV2RowDownSendSegOffsets[slot];
+                            int count = symV2RowDownSendSegCounts[slot];
+                            if (count <= 0)
+                                ABORT("SymFact V2 row-down lazy-sendmap slot has no segments.");
+                            if (off + static_cast<size_t>(count) >
+                                    symV2RowDownSendSegPoolCount ||
+                                off + static_cast<size_t>(count) < off)
+                                ABORT("SymFact V2 row-down lazy-sendmap segment offset is invalid.");
+                        }
+                        else
+                        {
+                            size_t off = symV2RowDownSendMapOffsets[slot];
+                            if (off + static_cast<size_t>(symV2RowDownSendSizes[slot]) >
+                                    symV2RowDownSendMapPoolCount ||
+                                off + static_cast<size_t>(symV2RowDownSendSizes[slot]) < off)
+                                ABORT("SymFact V2 row-down send map offset is invalid.");
+                        }
                     }
+// SYM_V2_PC2_LAZY_SENDMAP_ALLOC_END
                 }
 // SYM_V2_PC2_PHASE4_ALLOC_ROW_DOWN_GPU_MAPS_END
 
@@ -6472,6 +6803,14 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
         gpuErrchk(cudaFree(symV2RowDownSendMapPoolGPU));
         symV2RowDownSendMapPoolGPU = NULL;
     }
+// SYM_V2_PC2_LAZY_SENDMAP_FREE_BEGIN
+    if (symV2RowDownSendSegPoolGPU != NULL)
+    {
+        gpuErrchk(cudaFree(symV2RowDownSendSegPoolGPU));
+        symV2RowDownSendSegPoolGPU = NULL;
+    }
+    symV2RowDownSendSegPoolCount = 0;
+// SYM_V2_PC2_LAZY_SENDMAP_FREE_END
 // SYM_V2_PC2_PHASE4_FREE_ROW_DOWN_GPU_MAPS_END
 
     symV2PartnerLSendBufPoolCount = 0;
@@ -6571,6 +6910,13 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symV2RowDownSendSizes.clear();
     symV2RowDownSendMapOffsets.clear();
     symV2RowDownSendMapsHost.clear();
+// SYM_V2_PC2_LAZY_SENDMAP_CLEAR_BEGIN
+    symV2RowDownSendSegsHost.clear();
+    symV2RowDownSendSegOffsets.clear();
+    symV2RowDownSendSegCounts.clear();
+    symV2RowDownSendSegsGPU.clear();
+    symV2RowDownSendSegPoolCount = 0;
+// SYM_V2_PC2_LAZY_SENDMAP_CLEAR_END
     symV2RowDownSegOffsets.clear();
     symV2RowDownSegs.clear();
     symV2RowDownRecvSizes.clear();
@@ -6688,6 +7034,11 @@ inline size_t xLUstruct_t<double>::symV2DelayedGpuMetadataBytes() const
               "SymFact V2 row-fragment receive map pool");
     add_bytes(symV2RowDownSendMapPoolCount, sizeof(int_t),
               "SymFact V2 row-down send map pool");
+// SYM_V2_PC2_LAZY_SENDMAP_BYTES_BEGIN
+    add_bytes(symV2RowDownSendSegPoolCount,
+              sizeof(SymV2RowDownSendSegmentGPU),
+              "SymFact V2 row-down send segment pool");
+// SYM_V2_PC2_LAZY_SENDMAP_BYTES_END
 
     return total;
 }
@@ -6937,6 +7288,48 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
                 symV2RowDownSendMapPoolGPU + offset;
         }
     }
+// SYM_V2_PC2_LAZY_SENDMAP_MATERIALIZE_BEGIN
+    if (symV2RowDownSendSegPoolCount > 0)
+    {
+        if (symV2RowDownSendSegPoolGPU != NULL)
+            ABORT("SymFact V2 row-down send segment pool was already allocated.");
+        if (symV2RowDownSendSegsHost.size() !=
+            symV2RowDownSendSegPoolCount)
+            ABORT("SymFact V2 row-down send segment pool size mismatch.");
+        gpuErrchk(cudaMalloc(
+            (void **)&symV2RowDownSendSegPoolGPU,
+            xlu_checked_product(symV2RowDownSendSegPoolCount,
+                                sizeof(SymV2RowDownSendSegmentGPU),
+                                "SymFact V2 row-down send segment pool")));
+        gpuErrchk(cudaMemcpy(symV2RowDownSendSegPoolGPU,
+                             symV2RowDownSendSegsHost.data(),
+                             sizeof(SymV2RowDownSendSegmentGPU) *
+                                 symV2RowDownSendSegPoolCount,
+                             cudaMemcpyHostToDevice));
+        if (symV2RowDownSendSegsGPU.size() !=
+                symV2RowDownSendSizes.size() ||
+            symV2RowDownSendSegOffsets.size() !=
+                symV2RowDownSendSizes.size() ||
+            symV2RowDownSendSegCounts.size() !=
+                symV2RowDownSendSizes.size())
+            ABORT("SymFact V2 row-down send segment table size mismatch.");
+        for (size_t slot = 0; slot < symV2RowDownSendSizes.size(); ++slot)
+        {
+            if (symV2RowDownSendSizes[slot] <= 0)
+                continue;
+            int count = symV2RowDownSendSegCounts[slot];
+            if (count <= 0)
+                ABORT("SymFact V2 row-down send segment slot has no descriptors.");
+            size_t offset = symV2RowDownSendSegOffsets[slot];
+            if (offset + static_cast<size_t>(count) >
+                    symV2RowDownSendSegPoolCount ||
+                offset + static_cast<size_t>(count) < offset)
+                ABORT("SymFact V2 row-down send segment offset is invalid.");
+            symV2RowDownSendSegsGPU[slot] =
+                symV2RowDownSendSegPoolGPU + offset;
+        }
+    }
+// SYM_V2_PC2_LAZY_SENDMAP_MATERIALIZE_END
 
     auto materialize_recv_maps =
         [&](const std::vector<std::vector<int_t> > &maps,
@@ -7094,6 +7487,11 @@ inline int xLUstruct_t<double>::materializeSymFactGpuMetadata()
     std::vector<int_t>().swap(symV2PartnerLExactSendMapsHost);
     if (symV2RowDownSendMapPoolGPU != NULL)
         std::vector<int_t>().swap(symV2RowDownSendMapsHost);
+// SYM_V2_PC2_LAZY_SENDMAP_HOST_RELEASE_BEGIN
+    if (symV2RowDownSendSegPoolGPU != NULL)
+        std::vector<SymV2RowDownSendSegmentGPU>().swap(
+            symV2RowDownSendSegsHost);
+// SYM_V2_PC2_LAZY_SENDMAP_HOST_RELEASE_END
 
     return 0;
 }
