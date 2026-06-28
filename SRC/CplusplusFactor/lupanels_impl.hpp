@@ -1896,6 +1896,14 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             symV2ExactSendSegments.assign(l2u_slots,
                                           std::vector<SymV2ExactSendSegment>());
 
+// SYM_V2_PC2_SEGMENT_SENDMAP_FAST_BEGIN
+        const bool row_l_segment_sendmap_setup =
+            symGPU3DVersion == 2 && Pr > 1 && Pc > 1 &&
+            superlu_sym_v2_pc_fragment_schur() &&
+            superlu_sym_v2_pc_fragment_ldl_native() &&
+            superlu_sym_v2_row_l_compressed_plan();
+// SYM_V2_PC2_SEGMENT_SENDMAP_FAST_END
+
         dLocalLU_t *Llu = LUstructPtr->Llu;
         if (need_l2u_workspace)
         {
@@ -2164,12 +2172,30 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         continue;
                     int_t fsupc = FstBlockC(ik);
 
-                    row_order.clear();
-                    row_order.reserve(static_cast<size_t>(len));
-                    for (int_t i = 0; i < len; ++i)
-                        row_order.push_back(std::make_pair(
-                            lsub[lptr_tmp + 2 + i] - fsupc, i));
-                    std::sort(row_order.begin(), row_order.end());
+// SYM_V2_PC2_SEGMENT_SENDMAP_BLOCK_ORDER_BEGIN
+                    const int_t *row_ids = lsub + lptr_tmp + 2;
+                    bool rows_already_sorted = row_l_segment_sendmap_setup;
+                    if (rows_already_sorted)
+                    {
+                        for (int_t i = 1; i < len; ++i)
+                        {
+                            if (row_ids[i - 1] > row_ids[i])
+                            {
+                                rows_already_sorted = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!rows_already_sorted)
+                    {
+                        row_order.clear();
+                        row_order.reserve(static_cast<size_t>(len));
+                        for (int_t i = 0; i < len; ++i)
+                            row_order.push_back(std::make_pair(
+                                row_ids[i] - fsupc, i));
+                        std::sort(row_order.begin(), row_order.end());
+                    }
+// SYM_V2_PC2_SEGMENT_SENDMAP_BLOCK_ORDER_END
 
                     size_t flat = static_cast<size_t>(lk) *
                                       static_cast<size_t>(Pc) +
@@ -2182,7 +2208,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     meta[meta_pos++] = ik;
                     meta[meta_pos++] = len;
                     for (int_t i = 0; i < len; ++i)
-                        meta[meta_pos++] = row_order[i].first;
+                        meta[meta_pos++] = rows_already_sorted
+                            ? row_ids[i] - fsupc
+                            : row_order[i].first;
                     meta_write_offsets[flat] = meta_pos;
 
                     size_t map_pos = map_write_offsets[flat];
@@ -2199,7 +2227,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         {
                             if (map_pos >= map_end)
                                 ABORT("SymFact V2 packed partner-L send map overrun.");
-                            int_t src_row = row_order[i].second;
+                            int_t src_row = rows_already_sorted
+                                ? i
+                                : row_order[i].second;
                             symV2PartnerLPackedMaps[map_pos++] =
                                 luptr_tmp + src_row + j * nsupr;
                         }
@@ -2322,11 +2352,29 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t len = lsub[lptr_tmp + 1];
                 int_t fsupc = FstBlockC(ik);
 
+// SYM_V2_PC2_SEGMENT_SENDMAP_LEGACY_ORDER_BEGIN
+                const int_t *row_ids = lsub + lptr_tmp + 2;
+                bool rows_already_sorted = row_l_segment_sendmap_setup;
+                if (rows_already_sorted)
+                {
+                    for (int_t i = 1; i < len; ++i)
+                    {
+                        if (row_ids[i - 1] > row_ids[i])
+                        {
+                            rows_already_sorted = false;
+                            break;
+                        }
+                    }
+                }
                 std::vector<std::pair<int_t, int_t> > row_order;
-                row_order.reserve(len);
-                for (int_t i = 0; i < len; ++i)
-                    row_order.push_back(std::make_pair(lsub[lptr_tmp + 2 + i] - fsupc, i));
-                std::sort(row_order.begin(), row_order.end());
+                if (!rows_already_sorted)
+                {
+                    row_order.reserve(static_cast<size_t>(len));
+                    for (int_t i = 0; i < len; ++i)
+                        row_order.push_back(std::make_pair(row_ids[i] - fsupc, i));
+                    std::sort(row_order.begin(), row_order.end());
+                }
+// SYM_V2_PC2_SEGMENT_SENDMAP_LEGACY_ORDER_END
 
                 if (have_comml_send)
                 {
@@ -2334,7 +2382,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     map.push_back(-(ik + 1));
                     for (int_t i = 0; i < len; ++i)
                     {
-                        int_t src_row = row_order[i].second;
+                        int_t src_row = rows_already_sorted
+                            ? i
+                            : row_order[i].second;
                         for (int_t j = 0; j < knsupc; ++j)
                             map.push_back(luptr_tmp + src_row + j * nsupr);
                     }
@@ -4741,11 +4791,26 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     int_t gid;
                     int chunk_pc;
                 };
+// SYM_V2_PC2_RANGE_NATIVE_DIRECT_MAP_BEGIN
+                struct SymV2RowDownDirectRange
+                {
+                    int_t start;
+                    int_t len;
+                    int chunk_pc;
+                };
+// SYM_V2_PC2_RANGE_NATIVE_DIRECT_MAP_END
                 std::vector<std::vector<int_t> > slot_maps(l2u_slots);
                 std::vector<std::vector<SymV2RowDownDirectBlock> >
                     slot_direct_blocks;
+                std::vector<std::vector<SymV2RowDownDirectRange> >
+                    slot_direct_ranges;
                 if (row_down_direct_recv)
-                    slot_direct_blocks.resize(l2u_slots);
+                {
+                    if (row_down_compressed_plan)
+                        slot_direct_ranges.resize(l2u_slots);
+                    else
+                        slot_direct_blocks.resize(l2u_slots);
+                }
                 auto append_row_down_source_map_for_gid =
                     [&](size_t flat, int_t gid, std::vector<int_t> &out)
                 {
@@ -5164,6 +5229,213 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     }
                 };
 
+
+// SYM_V2_PC2_RANGE_NATIVE_DIRECT_BUILDER_BEGIN
+                auto build_direct_row_down_slot_range_map =
+                    [&](size_t slot,
+                        std::vector<SymV2RowDownDirectRange> &ranges,
+                        std::vector<int_t> &out)
+                {
+                    if (ranges.empty())
+                        return;
+                    int_t lk = static_cast<int_t>(
+                        slot / static_cast<size_t>(Pc));
+                    int_t k0 = symV2PanelGid(lk);
+                    if (k0 < 0 || k0 >= nsupers)
+                        ABORT("SymFact V2 row-down range-direct panel is invalid.");
+                    int_t ksupc = SuperSize(k0);
+                    if (ksupc <= 0)
+                        ABORT("SymFact V2 row-down range-direct panel width is invalid.");
+
+                    std::sort(ranges.begin(), ranges.end(),
+                              [](const SymV2RowDownDirectRange &a,
+                                 const SymV2RowDownDirectRange &b)
+                              {
+                                  if (a.start != b.start)
+                                      return a.start < b.start;
+                                  return a.chunk_pc < b.chunk_pc;
+                              });
+
+                    std::vector<SymV2RowDownDirectRange> merged_ranges;
+                    merged_ranges.reserve(ranges.size());
+                    size_t requested_blocks = 0;
+                    for (size_t ri = 0; ri < ranges.size(); ++ri)
+                    {
+                        SymV2RowDownDirectRange cur = ranges[ri];
+                        if (cur.chunk_pc < 0 || cur.chunk_pc >= Pc ||
+                            cur.start < 0 || cur.len <= 0 ||
+                            cur.start > std::numeric_limits<int_t>::max() - cur.len)
+                            ABORT("SymFact V2 row-down range-direct request is invalid.");
+                        int_t cur_end = cur.start + cur.len;
+                        if (!merged_ranges.empty())
+                        {
+                            SymV2RowDownDirectRange &prev = merged_ranges.back();
+                            int_t prev_end = prev.start + prev.len;
+                            if (cur.start < prev_end && cur.chunk_pc != prev.chunk_pc)
+                                ABORT("SymFact V2 row-down range-direct request overlaps across chunks.");
+                            if (cur.chunk_pc == prev.chunk_pc && cur.start <= prev_end)
+                            {
+                                if (cur_end > prev_end)
+                                    prev.len = cur_end - prev.start;
+                                continue;
+                            }
+                        }
+                        merged_ranges.push_back(cur);
+                    }
+                    ranges.swap(merged_ranges);
+                    for (size_t ri = 0; ri < ranges.size(); ++ri)
+                    {
+                        if (static_cast<size_t>(ranges[ri].len) >
+                            std::numeric_limits<size_t>::max() - requested_blocks)
+                            ABORT("SymFact V2 row-down range-direct request count overflows.");
+                        requested_blocks += static_cast<size_t>(ranges[ri].len);
+                    }
+                    if (requested_blocks == 0)
+                        return;
+
+                    std::vector<SymV2RowDownDirectRange> scan_ranges = ranges;
+                    std::sort(scan_ranges.begin(), scan_ranges.end(),
+                              [](const SymV2RowDownDirectRange &a,
+                                 const SymV2RowDownDirectRange &b)
+                              {
+                                  if (a.chunk_pc != b.chunk_pc)
+                                      return a.chunk_pc < b.chunk_pc;
+                                  return a.start < b.start;
+                              });
+
+                    struct SymV2RowDownDirectSegment
+                    {
+                        int_t gid;
+                        int_t nrows;
+                        size_t map_offset;
+                    };
+                    std::vector<SymV2RowDownDirectSegment> segments;
+                    segments.reserve(requested_blocks);
+
+                    size_t group_begin = 0;
+                    while (group_begin < scan_ranges.size())
+                    {
+                        int chunk_pc = scan_ranges[group_begin].chunk_pc;
+                        size_t group_end = group_begin + 1;
+                        while (group_end < scan_ranges.size() &&
+                               scan_ranges[group_end].chunk_pc == chunk_pc)
+                            ++group_end;
+
+                        size_t flat =
+                            static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                            static_cast<size_t>(chunk_pc);
+                        if (flat >= symL2LSendMeta.size() ||
+                            flat >= symV2PartnerLSendSizes.size() ||
+                            flat >= symV2PartnerLMapOffsets.size())
+                            ABORT("SymFact V2 row-down range-direct source map is invalid.");
+                        if (symV2PartnerLSendSizes[flat] < 0)
+                            ABORT("SymFact V2 row-down range-direct source map size is invalid.");
+                        const std::vector<int_t> &meta = symL2LSendMeta[flat];
+                        size_t map_pos = symV2PartnerLMapOffsets[flat];
+                        size_t map_end = map_pos +
+                            static_cast<size_t>(symV2PartnerLSendSizes[flat]);
+                        if (map_end > symV2PartnerLPackedMaps.size() ||
+                            map_end < map_pos)
+                            ABORT("SymFact V2 row-down range-direct source map bounds are invalid.");
+
+                        auto range_group_contains_gid = [&](int_t gid) -> bool
+                        {
+                            size_t lo = group_begin;
+                            size_t hi = group_end;
+                            while (lo < hi)
+                            {
+                                size_t mid = lo + (hi - lo) / 2;
+                                if (scan_ranges[mid].start <= gid)
+                                    lo = mid + 1;
+                                else
+                                    hi = mid;
+                            }
+                            if (lo == group_begin)
+                                return false;
+                            const SymV2RowDownDirectRange &r = scan_ranges[lo - 1];
+                            return gid >= r.start && gid < r.start + r.len;
+                        };
+
+                        size_t meta_pos = 0;
+                        while (meta_pos < meta.size())
+                        {
+                            if (meta_pos + 2 > meta.size())
+                                ABORT("SymFact V2 row-down range-direct metadata is truncated.");
+                            int_t block_gid = meta[meta_pos++];
+                            int_t len = meta[meta_pos++];
+                            if (len < 0 ||
+                                meta_pos + static_cast<size_t>(len) > meta.size())
+                                ABORT("SymFact V2 row-down range-direct metadata block is invalid.");
+                            size_t value_count = xlu_checked_product(
+                                static_cast<size_t>(len),
+                                static_cast<size_t>(ksupc),
+                                "SymFact V2 row-down range-direct source map segment");
+                            if (map_pos + value_count > map_end ||
+                                map_pos + value_count < map_pos)
+                                ABORT("SymFact V2 row-down range-direct source map segment is invalid.");
+                            if (range_group_contains_gid(block_gid))
+                            {
+                                SymV2RowDownDirectSegment seg;
+                                seg.gid = block_gid;
+                                seg.nrows = len;
+                                seg.map_offset = map_pos;
+                                segments.push_back(seg);
+                            }
+                            map_pos += value_count;
+                            meta_pos += static_cast<size_t>(len);
+                        }
+                        if (map_pos != map_end)
+                            ABORT("SymFact V2 row-down range-direct source map size mismatch.");
+                        group_begin = group_end;
+                    }
+
+                    if (segments.size() != requested_blocks)
+                        ABORT("SymFact V2 row-down range-direct did not find all requested blocks.");
+                    std::sort(segments.begin(), segments.end(),
+                              [](const SymV2RowDownDirectSegment &a,
+                                 const SymV2RowDownDirectSegment &b)
+                              { return a.gid < b.gid; });
+                    for (size_t si = 1; si < segments.size(); ++si)
+                    {
+                        if (segments[si - 1].gid == segments[si].gid)
+                            ABORT("SymFact V2 row-down range-direct duplicate source block.");
+                    }
+
+                    size_t append_count = 0;
+                    for (size_t si = 0; si < segments.size(); ++si)
+                    {
+                        if (segments[si].nrows <= 0 ||
+                            static_cast<size_t>(segments[si].nrows) >
+                                std::numeric_limits<size_t>::max() /
+                                    static_cast<size_t>(ksupc))
+                            ABORT("SymFact V2 row-down range-direct segment has invalid width.");
+                        size_t block_count = static_cast<size_t>(segments[si].nrows) *
+                                             static_cast<size_t>(ksupc);
+                        if (segments[si].map_offset + block_count >
+                                symV2PartnerLPackedMaps.size() ||
+                            segments[si].map_offset + block_count <
+                                segments[si].map_offset ||
+                            append_count > std::numeric_limits<size_t>::max() - block_count)
+                            ABORT("SymFact V2 row-down range-direct segment map is invalid.");
+                        append_count += block_count;
+                    }
+                    out.reserve(out.size() + append_count);
+                    for (int_t col = 0; col < ksupc; ++col)
+                    {
+                        for (size_t si = 0; si < segments.size(); ++si)
+                        {
+                            size_t src = segments[si].map_offset +
+                                         static_cast<size_t>(col) *
+                                             static_cast<size_t>(segments[si].nrows);
+                            out.insert(out.end(),
+                                       symV2PartnerLPackedMaps.begin() + src,
+                                       symV2PartnerLPackedMaps.begin() + src +
+                                           segments[si].nrows);
+                        }
+                    }
+                };
+// SYM_V2_PC2_RANGE_NATIVE_DIRECT_BUILDER_END
+
                 for (int sender_pc = 0; sender_pc < Pc; ++sender_pc)
                 {
                     size_t pos = static_cast<size_t>(recv_displs[static_cast<size_t>(sender_pc)]);
@@ -5231,33 +5503,86 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             ABORT("SymFact V2 row-down demand slot is invalid.");
                         if (row_down_direct_recv)
                         {
-                            if (slot >= slot_direct_blocks.size())
-                                ABORT("SymFact V2 row-down direct slot is invalid.");
-                            std::vector<SymV2RowDownDirectBlock> &blocks =
-                                slot_direct_blocks[slot];
-                            if (range_encoded)
+                            if (row_down_compressed_plan)
                             {
-                                for (size_t rp = request_pos; rp < request_end; rp += 2)
+                                if (slot >= slot_direct_ranges.size())
+                                    ABORT("SymFact V2 row-down range-direct slot is invalid.");
+                                std::vector<SymV2RowDownDirectRange> &ranges =
+                                    slot_direct_ranges[slot];
+                                auto append_direct_range =
+                                    [&](int_t start, int_t len)
                                 {
-                                    int_t start = recv_payload[rp];
-                                    int_t len = recv_payload[rp + 1];
-                                    for (int_t off = 0; off < len; ++off)
+                                    if (start < 0 || len <= 0 ||
+                                        start > std::numeric_limits<int_t>::max() - len)
+                                        ABORT("SymFact V2 row-down range-direct demand is invalid.");
+                                    SymV2RowDownDirectRange range;
+                                    range.start = start;
+                                    range.len = len;
+                                    range.chunk_pc = chunk_pc;
+                                    ranges.push_back(range);
+                                };
+                                if (range_encoded)
+                                {
+                                    for (size_t rp = request_pos; rp < request_end; rp += 2)
+                                        append_direct_range(recv_payload[rp],
+                                                            recv_payload[rp + 1]);
+                                }
+                                else
+                                {
+                                    int_t run_start = recv_payload[request_pos];
+                                    int_t prev = run_start;
+                                    if (run_start < 0)
+                                        ABORT("SymFact V2 row-down range-direct demand has invalid gid.");
+                                    for (size_t ri = request_pos + 1; ri < request_end; ++ri)
                                     {
-                                        SymV2RowDownDirectBlock block;
-                                        block.gid = start + off;
-                                        block.chunk_pc = chunk_pc;
-                                        blocks.push_back(block);
+                                        int_t gid = recv_payload[ri];
+                                        if (gid <= prev)
+                                            ABORT("SymFact V2 row-down range-direct explicit demand is not sorted unique.");
+                                        if (prev < std::numeric_limits<int_t>::max() &&
+                                            gid == prev + 1)
+                                        {
+                                            prev = gid;
+                                            continue;
+                                        }
+                                        append_direct_range(run_start,
+                                                            prev - run_start + 1);
+                                        run_start = gid;
+                                        prev = gid;
                                     }
+                                    append_direct_range(run_start,
+                                                        prev - run_start + 1);
                                 }
                             }
                             else
                             {
-                                for (size_t ri = request_pos; ri < request_end; ++ri)
+                                if (slot >= slot_direct_blocks.size())
+                                    ABORT("SymFact V2 row-down direct slot is invalid.");
+                                std::vector<SymV2RowDownDirectBlock> &blocks =
+                                    slot_direct_blocks[slot];
+                                if (range_encoded)
                                 {
-                                    SymV2RowDownDirectBlock block;
-                                    block.gid = recv_payload[ri];
-                                    block.chunk_pc = chunk_pc;
-                                    blocks.push_back(block);
+                                    for (size_t rp = request_pos; rp < request_end; rp += 2)
+                                    {
+                                        int_t start = recv_payload[rp];
+                                        int_t len = recv_payload[rp + 1];
+                                        for (int_t off = 0; off < len; ++off)
+                                        {
+                                            SymV2RowDownDirectBlock block;
+                                            block.gid = start + off;
+                                            block.chunk_pc = chunk_pc;
+                                            blocks.push_back(block);
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    for (size_t ri = request_pos; ri < request_end; ++ri)
+                                    {
+                                        SymV2RowDownDirectBlock block;
+                                        block.gid = recv_payload[ri];
+                                        block.chunk_pc = chunk_pc;
+                                        blocks.push_back(block);
+                                    }
                                 }
                             }
                         }
@@ -5305,10 +5630,20 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 }
                 if (row_down_direct_recv)
                 {
-                    for (size_t slot = 0; slot < slot_direct_blocks.size();
-                         ++slot)
-                        build_direct_row_down_slot_map(
-                            slot, slot_direct_blocks[slot], slot_maps[slot]);
+                    if (row_down_compressed_plan)
+                    {
+                        for (size_t slot = 0; slot < slot_direct_ranges.size();
+                             ++slot)
+                            build_direct_row_down_slot_range_map(
+                                slot, slot_direct_ranges[slot], slot_maps[slot]);
+                    }
+                    else
+                    {
+                        for (size_t slot = 0; slot < slot_direct_blocks.size();
+                             ++slot)
+                            build_direct_row_down_slot_map(
+                                slot, slot_direct_blocks[slot], slot_maps[slot]);
+                    }
                 }
 
                 symV2RowDownSendMapsHost.clear();
