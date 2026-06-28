@@ -478,6 +478,11 @@ static inline bool superlu_sym_v2_recv_map_index_verify()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_RECV_MAP_INDEX_VERIFY", 0);
 }
+
+static inline bool superlu_sym_v2_row_l_compressed_plan()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_COMPRESSED_PLAN", 0);
+}
 // SYM_V2_PC2_PHASE1_FLAGS_END
 static inline bool superlu_sym_v2_rowfrag_destination_path()
 {

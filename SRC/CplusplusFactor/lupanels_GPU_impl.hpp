@@ -2540,18 +2540,123 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 row_send_total += count;
             }
 
-            for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
+// SYM_V2_PC2_COMPRESSED_PLAN_AGG_PACK_BEGIN
+            auto row_pack_plan_destination_range =
+                [&](int pc_begin, int pc_end)
             {
-                int count = symV2RowFragSendCountsScratch[static_cast<size_t>(pc_dest)];
-                if (count <= 0)
-                    continue;
-                int off = symV2RowFragSendOffsetsScratch[static_cast<size_t>(pc_dest)];
-                int packed = row_pack_destination(
-                    pc_dest,
-                    A_gpu.symV2RowFragStageBufs[stream_offset] + off);
-                if (packed != count)
-                    ABORT("SymFact V2 aggregate row-fragment pack size mismatch.");
+                int run_first = -1;
+                int run_last = -1;
+                int run_total = 0;
+                int expected_off = -1;
+                for (int pc_dest = pc_begin; pc_dest < pc_end; ++pc_dest)
+                {
+                    int count = symV2RowFragSendCountsScratch[
+                        static_cast<size_t>(pc_dest)];
+                    if (count <= 0)
+                        continue;
+                    int off = symV2RowFragSendOffsetsScratch[
+                        static_cast<size_t>(pc_dest)];
+                    if (off < 0)
+                        ABORT("SymFact V2 aggregate row-fragment offset is invalid.");
+                    if (run_first < 0)
+                    {
+                        run_first = pc_dest;
+                        expected_off = off;
+                    }
+                    else if (off != expected_off)
+                    {
+                        ABORT("SymFact V2 aggregate row-fragment staging is not contiguous.");
+                    }
+                    run_last = pc_dest;
+                    if (run_total > maxSymV2RowFragValSendCount - count)
+                        ABORT("SymFact V2 aggregate row-fragment range pack exceeds staging capacity.");
+                    run_total += count;
+                    expected_off += count;
+                }
+                if (run_total <= 0)
+                    return;
+                if (row_lpanel_ptr == NULL || row_lpanel_ptr->isEmpty())
+                    ABORT("SymFact V2 row-down source L panel is missing.");
+                size_t first_slot =
+                    static_cast<size_t>(row_send_lk) * static_cast<size_t>(Pc) +
+                    static_cast<size_t>(run_first);
+                size_t last_slot =
+                    static_cast<size_t>(row_send_lk) * static_cast<size_t>(Pc) +
+                    static_cast<size_t>(run_last);
+                if (first_slot >= symV2RowDownSendSizes.size() ||
+                    last_slot >= symV2RowDownSendSizes.size() ||
+                    first_slot >= symV2RowDownSendMapOffsets.size() ||
+                    last_slot >= symV2RowDownSendMapOffsets.size() ||
+                    first_slot >= symV2RowDownSendMapsGPU.size())
+                    ABORT("SymFact V2 row-down range send slot is invalid.");
+                size_t map_expected = symV2RowDownSendMapOffsets[first_slot];
+                size_t map_begin = map_expected;
+                for (int pc_dest = run_first; pc_dest <= run_last; ++pc_dest)
+                {
+                    size_t slot =
+                        static_cast<size_t>(row_send_lk) *
+                            static_cast<size_t>(Pc) +
+                        static_cast<size_t>(pc_dest);
+                    if (slot >= symV2RowDownSendSizes.size() ||
+                        slot >= symV2RowDownSendMapOffsets.size())
+                        ABORT("SymFact V2 row-down range send slot is invalid.");
+                    int expected_count = symV2RowFragSendCountsScratch[
+                        static_cast<size_t>(pc_dest)];
+                    int map_count = symV2RowDownSendSizes[slot];
+                    if (expected_count < 0 || map_count < 0 ||
+                        expected_count != map_count)
+                        ABORT("SymFact V2 row-down range send size mismatch.");
+                    if (symV2RowDownSendMapOffsets[slot] != map_expected)
+                        ABORT("SymFact V2 row-down range send maps are not contiguous.");
+                    map_expected += static_cast<size_t>(map_count);
+                }
+                if (map_expected < map_begin ||
+                    map_expected - map_begin != static_cast<size_t>(run_total))
+                    ABORT("SymFact V2 row-down range send map size mismatch.");
+                int_t *sendmap = symV2RowDownSendMapsGPU[first_slot];
+                if (sendmap == NULL)
+                    ABORT("SymFact V2 row-down range send map is missing.");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double row_pack_issue_t = SuperLU_timer_();
+#endif
+                int threads = 256;
+                int blocks = (run_total + threads - 1) / threads;
+                int first_off = symV2RowFragSendOffsetsScratch[
+                    static_cast<size_t>(run_first)];
+                sym_l2u_pack_kernel<<<blocks, threads, 0, stream>>>(
+                    row_lpanel_ptr->gpuPanel.val,
+                    A_gpu.symV2RowFragStageBufs[stream_offset] + first_off,
+                    sendmap, run_total);
+                gpuErrchk(cudaGetLastError());
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_ISSUE,
+                                 SYM_GPU3D_T_ROW_LFRAG_PACK_ISSUE,
+                                 SuperLU_timer_() - row_pack_issue_t);
+#endif
+            };
+
+            if (superlu_sym_v2_row_l_plan_v2_exchange() &&
+                superlu_sym_v2_row_l_compressed_plan())
+            {
+                row_pack_plan_destination_range(0, mycol);
+                row_pack_plan_destination_range(mycol + 1, Pc);
             }
+            else
+            {
+                for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
+                {
+                    int count = symV2RowFragSendCountsScratch[static_cast<size_t>(pc_dest)];
+                    if (count <= 0)
+                        continue;
+                    int off = symV2RowFragSendOffsetsScratch[static_cast<size_t>(pc_dest)];
+                    int packed = row_pack_destination(
+                        pc_dest,
+                        A_gpu.symV2RowFragStageBufs[stream_offset] + off);
+                    if (packed != count)
+                        ABORT("SymFact V2 aggregate row-fragment pack size mismatch.");
+                }
+            }
+// SYM_V2_PC2_COMPRESSED_PLAN_AGG_PACK_END
 
             if (row_send_total > 0)
             {

@@ -4317,6 +4317,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 const bool row_down_direct_recv =
                     superlu_sym_v2_row_l_direct_recv() &&
                     !superlu_sym_v2_row_l_postsolve_send();
+                const bool row_down_compressed_plan =
+                    superlu_sym_v2_row_l_compressed_plan();
                 if (row_down_compact)
                 {
                     if (row_down_dryrun)
@@ -4344,6 +4346,70 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     "SymFact V2 row-down chunk table");
                 std::vector<std::vector<int_t> > requested_by_chunk(row_chunk_count);
                 std::vector<std::vector<int_t> > row_down_payloads(static_cast<size_t>(Pc));
+
+// SYM_V2_PC2_COMPRESSED_PLAN_DEMAND_ENCODE_BEGIN
+                auto append_row_down_demand_record =
+                    [&](std::vector<int_t> &payload, int_t panel,
+                        int dest_pc, int chunk_pc,
+                        const std::vector<int_t> &blocks)
+                {
+                    if (blocks.empty())
+                        return;
+                    if (blocks.size() >
+                        static_cast<size_t>(std::numeric_limits<int_t>::max()))
+                        ABORT("SymFact V2 row-down demand record is too large.");
+
+                    payload.push_back(panel);
+                    payload.push_back(dest_pc);
+                    payload.push_back(chunk_pc);
+
+                    if (row_down_compressed_plan)
+                    {
+                        std::vector<int_t> ranges;
+                        ranges.reserve(blocks.size());
+                        int_t start = blocks[0];
+                        int_t prev = blocks[0];
+                        if (start < 0)
+                            ABORT("SymFact V2 row-down compressed demand has invalid block id.");
+                        for (size_t bi = 1; bi < blocks.size(); ++bi)
+                        {
+                            int_t gid = blocks[bi];
+                            if (gid <= prev)
+                                ABORT("SymFact V2 row-down compressed demand is not sorted unique.");
+                            if (prev < std::numeric_limits<int_t>::max() &&
+                                gid == prev + 1)
+                            {
+                                prev = gid;
+                                continue;
+                            }
+                            ranges.push_back(start);
+                            ranges.push_back(prev - start + 1);
+                            start = gid;
+                            prev = gid;
+                        }
+                        ranges.push_back(start);
+                        ranges.push_back(prev - start + 1);
+
+                        /* Range encoding is [k0, dest_pc, chunk_pc,
+                           -nranges, start0, len0, ...].  Use it only when it
+                           strictly reduces the demand payload. */
+                        if (ranges.size() < blocks.size())
+                        {
+                            size_t nranges = ranges.size() / 2;
+                            if (nranges > static_cast<size_t>(
+                                              std::numeric_limits<int_t>::max()))
+                                ABORT("SymFact V2 row-down compressed demand has too many ranges.");
+                            payload.push_back(-static_cast<int_t>(nranges));
+                            payload.insert(payload.end(), ranges.begin(), ranges.end());
+                            return;
+                        }
+                    }
+
+                    payload.push_back(static_cast<int_t>(blocks.size()));
+                    payload.insert(payload.end(), blocks.begin(), blocks.end());
+                };
+// SYM_V2_PC2_COMPRESSED_PLAN_DEMAND_ENCODE_END
+
                 long long local_demand_records = 0;
                 long long local_current_recv_values = 0;
 
@@ -4422,14 +4488,15 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         }
                         std::vector<int_t> &payload =
                             row_down_payloads[static_cast<size_t>(source_pc)];
+// SYM_V2_PC2_COMPRESSED_PLAN_PAYLOAD_EMIT_BEGIN
                         /* Record encoding over grid3d->rscp.comm:
-                           [k0, dest_pc, chunk_pc, nblocks, gids...].
+                           uncompressed: [k0, dest_pc, chunk_pc, nblocks, gids...]
+                           compressed:   [k0, dest_pc, chunk_pc, -nranges,
+                                          start0, len0, ...]
                            Sender rank is dest_pc; receiver rank is source_pc. */
-                        payload.push_back(k0);
-                        payload.push_back(mycol);
-                        payload.push_back(chunk_pc);
-                        payload.push_back(static_cast<int_t>(blocks.size()));
-                        payload.insert(payload.end(), blocks.begin(), blocks.end());
+                        append_row_down_demand_record(
+                            payload, k0, mycol, chunk_pc, blocks);
+// SYM_V2_PC2_COMPRESSED_PLAN_PAYLOAD_EMIT_END
                         ++local_demand_records;
                     }
                 }
@@ -4580,17 +4647,19 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         int_t src_offset = 0;
                         for (size_t rb = 0; rb < recv_blocks.size(); ++rb)
                         {
-                            int_t ib = GLOBAL_BLOCK_NOT_FOUND;
-                            for (int_t probe = 0; probe < row_nblocks; ++probe)
-                            {
-                                if (blocks[probe].gid == recv_blocks[rb].gid)
-                                {
-                                    ib = probe;
-                                    break;
-                                }
-                            }
-                            if (ib == GLOBAL_BLOCK_NOT_FOUND)
+// SYM_V2_PC2_ROW_RECV_LOWER_BOUND_BEGIN
+                            std::vector<SymV2CachedPartnerBlock>::const_iterator block_it =
+                                std::lower_bound(
+                                    blocks.begin(), blocks.end(),
+                                    recv_blocks[rb].gid,
+                                    [](const SymV2CachedPartnerBlock &block,
+                                       int_t gid)
+                                    { return block.gid < gid; });
+                            if (block_it == blocks.end() ||
+                                block_it->gid != recv_blocks[rb].gid)
                                 ABORT("SymFact V2 row-down receive map cannot find a block.");
+                            int_t ib = static_cast<int_t>(block_it - blocks.begin());
+// SYM_V2_PC2_ROW_RECV_LOWER_BOUND_END
                             int_t nrows =
                                 static_cast<int_t>(recv_blocks[rb].cols.size());
                             recv_map.push_back(row_index[row_px_ptr + ib]);
@@ -4786,6 +4855,109 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     if (map_pos != map_end)
                         ABORT("SymFact V2 row-down source map range size mismatch.");
                 };
+
+// SYM_V2_PC2_COMPRESSED_PLAN_RANGE_SOURCE_MAP_BEGIN
+                auto append_row_down_map_for_ranges =
+                    [&](int_t k0, int chunk_pc,
+                        const int_t *ranges_begin,
+                        const int_t *ranges_end,
+                        std::vector<int_t> &out)
+                {
+                    if (ranges_begin == ranges_end)
+                        return;
+                    size_t range_values =
+                        static_cast<size_t>(ranges_end - ranges_begin);
+                    if ((range_values % 2) != 0)
+                        ABORT("SymFact V2 row-down compressed demand has invalid range stride.");
+                    size_t range_count = range_values / 2;
+                    if (range_count == 0)
+                        return;
+
+                    int_t previous_end = 0;
+                    bool have_previous = false;
+                    for (size_t ri = 0; ri < range_count; ++ri)
+                    {
+                        int_t start = ranges_begin[2 * ri];
+                        int_t len = ranges_begin[2 * ri + 1];
+                        if (start < 0 || len <= 0 ||
+                            start > std::numeric_limits<int_t>::max() - len)
+                            ABORT("SymFact V2 row-down compressed range is invalid.");
+                        int_t end_gid = start + len;
+                        if (have_previous && start < previous_end)
+                            ABORT("SymFact V2 row-down compressed ranges overlap or are unsorted.");
+                        previous_end = end_gid;
+                        have_previous = true;
+                    }
+
+                    int_t lk = symV2PanelIndex(k0);
+                    if (lk < 0)
+                        return;
+                    size_t flat =
+                        static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                        static_cast<size_t>(chunk_pc);
+                    if (flat >= symL2LSendMeta.size() ||
+                        flat >= symV2PartnerLSendSizes.size() ||
+                        flat >= symV2PartnerLMapOffsets.size())
+                        ABORT("SymFact V2 row-down compressed source metadata is invalid.");
+                    const std::vector<int_t> &meta = symL2LSendMeta[flat];
+                    size_t map_pos = symV2PartnerLMapOffsets[flat];
+                    size_t map_end = map_pos +
+                        static_cast<size_t>(symV2PartnerLSendSizes[flat]);
+                    if (map_end > symV2PartnerLPackedMaps.size() ||
+                        map_end < map_pos)
+                        ABORT("SymFact V2 row-down compressed source map range is invalid.");
+                    int_t ksupc = SuperSize(k0);
+
+                    auto range_contains_gid = [&](int_t gid) -> bool
+                    {
+                        size_t lo = 0;
+                        size_t hi = range_count;
+                        while (lo < hi)
+                        {
+                            size_t mid = lo + (hi - lo) / 2;
+                            if (ranges_begin[2 * mid] <= gid)
+                                lo = mid + 1;
+                            else
+                                hi = mid;
+                        }
+                        if (lo == 0)
+                            return false;
+                        size_t ri = lo - 1;
+                        int_t start = ranges_begin[2 * ri];
+                        int_t len = ranges_begin[2 * ri + 1];
+                        return gid >= start && gid < start + len;
+                    };
+
+                    size_t meta_pos = 0;
+                    while (meta_pos < meta.size())
+                    {
+                        if (meta_pos + 2 > meta.size())
+                            ABORT("SymFact V2 row-down compressed source metadata is truncated.");
+                        int_t gid = meta[meta_pos++];
+                        int_t len = meta[meta_pos++];
+                        if (len < 0 || meta_pos + static_cast<size_t>(len) > meta.size())
+                            ABORT("SymFact V2 row-down compressed source metadata block is invalid.");
+                        size_t value_count = xlu_checked_product(
+                            static_cast<size_t>(len),
+                            static_cast<size_t>(ksupc),
+                            "SymFact V2 row-down compressed source map segment");
+                        if (map_pos + value_count > map_end ||
+                            map_pos + value_count < map_pos)
+                            ABORT("SymFact V2 row-down compressed source map segment is invalid.");
+                        if (range_contains_gid(gid))
+                        {
+                            out.insert(out.end(),
+                                       symV2PartnerLPackedMaps.begin() + map_pos,
+                                       symV2PartnerLPackedMaps.begin() + map_pos + value_count);
+                        }
+                        map_pos += value_count;
+                        meta_pos += static_cast<size_t>(len);
+                    }
+                    if (map_pos != map_end)
+                        ABORT("SymFact V2 row-down compressed source map range size mismatch.");
+                };
+// SYM_V2_PC2_COMPRESSED_PLAN_RANGE_SOURCE_MAP_END
+
                 auto build_direct_row_down_slot_map =
                     [&](size_t slot,
                         std::vector<SymV2RowDownDirectBlock> &blocks,
@@ -4821,31 +4993,161 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
                     std::vector<std::vector<int_t> > block_maps(
                         unique_blocks.size());
-                    std::vector<int_t> block_nrows(unique_blocks.size(), 0);
+                    std::vector<int_t> block_nrows(
+                        unique_blocks.size(), static_cast<int_t>(-1));
+
+                    if (!row_down_compressed_plan)
+                    {
+                        for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
+                        {
+                            int chunk_pc = unique_blocks[bi].chunk_pc;
+                            if (chunk_pc < 0 || chunk_pc >= Pc)
+                                ABORT("SymFact V2 row-down direct chunk is invalid.");
+                            size_t flat =
+                                static_cast<size_t>(lk) *
+                                    static_cast<size_t>(Pc) +
+                                static_cast<size_t>(chunk_pc);
+                            append_row_down_source_map_for_gid(
+                                flat, unique_blocks[bi].gid, block_maps[bi]);
+                            if (block_maps[bi].empty() ||
+                                block_maps[bi].size() %
+                                        static_cast<size_t>(ksupc) !=
+                                    0)
+                                ABORT("SymFact V2 row-down direct block map has invalid width.");
+                            size_t nrows =
+                                block_maps[bi].size() /
+                                static_cast<size_t>(ksupc);
+                            if (nrows >
+                                static_cast<size_t>(
+                                    std::numeric_limits<int_t>::max()))
+                                ABORT("SymFact V2 row-down direct block is too large.");
+                            block_nrows[bi] = static_cast<int_t>(nrows);
+                        }
+                    }
+                    else
+                    {
+// SYM_V2_PC2_COMPRESSED_DIRECT_MAP_BEGIN
+                        struct SymV2RowDownDirectRequest
+                        {
+                            int_t gid;
+                            int chunk_pc;
+                            size_t block_index;
+                        };
+                        std::vector<SymV2RowDownDirectRequest> requests;
+                        requests.reserve(unique_blocks.size());
+                        for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
+                        {
+                            int chunk_pc = unique_blocks[bi].chunk_pc;
+                            if (chunk_pc < 0 || chunk_pc >= Pc)
+                                ABORT("SymFact V2 row-down direct chunk is invalid.");
+                            SymV2RowDownDirectRequest req;
+                            req.gid = unique_blocks[bi].gid;
+                            req.chunk_pc = chunk_pc;
+                            req.block_index = bi;
+                            requests.push_back(req);
+                        }
+                        std::sort(requests.begin(), requests.end(),
+                                  [](const SymV2RowDownDirectRequest &a,
+                                     const SymV2RowDownDirectRequest &b)
+                                  {
+                                      if (a.chunk_pc != b.chunk_pc)
+                                          return a.chunk_pc < b.chunk_pc;
+                                      return a.gid < b.gid;
+                                  });
+
+                        size_t group_begin = 0;
+                        while (group_begin < requests.size())
+                        {
+                            int chunk_pc = requests[group_begin].chunk_pc;
+                            size_t group_end = group_begin + 1;
+                            while (group_end < requests.size() &&
+                                   requests[group_end].chunk_pc == chunk_pc)
+                                ++group_end;
+
+                            size_t flat =
+                                static_cast<size_t>(lk) *
+                                    static_cast<size_t>(Pc) +
+                                static_cast<size_t>(chunk_pc);
+                            if (flat >= symL2LSendMeta.size() ||
+                                flat >= symV2PartnerLSendSizes.size() ||
+                                flat >= symV2PartnerLMapOffsets.size())
+                                ABORT("SymFact V2 row-down direct source map is invalid.");
+                            if (symV2PartnerLSendSizes[flat] < 0)
+                                ABORT("SymFact V2 row-down direct source map size is invalid.");
+                            const std::vector<int_t> &meta = symL2LSendMeta[flat];
+                            size_t map_pos = symV2PartnerLMapOffsets[flat];
+                            size_t map_end = map_pos +
+                                static_cast<size_t>(
+                                    symV2PartnerLSendSizes[flat]);
+                            if (map_end > symV2PartnerLPackedMaps.size() ||
+                                map_end < map_pos)
+                                ABORT("SymFact V2 row-down direct source map bounds are invalid.");
+
+                            size_t meta_pos = 0;
+                            while (meta_pos < meta.size())
+                            {
+                                if (meta_pos + 2 > meta.size())
+                                    ABORT("SymFact V2 row-down direct metadata is truncated.");
+                                int_t block_gid = meta[meta_pos++];
+                                int_t len = meta[meta_pos++];
+                                if (len < 0 ||
+                                    meta_pos + static_cast<size_t>(len) >
+                                        meta.size())
+                                    ABORT("SymFact V2 row-down direct metadata block is invalid.");
+                                size_t value_count = xlu_checked_product(
+                                    static_cast<size_t>(len),
+                                    static_cast<size_t>(ksupc),
+                                    "SymFact V2 row-down direct source map segment");
+                                if (map_pos + value_count > map_end ||
+                                    map_pos + value_count < map_pos)
+                                    ABORT("SymFact V2 row-down direct source map segment is invalid.");
+
+                                SymV2RowDownDirectRequest key;
+                                key.gid = block_gid;
+                                key.chunk_pc = chunk_pc;
+                                key.block_index = 0;
+                                std::vector<SymV2RowDownDirectRequest>::const_iterator it =
+                                    std::lower_bound(
+                                        requests.begin() + group_begin,
+                                        requests.begin() + group_end,
+                                        key,
+                                        [](const SymV2RowDownDirectRequest &a,
+                                           const SymV2RowDownDirectRequest &b)
+                                        { return a.gid < b.gid; });
+                                if (it != requests.begin() + group_end &&
+                                    it->gid == block_gid)
+                                {
+                                    size_t bi = it->block_index;
+                                    if (bi >= block_maps.size() ||
+                                        block_nrows[bi] >= 0)
+                                        ABORT("SymFact V2 row-down direct duplicate source block.");
+                                    block_maps[bi].insert(
+                                        block_maps[bi].end(),
+                                        symV2PartnerLPackedMaps.begin() + map_pos,
+                                        symV2PartnerLPackedMaps.begin() + map_pos + value_count);
+                                    block_nrows[bi] = len;
+                                }
+
+                                map_pos += value_count;
+                                meta_pos += static_cast<size_t>(len);
+                            }
+                            if (map_pos != map_end)
+                                ABORT("SymFact V2 row-down direct source map size mismatch.");
+                            group_begin = group_end;
+                        }
+// SYM_V2_PC2_COMPRESSED_DIRECT_MAP_END
+                    }
+
                     for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
                     {
-                        int chunk_pc = unique_blocks[bi].chunk_pc;
-                        if (chunk_pc < 0 || chunk_pc >= Pc)
-                            ABORT("SymFact V2 row-down direct chunk is invalid.");
-                        size_t flat =
-                            static_cast<size_t>(lk) *
-                                static_cast<size_t>(Pc) +
-                            static_cast<size_t>(chunk_pc);
-                        append_row_down_source_map_for_gid(
-                            flat, unique_blocks[bi].gid, block_maps[bi]);
-                        if (block_maps[bi].empty() ||
-                            block_maps[bi].size() %
-                                    static_cast<size_t>(ksupc) !=
-                                0)
+                        if (block_nrows[bi] <= 0 || block_maps[bi].empty() ||
+                            static_cast<size_t>(block_nrows[bi]) >
+                                std::numeric_limits<size_t>::max() /
+                                    static_cast<size_t>(ksupc) ||
+                            block_maps[bi].size() !=
+                                static_cast<size_t>(block_nrows[bi]) *
+                                    static_cast<size_t>(ksupc))
                             ABORT("SymFact V2 row-down direct block map has invalid width.");
-                        size_t nrows =
-                            block_maps[bi].size() /
-                            static_cast<size_t>(ksupc);
-                        if (nrows >
-                            static_cast<size_t>(
-                                std::numeric_limits<int_t>::max()))
-                            ABORT("SymFact V2 row-down direct block is too large.");
-                        block_nrows[bi] = static_cast<int_t>(nrows);
                     }
                     for (int_t col = 0; col < ksupc; ++col)
                     {
@@ -4873,15 +5175,52 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         int_t k0 = recv_payload[pos++];
                         int dest_pc = static_cast<int>(recv_payload[pos++]);
                         int chunk_pc = static_cast<int>(recv_payload[pos++]);
-                        int_t nblocks = recv_payload[pos++];
+// SYM_V2_PC2_COMPRESSED_PLAN_DEMAND_DECODE_BEGIN
+                        int_t encoded_count = recv_payload[pos++];
+                        if (encoded_count == 0 ||
+                            encoded_count == std::numeric_limits<int_t>::min())
+                            ABORT("SymFact V2 row-down demand record is invalid.");
+                        const bool range_encoded = encoded_count < 0;
+                        int_t encoded_items = range_encoded
+                            ? -encoded_count
+                            : encoded_count;
+                        if (encoded_items <= 0)
+                            ABORT("SymFact V2 row-down demand record is invalid.");
+                        size_t payload_items =
+                            static_cast<size_t>(encoded_items);
+                        if (range_encoded)
+                        {
+                            if (payload_items >
+                                std::numeric_limits<size_t>::max() / 2)
+                                ABORT("SymFact V2 row-down compressed demand overflows.");
+                            payload_items *= 2;
+                        }
                         if (k0 < 0 || k0 >= nsupers || dest_pc < 0 || dest_pc >= Pc ||
-                            chunk_pc < 0 || chunk_pc >= Pc || nblocks <= 0 ||
-                            pos + static_cast<size_t>(nblocks) > end)
+                            chunk_pc < 0 || chunk_pc >= Pc || payload_items > end - pos)
                             ABORT("SymFact V2 row-down demand record is invalid.");
                         if (dest_pc != sender_pc || symV2PanelRoot(k0) != mycol)
                             ABORT("SymFact V2 row-down demand arrived at wrong source column.");
                         const size_t request_pos = pos;
-                        pos += static_cast<size_t>(nblocks);
+                        const size_t request_end = pos + payload_items;
+                        if (range_encoded)
+                        {
+                            int_t previous_end = 0;
+                            bool have_previous = false;
+                            for (size_t rp = request_pos; rp < request_end; rp += 2)
+                            {
+                                int_t start = recv_payload[rp];
+                                int_t len = recv_payload[rp + 1];
+                                if (start < 0 || len <= 0 ||
+                                    start > std::numeric_limits<int_t>::max() - len)
+                                    ABORT("SymFact V2 row-down compressed demand range is invalid.");
+                                int_t end_gid = start + len;
+                                if (have_previous && start < previous_end)
+                                    ABORT("SymFact V2 row-down compressed demand ranges overlap or are unsorted.");
+                                previous_end = end_gid;
+                                have_previous = true;
+                            }
+                        }
+                        pos = request_end;
                         int_t lk = symV2PanelIndex(k0);
                         if (lk < 0)
                             continue;
@@ -4896,35 +5235,72 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 ABORT("SymFact V2 row-down direct slot is invalid.");
                             std::vector<SymV2RowDownDirectBlock> &blocks =
                                 slot_direct_blocks[slot];
-                            for (size_t ri = request_pos; ri < pos; ++ri)
+                            if (range_encoded)
                             {
-                                SymV2RowDownDirectBlock block;
-                                block.gid = recv_payload[ri];
-                                block.chunk_pc = chunk_pc;
-                                blocks.push_back(block);
+                                for (size_t rp = request_pos; rp < request_end; rp += 2)
+                                {
+                                    int_t start = recv_payload[rp];
+                                    int_t len = recv_payload[rp + 1];
+                                    for (int_t off = 0; off < len; ++off)
+                                    {
+                                        SymV2RowDownDirectBlock block;
+                                        block.gid = start + off;
+                                        block.chunk_pc = chunk_pc;
+                                        blocks.push_back(block);
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                for (size_t ri = request_pos; ri < request_end; ++ri)
+                                {
+                                    SymV2RowDownDirectBlock block;
+                                    block.gid = recv_payload[ri];
+                                    block.chunk_pc = chunk_pc;
+                                    blocks.push_back(block);
+                                }
                             }
                         }
                         else if (row_down_compact)
                         {
-                            append_row_down_map_for_record(
-                                k0, chunk_pc, recv_payload.data() + request_pos,
-                                recv_payload.data() + pos, slot_maps[slot]);
+                            if (range_encoded)
+                                append_row_down_map_for_ranges(
+                                    k0, chunk_pc,
+                                    recv_payload.data() + request_pos,
+                                    recv_payload.data() + request_end,
+                                    slot_maps[slot]);
+                            else
+                                append_row_down_map_for_record(
+                                    k0, chunk_pc, recv_payload.data() + request_pos,
+                                    recv_payload.data() + request_end, slot_maps[slot]);
                         }
                         else
                         {
-                            std::vector<int_t> requested(
-                                recv_payload.begin() + request_pos,
-                                recv_payload.begin() + pos);
-                            std::sort(requested.begin(), requested.end());
-                            requested.erase(
-                                std::unique(requested.begin(),
-                                            requested.end()),
-                                requested.end());
-                            append_row_down_map_for_record(
-                                k0, chunk_pc, requested.data(),
-                                requested.data() + requested.size(),
-                                slot_maps[slot]);
+                            if (range_encoded)
+                            {
+                                append_row_down_map_for_ranges(
+                                    k0, chunk_pc,
+                                    recv_payload.data() + request_pos,
+                                    recv_payload.data() + request_end,
+                                    slot_maps[slot]);
+                            }
+                            else
+                            {
+                                std::vector<int_t> requested(
+                                    recv_payload.begin() + request_pos,
+                                    recv_payload.begin() + request_end);
+                                std::sort(requested.begin(), requested.end());
+                                requested.erase(
+                                    std::unique(requested.begin(),
+                                                requested.end()),
+                                    requested.end());
+                                append_row_down_map_for_record(
+                                    k0, chunk_pc, requested.data(),
+                                    requested.data() + requested.size(),
+                                    slot_maps[slot]);
+                            }
                         }
+// SYM_V2_PC2_COMPRESSED_PLAN_DEMAND_DECODE_END
                     }
                 }
                 if (row_down_direct_recv)
