@@ -361,12 +361,16 @@ static inline bool superlu_sym_v2_row_l_one_sync()
 
 static inline bool superlu_sym_v2_row_l_plan_v2()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2", 0);
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_ROW_L_PLAN_V2",
+        superlu_sym_v2_pc_fragment_ldl_native() ? 1 : 0);
 }
 
 static inline bool superlu_sym_v2_row_l_plan_v2_dryrun()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_DRYRUN", 1);
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_ROW_L_PLAN_V2_DRYRUN",
+        superlu_sym_v2_pc_fragment_ldl_native() ? 0 : 1);
 }
 
 static inline bool superlu_sym_v2_row_l_plan_v2_block()
@@ -381,7 +385,10 @@ static inline bool superlu_sym_v2_row_l_plan_v2_verify()
 
 static inline bool superlu_sym_v2_row_l_plan_v2_exchange()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE", 0);
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_ROW_L_PLAN_V2_EXCHANGE",
+        (superlu_sym_v2_pc_fragment_ldl_native() &&
+         superlu_sym_v2_row_l_plan_v2()) ? 1 : 0);
 }
 
 static inline bool superlu_sym_v2_row_l_plan_v2_aggregate_dest()
@@ -391,7 +398,10 @@ static inline bool superlu_sym_v2_row_l_plan_v2_aggregate_dest()
 
 static inline bool superlu_sym_v2_row_l_plan_v2_compact()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_ROW_L_PLAN_V2_COMPACT", 0);
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_ROW_L_PLAN_V2_COMPACT",
+        (superlu_sym_v2_pc_fragment_ldl_native() &&
+         superlu_sym_v2_row_l_plan_v2()) ? 1 : 0);
 }
 
 static inline bool superlu_sym_v2_row_hybrid_cost()

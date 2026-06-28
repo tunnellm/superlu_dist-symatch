@@ -1148,9 +1148,6 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             if (superlu_sym_v2_pc_fragment_ldl_native() &&
                 !superlu_sym_v2_pc_fragment_schur())
                 ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE requires GPU3DV2_PC_FRAGMENT_SCHUR=1.");
-            if (superlu_sym_v2_pc_fragment_ldl_native() &&
-                superlu_sym_v2_row_l_plan_v2())
-                ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE is incompatible with GPU3DV2_ROW_L_PLAN_V2.");
             symV2DiagBlocks.assign(nsupers, NULL);
 #ifdef HAVE_CUDA
             symV2DiagBlocksGPU.assign(nsupers, NULL);
@@ -3872,7 +3869,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 
             if (pc_fragment_schur_setup &&
                 superlu_sym_v2_row_l_direct_recv() &&
-                !superlu_sym_v2_row_l_postsolve_send())
+                !superlu_sym_v2_row_l_postsolve_send() &&
+                !superlu_sym_v2_row_l_plan_v2_exchange())
             {
                 struct SymV2DirectRowBlock
                 {
@@ -4316,6 +4314,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     superlu_sym_v2_row_l_plan_v2_dryrun();
                 const bool row_down_compact =
                     superlu_sym_v2_row_l_plan_v2_compact();
+                const bool row_down_direct_recv =
+                    superlu_sym_v2_row_l_direct_recv() &&
+                    !superlu_sym_v2_row_l_postsolve_send();
                 if (row_down_compact)
                 {
                     if (row_down_dryrun)
@@ -4666,7 +4667,70 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                               recv_counts.data(), recv_displs.data(), mpi_int_t,
                               grid3d->rscp.comm);
 
+                struct SymV2RowDownDirectBlock
+                {
+                    int_t gid;
+                    int chunk_pc;
+                };
                 std::vector<std::vector<int_t> > slot_maps(l2u_slots);
+                std::vector<std::vector<SymV2RowDownDirectBlock> >
+                    slot_direct_blocks;
+                if (row_down_direct_recv)
+                    slot_direct_blocks.resize(l2u_slots);
+                auto append_row_down_source_map_for_gid =
+                    [&](size_t flat, int_t gid, std::vector<int_t> &out)
+                {
+                    if (flat >= symL2LSendMeta.size() ||
+                        flat >= symV2PartnerLSendSizes.size() ||
+                        flat >= symV2PartnerLMapOffsets.size())
+                        ABORT("SymFact V2 row-down source map is invalid.");
+                    int_t lk = static_cast<int_t>(
+                        flat / static_cast<size_t>(Pc));
+                    int_t k0 = symV2PanelGid(lk);
+                    if (k0 < 0 || k0 >= nsupers)
+                        ABORT("SymFact V2 row-down source panel is invalid.");
+                    int_t ksupc = SuperSize(k0);
+                    const std::vector<int_t> &meta = symL2LSendMeta[flat];
+                    size_t map_pos = symV2PartnerLMapOffsets[flat];
+                    size_t map_end = map_pos +
+                        static_cast<size_t>(symV2PartnerLSendSizes[flat]);
+                    if (map_end > symV2PartnerLPackedMaps.size() ||
+                        map_end < map_pos)
+                        ABORT("SymFact V2 row-down source map range is invalid.");
+                    bool found = false;
+                    size_t meta_pos = 0;
+                    while (meta_pos < meta.size())
+                    {
+                        if (meta_pos + 2 > meta.size())
+                            ABORT("SymFact V2 row-down source metadata is truncated.");
+                        int_t block_gid = meta[meta_pos++];
+                        int_t len = meta[meta_pos++];
+                        if (len < 0 ||
+                            meta_pos + static_cast<size_t>(len) > meta.size())
+                            ABORT("SymFact V2 row-down source metadata block is invalid.");
+                        size_t value_count = xlu_checked_product(
+                            static_cast<size_t>(len),
+                            static_cast<size_t>(ksupc),
+                            "SymFact V2 row-down source map segment");
+                        if (map_pos + value_count > map_end ||
+                            map_pos + value_count < map_pos)
+                            ABORT("SymFact V2 row-down source map segment is invalid.");
+                        if (block_gid == gid)
+                        {
+                            out.insert(out.end(),
+                                       symV2PartnerLPackedMaps.begin() + map_pos,
+                                       symV2PartnerLPackedMaps.begin() +
+                                           map_pos + value_count);
+                            found = true;
+                        }
+                        map_pos += value_count;
+                        meta_pos += static_cast<size_t>(len);
+                    }
+                    if (map_pos != map_end)
+                        ABORT("SymFact V2 row-down source map range size mismatch.");
+                    if (!found)
+                        ABORT("SymFact V2 row-down source map cannot find a requested block.");
+                };
                 auto append_row_down_map_for_record =
                     [&](int_t k0, int chunk_pc,
                         const int_t *requested_begin,
@@ -4722,6 +4786,81 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     if (map_pos != map_end)
                         ABORT("SymFact V2 row-down source map range size mismatch.");
                 };
+                auto build_direct_row_down_slot_map =
+                    [&](size_t slot,
+                        std::vector<SymV2RowDownDirectBlock> &blocks,
+                        std::vector<int_t> &out)
+                {
+                    if (blocks.empty())
+                        return;
+                    std::sort(blocks.begin(), blocks.end(),
+                              [](const SymV2RowDownDirectBlock &a,
+                                 const SymV2RowDownDirectBlock &b)
+                              {
+                                  if (a.gid != b.gid)
+                                      return a.gid < b.gid;
+                                  return a.chunk_pc < b.chunk_pc;
+                              });
+                    std::vector<SymV2RowDownDirectBlock> unique_blocks;
+                    unique_blocks.reserve(blocks.size());
+                    for (size_t bi = 0; bi < blocks.size(); ++bi)
+                    {
+                        if (!unique_blocks.empty() &&
+                            unique_blocks.back().gid == blocks[bi].gid)
+                            continue;
+                        unique_blocks.push_back(blocks[bi]);
+                    }
+                    int_t lk = static_cast<int_t>(
+                        slot / static_cast<size_t>(Pc));
+                    int_t k0 = symV2PanelGid(lk);
+                    if (k0 < 0 || k0 >= nsupers)
+                        ABORT("SymFact V2 row-down direct panel is invalid.");
+                    int_t ksupc = SuperSize(k0);
+                    if (ksupc <= 0)
+                        ABORT("SymFact V2 row-down direct panel width is invalid.");
+
+                    std::vector<std::vector<int_t> > block_maps(
+                        unique_blocks.size());
+                    std::vector<int_t> block_nrows(unique_blocks.size(), 0);
+                    for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
+                    {
+                        int chunk_pc = unique_blocks[bi].chunk_pc;
+                        if (chunk_pc < 0 || chunk_pc >= Pc)
+                            ABORT("SymFact V2 row-down direct chunk is invalid.");
+                        size_t flat =
+                            static_cast<size_t>(lk) *
+                                static_cast<size_t>(Pc) +
+                            static_cast<size_t>(chunk_pc);
+                        append_row_down_source_map_for_gid(
+                            flat, unique_blocks[bi].gid, block_maps[bi]);
+                        if (block_maps[bi].empty() ||
+                            block_maps[bi].size() %
+                                    static_cast<size_t>(ksupc) !=
+                                0)
+                            ABORT("SymFact V2 row-down direct block map has invalid width.");
+                        size_t nrows =
+                            block_maps[bi].size() /
+                            static_cast<size_t>(ksupc);
+                        if (nrows >
+                            static_cast<size_t>(
+                                std::numeric_limits<int_t>::max()))
+                            ABORT("SymFact V2 row-down direct block is too large.");
+                        block_nrows[bi] = static_cast<int_t>(nrows);
+                    }
+                    for (int_t col = 0; col < ksupc; ++col)
+                    {
+                        for (size_t bi = 0; bi < unique_blocks.size(); ++bi)
+                        {
+                            size_t src =
+                                static_cast<size_t>(col) *
+                                static_cast<size_t>(block_nrows[bi]);
+                            out.insert(out.end(),
+                                       block_maps[bi].begin() + src,
+                                       block_maps[bi].begin() + src +
+                                           block_nrows[bi]);
+                        }
+                    }
+                };
 
                 for (int sender_pc = 0; sender_pc < Pc; ++sender_pc)
                 {
@@ -4751,7 +4890,21 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             static_cast<size_t>(dest_pc);
                         if (slot >= slot_maps.size())
                             ABORT("SymFact V2 row-down demand slot is invalid.");
-                        if (row_down_compact)
+                        if (row_down_direct_recv)
+                        {
+                            if (slot >= slot_direct_blocks.size())
+                                ABORT("SymFact V2 row-down direct slot is invalid.");
+                            std::vector<SymV2RowDownDirectBlock> &blocks =
+                                slot_direct_blocks[slot];
+                            for (size_t ri = request_pos; ri < pos; ++ri)
+                            {
+                                SymV2RowDownDirectBlock block;
+                                block.gid = recv_payload[ri];
+                                block.chunk_pc = chunk_pc;
+                                blocks.push_back(block);
+                            }
+                        }
+                        else if (row_down_compact)
                         {
                             append_row_down_map_for_record(
                                 k0, chunk_pc, recv_payload.data() + request_pos,
@@ -4773,6 +4926,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 slot_maps[slot]);
                         }
                     }
+                }
+                if (row_down_direct_recv)
+                {
+                    for (size_t slot = 0; slot < slot_direct_blocks.size();
+                         ++slot)
+                        build_direct_row_down_slot_map(
+                            slot, slot_direct_blocks[slot], slot_maps[slot]);
                 }
 
                 symV2RowDownSendMapsHost.clear();

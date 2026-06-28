@@ -550,12 +550,14 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     const bool exact_partner_fragment_demand =
         exact_fragment_demand &&
         superlu_sym_v2_exact_partner_fragment_demand();
+    const bool row_down_plan_exchange =
+        pc_fragment_schur && superlu_sym_v2_row_l_plan_v2_exchange();
     const bool exact_row_fragment_demand =
         exact_fragment_demand &&
         superlu_sym_v2_exact_row_fragment_demand() &&
         !superlu_sym_v2_row_l_postsolve_send() &&
 // SYM_V2_PC2_PHASE4_GPU_EXACT_ROW_GUARD_BEGIN
-        !superlu_sym_v2_row_l_plan_v2_exchange();
+        !row_down_plan_exchange;
 // SYM_V2_PC2_PHASE4_GPU_EXACT_ROW_GUARD_END
     const bool row_l_direct_recv =
         pc_fragment_schur && superlu_sym_v2_row_l_direct_recv() &&
@@ -571,10 +573,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         ABORT("GPU3DV2_ROW_L_PACK_ALL_DEST requires GPU3DV2_ROW_L_SEPARATE_SEND_STAGING=1.");
 // SYM_V2_PC2_PHASE2_COMBO_GUARD_END
 // SYM_V2_PC2_PHASE4_PLAN_EXCHANGE_GUARD_BEGIN
-    if (pc_fragment_schur && superlu_sym_v2_pc_fragment_ldl_native() &&
-        superlu_sym_v2_row_l_plan_v2())
-        ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE is incompatible with GPU3DV2_ROW_L_PLAN_V2.");
-    if (pc_fragment_schur && superlu_sym_v2_row_l_plan_v2_exchange())
+    if (row_down_plan_exchange)
     {
         if (!superlu_sym_v2_row_l_plan_v2())
             ABORT("GPU3DV2_ROW_L_PLAN_V2_EXCHANGE requires GPU3DV2_ROW_L_PLAN_V2=1.");
