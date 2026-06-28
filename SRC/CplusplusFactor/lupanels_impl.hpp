@@ -1904,6 +1904,14 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             superlu_sym_v2_row_l_compressed_plan();
 // SYM_V2_PC2_SEGMENT_SENDMAP_FAST_END
 
+// SYM_V2_PC2_PARALLEL_SENDMAP_SETUP_BEGIN
+        const bool row_l_parallel_sendmap_setup =
+            symGPU3DVersion == 2 && Pr > 1 && Pc > 1 &&
+            superlu_sym_v2_pc_fragment_schur() &&
+            superlu_sym_v2_pc_fragment_ldl_native() &&
+            superlu_sym_v2_row_l_parallel_sendmap();
+// SYM_V2_PC2_PARALLEL_SENDMAP_SETUP_END
+
         dLocalLU_t *Llu = LUstructPtr->Llu;
         if (need_l2u_workspace)
         {
@@ -2127,56 +2135,60 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             std::vector<size_t> map_write_offsets =
                 symV2PartnerLMapOffsets;
             std::vector<size_t> meta_write_offsets(l2u_slots, 0);
-            std::vector<std::pair<int_t, int_t> > row_order;
-            for (int_t lk = 0; lk < local_cols; ++lk)
+// SYM_V2_PC2_PARALLEL_SENDMAP_FILL_BEGIN
+            if (row_l_parallel_sendmap_setup)
             {
-                int_t *lsub = Llu->Lrowind_bc_ptr[lk];
-                int_t *lloc = Llu->Lindval_loc_bc_ptr[lk];
-                if (lsub == NULL || lloc == NULL || lsub[0] <= 0)
-                    continue;
-
-                int_t jb = symV2PanelGid(lk);
-                if (jb >= nsupers)
-                    continue;
-
-                int_t nb;
-                int_t idx_i;
-                int_t idx_v;
-                if (myrow == symV2DiagRoot(jb))
+                auto build_partner_l_send_maps_for_lk =
+                    [&](int_t lk,
+                        std::vector<std::pair<int_t, int_t> > &row_order,
+                        std::vector<int_t> &row_pos_scratch,
+                        std::vector<int_t> &row_sorted_scratch)
                 {
-                    nb = lsub[0] - 1;
-                    idx_i = nb + 2;
-                    idx_v = 2 * nb + 3;
-                }
-                else
-                {
-                    nb = lsub[0];
-                    idx_i = nb;
-                    idx_v = 2 * nb;
-                }
-                if (nb <= 0)
-                    continue;
+                    int_t *lsub = Llu->Lrowind_bc_ptr[lk];
+                    int_t *lloc = Llu->Lindval_loc_bc_ptr[lk];
+                    if (lsub == NULL || lloc == NULL || lsub[0] <= 0)
+                        return;
 
-                int_t knsupc = SuperSize(jb);
-                int_t nsupr = lsub[1];
-                for (int_t lb = 0; lb < nb; ++lb)
-                {
-                    int_t luptr_tmp = lloc[lb + idx_v];
-                    int_t lptr_tmp = lloc[lb + idx_i];
-                    int_t ik = lsub[lptr_tmp];
-                    int ikcol = symV2PanelRoot(ik);
-                    if (ikcol < 0 || ikcol >= Pc)
-                        ABORT("SymFact V2 partner-L target process column is invalid.");
-                    int_t len = lsub[lptr_tmp + 1];
-                    if (len <= 0)
-                        continue;
-                    int_t fsupc = FstBlockC(ik);
+                    int_t jb = symV2PanelGid(lk);
+                    if (jb >= nsupers)
+                        return;
 
-// SYM_V2_PC2_SEGMENT_SENDMAP_BLOCK_ORDER_BEGIN
-                    const int_t *row_ids = lsub + lptr_tmp + 2;
-                    bool rows_already_sorted = row_l_segment_sendmap_setup;
-                    if (rows_already_sorted)
+                    int_t nb;
+                    int_t idx_i;
+                    int_t idx_v;
+                    if (myrow == symV2DiagRoot(jb))
                     {
+                        nb = lsub[0] - 1;
+                        idx_i = nb + 2;
+                        idx_v = 2 * nb + 3;
+                    }
+                    else
+                    {
+                        nb = lsub[0];
+                        idx_i = nb;
+                        idx_v = 2 * nb;
+                    }
+                    if (nb <= 0)
+                        return;
+
+                    int_t knsupc = SuperSize(jb);
+                    int_t nsupr = lsub[1];
+
+                    for (int_t lb = 0; lb < nb; ++lb)
+                    {
+                        int_t luptr_tmp = lloc[lb + idx_v];
+                        int_t lptr_tmp = lloc[lb + idx_i];
+                        int_t ik = lsub[lptr_tmp];
+                        int ikcol = symV2PanelRoot(ik);
+                        if (ikcol < 0 || ikcol >= Pc)
+                            ABORT("SymFact V2 parallel partner-L target process column is invalid.");
+                        int_t len = lsub[lptr_tmp + 1];
+                        if (len <= 0)
+                            continue;
+                        int_t fsupc = FstBlockC(ik);
+                        const int_t *row_ids = lsub + lptr_tmp + 2;
+
+                        bool rows_already_sorted = true;
                         for (int_t i = 1; i < len; ++i)
                         {
                             if (row_ids[i - 1] > row_ids[i])
@@ -2185,68 +2197,278 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 break;
                             }
                         }
-                    }
-                    if (!rows_already_sorted)
-                    {
-                        row_order.clear();
-                        row_order.reserve(static_cast<size_t>(len));
+
+                        bool rows_scatter_sorted = false;
+                        if (!rows_already_sorted)
+                        {
+                            int_t gsupc = SuperSize(ik);
+                            if (gsupc > 0)
+                            {
+                                row_pos_scratch.assign(
+                                    static_cast<size_t>(gsupc),
+                                    static_cast<int_t>(-1));
+                                bool scatter_ok = true;
+                                for (int_t i = 0; i < len; ++i)
+                                {
+                                    int_t local_row = row_ids[i] - fsupc;
+                                    if (local_row < 0 || local_row >= gsupc)
+                                    {
+                                        scatter_ok = false;
+                                        break;
+                                    }
+                                    if (row_pos_scratch[static_cast<size_t>(local_row)] !=
+                                        static_cast<int_t>(-1))
+                                    {
+                                        scatter_ok = false;
+                                        break;
+                                    }
+                                    row_pos_scratch[static_cast<size_t>(local_row)] = i;
+                                }
+                                if (scatter_ok)
+                                {
+                                    row_sorted_scratch.clear();
+                                    row_sorted_scratch.reserve(static_cast<size_t>(len));
+                                    for (int_t row = 0; row < gsupc; ++row)
+                                    {
+                                        if (row_pos_scratch[static_cast<size_t>(row)] !=
+                                            static_cast<int_t>(-1))
+                                            row_sorted_scratch.push_back(row);
+                                    }
+                                    if (row_sorted_scratch.size() !=
+                                        static_cast<size_t>(len))
+                                        ABORT("SymFact V2 parallel partner-L row-order scatter lost rows.");
+                                    rows_scatter_sorted = true;
+                                }
+                            }
+                        }
+
+                        if (!rows_already_sorted && !rows_scatter_sorted)
+                        {
+                            row_order.clear();
+                            row_order.reserve(static_cast<size_t>(len));
+                            for (int_t i = 0; i < len; ++i)
+                                row_order.push_back(std::make_pair(
+                                    row_ids[i] - fsupc, i));
+                            std::sort(row_order.begin(), row_order.end());
+                        }
+
+                        auto sorted_row_id = [&](int_t i) -> int_t
+                        {
+                            if (rows_already_sorted)
+                                return row_ids[i] - fsupc;
+                            if (rows_scatter_sorted)
+                                return row_sorted_scratch[static_cast<size_t>(i)];
+                            return row_order[static_cast<size_t>(i)].first;
+                        };
+                        auto sorted_src_row = [&](int_t i) -> int_t
+                        {
+                            if (rows_already_sorted)
+                                return i;
+                            if (rows_scatter_sorted)
+                            {
+                                int_t local_row =
+                                    row_sorted_scratch[static_cast<size_t>(i)];
+                                return row_pos_scratch[
+                                    static_cast<size_t>(local_row)];
+                            }
+                            return row_order[static_cast<size_t>(i)].second;
+                        };
+
+                        size_t flat = static_cast<size_t>(lk) *
+                                          static_cast<size_t>(Pc) +
+                                      static_cast<size_t>(ikcol);
+                        std::vector<int_t> &meta = symL2LSendMeta[flat];
+                        size_t meta_pos = meta_write_offsets[flat];
+                        if (meta_pos + static_cast<size_t>(len) + 2 >
+                            meta.size())
+                            ABORT("SymFact V2 parallel packed partner-L metadata overrun.");
+                        meta[meta_pos++] = ik;
+                        meta[meta_pos++] = len;
                         for (int_t i = 0; i < len; ++i)
-                            row_order.push_back(std::make_pair(
-                                row_ids[i] - fsupc, i));
-                        std::sort(row_order.begin(), row_order.end());
+                            meta[meta_pos++] = sorted_row_id(i);
+                        meta_write_offsets[flat] = meta_pos;
+
+                        size_t map_pos = map_write_offsets[flat];
+                        size_t map_end = symV2PartnerLMapOffsets[flat] +
+                                         map_counts[flat];
+                        size_t segment_map_offset = map_pos;
+                        size_t segment_map_count = xlu_checked_product(
+                            static_cast<size_t>(len),
+                            static_cast<size_t>(knsupc),
+                            "SymFact V2 parallel exact send map index segment");
+                        for (int_t j = 0; j < knsupc; ++j)
+                        {
+                            for (int_t i = 0; i < len; ++i)
+                            {
+                                if (map_pos >= map_end)
+                                    ABORT("SymFact V2 parallel packed partner-L send map overrun.");
+                                int_t src_row = sorted_src_row(i);
+                                symV2PartnerLPackedMaps[map_pos++] =
+                                    luptr_tmp + src_row + j * nsupr;
+                            }
+                        }
+                        if (map_pos != segment_map_offset + segment_map_count)
+                            ABORT("SymFact V2 parallel exact send map index segment size mismatch.");
+                        if (!symV2ExactSendSegments.empty())
+                        {
+                            SymV2ExactSendSegment segment;
+                            segment.gid = ik;
+                            segment.map_offset = segment_map_offset;
+                            segment.map_count = segment_map_count;
+                            symV2ExactSendSegments[flat].push_back(segment);
+                        }
+                        map_write_offsets[flat] = map_pos;
                     }
+                };
+
+#ifdef _OPENMP
+#pragma omp parallel
+                {
+                    std::vector<std::pair<int_t, int_t> > row_order;
+                    std::vector<int_t> row_pos_scratch;
+                    std::vector<int_t> row_sorted_scratch;
+#pragma omp for schedule(dynamic)
+                    for (int_t lk = 0; lk < local_cols; ++lk)
+                        build_partner_l_send_maps_for_lk(
+                            lk, row_order, row_pos_scratch,
+                            row_sorted_scratch);
+                }
+#else
+                std::vector<std::pair<int_t, int_t> > row_order;
+                std::vector<int_t> row_pos_scratch;
+                std::vector<int_t> row_sorted_scratch;
+                for (int_t lk = 0; lk < local_cols; ++lk)
+                    build_partner_l_send_maps_for_lk(
+                        lk, row_order, row_pos_scratch,
+                        row_sorted_scratch);
+#endif
+            }
+            else
+            {
+// SYM_V2_PC2_PARALLEL_SENDMAP_SERIAL_FALLBACK_BEGIN
+                std::vector<std::pair<int_t, int_t> > row_order;
+                for (int_t lk = 0; lk < local_cols; ++lk)
+                {
+                    int_t *lsub = Llu->Lrowind_bc_ptr[lk];
+                    int_t *lloc = Llu->Lindval_loc_bc_ptr[lk];
+                    if (lsub == NULL || lloc == NULL || lsub[0] <= 0)
+                        continue;
+
+                    int_t jb = symV2PanelGid(lk);
+                    if (jb >= nsupers)
+                        continue;
+
+                    int_t nb;
+                    int_t idx_i;
+                    int_t idx_v;
+                    if (myrow == symV2DiagRoot(jb))
+                    {
+                        nb = lsub[0] - 1;
+                        idx_i = nb + 2;
+                        idx_v = 2 * nb + 3;
+                    }
+                    else
+                    {
+                        nb = lsub[0];
+                        idx_i = nb;
+                        idx_v = 2 * nb;
+                    }
+                    if (nb <= 0)
+                        continue;
+
+                    int_t knsupc = SuperSize(jb);
+                    int_t nsupr = lsub[1];
+                    for (int_t lb = 0; lb < nb; ++lb)
+                    {
+                        int_t luptr_tmp = lloc[lb + idx_v];
+                        int_t lptr_tmp = lloc[lb + idx_i];
+                        int_t ik = lsub[lptr_tmp];
+                        int ikcol = symV2PanelRoot(ik);
+                        if (ikcol < 0 || ikcol >= Pc)
+                            ABORT("SymFact V2 partner-L target process column is invalid.");
+                        int_t len = lsub[lptr_tmp + 1];
+                        if (len <= 0)
+                            continue;
+                        int_t fsupc = FstBlockC(ik);
+
+// SYM_V2_PC2_SEGMENT_SENDMAP_BLOCK_ORDER_BEGIN
+                        const int_t *row_ids = lsub + lptr_tmp + 2;
+                        bool rows_already_sorted = row_l_segment_sendmap_setup;
+                        if (rows_already_sorted)
+                        {
+                            for (int_t i = 1; i < len; ++i)
+                            {
+                                if (row_ids[i - 1] > row_ids[i])
+                                {
+                                    rows_already_sorted = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!rows_already_sorted)
+                        {
+                            row_order.clear();
+                            row_order.reserve(static_cast<size_t>(len));
+                            for (int_t i = 0; i < len; ++i)
+                                row_order.push_back(std::make_pair(
+                                    row_ids[i] - fsupc, i));
+                            std::sort(row_order.begin(), row_order.end());
+                        }
 // SYM_V2_PC2_SEGMENT_SENDMAP_BLOCK_ORDER_END
 
-                    size_t flat = static_cast<size_t>(lk) *
-                                      static_cast<size_t>(Pc) +
-                                  static_cast<size_t>(ikcol);
-                    std::vector<int_t> &meta = symL2LSendMeta[flat];
-                    size_t meta_pos = meta_write_offsets[flat];
-                    if (meta_pos + static_cast<size_t>(len) + 2 >
-                        meta.size())
-                        ABORT("SymFact V2 packed partner-L metadata overrun.");
-                    meta[meta_pos++] = ik;
-                    meta[meta_pos++] = len;
-                    for (int_t i = 0; i < len; ++i)
-                        meta[meta_pos++] = rows_already_sorted
-                            ? row_ids[i] - fsupc
-                            : row_order[i].first;
-                    meta_write_offsets[flat] = meta_pos;
-
-                    size_t map_pos = map_write_offsets[flat];
-                    size_t map_end = symV2PartnerLMapOffsets[flat] +
-                                     map_counts[flat];
-                    size_t segment_map_offset = map_pos;
-                    size_t segment_map_count = xlu_checked_product(
-                        static_cast<size_t>(len),
-                        static_cast<size_t>(knsupc),
-                        "SymFact V2 exact send map index segment");
-                    for (int_t j = 0; j < knsupc; ++j)
-                    {
+                        size_t flat = static_cast<size_t>(lk) *
+                                          static_cast<size_t>(Pc) +
+                                      static_cast<size_t>(ikcol);
+                        std::vector<int_t> &meta = symL2LSendMeta[flat];
+                        size_t meta_pos = meta_write_offsets[flat];
+                        if (meta_pos + static_cast<size_t>(len) + 2 >
+                            meta.size())
+                            ABORT("SymFact V2 packed partner-L metadata overrun.");
+                        meta[meta_pos++] = ik;
+                        meta[meta_pos++] = len;
                         for (int_t i = 0; i < len; ++i)
+                            meta[meta_pos++] = rows_already_sorted
+                                ? row_ids[i] - fsupc
+                                : row_order[i].first;
+                        meta_write_offsets[flat] = meta_pos;
+
+                        size_t map_pos = map_write_offsets[flat];
+                        size_t map_end = symV2PartnerLMapOffsets[flat] +
+                                         map_counts[flat];
+                        size_t segment_map_offset = map_pos;
+                        size_t segment_map_count = xlu_checked_product(
+                            static_cast<size_t>(len),
+                            static_cast<size_t>(knsupc),
+                            "SymFact V2 exact send map index segment");
+                        for (int_t j = 0; j < knsupc; ++j)
                         {
-                            if (map_pos >= map_end)
-                                ABORT("SymFact V2 packed partner-L send map overrun.");
-                            int_t src_row = rows_already_sorted
-                                ? i
-                                : row_order[i].second;
-                            symV2PartnerLPackedMaps[map_pos++] =
-                                luptr_tmp + src_row + j * nsupr;
+                            for (int_t i = 0; i < len; ++i)
+                            {
+                                if (map_pos >= map_end)
+                                    ABORT("SymFact V2 packed partner-L send map overrun.");
+                                int_t src_row = rows_already_sorted
+                                    ? i
+                                    : row_order[i].second;
+                                symV2PartnerLPackedMaps[map_pos++] =
+                                    luptr_tmp + src_row + j * nsupr;
+                            }
                         }
+                        if (map_pos != segment_map_offset + segment_map_count)
+                            ABORT("SymFact V2 exact send map index segment size mismatch.");
+                        if (!symV2ExactSendSegments.empty())
+                        {
+                            SymV2ExactSendSegment segment;
+                            segment.gid = ik;
+                            segment.map_offset = segment_map_offset;
+                            segment.map_count = segment_map_count;
+                            symV2ExactSendSegments[flat].push_back(segment);
+                        }
+                        map_write_offsets[flat] = map_pos;
                     }
-                    if (map_pos != segment_map_offset + segment_map_count)
-                        ABORT("SymFact V2 exact send map index segment size mismatch.");
-                    if (!symV2ExactSendSegments.empty())
-                    {
-                        SymV2ExactSendSegment segment;
-                        segment.gid = ik;
-                        segment.map_offset = segment_map_offset;
-                        segment.map_count = segment_map_count;
-                        symV2ExactSendSegments[flat].push_back(segment);
-                    }
-                    map_write_offsets[flat] = map_pos;
                 }
+// SYM_V2_PC2_PARALLEL_SENDMAP_SERIAL_FALLBACK_END
             }
+// SYM_V2_PC2_PARALLEL_SENDMAP_FILL_END
 
             for (size_t flat = 0; flat < l2u_slots; ++flat)
             {
