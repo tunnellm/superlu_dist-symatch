@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <cstdio>
+#include <utility>
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
 #ifdef HAVE_CUDA
@@ -740,6 +741,15 @@ struct xLUstruct_t
         SYM_GPU3D_T_INITIAL_FACTOR_DISPATCH,
         SYM_GPU3D_T_INITIAL_PANEL_BCAST,
         SYM_GPU3D_T_FACTOR_TREE_WALL,
+        SYM_GPU3D_T_PCFRAG_ASYNC_ISSUE_WALL,
+        SYM_GPU3D_T_PCFRAG_ASYNC_PROGRESS_WALL,
+        SYM_GPU3D_T_PCFRAG_ASYNC_BLOCKING_COMPLETE_WALL,
+        SYM_GPU3D_T_PCFRAG_ASYNC_RELEASE_SYNC_WALL,
+        SYM_GPU3D_T_PCFRAG_ASYNC_EVENT_WAIT,
+        SYM_GPU3D_T_PARTNER_LFRAG_MPI_RECV_TEST,
+        SYM_GPU3D_T_ROW_LFRAG_MPI_RECV_TEST,
+        SYM_GPU3D_T_PARTNER_LFRAG_MPI_SEND_TEST,
+        SYM_GPU3D_T_ROW_LFRAG_MPI_SEND_TEST,
         SYM_GPU3D_T_COUNT
     };
 
@@ -771,6 +781,15 @@ struct xLUstruct_t
         SYM_GPU3D_S_SCHED_READY_BCASTS,
         SYM_GPU3D_S_SCHED_MAX_WINDOW,
         SYM_GPU3D_S_SCHED_MAX_NUM_LA,
+        SYM_GPU3D_S_PCFRAG_ASYNC_PANELS_ISSUED,
+        SYM_GPU3D_S_PCFRAG_ASYNC_COMPLETED_PROGRESS,
+        SYM_GPU3D_S_PCFRAG_ASYNC_COMPLETED_BLOCKING,
+        SYM_GPU3D_S_PCFRAG_ASYNC_COMPLETED_FINAL_SYNC,
+        SYM_GPU3D_S_PCFRAG_ASYNC_STREAM_SCRATCH_RELEASED,
+        SYM_GPU3D_S_PCFRAG_ASYNC_PARTNER_RECV_POSTS,
+        SYM_GPU3D_S_PCFRAG_ASYNC_ROW_RECV_POSTS,
+        SYM_GPU3D_S_PCFRAG_ASYNC_PARTNER_SEND_POSTS,
+        SYM_GPU3D_S_PCFRAG_ASYNC_ROW_SEND_POSTS,
         SYM_GPU3D_S_COUNT
     };
 
@@ -989,24 +1008,48 @@ struct xLUstruct_t
     };
     std::vector<SymV2RowExchangeState> symV2RowExchangeStates;
 // SYM_V2_PC2_PHASE6_XLU_EXCHANGE_STATE_END
+    // SYM_V2_PCFRAG_ASYNC_PROGRESS_STATE_BEGIN
     struct SymV2PcFragAsyncState
     {
         int_t active_k;
         int stream_offset;
         int active;
+        int progress_path;
         int partner_recvs_posted;
         int row_recvs_posted;
         int partner_source_issued;
         int row_source_issued;
         int partner_recv_total;
+        int partner_send_total;
         int row_recv_total;
         int row_send_total;
         int completed;
+        int send_d2h_event_recorded;
+        int send_stage_ready;
+        int sends_posted;
+        int partner_recvs_done;
+        int row_recvs_done;
+        int recv_h2d_issued;
+        int fragment_ready_event_recorded;
+        int stream_scratch_released;
+        int consumer_completed;
+        int completion_counted;
         Ftype *partner_recv_host_base;
+        Ftype *partner_send_host_base;
         Ftype *row_recv_host_base;
         Ftype *row_send_host_base;
+        size_t partner_recv_host_capacity;
+        size_t partner_send_host_capacity;
+        size_t row_recv_host_capacity;
+        size_t row_send_host_capacity;
+        int partner_recv_host_owned;
+        int partner_send_host_owned;
+        int row_recv_host_owned;
+        int row_send_host_owned;
         int partner_self_pr;
         int partner_self_count;
+        int_t partner_empty_header[LPANEL_HEADER_SIZE];
+        int_t row_empty_header[LPANEL_HEADER_SIZE];
         std::vector<Ftype> partner_recv_values;
         std::vector<Ftype> partner_send_values;
         std::vector<Ftype> partner_self_values;
@@ -1025,34 +1068,255 @@ struct xLUstruct_t
         std::vector<int> row_send_counts;
         std::vector<int> row_send_offsets;
         std::vector<MPI_Request> row_send_reqs;
+#ifdef HAVE_CUDA
+        int_t *partner_index_device;
+        Ftype *partner_value_device;
+        Ftype *partner_stage_device;
+        Ftype *partner_self_device;
+        int_t *row_index_device;
+        Ftype *row_value_device;
+        size_t partner_index_capacity;
+        size_t partner_value_capacity;
+        size_t partner_stage_capacity;
+        size_t partner_self_capacity;
+        size_t row_index_capacity;
+        size_t row_value_capacity;
+        cudaEvent_t send_d2h_done_event;
+        cudaEvent_t fragment_ready_event;
+#endif
 
         SymV2PcFragAsyncState()
-            : active_k(-1), stream_offset(-1), active(0),
+            : active_k(-1), stream_offset(-1), active(0), progress_path(0),
               partner_recvs_posted(0), row_recvs_posted(0),
               partner_source_issued(0), row_source_issued(0),
-              partner_recv_total(0), row_recv_total(0), row_send_total(0),
-              completed(0),
-              partner_recv_host_base(NULL), row_recv_host_base(NULL),
-              row_send_host_base(NULL), partner_self_pr(-1),
-              partner_self_count(0) {}
+              partner_recv_total(0), partner_send_total(0),
+              row_recv_total(0), row_send_total(0), completed(0),
+              send_d2h_event_recorded(0), send_stage_ready(0),
+              sends_posted(0), partner_recvs_done(1), row_recvs_done(1),
+              recv_h2d_issued(0), fragment_ready_event_recorded(0),
+              stream_scratch_released(0), consumer_completed(0),
+              completion_counted(0), partner_recv_host_base(NULL),
+              partner_send_host_base(NULL), row_recv_host_base(NULL),
+              row_send_host_base(NULL), partner_recv_host_capacity(0),
+              partner_send_host_capacity(0), row_recv_host_capacity(0),
+              row_send_host_capacity(0), partner_recv_host_owned(0),
+              partner_send_host_owned(0), row_recv_host_owned(0),
+              row_send_host_owned(0), partner_self_pr(-1),
+              partner_self_count(0)
+#ifdef HAVE_CUDA
+              , partner_index_device(NULL), partner_value_device(NULL),
+              partner_stage_device(NULL), partner_self_device(NULL),
+              row_index_device(NULL), row_value_device(NULL),
+              partner_index_capacity(0), partner_value_capacity(0),
+              partner_stage_capacity(0), partner_self_capacity(0),
+              row_index_capacity(0), row_value_capacity(0),
+              send_d2h_done_event(NULL), fragment_ready_event(NULL)
+#endif
+        {
+            for (int i = 0; i < LPANEL_HEADER_SIZE; ++i)
+            {
+                partner_empty_header[i] = 0;
+                row_empty_header[i] = 0;
+            }
+        }
+
+        ~SymV2PcFragAsyncState()
+        {
+            releaseOwnedBuffers();
+        }
+
+        SymV2PcFragAsyncState(const SymV2PcFragAsyncState &) = delete;
+        SymV2PcFragAsyncState &operator=(const SymV2PcFragAsyncState &) = delete;
+
+        SymV2PcFragAsyncState(SymV2PcFragAsyncState &&other) noexcept
+            : SymV2PcFragAsyncState()
+        {
+            swapWith(other);
+        }
+
+        SymV2PcFragAsyncState &operator=(SymV2PcFragAsyncState &&other) noexcept
+        {
+            if (this != &other)
+            {
+                reset();
+                swapWith(other);
+            }
+            return *this;
+        }
+
+        void swapWith(SymV2PcFragAsyncState &other) noexcept
+        {
+            using std::swap;
+            swap(active_k, other.active_k);
+            swap(stream_offset, other.stream_offset);
+            swap(active, other.active);
+            swap(progress_path, other.progress_path);
+            swap(partner_recvs_posted, other.partner_recvs_posted);
+            swap(row_recvs_posted, other.row_recvs_posted);
+            swap(partner_source_issued, other.partner_source_issued);
+            swap(row_source_issued, other.row_source_issued);
+            swap(partner_recv_total, other.partner_recv_total);
+            swap(partner_send_total, other.partner_send_total);
+            swap(row_recv_total, other.row_recv_total);
+            swap(row_send_total, other.row_send_total);
+            swap(completed, other.completed);
+            swap(send_d2h_event_recorded, other.send_d2h_event_recorded);
+            swap(send_stage_ready, other.send_stage_ready);
+            swap(sends_posted, other.sends_posted);
+            swap(partner_recvs_done, other.partner_recvs_done);
+            swap(row_recvs_done, other.row_recvs_done);
+            swap(recv_h2d_issued, other.recv_h2d_issued);
+            swap(fragment_ready_event_recorded,
+                 other.fragment_ready_event_recorded);
+            swap(stream_scratch_released, other.stream_scratch_released);
+            swap(consumer_completed, other.consumer_completed);
+            swap(completion_counted, other.completion_counted);
+            swap(partner_recv_host_base, other.partner_recv_host_base);
+            swap(partner_send_host_base, other.partner_send_host_base);
+            swap(row_recv_host_base, other.row_recv_host_base);
+            swap(row_send_host_base, other.row_send_host_base);
+            swap(partner_recv_host_capacity,
+                 other.partner_recv_host_capacity);
+            swap(partner_send_host_capacity,
+                 other.partner_send_host_capacity);
+            swap(row_recv_host_capacity, other.row_recv_host_capacity);
+            swap(row_send_host_capacity, other.row_send_host_capacity);
+            swap(partner_recv_host_owned, other.partner_recv_host_owned);
+            swap(partner_send_host_owned, other.partner_send_host_owned);
+            swap(row_recv_host_owned, other.row_recv_host_owned);
+            swap(row_send_host_owned, other.row_send_host_owned);
+            swap(partner_self_pr, other.partner_self_pr);
+            swap(partner_self_count, other.partner_self_count);
+            for (int i = 0; i < LPANEL_HEADER_SIZE; ++i)
+            {
+                swap(partner_empty_header[i], other.partner_empty_header[i]);
+                swap(row_empty_header[i], other.row_empty_header[i]);
+            }
+            partner_recv_values.swap(other.partner_recv_values);
+            partner_send_values.swap(other.partner_send_values);
+            partner_self_values.swap(other.partner_self_values);
+            row_recv_values.swap(other.row_recv_values);
+            row_send_values.swap(other.row_send_values);
+            row_self_values.swap(other.row_self_values);
+            partner_recv_sizes.swap(other.partner_recv_sizes);
+            partner_recv_offsets.swap(other.partner_recv_offsets);
+            partner_recv_peers.swap(other.partner_recv_peers);
+            partner_send_counts.swap(other.partner_send_counts);
+            partner_send_offsets.swap(other.partner_send_offsets);
+            partner_recv_reqs.swap(other.partner_recv_reqs);
+            partner_send_reqs.swap(other.partner_send_reqs);
+            row_recv_offsets.swap(other.row_recv_offsets);
+            row_recv_reqs.swap(other.row_recv_reqs);
+            row_send_counts.swap(other.row_send_counts);
+            row_send_offsets.swap(other.row_send_offsets);
+            row_send_reqs.swap(other.row_send_reqs);
+#ifdef HAVE_CUDA
+            swap(partner_index_device, other.partner_index_device);
+            swap(partner_value_device, other.partner_value_device);
+            swap(partner_stage_device, other.partner_stage_device);
+            swap(partner_self_device, other.partner_self_device);
+            swap(row_index_device, other.row_index_device);
+            swap(row_value_device, other.row_value_device);
+            swap(partner_index_capacity, other.partner_index_capacity);
+            swap(partner_value_capacity, other.partner_value_capacity);
+            swap(partner_stage_capacity, other.partner_stage_capacity);
+            swap(partner_self_capacity, other.partner_self_capacity);
+            swap(row_index_capacity, other.row_index_capacity);
+            swap(row_value_capacity, other.row_value_capacity);
+            swap(send_d2h_done_event, other.send_d2h_done_event);
+            swap(fragment_ready_event, other.fragment_ready_event);
+#endif
+        }
+
+        void releaseOwnedBuffers()
+        {
+#ifdef HAVE_CUDA
+            if (partner_recv_host_owned && partner_recv_host_base != NULL)
+                (void)cudaFreeHost(partner_recv_host_base);
+            if (partner_send_host_owned && partner_send_host_base != NULL)
+                (void)cudaFreeHost(partner_send_host_base);
+            if (row_recv_host_owned && row_recv_host_base != NULL)
+                (void)cudaFreeHost(row_recv_host_base);
+            if (row_send_host_owned && row_send_host_base != NULL)
+                (void)cudaFreeHost(row_send_host_base);
+            if (partner_index_device != NULL)
+                (void)cudaFree(partner_index_device);
+            if (partner_value_device != NULL)
+                (void)cudaFree(partner_value_device);
+            if (partner_stage_device != NULL)
+                (void)cudaFree(partner_stage_device);
+            if (partner_self_device != NULL)
+                (void)cudaFree(partner_self_device);
+            if (row_index_device != NULL)
+                (void)cudaFree(row_index_device);
+            if (row_value_device != NULL)
+                (void)cudaFree(row_value_device);
+            if (send_d2h_done_event != NULL)
+                (void)cudaEventDestroy(send_d2h_done_event);
+            if (fragment_ready_event != NULL)
+                (void)cudaEventDestroy(fragment_ready_event);
+            partner_index_device = NULL;
+            partner_value_device = NULL;
+            partner_stage_device = NULL;
+            partner_self_device = NULL;
+            row_index_device = NULL;
+            row_value_device = NULL;
+            partner_index_capacity = 0;
+            partner_value_capacity = 0;
+            partner_stage_capacity = 0;
+            partner_self_capacity = 0;
+            row_index_capacity = 0;
+            row_value_capacity = 0;
+            send_d2h_done_event = NULL;
+            fragment_ready_event = NULL;
+#endif
+            partner_recv_host_base = NULL;
+            partner_send_host_base = NULL;
+            row_recv_host_base = NULL;
+            row_send_host_base = NULL;
+            partner_recv_host_capacity = 0;
+            partner_send_host_capacity = 0;
+            row_recv_host_capacity = 0;
+            row_send_host_capacity = 0;
+            partner_recv_host_owned = 0;
+            partner_send_host_owned = 0;
+            row_recv_host_owned = 0;
+            row_send_host_owned = 0;
+        }
+
         void reset()
         {
+            releaseOwnedBuffers();
             active_k = -1;
             stream_offset = -1;
             active = 0;
+            progress_path = 0;
             partner_recvs_posted = 0;
             row_recvs_posted = 0;
             partner_source_issued = 0;
             row_source_issued = 0;
             partner_recv_total = 0;
+            partner_send_total = 0;
             row_recv_total = 0;
             row_send_total = 0;
             completed = 0;
-            partner_recv_host_base = NULL;
-            row_recv_host_base = NULL;
-            row_send_host_base = NULL;
+            send_d2h_event_recorded = 0;
+            send_stage_ready = 0;
+            sends_posted = 0;
+            partner_recvs_done = 1;
+            row_recvs_done = 1;
+            recv_h2d_issued = 0;
+            fragment_ready_event_recorded = 0;
+            stream_scratch_released = 0;
+            consumer_completed = 0;
+            completion_counted = 0;
             partner_self_pr = -1;
             partner_self_count = 0;
+            for (int i = 0; i < LPANEL_HEADER_SIZE; ++i)
+            {
+                partner_empty_header[i] = 0;
+                row_empty_header[i] = 0;
+            }
             std::vector<Ftype>().swap(partner_recv_values);
             std::vector<Ftype>().swap(partner_send_values);
             std::vector<Ftype>().swap(partner_self_values);
@@ -1073,6 +1337,7 @@ struct xLUstruct_t
             row_send_reqs.clear();
         }
     };
+    // SYM_V2_PCFRAG_ASYNC_PROGRESS_STATE_END
     std::vector<SymV2PcFragAsyncState> symV2PcFragAsyncStates;
     std::vector<int_t> symV2PcFragAsyncStreamOwner;
 
@@ -1697,6 +1962,15 @@ struct xLUstruct_t
     int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeIssueGPU(int_t k, int_t stream_offset);
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_DECL_BEGIN
+    int_t dSymV2LFragmentExchangeIssueProgressGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeProgressGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeProgressAllGPU();
+    int_t dSymV2LFragmentExchangeCompleteProgressGPU(
+        int_t k, int_t stream_offset, int final_sync);
+    int_t dSymV2LFragmentExchangeFinalSyncGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeReleaseProgressGPU(int_t k, int_t stream_offset);
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_DECL_END
     int_t dSymV2LFragmentExchangeCompleteGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeReleaseGPU(int_t k, int_t stream_offset);
     bool symV2UsePcFragmentSchurPanel(int_t k) const;

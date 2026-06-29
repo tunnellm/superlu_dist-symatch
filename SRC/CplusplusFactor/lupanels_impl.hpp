@@ -558,7 +558,16 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "sched_final_sync_bookkeep",
         "initial_factor_dispatch",
         "initial_panel_bcast",
-        "factor_tree_wall"
+        "factor_tree_wall",
+        "pcfrag_async_issue_wall",
+        "pcfrag_async_progress_wall",
+        "pcfrag_async_blocking_complete_wall",
+        "pcfrag_async_release_sync_wall",
+        "pcfrag_async_event_wait",
+        "partner_lfrag_mpi_recv_test",
+        "row_lfrag_mpi_recv_test",
+        "partner_lfrag_mpi_send_test",
+        "row_lfrag_mpi_send_test"
     };
     static const char *labels_v2[SYM_GPU3D_T_COUNT] = {
         "lfrag_start",
@@ -626,7 +635,16 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "sched_final_sync_bookkeep",
         "initial_factor_dispatch",
         "initial_panel_bcast",
-        "factor_tree_wall"
+        "factor_tree_wall",
+        "pcfrag_async_issue_wall",
+        "pcfrag_async_progress_wall",
+        "pcfrag_async_blocking_complete_wall",
+        "pcfrag_async_release_sync_wall",
+        "pcfrag_async_event_wait",
+        "partner_lfrag_mpi_recv_test",
+        "row_lfrag_mpi_recv_test",
+        "partner_lfrag_mpi_send_test",
+        "row_lfrag_mpi_send_test"
     };
     static const char *stat_labels_v1[SYM_GPU3D_S_COUNT] = {
         "factor_trees",
@@ -654,7 +672,16 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "sched_window_nodes",
         "sched_ready_bcasts",
         "sched_max_window",
-        "sched_max_num_la"
+        "sched_max_num_la",
+        "pcfrag_async_panels_issued",
+        "pcfrag_async_completed_progress",
+        "pcfrag_async_completed_blocking",
+        "pcfrag_async_completed_final_sync",
+        "pcfrag_async_stream_scratch_released",
+        "pcfrag_async_partner_recv_posts",
+        "pcfrag_async_row_recv_posts",
+        "pcfrag_async_partner_send_posts",
+        "pcfrag_async_row_send_posts"
     };
     static const char *stat_labels_v2[SYM_GPU3D_S_COUNT] = {
         "factor_trees",
@@ -682,7 +709,16 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "sched_window_nodes",
         "sched_ready_bcasts",
         "sched_max_window",
-        "sched_max_num_la"
+        "sched_max_num_la",
+        "pcfrag_async_panels_issued",
+        "pcfrag_async_completed_progress",
+        "pcfrag_async_completed_blocking",
+        "pcfrag_async_completed_final_sync",
+        "pcfrag_async_stream_scratch_released",
+        "pcfrag_async_partner_recv_posts",
+        "pcfrag_async_row_recv_posts",
+        "pcfrag_async_partner_send_posts",
+        "pcfrag_async_row_send_posts"
     };
 
     int mpi_initialized = 0;

@@ -2714,10 +2714,34 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateDualFragmentsGPU(
     if (row_frag.empty() || col_frag.empty())
         return 0;
 
-    int_t *row_idx = A_gpu.symV2RowFragIdxRecvBufs[streamId];
-    Ftype *row_val = A_gpu.symV2RowFragValRecvBufs[streamId];
-    int_t *col_idx = A_gpu.symPartnerLidxRecvBufs[streamId];
-    Ftype *col_val = A_gpu.symPartnerLvalRecvBufs[streamId];
+    // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_BEGIN
+    SymV2PcFragAsyncState *pcfrag_async_state = NULL;
+    if (superlu_sym_v2_pcfrag_async_progress() &&
+        static_cast<size_t>(k) < symV2PcFragAsyncStates.size())
+    {
+        SymV2PcFragAsyncState &candidate =
+            symV2PcFragAsyncStates[static_cast<size_t>(k)];
+        if (candidate.active && candidate.progress_path)
+        {
+            if (!candidate.completed)
+                ABORT("SymFact V2 Pc-fragment progress lookahead consumed fragments before CompleteGPU.");
+            pcfrag_async_state = &candidate;
+        }
+    }
+
+    int_t *row_idx = pcfrag_async_state != NULL
+        ? pcfrag_async_state->row_index_device
+        : A_gpu.symV2RowFragIdxRecvBufs[streamId];
+    Ftype *row_val = pcfrag_async_state != NULL
+        ? pcfrag_async_state->row_value_device
+        : A_gpu.symV2RowFragValRecvBufs[streamId];
+    int_t *col_idx = pcfrag_async_state != NULL
+        ? pcfrag_async_state->partner_index_device
+        : A_gpu.symPartnerLidxRecvBufs[streamId];
+    Ftype *col_val = pcfrag_async_state != NULL
+        ? pcfrag_async_state->partner_value_device
+        : A_gpu.symPartnerLvalRecvBufs[streamId];
+    // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_END
     if (row_idx == NULL || row_val == NULL || col_idx == NULL || col_val == NULL)
         ABORT("SymFact V2 Pc-fragment GPU buffers are missing.");
 
@@ -2777,10 +2801,34 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneDualFragmentsGPU(
     if (row_frag.empty() || col_frag.empty())
         return 0;
 
-    int_t *row_idx = A_gpu.symV2RowFragIdxRecvBufs[streamId];
-    Ftype *row_val = A_gpu.symV2RowFragValRecvBufs[streamId];
-    int_t *col_idx = A_gpu.symPartnerLidxRecvBufs[streamId];
-    Ftype *col_val = A_gpu.symPartnerLvalRecvBufs[streamId];
+    // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_BEGIN
+    SymV2PcFragAsyncState *pcfrag_async_state = NULL;
+    if (superlu_sym_v2_pcfrag_async_progress() &&
+        static_cast<size_t>(k) < symV2PcFragAsyncStates.size())
+    {
+        SymV2PcFragAsyncState &candidate =
+            symV2PcFragAsyncStates[static_cast<size_t>(k)];
+        if (candidate.active && candidate.progress_path)
+        {
+            if (!candidate.completed)
+                ABORT("SymFact V2 Pc-fragment progress lookahead consumed fragments before CompleteGPU.");
+            pcfrag_async_state = &candidate;
+        }
+    }
+
+    int_t *row_idx = pcfrag_async_state != NULL
+        ? pcfrag_async_state->row_index_device
+        : A_gpu.symV2RowFragIdxRecvBufs[streamId];
+    Ftype *row_val = pcfrag_async_state != NULL
+        ? pcfrag_async_state->row_value_device
+        : A_gpu.symV2RowFragValRecvBufs[streamId];
+    int_t *col_idx = pcfrag_async_state != NULL
+        ? pcfrag_async_state->partner_index_device
+        : A_gpu.symPartnerLidxRecvBufs[streamId];
+    Ftype *col_val = pcfrag_async_state != NULL
+        ? pcfrag_async_state->partner_value_device
+        : A_gpu.symPartnerLvalRecvBufs[streamId];
+    // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_END
     if (row_idx == NULL || row_val == NULL || col_idx == NULL || col_val == NULL)
         ABORT("SymFact V2 Pc-fragment GPU buffers are missing.");
 

@@ -466,7 +466,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                     superlu_sym_v2_row_l_lazy_sendmap() &&
                     !superlu_sym_v2_row_l_lazy_warp_pack() &&
                     (superlu_sym_v2_pcfrag_async_pipeline_stage2b() ||
-                     superlu_sym_v2_pcfrag_async_pipeline_stage3()); // SYM_V2_PC2_ASYNC_STAGE3_PANEL_ISSUE
+                     superlu_sym_v2_pcfrag_async_pipeline_stage3() ||
+                     superlu_sym_v2_pcfrag_async_progress()); // SYM_V2_PC2_ASYNC_PROGRESS_PANEL_ISSUE
                 if (pcfrag_async_stage2b_issue)
                     dSymV2LFragmentExchangeIssueGPU(k, offset);
                 else
@@ -491,7 +492,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 (superlu_sym_v2_pcfrag_async_exchange() ||
                  superlu_sym_v2_pcfrag_async_pipeline() ||
                  superlu_sym_v2_pcfrag_async_pipeline_stage2b() ||
-                 superlu_sym_v2_pcfrag_async_pipeline_stage3()); // SYM_V2_PC2_ASYNC_STAGE3_PANEL_READY
+                 superlu_sym_v2_pcfrag_async_pipeline_stage3() ||
+                 superlu_sym_v2_pcfrag_async_progress()); // SYM_V2_PC2_ASYNC_PROGRESS_PANEL_READY
             if (superlu_sym_v2_async_factor() &&
                 pcfrag_async_exchange_panel_ready &&
                 mycol == sym_panel_root &&
@@ -932,6 +934,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 (symGPU3DVersion == 2) ? this : NULL,
                 SYM_V2_FACTOR_INITIAL_PANEL_BCAST);
             dPanelBcastGPU(k, offset);
+            // SYM_V2_PCFRAG_ASYNC_PROGRESS_AFTER_INITIAL_BCAST
+            dSymV2LFragmentExchangeProgressAllGPU();
             donePanelBcast[k0] = 1;
         }
     } /*for (int k0 = k_st; k0 < SUPERLU_MIN(k_end, k_st + numLA); ++k0)*/
@@ -959,8 +963,12 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             sym_sched_t = SuperLU_timer_();
         }
 #endif
+        // SYM_V2_PCFRAG_ASYNC_PROGRESS_SCHED_BEGIN
+        dSymV2LFragmentExchangeProgressAllGPU();
+        // SYM_V2_PCFRAG_ASYNC_PROGRESS_SCHED_END
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
         {
+            dSymV2LFragmentExchangeProgressAllGPU();
             SymV2FactorProfileScope sym_v2_sched_scope(
                 (symGPU3DVersion == 2) ? this : NULL,
                 SYM_V2_FACTOR_SCHED_LOOKAHEAD_DISPATCH);
@@ -1007,7 +1015,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
                     SymV2FactorProfileScope sym_v2_la_scope(
                         this, SYM_V2_FACTOR_LOOKAHEAD_UPDATE);
-                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_STAGE2B_LOOKAHEAD_COMPLETE
+                    dSymV2LFragmentExchangeProgressAllGPU();
+                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_PROGRESS_LOOKAHEAD_COMPLETE
                     dSymLookAheadUpdateWithLFragmentsGPU(offset, k, k_parent,
                                                          k_lpanel);
                 }
@@ -1147,6 +1156,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                                 (symGPU3DVersion == 2) ? this : NULL,
                                 SYM_V2_FACTOR_PARENT_FACTOR);
 	                        dDFactPSolveGPU(k_parent, dOffset, dFBufs);
+                            // SYM_V2_PCFRAG_ASYNC_PROGRESS_AFTER_PARENT_FACTOR
+                            dSymV2LFragmentExchangeProgressAllGPU();
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                             if (sym_timing_enabled)
                             {
@@ -1190,7 +1201,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
                     SymV2FactorProfileScope sym_v2_exclude_scope(
                         this, SYM_V2_FACTOR_EXCLUDE_UPDATE);
-                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_STAGE2B_EXCLUDE_COMPLETE
+                    dSymV2LFragmentExchangeProgressAllGPU();
+                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_PROGRESS_EXCLUDE_COMPLETE
                     dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(offset, k,
                                                                    k_parent,
                                                                    k_lpanel);
@@ -1270,6 +1282,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 }
 #endif
                 dPanelBcastGPU(k_next, offset_next);
+                // SYM_V2_PCFRAG_ASYNC_PROGRESS_AFTER_ADVANCE_BCAST
+                dSymV2LFragmentExchangeProgressAllGPU();
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 if (sym_timing_enabled)
                 {
@@ -1344,7 +1358,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 superlu_sym_v2_row_l_lazy_sendmap() &&
                 !superlu_sym_v2_row_l_lazy_warp_pack() &&
                 (superlu_sym_v2_pcfrag_async_pipeline_stage2b() ||
-                 superlu_sym_v2_pcfrag_async_pipeline_stage3()); // SYM_V2_PC2_ASYNC_STAGE3_FINAL_COMPLETE
+                 superlu_sym_v2_pcfrag_async_pipeline_stage3() ||
+                 superlu_sym_v2_pcfrag_async_progress()); // SYM_V2_PC2_ASYNC_PROGRESS_FINAL_COMPLETE
             if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
                 pcfrag_stage2b_final_complete ||
                 (symGPU3DVersion != 2 &&
@@ -1358,7 +1373,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 }
 #endif
                 if (symGPU3DVersion == 2)
-                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_STAGE2B_FINAL_COMPLETE
+                    dSymV2LFragmentExchangeFinalSyncGPU(k, offset); // SYM_V2_PC2_ASYNC_PROGRESS_FINAL_COMPLETE
                 gpuErrchk(cudaStreamSynchronize(A_gpu.cuStreams[offset]));
                 if (symGPU3DVersion == 2)
                     dSymV2LFragmentExchangeReleaseGPU(k, offset);
