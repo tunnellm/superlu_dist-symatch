@@ -6985,6 +6985,36 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
             ABORT("SymFact V2 Pc-fragment async state is still active during free.");
     }
     symV2PcFragAsyncStates.clear();
+// SYM_V2_PC2_STAGE3_FREE_PINNED_ASYNC_POOLS_BEGIN
+    for (size_t px = 0; px < symV2PcFragAsyncPinnedPools.size(); ++px)
+    {
+        if (symV2PcFragAsyncPinnedPools[px].partner_recv_pinned != NULL)
+        {
+            gpuErrchk(cudaFreeHost(symV2PcFragAsyncPinnedPools[px].partner_recv_pinned));
+            symV2PcFragAsyncPinnedPools[px].partner_recv_pinned = NULL;
+            symV2PcFragAsyncPinnedPools[px].partner_recv_pinned_capacity = 0;
+        }
+        if (symV2PcFragAsyncPinnedPools[px].partner_send_pinned != NULL)
+        {
+            gpuErrchk(cudaFreeHost(symV2PcFragAsyncPinnedPools[px].partner_send_pinned));
+            symV2PcFragAsyncPinnedPools[px].partner_send_pinned = NULL;
+            symV2PcFragAsyncPinnedPools[px].partner_send_pinned_capacity = 0;
+        }
+        if (symV2PcFragAsyncPinnedPools[px].row_recv_pinned != NULL)
+        {
+            gpuErrchk(cudaFreeHost(symV2PcFragAsyncPinnedPools[px].row_recv_pinned));
+            symV2PcFragAsyncPinnedPools[px].row_recv_pinned = NULL;
+            symV2PcFragAsyncPinnedPools[px].row_recv_pinned_capacity = 0;
+        }
+        if (symV2PcFragAsyncPinnedPools[px].row_send_pinned != NULL)
+        {
+            gpuErrchk(cudaFreeHost(symV2PcFragAsyncPinnedPools[px].row_send_pinned));
+            symV2PcFragAsyncPinnedPools[px].row_send_pinned = NULL;
+            symV2PcFragAsyncPinnedPools[px].row_send_pinned_capacity = 0;
+        }
+    }
+    symV2PcFragAsyncPinnedPools.clear();
+// SYM_V2_PC2_STAGE3_FREE_PINNED_ASYNC_POOLS_END
     symV2PcFragAsyncStreamOwner.clear();
 // SYM_V2_PC2_STAGE2B_FREE_ASYNC_STATES_END
 

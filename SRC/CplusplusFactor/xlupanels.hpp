@@ -1076,6 +1076,27 @@ struct xLUstruct_t
     std::vector<SymV2PcFragAsyncState> symV2PcFragAsyncStates;
     std::vector<int_t> symV2PcFragAsyncStreamOwner;
 
+    struct SymV2PcFragAsyncPinnedPool
+    {
+        Ftype *partner_recv_pinned;
+        Ftype *partner_send_pinned;
+        Ftype *row_recv_pinned;
+        Ftype *row_send_pinned;
+        size_t partner_recv_pinned_capacity;
+        size_t partner_send_pinned_capacity;
+        size_t row_recv_pinned_capacity;
+        size_t row_send_pinned_capacity;
+
+        SymV2PcFragAsyncPinnedPool()
+            : partner_recv_pinned(NULL), partner_send_pinned(NULL),
+              row_recv_pinned(NULL), row_send_pinned(NULL),
+              partner_recv_pinned_capacity(0),
+              partner_send_pinned_capacity(0),
+              row_recv_pinned_capacity(0),
+              row_send_pinned_capacity(0) {}
+    };
+    std::vector<SymV2PcFragAsyncPinnedPool> symV2PcFragAsyncPinnedPools;
+
     void *symV2LPanelArenaGPU = NULL;
     void *symV2StreamArenaGPU = NULL;
     void *symV2GemmArenaGPU = NULL;
