@@ -2021,6 +2021,12 @@ struct xLUstruct_t
     int_t dSymV2LFragmentExchangeIssueProgressGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeProgressGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeProgressAllGPU();
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_DECL_BEGIN
+    int_t dSymV2LFragmentExchangeCompleteReadyGPU();
+    int_t dSymV2LFragmentExchangeProgressAndCompleteReadyGPU();
+    int_t dSymV2CudaStreamSynchronizeWithProgressGPU(cudaStream_t stream);
+    int_t dSymV2SyncLookAheadUpdateWithProgressGPU(int streamId);
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_DECL_END
     int_t dSymV2LFragmentExchangeCompleteProgressGPU(
         int_t k, int_t stream_offset, int final_sync);
     int_t dSymV2LFragmentExchangeFinalSyncGPU(int_t k, int_t stream_offset);

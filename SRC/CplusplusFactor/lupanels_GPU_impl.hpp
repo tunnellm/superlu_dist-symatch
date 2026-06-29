@@ -649,6 +649,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeProgressGPU(
     int_t k, int_t stream_offset);
 
 template <>
+inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeProgressAllGPU();
+
+template <>
 inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeProgressLeanGPU(
     int_t k, int_t stream_offset);
 
@@ -743,6 +746,7 @@ void xLUstruct_t<Ftype>::dSymV2PcFragAsyncLiveRemove(int_t k)
             symV2PcFragAsyncLivePanels[out++] = symV2PcFragAsyncLivePanels[i];
     symV2PcFragAsyncLivePanels.resize(out);
 }
+
 
 template <>
 inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
@@ -856,6 +860,11 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double forced_owner_t = SuperLU_timer_();
 #endif
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_FORCED_OWNER_BEGIN
+            if (superlu_sym_v2_pcfrag_async_progress_stage5() &&
+                Pr > 1 && Pc > 1)
+                dSymV2LFragmentExchangeProgressAllGPU();
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_FORCED_OWNER_END
             dSymV2LFragmentExchangeCompleteProgressGPU(current_owner,
                                                        stream_offset, 1);
             dSymV2LFragmentExchangeReleaseProgressGPU(current_owner,
@@ -1853,66 +1862,82 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeCompleteProgressLeanGPU
     if (state.active_k != k || state.stream_offset != stream_offset)
         ABORT("SymFact V2 Pc-fragment lean progress complete has a stream mismatch.");
 
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_LEAN_COMPLETE_BEGIN
+    if (superlu_sym_v2_pcfrag_async_progress_stage5() &&
+        Pr > 1 && Pc > 1 &&
+        state.completed && state.consumer_completed)
+        return 0;
+
     const int already_completed = state.completed;
     if (!already_completed)
     {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double block_t = SuperLU_timer_();
 #endif
-        if (!state.send_stage_ready && state.send_d2h_event_recorded)
+        if (superlu_sym_v2_pcfrag_async_progress_stage5() &&
+            Pr > 1 && Pc > 1)
         {
-            cudaEvent_t ev = symV2PcFragAsyncLeanD2HEvents[static_cast<size_t>(stream_offset)];
-            if (ev == NULL)
-                ABORT("SymFact V2 Pc-fragment lean progress D2H event is missing.");
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            double event_wait_t = SuperLU_timer_();
-#endif
-            gpuErrchk(cudaEventSynchronize(ev));
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            symTimingAdd(SYM_GPU3D_T_PCFRAG_ASYNC_EVENT_WAIT,
-                         SuperLU_timer_() - event_wait_t);
-#endif
-            state.send_stage_ready = 1;
+            while (!state.completed)
+                dSymV2LFragmentExchangeProgressAllGPU();
         }
-        dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
-        if (!state.partner_recvs_done && !state.partner_recv_reqs.empty())
+        else
         {
+            if (!state.send_stage_ready && state.send_d2h_event_recorded)
+            {
+                cudaEvent_t ev = symV2PcFragAsyncLeanD2HEvents[static_cast<size_t>(stream_offset)];
+                if (ev == NULL)
+                    ABORT("SymFact V2 Pc-fragment lean progress D2H event is missing.");
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            double recv_wait_t = SuperLU_timer_();
+                double event_wait_t = SuperLU_timer_();
 #endif
-            MPI_Waitall(static_cast<int>(state.partner_recv_reqs.size()),
-                        state.partner_recv_reqs.data(), MPI_STATUSES_IGNORE);
+                gpuErrchk(cudaEventSynchronize(ev));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            symTimingAddBoth(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
-                             SYM_GPU3D_T_PARTNER_LFRAG_MPI_RECV_WAIT,
-                             SuperLU_timer_() - recv_wait_t);
+                symTimingAdd(SYM_GPU3D_T_PCFRAG_ASYNC_EVENT_WAIT,
+                             SuperLU_timer_() - event_wait_t);
 #endif
-            state.partner_recv_reqs.clear();
-            state.partner_recvs_done = 1;
-        }
-        if (!state.row_recvs_done && !state.row_recv_reqs.empty())
-        {
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            double row_recv_wait_t = SuperLU_timer_();
-#endif
-            MPI_Waitall(static_cast<int>(state.row_recv_reqs.size()),
-                        state.row_recv_reqs.data(), MPI_STATUSES_IGNORE);
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            symTimingAddBoth(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
-                             SYM_GPU3D_T_ROW_LFRAG_MPI_RECV_WAIT,
-                             SuperLU_timer_() - row_recv_wait_t);
-#endif
-            state.row_recv_reqs.clear();
-            state.row_recvs_done = 1;
-        }
-        dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
-        while (!state.completed)
+                state.send_stage_ready = 1;
+            }
             dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
+            if (!state.partner_recvs_done && !state.partner_recv_reqs.empty())
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double recv_wait_t = SuperLU_timer_();
+#endif
+                MPI_Waitall(static_cast<int>(state.partner_recv_reqs.size()),
+                            state.partner_recv_reqs.data(), MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
+                                 SYM_GPU3D_T_PARTNER_LFRAG_MPI_RECV_WAIT,
+                                 SuperLU_timer_() - recv_wait_t);
+#endif
+                state.partner_recv_reqs.clear();
+                state.partner_recvs_done = 1;
+            }
+            if (!state.row_recvs_done && !state.row_recv_reqs.empty())
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double row_recv_wait_t = SuperLU_timer_();
+#endif
+                MPI_Waitall(static_cast<int>(state.row_recv_reqs.size()),
+                            state.row_recv_reqs.data(), MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
+                                 SYM_GPU3D_T_ROW_LFRAG_MPI_RECV_WAIT,
+                                 SuperLU_timer_() - row_recv_wait_t);
+#endif
+                state.row_recv_reqs.clear();
+                state.row_recvs_done = 1;
+            }
+            dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
+            while (!state.completed)
+                dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
+        }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         symTimingAdd(SYM_GPU3D_T_PCFRAG_ASYNC_BLOCKING_COMPLETE_WALL,
                      SuperLU_timer_() - block_t);
 #endif
     }
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_LEAN_COMPLETE_END
 
     if (!state.completion_counted)
     {
@@ -1978,53 +2003,66 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeReleaseProgressLeanGPU(
         gpuErrchk(cudaStreamSynchronize(A_gpu.lookAheadUStream[stream_offset]));
     }
 
-    if (!state.send_stage_ready && state.send_d2h_event_recorded)
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_LEAN_RELEASE_SEND_BEGIN
+    if (superlu_sym_v2_pcfrag_async_progress_stage5() &&
+        Pr > 1 && Pc > 1)
     {
-        cudaEvent_t ev = symV2PcFragAsyncLeanD2HEvents[static_cast<size_t>(stream_offset)];
-        if (ev != NULL)
+        while (!state.sends_posted ||
+               !state.partner_send_reqs.empty() ||
+               !state.row_send_reqs.empty())
+            dSymV2LFragmentExchangeProgressAllGPU();
+    }
+    else
+    {
+        if (!state.send_stage_ready && state.send_d2h_event_recorded)
+        {
+            cudaEvent_t ev = symV2PcFragAsyncLeanD2HEvents[static_cast<size_t>(stream_offset)];
+            if (ev != NULL)
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double event_wait_t = SuperLU_timer_();
+#endif
+                gpuErrchk(cudaEventSynchronize(ev));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAdd(SYM_GPU3D_T_PCFRAG_ASYNC_EVENT_WAIT,
+                             SuperLU_timer_() - event_wait_t);
+#endif
+                state.send_stage_ready = 1;
+            }
+        }
+        while (!state.sends_posted)
+            dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
+        dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
+        if (!state.partner_send_reqs.empty())
         {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            double event_wait_t = SuperLU_timer_();
+            double send_wait_t = SuperLU_timer_();
 #endif
-            gpuErrchk(cudaEventSynchronize(ev));
+            MPI_Waitall(static_cast<int>(state.partner_send_reqs.size()),
+                        state.partner_send_reqs.data(), MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            symTimingAdd(SYM_GPU3D_T_PCFRAG_ASYNC_EVENT_WAIT,
-                         SuperLU_timer_() - event_wait_t);
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
+                             SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
+                             SuperLU_timer_() - send_wait_t);
 #endif
-            state.send_stage_ready = 1;
+            state.partner_send_reqs.clear();
+        }
+        if (!state.row_send_reqs.empty())
+        {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double row_send_wait_t = SuperLU_timer_();
+#endif
+            MPI_Waitall(static_cast<int>(state.row_send_reqs.size()),
+                        state.row_send_reqs.data(), MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
+                             SYM_GPU3D_T_ROW_LFRAG_SEND_WAIT,
+                             SuperLU_timer_() - row_send_wait_t);
+#endif
+            state.row_send_reqs.clear();
         }
     }
-    while (!state.sends_posted)
-        dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
-    dSymV2LFragmentExchangeProgressLeanGPU(k, stream_offset);
-    if (!state.partner_send_reqs.empty())
-    {
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        double send_wait_t = SuperLU_timer_();
-#endif
-        MPI_Waitall(static_cast<int>(state.partner_send_reqs.size()),
-                    state.partner_send_reqs.data(), MPI_STATUSES_IGNORE);
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
-                         SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
-                         SuperLU_timer_() - send_wait_t);
-#endif
-        state.partner_send_reqs.clear();
-    }
-    if (!state.row_send_reqs.empty())
-    {
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        double row_send_wait_t = SuperLU_timer_();
-#endif
-        MPI_Waitall(static_cast<int>(state.row_send_reqs.size()),
-                    state.row_send_reqs.data(), MPI_STATUSES_IGNORE);
-#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-        symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
-                         SYM_GPU3D_T_ROW_LFRAG_SEND_WAIT,
-                         SuperLU_timer_() - row_send_wait_t);
-#endif
-        state.row_send_reqs.clear();
-    }
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_LEAN_RELEASE_SEND_END
 
     if (state.stream_offset >= 0 &&
         static_cast<size_t>(state.stream_offset) < symV2PcFragAsyncStreamOwner.size() &&
@@ -3183,8 +3221,16 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeCompleteProgressGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double block_t = SuperLU_timer_();
 #endif
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_NONLEAN_COMPLETE_BEGIN
         while (!state.completed)
-            dSymV2LFragmentExchangeProgressGPU(k, stream_offset);
+        {
+            if (superlu_sym_v2_pcfrag_async_progress_stage5() &&
+                Pr > 1 && Pc > 1)
+                dSymV2LFragmentExchangeProgressAllGPU();
+            else
+                dSymV2LFragmentExchangeProgressGPU(k, stream_offset);
+        }
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_NONLEAN_COMPLETE_END
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         symTimingAdd(SYM_GPU3D_T_PCFRAG_ASYNC_BLOCKING_COMPLETE_WALL,
                      SuperLU_timer_() - block_t);
@@ -3216,6 +3262,143 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeCompleteProgressGPU(
     state.consumer_completed = 1;
     return 0;
 }
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_IMPL_BEGIN
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2LFragmentExchangeCompleteReadyGPU()
+{
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2LFragmentExchangeProgressAndCompleteReadyGPU()
+{
+    if (!superlu_sym_v2_pcfrag_async_progress())
+        return 0;
+    dSymV2LFragmentExchangeProgressAllGPU();
+    return dSymV2LFragmentExchangeCompleteReadyGPU();
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2CudaStreamSynchronizeWithProgressGPU(cudaStream_t stream)
+{
+    gpuErrchk(cudaStreamSynchronize(stream));
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2SyncLookAheadUpdateWithProgressGPU(int streamId)
+{
+    return SyncLookAheadUpdate(streamId);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeCompleteReadyGPU()
+{
+    if (!superlu_sym_v2_pcfrag_async_progress() ||
+        !superlu_sym_v2_pcfrag_async_progress_stage5() ||
+        Pr <= 1 || Pc <= 1)
+        return 0;
+    if (symV2PcFragAsyncStates.empty())
+        return 0;
+
+    auto complete_if_ready = [&](SymV2PcFragAsyncState &st) -> void
+    {
+        if (!st.active || !st.progress_path)
+            return;
+        if (!st.completed || st.consumer_completed)
+            return;
+        dSymV2LFragmentExchangeCompleteProgressGPU(
+            st.active_k, st.stream_offset, 0);
+    };
+
+    if (superlu_sym_v2_pcfrag_async_progress_liveset())
+    {
+        size_t out = 0;
+        for (size_t i = 0; i < symV2PcFragAsyncLivePanels.size(); ++i)
+        {
+            int_t active_k = symV2PcFragAsyncLivePanels[i];
+            bool keep = false;
+            if (active_k >= 0 && active_k < nsupers &&
+                static_cast<size_t>(active_k) < symV2PcFragAsyncStates.size())
+            {
+                SymV2PcFragAsyncState &st =
+                    symV2PcFragAsyncStates[static_cast<size_t>(active_k)];
+                if (st.active && st.progress_path)
+                {
+                    keep = true;
+                    complete_if_ready(st);
+                }
+            }
+            if (keep)
+                symV2PcFragAsyncLivePanels[out++] = active_k;
+        }
+        symV2PcFragAsyncLivePanels.resize(out);
+        return 0;
+    }
+
+    for (size_t i = 0; i < symV2PcFragAsyncStates.size(); ++i)
+        complete_if_ready(symV2PcFragAsyncStates[i]);
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeProgressAndCompleteReadyGPU()
+{
+    if (!superlu_sym_v2_pcfrag_async_progress())
+        return 0;
+    dSymV2LFragmentExchangeProgressAllGPU();
+    if (superlu_sym_v2_pcfrag_async_progress_stage5())
+        dSymV2LFragmentExchangeCompleteReadyGPU();
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2CudaStreamSynchronizeWithProgressGPU(cudaStream_t stream)
+{
+    if (!superlu_sym_v2_pcfrag_async_progress() ||
+        !superlu_sym_v2_pcfrag_async_progress_stage5() ||
+        Pr <= 1 || Pc <= 1)
+    {
+        gpuErrchk(cudaStreamSynchronize(stream));
+        return 0;
+    }
+
+    int spins = 0;
+    const int spin_budget = superlu_sym_v2_pcfrag_async_progress_stage5_spin();
+    while (true)
+    {
+        cudaError_t q = cudaStreamQuery(stream);
+        if (q == cudaSuccess)
+            break;
+        if (q != cudaErrorNotReady)
+            gpuErrchk(q);
+        dSymV2LFragmentExchangeProgressAndCompleteReadyGPU();
+        if (++spins >= spin_budget)
+            spins = 0;
+    }
+    dSymV2LFragmentExchangeProgressAndCompleteReadyGPU();
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2SyncLookAheadUpdateWithProgressGPU(int streamId)
+{
+    if (!superlu_sym_v2_pcfrag_async_progress() ||
+        !superlu_sym_v2_pcfrag_async_progress_stage5() ||
+        Pr <= 1 || Pc <= 1)
+        return SyncLookAheadUpdate(streamId);
+    if (streamId < 0 || streamId >= A_gpu.numCudaStreams)
+        return SyncLookAheadUpdate(streamId);
+
+    dSymV2CudaStreamSynchronizeWithProgressGPU(A_gpu.cuStreams[streamId]);
+    dSymV2CudaStreamSynchronizeWithProgressGPU(A_gpu.lookAheadLStream[streamId]);
+    dSymV2CudaStreamSynchronizeWithProgressGPU(A_gpu.lookAheadUStream[streamId]);
+    int_t ret = SyncLookAheadUpdate(streamId);
+    dSymV2LFragmentExchangeProgressAndCompleteReadyGPU();
+    return ret;
+}
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_IMPL_END
+
 
 template <>
 inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeFinalSyncGPU(
