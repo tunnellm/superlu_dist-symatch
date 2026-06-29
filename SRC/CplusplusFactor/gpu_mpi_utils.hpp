@@ -516,6 +516,21 @@ static inline bool superlu_sym_v2_pcfrag_async_progress_release_nosync()
     return superlu_sym_v2_env_bool_flag(
         "GPU3DV2_PCFRAG_ASYNC_PROGRESS_RELEASE_NOSYNC", 1);
 }
+
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_FLAGS_BEGIN
+static inline bool superlu_sym_v2_pcfrag_async_progress_lean_dedicated_host()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_LEAN_DEDICATED_HOST", 1);
+}
+
+static inline bool superlu_sym_v2_pcfrag_async_progress_lean_dedicated_partner_send()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_LEAN_DEDICATED_PARTNER_SEND", 1);
+}
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_FLAGS_END
+
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_FLAGS_END
 
 static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()

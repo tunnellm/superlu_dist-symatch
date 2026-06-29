@@ -1351,6 +1351,17 @@ struct xLUstruct_t
     std::vector<int_t> symV2PcFragAsyncLivePanels;
     std::vector<cudaEvent_t> symV2PcFragAsyncLeanD2HEvents;
     std::vector<cudaEvent_t> symV2PcFragAsyncLeanReadyEvents;
+
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_STATE_BEGIN
+    std::vector<Ftype *> symV2PcFragAsyncLeanPartnerRecvHost;
+    std::vector<Ftype *> symV2PcFragAsyncLeanPartnerSendHost;
+    std::vector<Ftype *> symV2PcFragAsyncLeanRowRecvHost;
+    std::vector<Ftype *> symV2PcFragAsyncLeanRowSendHost;
+    std::vector<size_t> symV2PcFragAsyncLeanPartnerRecvHostCapacity;
+    std::vector<size_t> symV2PcFragAsyncLeanPartnerSendHostCapacity;
+    std::vector<size_t> symV2PcFragAsyncLeanRowRecvHostCapacity;
+    std::vector<size_t> symV2PcFragAsyncLeanRowSendHostCapacity;
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_STATE_END
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_STATE_END
 
     struct SymV2PcFragAsyncPinnedPool
@@ -1724,6 +1735,28 @@ struct xLUstruct_t
             for (size_t ev = 0; ev < symV2PcFragAsyncLeanReadyEvents.size(); ++ev)
                 if (symV2PcFragAsyncLeanReadyEvents[ev] != NULL)
                     cudaEventDestroy(symV2PcFragAsyncLeanReadyEvents[ev]);
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_DTOR_BEGIN
+            for (size_t i = 0; i < symV2PcFragAsyncLeanPartnerRecvHost.size(); ++i)
+                if (symV2PcFragAsyncLeanPartnerRecvHost[i] != NULL)
+                    cudaFreeHost(symV2PcFragAsyncLeanPartnerRecvHost[i]);
+            for (size_t i = 0; i < symV2PcFragAsyncLeanPartnerSendHost.size(); ++i)
+                if (symV2PcFragAsyncLeanPartnerSendHost[i] != NULL)
+                    cudaFreeHost(symV2PcFragAsyncLeanPartnerSendHost[i]);
+            for (size_t i = 0; i < symV2PcFragAsyncLeanRowRecvHost.size(); ++i)
+                if (symV2PcFragAsyncLeanRowRecvHost[i] != NULL)
+                    cudaFreeHost(symV2PcFragAsyncLeanRowRecvHost[i]);
+            for (size_t i = 0; i < symV2PcFragAsyncLeanRowSendHost.size(); ++i)
+                if (symV2PcFragAsyncLeanRowSendHost[i] != NULL)
+                    cudaFreeHost(symV2PcFragAsyncLeanRowSendHost[i]);
+            symV2PcFragAsyncLeanPartnerRecvHost.clear();
+            symV2PcFragAsyncLeanPartnerSendHost.clear();
+            symV2PcFragAsyncLeanRowRecvHost.clear();
+            symV2PcFragAsyncLeanRowSendHost.clear();
+            symV2PcFragAsyncLeanPartnerRecvHostCapacity.clear();
+            symV2PcFragAsyncLeanPartnerSendHostCapacity.clear();
+            symV2PcFragAsyncLeanRowRecvHostCapacity.clear();
+            symV2PcFragAsyncLeanRowSendHostCapacity.clear();
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_DTOR_END
             symV2PcFragAsyncLeanD2HEvents.clear();
             symV2PcFragAsyncLeanReadyEvents.clear();
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_DTOR_END

@@ -811,6 +811,39 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
             &symV2PcFragAsyncLeanReadyEvents[static_cast<size_t>(stream_offset)],
             cudaEventDisableTiming));
 
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_HELPER_BEGIN
+    auto sym_v2_lean_host_stage = [&]
+        (std::vector<double *> &bufs,
+         std::vector<size_t> &caps,
+         size_t need,
+         const char *what) -> double *
+    {
+        if (need == 0)
+            return NULL;
+        if (!superlu_sym_v2_pcfrag_async_progress_lean_dedicated_host())
+            return NULL;
+        if (bufs.size() < stream_count)
+            bufs.resize(stream_count, NULL);
+        if (caps.size() < stream_count)
+            caps.resize(stream_count, 0);
+        const size_t sx = static_cast<size_t>(stream_offset);
+        if (caps[sx] < need || bufs[sx] == NULL)
+        {
+            if (bufs[sx] != NULL)
+            {
+                gpuErrchk(cudaFreeHost(bufs[sx]));
+                bufs[sx] = NULL;
+                caps[sx] = 0;
+            }
+            gpuErrchk(cudaMallocHost(
+                (void **)&bufs[sx],
+                xlu_checked_product(need, sizeof(double), what)));
+            caps[sx] = need;
+        }
+        return bufs[sx];
+    };
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_HELPER_END
+
     int_t current_owner =
         symV2PcFragAsyncStreamOwner[static_cast<size_t>(stream_offset)];
     if (current_owner >= 0 && current_owner < nsupers && current_owner != k)
@@ -928,10 +961,18 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
     state.partner_recv_total = partner_recv_total;
     if (partner_recv_total > 0)
     {
-        if (static_cast<size_t>(stream_offset) >= symPartnerLvalRecvBufs.size() ||
-            symPartnerLvalRecvBufs[stream_offset] == NULL)
-            ABORT("SymFact V2 Pc-fragment lean progress partner receive host staging is missing.");
-        state.partner_recv_host_base = symPartnerLvalRecvBufs[stream_offset];
+        state.partner_recv_host_base = sym_v2_lean_host_stage(
+            symV2PcFragAsyncLeanPartnerRecvHost,
+            symV2PcFragAsyncLeanPartnerRecvHostCapacity,
+            static_cast<size_t>(partner_recv_total),
+            "Pc-fragment lean partner receive host staging");
+        if (state.partner_recv_host_base == NULL)
+        {
+            if (static_cast<size_t>(stream_offset) >= symPartnerLvalRecvBufs.size() ||
+                symPartnerLvalRecvBufs[stream_offset] == NULL)
+                ABORT("SymFact V2 Pc-fragment lean progress partner receive host staging is missing.");
+            state.partner_recv_host_base = symPartnerLvalRecvBufs[stream_offset];
+        }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         double recv_post_t = SuperLU_timer_();
 #endif
@@ -994,10 +1035,18 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
         int row_src_pc = static_cast<int>(kcol_);
         if (row_recv_total > 0 && row_src_pc != mycol)
         {
-            if (static_cast<size_t>(stream_offset) >= symV2RowFragHostRecvBufs.size() ||
-                symV2RowFragHostRecvBufs[stream_offset] == NULL)
-                ABORT("SymFact V2 Pc-fragment lean progress row receive host staging is missing.");
-            state.row_recv_host_base = symV2RowFragHostRecvBufs[stream_offset];
+            state.row_recv_host_base = sym_v2_lean_host_stage(
+                symV2PcFragAsyncLeanRowRecvHost,
+                symV2PcFragAsyncLeanRowRecvHostCapacity,
+                static_cast<size_t>(row_recv_total),
+                "Pc-fragment lean row receive host staging");
+            if (state.row_recv_host_base == NULL)
+            {
+                if (static_cast<size_t>(stream_offset) >= symV2RowFragHostRecvBufs.size() ||
+                    symV2RowFragHostRecvBufs[stream_offset] == NULL)
+                    ABORT("SymFact V2 Pc-fragment lean progress row receive host staging is missing.");
+                state.row_recv_host_base = symV2RowFragHostRecvBufs[stream_offset];
+            }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double row_recv_post_t = SuperLU_timer_();
 #endif
@@ -1150,7 +1199,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
         }
 
         state.partner_send_counts.assign(static_cast<size_t>(Pc), 0);
-        state.partner_send_offsets.assign(static_cast<size_t>(Pc), 0);
+        state.partner_send_offsets.assign(static_cast<size_t>(Pc), -1);
         int partner_send_total = 0;
         for (int pc = 0; pc < Pc; ++pc)
         {
@@ -1176,11 +1225,25 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
             if (!active_remote_dest)
                 continue;
             state.partner_send_counts[static_cast<size_t>(pc)] = size;
+            state.partner_send_offsets[static_cast<size_t>(pc)] = partner_send_total;
             partner_send_total += size;
         }
         state.partner_send_total = partner_send_total;
         if (partner_send_total > 0)
         {
+            const bool lean_dedicated_partner_send =
+                superlu_sym_v2_pcfrag_async_progress_lean_dedicated_host() &&
+                superlu_sym_v2_pcfrag_async_progress_lean_dedicated_partner_send();
+            if (lean_dedicated_partner_send)
+            {
+                state.partner_send_host_base = sym_v2_lean_host_stage(
+                    symV2PcFragAsyncLeanPartnerSendHost,
+                    symV2PcFragAsyncLeanPartnerSendHostCapacity,
+                    static_cast<size_t>(partner_send_total),
+                    "Pc-fragment lean partner send host staging");
+                if (state.partner_send_host_base == NULL)
+                    ABORT("SymFact V2 Pc-fragment lean progress dedicated partner send host staging is missing.");
+            }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double d2h_issue_t = SuperLU_timer_();
 #endif
@@ -1191,7 +1254,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
                     continue;
                 size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
                               static_cast<size_t>(pc);
-                double *host_stage = partner_host_send_stage(flat, size);
+                int off = state.partner_send_offsets[static_cast<size_t>(pc)];
+                if (off < 0)
+                    ABORT("SymFact V2 Pc-fragment lean progress partner send offset is invalid.");
+                double *host_stage = lean_dedicated_partner_send
+                    ? state.partner_send_host_base + off
+                    : partner_host_send_stage(flat, size);
                 if (host_stage == NULL)
                     ABORT("SymFact V2 Pc-fragment lean progress partner host send buffer is missing.");
                 gpuErrchk(cudaMemcpyAsync(
@@ -1329,10 +1397,18 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueProgressLeanGPU(
         }
         if (row_send_total > 0)
         {
-            if (static_cast<size_t>(stream_offset) >= symV2RowFragHostSendBufs.size() ||
-                symV2RowFragHostSendBufs[stream_offset] == NULL)
-                ABORT("SymFact V2 Pc-fragment lean progress row host send staging is missing.");
-            state.row_send_host_base = symV2RowFragHostSendBufs[stream_offset];
+            state.row_send_host_base = sym_v2_lean_host_stage(
+                symV2PcFragAsyncLeanRowSendHost,
+                symV2PcFragAsyncLeanRowSendHostCapacity,
+                static_cast<size_t>(row_send_total),
+                "Pc-fragment lean row send host staging");
+            if (state.row_send_host_base == NULL)
+            {
+                if (static_cast<size_t>(stream_offset) >= symV2RowFragHostSendBufs.size() ||
+                    symV2RowFragHostSendBufs[stream_offset] == NULL)
+                    ABORT("SymFact V2 Pc-fragment lean progress row host send staging is missing.");
+                state.row_send_host_base = symV2RowFragHostSendBufs[stream_offset];
+            }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double row_d2h_issue_t = SuperLU_timer_();
 #endif
@@ -1464,7 +1540,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeProgressLeanGPU(
                     continue;
                 size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
                               static_cast<size_t>(pc);
-                double *host_stage = partner_host_send_stage(flat, size);
+                int off = state.partner_send_offsets[static_cast<size_t>(pc)];
+                if (off < 0)
+                    ABORT("SymFact V2 Pc-fragment lean progress partner send post offset is invalid.");
+                double *host_stage = (state.partner_send_host_base != NULL)
+                    ? state.partner_send_host_base + off
+                    : partner_host_send_stage(flat, size);
                 if (host_stage == NULL)
                     ABORT("SymFact V2 Pc-fragment lean progress partner host send buffer is missing.");
                 for (int pr = 0; pr < Pr; ++pr)
