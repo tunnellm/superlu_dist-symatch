@@ -989,6 +989,92 @@ struct xLUstruct_t
     };
     std::vector<SymV2RowExchangeState> symV2RowExchangeStates;
 // SYM_V2_PC2_PHASE6_XLU_EXCHANGE_STATE_END
+    struct SymV2PcFragAsyncState
+    {
+        int_t active_k;
+        int stream_offset;
+        int active;
+        int partner_recvs_posted;
+        int row_recvs_posted;
+        int partner_source_issued;
+        int row_source_issued;
+        int partner_recv_total;
+        int row_recv_total;
+        int row_send_total;
+        int completed;
+        Ftype *partner_recv_host_base;
+        Ftype *row_recv_host_base;
+        Ftype *row_send_host_base;
+        int partner_self_pr;
+        int partner_self_count;
+        std::vector<Ftype> partner_recv_values;
+        std::vector<Ftype> partner_send_values;
+        std::vector<Ftype> partner_self_values;
+        std::vector<Ftype> row_recv_values;
+        std::vector<Ftype> row_send_values;
+        std::vector<Ftype> row_self_values;
+        std::vector<int> partner_recv_sizes;
+        std::vector<int> partner_recv_offsets;
+        std::vector<int> partner_recv_peers;
+        std::vector<int> partner_send_counts;
+        std::vector<int> partner_send_offsets;
+        std::vector<MPI_Request> partner_recv_reqs;
+        std::vector<MPI_Request> partner_send_reqs;
+        std::vector<int> row_recv_offsets;
+        std::vector<MPI_Request> row_recv_reqs;
+        std::vector<int> row_send_counts;
+        std::vector<int> row_send_offsets;
+        std::vector<MPI_Request> row_send_reqs;
+
+        SymV2PcFragAsyncState()
+            : active_k(-1), stream_offset(-1), active(0),
+              partner_recvs_posted(0), row_recvs_posted(0),
+              partner_source_issued(0), row_source_issued(0),
+              partner_recv_total(0), row_recv_total(0), row_send_total(0),
+              completed(0),
+              partner_recv_host_base(NULL), row_recv_host_base(NULL),
+              row_send_host_base(NULL), partner_self_pr(-1),
+              partner_self_count(0) {}
+        void reset()
+        {
+            active_k = -1;
+            stream_offset = -1;
+            active = 0;
+            partner_recvs_posted = 0;
+            row_recvs_posted = 0;
+            partner_source_issued = 0;
+            row_source_issued = 0;
+            partner_recv_total = 0;
+            row_recv_total = 0;
+            row_send_total = 0;
+            completed = 0;
+            partner_recv_host_base = NULL;
+            row_recv_host_base = NULL;
+            row_send_host_base = NULL;
+            partner_self_pr = -1;
+            partner_self_count = 0;
+            std::vector<Ftype>().swap(partner_recv_values);
+            std::vector<Ftype>().swap(partner_send_values);
+            std::vector<Ftype>().swap(partner_self_values);
+            std::vector<Ftype>().swap(row_recv_values);
+            std::vector<Ftype>().swap(row_send_values);
+            std::vector<Ftype>().swap(row_self_values);
+            partner_recv_sizes.clear();
+            partner_recv_offsets.clear();
+            partner_recv_peers.clear();
+            partner_send_counts.clear();
+            partner_send_offsets.clear();
+            partner_recv_reqs.clear();
+            partner_send_reqs.clear();
+            row_recv_offsets.clear();
+            row_recv_reqs.clear();
+            row_send_counts.clear();
+            row_send_offsets.clear();
+            row_send_reqs.clear();
+        }
+    };
+    std::vector<SymV2PcFragAsyncState> symV2PcFragAsyncStates;
+    std::vector<int_t> symV2PcFragAsyncStreamOwner;
 
     void *symV2LPanelArenaGPU = NULL;
     void *symV2StreamArenaGPU = NULL;
@@ -1589,6 +1675,9 @@ struct xLUstruct_t
     int_t dSymV2ComputePartnerScratchSize(LUStruct_type<Ftype> *LUstruct);
     int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeIssueGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeCompleteGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeReleaseGPU(int_t k, int_t stream_offset);
     bool symV2UsePcFragmentSchurPanel(int_t k) const;
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,

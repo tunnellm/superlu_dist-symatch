@@ -474,6 +474,11 @@ static inline bool superlu_sym_v2_pcfrag_async_pipeline()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_ASYNC_PIPELINE", 0);
 }
 
+static inline bool superlu_sym_v2_pcfrag_async_pipeline_stage2b()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_ASYNC_PIPELINE_STAGE2B", 0);
+}
+
 static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_CUDA_AWARE_EXPERIMENT", 0);

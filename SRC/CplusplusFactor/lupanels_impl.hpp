@@ -6978,6 +6978,15 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     }
     symV2RowExchangeStates.clear();
 // SYM_V2_PC2_PHASE6_FREE_EXCHANGE_STATES_END
+// SYM_V2_PC2_STAGE2B_FREE_ASYNC_STATES_BEGIN
+    for (size_t sx = 0; sx < symV2PcFragAsyncStates.size(); ++sx)
+    {
+        if (symV2PcFragAsyncStates[sx].active)
+            ABORT("SymFact V2 Pc-fragment async state is still active during free.");
+    }
+    symV2PcFragAsyncStates.clear();
+    symV2PcFragAsyncStreamOwner.clear();
+// SYM_V2_PC2_STAGE2B_FREE_ASYNC_STATES_END
 
     for (size_t i = 0; i < symDiagPrefetchBufs.size(); ++i)
         if (symDiagPrefetchBufs[i] != NULL)

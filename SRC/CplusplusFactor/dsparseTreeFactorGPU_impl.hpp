@@ -453,7 +453,24 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
             {
                 SymV2FactorProfileScope sym_v2_lfrag_scope(
                     this, SYM_V2_FACTOR_PARTNER_L_EXCHANGE);
-                dSymV2LFragmentExchangeGPU(k, offset);
+// SYM_V2_PC2_ASYNC_STAGE2B_PANEL_ISSUE_BEGIN
+                const bool pcfrag_async_stage2b_issue =
+                    pc_fragment_schur && Pr > 1 && Pc > 1 &&
+                    superlu_sym_v2_async_factor() &&
+                    !superlu_cuda_aware_mpi() &&
+                    superlu_sym_v2_pc_fragment_ldl_native() &&
+                    superlu_sym_v2_row_l_plan_v2_exchange() &&
+                    superlu_sym_v2_row_l_direct_recv() &&
+                    !superlu_sym_v2_row_l_postsolve_send() &&
+                    superlu_sym_v2_row_l_compressed_plan() &&
+                    superlu_sym_v2_row_l_lazy_sendmap() &&
+                    !superlu_sym_v2_row_l_lazy_warp_pack() &&
+                    superlu_sym_v2_pcfrag_async_pipeline_stage2b();
+                if (pcfrag_async_stage2b_issue)
+                    dSymV2LFragmentExchangeIssueGPU(k, offset);
+                else
+                    dSymV2LFragmentExchangeGPU(k, offset);
+// SYM_V2_PC2_ASYNC_STAGE2B_PANEL_ISSUE_END
                 SYM_V2_TRACE_SCHED(grid3d, k, "after L-fragment exchange");
             }
 
@@ -471,7 +488,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 superlu_sym_v2_row_l_compressed_plan() &&
                 superlu_sym_v2_row_l_lazy_sendmap() &&
                 (superlu_sym_v2_pcfrag_async_exchange() ||
-                 superlu_sym_v2_pcfrag_async_pipeline());
+                 superlu_sym_v2_pcfrag_async_pipeline() ||
+                 superlu_sym_v2_pcfrag_async_pipeline_stage2b());
             if (superlu_sym_v2_async_factor() &&
                 pcfrag_async_exchange_panel_ready &&
                 mycol == sym_panel_root &&
@@ -987,6 +1005,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
                     SymV2FactorProfileScope sym_v2_la_scope(
                         this, SYM_V2_FACTOR_LOOKAHEAD_UPDATE);
+                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_STAGE2B_LOOKAHEAD_COMPLETE
                     dSymLookAheadUpdateWithLFragmentsGPU(offset, k, k_parent,
                                                          k_lpanel);
                 }
@@ -1169,6 +1188,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
                     SymV2FactorProfileScope sym_v2_exclude_scope(
                         this, SYM_V2_FACTOR_EXCLUDE_UPDATE);
+                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_STAGE2B_EXCLUDE_COMPLETE
                     dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(offset, k,
                                                                    k_parent,
                                                                    k_lpanel);
@@ -1309,7 +1329,21 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             //     offset+= halfWin;
             int_t offset = getBufferOffset(k0, k1, oldWinSize, winParity, halfWin);
             // printf("Syncing stream %d on offset %d\n", k0, offset);
+            const bool pcfrag_stage2b_final_complete =
+                symGPU3DVersion == 2 && Pr > 1 && Pc > 1 &&
+                symV2UsePcFragmentSchurPanel(k) &&
+                superlu_sym_v2_async_factor() &&
+                !superlu_cuda_aware_mpi() &&
+                superlu_sym_v2_pc_fragment_ldl_native() &&
+                superlu_sym_v2_row_l_plan_v2_exchange() &&
+                superlu_sym_v2_row_l_direct_recv() &&
+                !superlu_sym_v2_row_l_postsolve_send() &&
+                superlu_sym_v2_row_l_compressed_plan() &&
+                superlu_sym_v2_row_l_lazy_sendmap() &&
+                !superlu_sym_v2_row_l_lazy_warp_pack() &&
+                superlu_sym_v2_pcfrag_async_pipeline_stage2b();
             if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
+                pcfrag_stage2b_final_complete ||
                 (symGPU3DVersion != 2 &&
                  UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0))
             {
@@ -1320,7 +1354,11 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                     sym_book_open = 0;
                 }
 #endif
+                if (symGPU3DVersion == 2)
+                    dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_STAGE2B_FINAL_COMPLETE
                 gpuErrchk(cudaStreamSynchronize(A_gpu.cuStreams[offset]));
+                if (symGPU3DVersion == 2)
+                    dSymV2LFragmentExchangeReleaseGPU(k, offset);
             }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             if (sym_timing_enabled && sym_book_open)

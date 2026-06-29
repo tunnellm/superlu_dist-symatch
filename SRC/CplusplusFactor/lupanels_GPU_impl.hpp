@@ -571,6 +571,1059 @@ int_t xLUstruct_t<Ftype>::dSymV2LFragmentExchangeGPU(
     return 0;
 }
 
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2LFragmentExchangeIssueGPU(
+    int_t k, int_t stream_offset)
+{
+    ABORT("SymFact GPU3D V2 Pc-fragment async issue is implemented for double precision only.");
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2LFragmentExchangeCompleteGPU(
+    int_t k, int_t stream_offset)
+{
+    ABORT("SymFact GPU3D V2 Pc-fragment async complete is implemented for double precision only.");
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeIssueGPU(
+    int_t k, int_t stream_offset)
+{
+    if (options->SymFact != YES || symGPU3DVersion != 2)
+        return 0;
+    if (!superlu_acc_offload)
+        ABORT("GPU3DVERSION=2 Pc-fragment async issue requires GPU offload.");
+    if (Pr <= 1 || Pc <= 1)
+        return 0;
+    if (k < 0 || k >= nsupers)
+        return 0;
+    if (!superlu_sym_v2_async_factor() ||
+        !superlu_sym_v2_pcfrag_async_pipeline_stage2b())
+        return 0;
+    if (!symV2UsePcFragmentSchurPanel(k))
+        return 0;
+    if (superlu_cuda_aware_mpi())
+        ABORT("Pc-fragment async pipeline Stage 2B keeps CUDA-aware MPI fail-closed.");
+    if (superlu_sym_v2_row_l_lazy_warp_pack())
+        ABORT("Stage 2B should be tested with GPU3DV2_ROW_L_LAZY_WARP_PACK=0.");
+    if (!superlu_sym_v2_pc_fragment_ldl_native() ||
+        !superlu_sym_v2_row_l_plan_v2_exchange() ||
+        !superlu_sym_v2_row_l_direct_recv() ||
+        superlu_sym_v2_row_l_postsolve_send() ||
+        !superlu_sym_v2_row_l_compressed_plan() ||
+        !superlu_sym_v2_row_l_lazy_sendmap() ||
+        !superlu_sym_v2_row_l_pack_all_dest() ||
+        !superlu_sym_v2_row_l_separate_send_staging())
+        return 0;
+
+    if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
+        stream_offset = 0;
+
+    if (symV2PcFragAsyncStates.size() < static_cast<size_t>(nsupers))
+        symV2PcFragAsyncStates.resize(static_cast<size_t>(nsupers));
+    if (symV2PcFragAsyncStreamOwner.size() !=
+        static_cast<size_t>(A_gpu.numCudaStreams))
+    {
+        for (size_t sx = 0; sx < symV2PcFragAsyncStates.size(); ++sx)
+            if (symV2PcFragAsyncStates[sx].active)
+                ABORT("SymFact V2 Pc-fragment async stream owner resize while an exchange is active.");
+        symV2PcFragAsyncStreamOwner.assign(
+            static_cast<size_t>(A_gpu.numCudaStreams), static_cast<int_t>(-1));
+    }
+    int_t current_owner =
+        symV2PcFragAsyncStreamOwner[static_cast<size_t>(stream_offset)];
+    if (current_owner >= 0 && current_owner < nsupers)
+    {
+        bool owner_active =
+            static_cast<size_t>(current_owner) < symV2PcFragAsyncStates.size() &&
+            symV2PcFragAsyncStates[static_cast<size_t>(current_owner)].active;
+        if (!owner_active)
+        {
+            symV2PcFragAsyncStreamOwner[static_cast<size_t>(stream_offset)] =
+                static_cast<int_t>(-1);
+            current_owner = -1;
+        }
+    }
+    if (current_owner >= 0 && current_owner != k)
+        ABORT("SymFact V2 Pc-fragment async stream slot is already owned by another panel.");
+
+    SymV2PcFragAsyncState &state =
+        symV2PcFragAsyncStates[static_cast<size_t>(k)];
+    if (state.active)
+    {
+        if (state.active_k != k || state.stream_offset != stream_offset)
+            ABORT("SymFact V2 Pc-fragment async state is already active for another stream.");
+        return 0;
+    }
+    state.reset();
+    state.active = 1;
+    state.active_k = k;
+    state.stream_offset = stream_offset;
+    symV2PcFragAsyncStreamOwner[static_cast<size_t>(stream_offset)] = k;
+
+    const bool cuda_aware = superlu_cuda_aware_mpi();
+    const int_t kcol_ = symV2PanelRoot(k);
+    const int_t ksupc = SuperSize(k);
+    int tag_ub = symFactTagUb;
+    cudaStream_t stream = superlu_sym_v2_async_factor()
+                              ? A_gpu.lookAheadUStream[stream_offset]
+                              : A_gpu.cuStreams[stream_offset];
+
+    if (cuda_aware)
+        ABORT("Pc-fragment async pipeline Stage 2B keeps CUDA-aware MPI fail-closed.");
+
+    /* Post partner-L receives as early as possible. */
+    size_t recv_count_base = static_cast<size_t>(k) *
+                             static_cast<size_t>(Pr);
+    if (recv_count_base + static_cast<size_t>(Pr) >
+            symV2PartnerLRecvSizes.size())
+        ABORT("SymFact V2 async issue partner receive sizes are missing.");
+    state.partner_recv_sizes.assign(static_cast<size_t>(Pr), 0);
+    state.partner_recv_offsets.assign(static_cast<size_t>(Pr), -1);
+    int partner_recv_total = 0;
+    for (int pr = 0; pr < Pr; ++pr)
+    {
+        int size = symV2PartnerLRecvSizes[recv_count_base +
+                                           static_cast<size_t>(pr)];
+        state.partner_recv_sizes[static_cast<size_t>(pr)] = size;
+        int src = PNUM(pr, kcol_, grid);
+        if (size > 0 && src != iam)
+        {
+            state.partner_recv_offsets[static_cast<size_t>(pr)] =
+                partner_recv_total;
+            partner_recv_total += size;
+        }
+    }
+    if (partner_recv_total > maxSymPartnerLvalCount)
+        ABORT("SymFact V2 async issue partner receive exceeds staging buffer.");
+    state.partner_recv_total = partner_recv_total;
+    if (partner_recv_total > 0)
+    {
+        state.partner_recv_values.resize(
+            static_cast<size_t>(partner_recv_total));
+        state.partner_recv_host_base = state.partner_recv_values.data();
+        if (state.partner_recv_host_base == NULL)
+            ABORT("SymFact V2 async issue partner owned receive staging is missing.");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double recv_post_t = SuperLU_timer_();
+#endif
+        for (int pr = 0; pr < Pr; ++pr)
+        {
+            int size = state.partner_recv_sizes[static_cast<size_t>(pr)];
+            if (size <= 0)
+                continue;
+            int src = PNUM(pr, kcol_, grid);
+            if (src == iam)
+                continue;
+            int off = state.partner_recv_offsets[static_cast<size_t>(pr)];
+            if (off < 0)
+                ABORT("SymFact V2 async issue partner receive offset is invalid.");
+            MPI_Request req;
+            MPI_Irecv(state.partner_recv_host_base + off, size, MPI_DOUBLE,
+                      src, SLU_MPI_TAG(5, k), grid->comm, &req);
+            state.partner_recv_reqs.push_back(req);
+            state.partner_recv_peers.push_back(pr);
+            symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_RECV,
+                                   static_cast<long long>(size) *
+                                       static_cast<long long>(sizeof(double)));
+        }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAddBoth(SYM_GPU3D_T_LFRAG_RECV_POST,
+                         SYM_GPU3D_T_PARTNER_LFRAG_RECV_POST,
+                         SuperLU_timer_() - recv_post_t);
+        symStatAdd(SYM_GPU3D_S_L2U_RECV_REQUESTS,
+                   static_cast<long long>(state.partner_recv_reqs.size()));
+#endif
+        state.partner_recvs_posted = !state.partner_recv_reqs.empty();
+    }
+
+    /* Post row-down receive early.  In native direct-recv mode this H2D's
+       directly into the row-fragment value buffer during completion. */
+    if (static_cast<size_t>(k) < symV2RowFragRecvIndex.size())
+    {
+        const std::vector<int_t> &row_index = symV2RowFragRecvIndex[k];
+        if (!row_index.empty())
+        {
+            if (row_index.size() < LPANEL_HEADER_SIZE || row_index[3] != ksupc)
+                ABORT("SymFact V2 async issue row-fragment index is invalid.");
+            int_t row_nrows = row_index[1];
+            if (row_nrows <= 0 ||
+                static_cast<int64_t>(row_nrows) *
+                        static_cast<int64_t>(ksupc) >
+                    static_cast<int64_t>(maxSymV2RowFragValRecvCount))
+                ABORT("SymFact V2 async issue row-fragment value buffer is too small.");
+            size_t row_recv_base = static_cast<size_t>(k) *
+                                   static_cast<size_t>(Pc);
+            if (row_recv_base + static_cast<size_t>(Pc) >
+                    symV2RowFragRecvSizes.size())
+                ABORT("SymFact V2 async issue row receive metadata is missing.");
+            state.row_recv_offsets.assign(static_cast<size_t>(Pc), -1);
+            int row_recv_total = 0;
+            for (int pc = 0; pc < Pc; ++pc)
+            {
+                int count =
+                    symV2RowFragRecvSizes[row_recv_base +
+                                           static_cast<size_t>(pc)];
+                if (count <= 0)
+                    continue;
+                state.row_recv_offsets[static_cast<size_t>(pc)] =
+                    row_recv_total;
+                row_recv_total += count;
+            }
+            if (row_recv_total > maxSymV2RowFragStageCount)
+                ABORT("SymFact V2 async issue row receive exceeds staging buffer.");
+            state.row_recv_total = row_recv_total;
+            int row_src_pc = static_cast<int>(kcol_);
+            if (row_recv_total > 0 && row_src_pc != mycol)
+            {
+                state.row_recv_values.resize(
+                    static_cast<size_t>(row_recv_total));
+                state.row_recv_host_base = state.row_recv_values.data();
+                if (state.row_recv_host_base == NULL)
+                    ABORT("SymFact V2 async issue row owned receive staging is missing.");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double row_recv_post_t = SuperLU_timer_();
+#endif
+                MPI_Request req;
+                MPI_Irecv(state.row_recv_host_base, row_recv_total,
+                          MPI_DOUBLE, row_src_pc, SLU_MPI_TAG(5, k),
+                          grid3d->rscp.comm, &req);
+                state.row_recv_reqs.push_back(req);
+                symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_MPI_RECV,
+                                       static_cast<long long>(row_recv_total) *
+                                           static_cast<long long>(sizeof(double)));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_RECV_POST,
+                                 SYM_GPU3D_T_ROW_LFRAG_RECV_POST,
+                                 SuperLU_timer_() - row_recv_post_t);
+#endif
+                state.row_recvs_posted = 1;
+            }
+        }
+    }
+
+    auto partner_send_buffer_stage2 = [&](size_t flat, int size) -> double *
+    {
+        if (A_gpu.symPartnerLSendStageBufs[stream_offset] == NULL)
+            ABORT("SymFact V2 async issue partner-L stream send stage is missing.");
+        if (flat >= symV2PartnerLHostSendScratchOffsets.size())
+            ABORT("SymFact V2 async issue partner-L send staging offset is missing.");
+        size_t send_offset = symV2PartnerLHostSendScratchOffsets[flat];
+        size_t count = size > 0 ? static_cast<size_t>(size) : 0;
+        if (send_offset + count >
+                static_cast<size_t>(maxSymPartnerLSendStageCount) ||
+            send_offset + count < send_offset)
+            ABORT("SymFact V2 async issue partner-L stream send stage is too small.");
+        return A_gpu.symPartnerLSendStageBufs[stream_offset] + send_offset;
+    };
+
+    if (mycol == kcol_)
+    {
+        int_t lk = symV2PanelIndex(k);
+        if (lk < 0)
+            ABORT("SymFact V2 async issue source panel is invalid.");
+        if (symV2DiagBlocksGPU.size() != static_cast<size_t>(nsupers) ||
+            symV2DiagBlocksGPU[k] == NULL)
+            ABORT("SymFact V2 async issue device diagonal block is missing.");
+        xlpanel_t<double> &lpanel = lPanelVec[lk];
+
+        unsigned char prepacked_slot =
+            (static_cast<size_t>(lk) < symV2PartnerLPrepacked.size())
+                ? symV2PartnerLPrepacked[static_cast<size_t>(lk)]
+                : 0;
+        bool prepacked = prepacked_slot != 0;
+        if (prepacked)
+        {
+            int pack_event_id = static_cast<int>(prepacked_slot) - 1;
+            if (pack_event_id < 0 || pack_event_id >= A_gpu.numCudaStreams)
+                ABORT("SymFact V2 async issue prepack event is invalid.");
+            gpuErrchk(cudaStreamWaitEvent(
+                stream, A_gpu.symV2PartnerLPackReadyEvents[pack_event_id], 0));
+        }
+        else if (static_cast<size_t>(k) < symPanelReadyEventIds.size() &&
+                 symPanelReadyEventIds[k] >= 0)
+        {
+            int panel_event_id = symPanelReadyEventIds[k];
+            if (panel_event_id >= A_gpu.numCudaStreams)
+                ABORT("SymFact V2 async issue transformed-panel event is invalid.");
+            gpuErrchk(cudaStreamWaitEvent(
+                stream, A_gpu.panelReadyEvents[panel_event_id], 0));
+            symPanelReadyEventIds[k] = -1;
+        }
+
+        bool partner_packed_any = false;
+        bool partner_d2h_any = false;
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double partner_pack_issue_t = SuperLU_timer_();
+#endif
+        for (int pc = 0; pc < Pc; ++pc)
+        {
+            size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                          static_cast<size_t>(pc);
+            if (flat >= symV2PartnerLSendSizes.size() ||
+                flat >= symL2LSendMapsGPU.size())
+                ABORT("SymFact V2 async issue partner-L metadata is missing.");
+            int size = symV2PartnerLSendSizes[flat];
+            if (size <= 0)
+                continue;
+            bool active_dest = false;
+            for (int pr = 0; pr < Pr; ++pr)
+            {
+                size_t active_pos = flat * static_cast<size_t>(Pr) +
+                                    static_cast<size_t>(pr);
+                if (active_pos >= symV2PartnerLSendRowActive.size())
+                    ABORT("SymFact V2 async issue partner-L row mask is missing.");
+                if (symV2PartnerLSendRowActive[active_pos])
+                {
+                    active_dest = true;
+                    break;
+                }
+            }
+            if (!active_dest)
+                continue;
+            if (lpanel.isEmpty())
+                ABORT("SymFact V2 async issue active partner-L source panel is missing.");
+
+            double *sendbuf = partner_send_buffer_stage2(flat, size);
+            int_t *sendmap = symL2LSendMapsGPU[flat];
+            if (sendbuf == NULL || sendmap == NULL)
+                ABORT("SymFact V2 async issue partner-L send buffer is missing.");
+
+            int threads = 256;
+            int blocks = (size + threads - 1) / threads;
+            if (prepacked)
+            {
+                sym_l2u_pack_kernel<<<blocks, threads, 0, stream>>>(
+                    lpanel.gpuPanel.val, sendbuf, sendmap, size);
+            }
+            else
+            {
+                sym_l2u_pack_raw_kernel<<<blocks, threads, 0, stream>>>(
+                    lpanel.gpuPanel.val, sendbuf, sendmap, size,
+                    lpanel.LDA(), symV2DiagBlocksGPU[k], ksupc);
+            }
+            partner_packed_any = true;
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symStatAdd(SYM_GPU3D_S_L2U_SEND_BYTES,
+                       static_cast<long long>(size) *
+                           static_cast<long long>(sizeof(double)));
+#endif
+        }
+        if (partner_packed_any)
+        {
+            gpuErrchk(cudaGetLastError());
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_ISSUE,
+                             SYM_GPU3D_T_PARTNER_LFRAG_PACK_ISSUE,
+                             SuperLU_timer_() - partner_pack_issue_t);
+            double partner_d2h_issue_t = SuperLU_timer_();
+#endif
+            state.partner_send_counts.assign(static_cast<size_t>(Pc), 0);
+            state.partner_send_offsets.assign(static_cast<size_t>(Pc), -1);
+            int partner_send_total = 0;
+            for (int pc = 0; pc < Pc; ++pc)
+            {
+                size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                              static_cast<size_t>(pc);
+                int size = symV2PartnerLSendSizes[flat];
+                if (size <= 0)
+                    continue;
+                bool active_remote_dest = false;
+                for (int pr = 0; pr < Pr; ++pr)
+                {
+                    size_t active_pos = flat * static_cast<size_t>(Pr) +
+                                        static_cast<size_t>(pr);
+                    if (active_pos >= symV2PartnerLSendRowActive.size())
+                        ABORT("SymFact V2 async issue partner-L row mask is missing.");
+                    if (symV2PartnerLSendRowActive[active_pos] &&
+                        PNUM(pr, pc, grid) != iam)
+                    {
+                        active_remote_dest = true;
+                        break;
+                    }
+                }
+                if (!active_remote_dest)
+                    continue;
+                state.partner_send_offsets[static_cast<size_t>(pc)] =
+                    partner_send_total;
+                state.partner_send_counts[static_cast<size_t>(pc)] = size;
+                partner_send_total += size;
+            }
+            if (partner_send_total > 0)
+                state.partner_send_values.resize(
+                    static_cast<size_t>(partner_send_total));
+            for (int pc = 0; pc < Pc; ++pc)
+            {
+                size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                              static_cast<size_t>(pc);
+                int size = state.partner_send_counts[static_cast<size_t>(pc)];
+                if (size <= 0)
+                    continue;
+                int send_off =
+                    state.partner_send_offsets[static_cast<size_t>(pc)];
+                if (send_off < 0 ||
+                    static_cast<size_t>(send_off) + static_cast<size_t>(size) >
+                        state.partner_send_values.size())
+                    ABORT("SymFact V2 async issue partner-L owned send offset is invalid.");
+                double *host_stage =
+                    state.partner_send_values.data() + send_off;
+                if (host_stage == NULL)
+                    ABORT("SymFact V2 async issue partner-L owned send buffer is missing.");
+                double *d2h_src = partner_send_buffer_stage2(flat, size);
+                gpuErrchk(cudaMemcpyAsync(
+                    host_stage, d2h_src,
+                    sizeof(double) * static_cast<size_t>(size),
+                    cudaMemcpyDeviceToHost, stream));
+                partner_d2h_any = true;
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symStatAdd(SYM_GPU3D_S_L2U_HOST_STAGING_BYTES,
+                           static_cast<long long>(size) *
+                               static_cast<long long>(sizeof(double)));
+#endif
+            }
+            if (kcol_ == mycol)
+            {
+                size_t self_recv_pos =
+                    recv_count_base + static_cast<size_t>(myrow);
+                if (self_recv_pos >= symV2PartnerLRecvSizes.size())
+                    ABORT("SymFact V2 async issue partner self receive size is missing.");
+                int self_count = symV2PartnerLRecvSizes[self_recv_pos];
+                if (self_count > 0)
+                {
+                    size_t self_flat =
+                        static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                        static_cast<size_t>(mycol);
+                    if (self_flat >= symV2PartnerLSendSizes.size() ||
+                        symV2PartnerLSendSizes[self_flat] != self_count)
+                        ABORT("SymFact V2 async issue partner self size mismatch.");
+                    double *self_src =
+                        partner_send_buffer_stage2(self_flat, self_count);
+                    if (self_src == NULL)
+                        ABORT("SymFact V2 async issue partner self device buffer is missing.");
+                    state.partner_self_pr = myrow;
+                    state.partner_self_count = self_count;
+                    state.partner_self_values.resize(
+                        static_cast<size_t>(self_count));
+                    gpuErrchk(cudaMemcpyAsync(
+                        state.partner_self_values.data(), self_src,
+                        sizeof(double) * static_cast<size_t>(self_count),
+                        cudaMemcpyDeviceToHost, stream));
+                    partner_d2h_any = true;
+                }
+            }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            if (partner_d2h_any)
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_D2H_STAGE_ISSUE,
+                                 SYM_GPU3D_T_PARTNER_LFRAG_D2H_STAGE_ISSUE,
+                                 SuperLU_timer_() - partner_d2h_issue_t);
+            double partner_stage_sync_t = SuperLU_timer_();
+#endif
+            if (partner_d2h_any)
+                gpuErrchk(cudaStreamSynchronize(stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            if (partner_d2h_any)
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
+                                 SYM_GPU3D_T_PARTNER_LFRAG_PACK_STAGE_SYNC,
+                                 SuperLU_timer_() - partner_stage_sync_t);
+            double partner_send_post_t = SuperLU_timer_();
+#endif
+            for (int pc = 0; pc < Pc; ++pc)
+            {
+                size_t flat = static_cast<size_t>(lk) * static_cast<size_t>(Pc) +
+                              static_cast<size_t>(pc);
+                int size = state.partner_send_counts[static_cast<size_t>(pc)];
+                if (size <= 0)
+                    continue;
+                int send_off =
+                    state.partner_send_offsets[static_cast<size_t>(pc)];
+                if (send_off < 0 ||
+                    static_cast<size_t>(send_off) + static_cast<size_t>(size) >
+                        state.partner_send_values.size())
+                    ABORT("SymFact V2 async issue partner-L owned send offset is invalid.");
+                double *host_stage =
+                    state.partner_send_values.data() + send_off;
+                for (int pr = 0; pr < Pr; ++pr)
+                {
+                    size_t active_pos = flat * static_cast<size_t>(Pr) +
+                                        static_cast<size_t>(pr);
+                    if (active_pos >= symV2PartnerLSendRowActive.size())
+                        ABORT("SymFact V2 async issue partner-L row mask is missing.");
+                    if (!symV2PartnerLSendRowActive[active_pos])
+                        continue;
+                    int dest = PNUM(pr, pc, grid);
+                    if (dest == iam)
+                        continue;
+                    if (host_stage == NULL)
+                        ABORT("SymFact V2 async issue partner-L host send staging is missing.");
+                    MPI_Request req;
+                    MPI_Isend(host_stage, size, MPI_DOUBLE, dest,
+                              SLU_MPI_TAG(5, k), grid->comm, &req);
+                    state.partner_send_reqs.push_back(req);
+                    symV2PayloadProfileAdd(SYM_V2_PAYLOAD_PARTNER_MPI_SEND,
+                                           static_cast<long long>(size) *
+                                               static_cast<long long>(sizeof(double)));
+                }
+            }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_POST,
+                             SYM_GPU3D_T_PARTNER_LFRAG_SEND_POST,
+                             SuperLU_timer_() - partner_send_post_t);
+            symStatAdd(SYM_GPU3D_S_L2U_SEND_REQUESTS,
+                       static_cast<long long>(state.partner_send_reqs.size()));
+#endif
+        }
+        state.partner_source_issued = 1;
+
+        /* Row-down sends: pack while the source L panel is still valid. */
+        if (A_gpu.symV2RowFragStageBufs[stream_offset] == NULL)
+            ABORT("SymFact V2 async issue row-fragment device staging buffer is missing.");
+        int_t row_send_lk = lk;
+        state.row_send_counts.assign(static_cast<size_t>(Pc), 0);
+        state.row_send_offsets.assign(static_cast<size_t>(Pc), -1);
+        int row_send_total = 0;
+        for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
+        {
+            if (pc_dest == mycol)
+                continue;
+            size_t slot = static_cast<size_t>(row_send_lk) *
+                              static_cast<size_t>(Pc) +
+                          static_cast<size_t>(pc_dest);
+            if (slot >= symV2RowDownSendSizes.size())
+                ABORT("SymFact V2 async issue row-down send size is missing.");
+            int count = symV2RowDownSendSizes[slot];
+            if (count <= 0)
+                continue;
+            if (count > maxSymV2RowFragValSendCount ||
+                row_send_total > maxSymV2RowFragValSendCount - count)
+                ABORT("SymFact V2 async issue row-down send exceeds staging capacity.");
+            state.row_send_offsets[static_cast<size_t>(pc_dest)] =
+                row_send_total;
+            state.row_send_counts[static_cast<size_t>(pc_dest)] = count;
+            row_send_total += count;
+        }
+        state.row_send_total = row_send_total;
+        bool row_packed_any = false;
+        bool row_self_d2h_any = false;
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double row_pack_issue_t = SuperLU_timer_();
+#endif
+        auto pack_row_destination = [&](int pc_dest, double *dst_buf) -> int
+        {
+            if (dst_buf == NULL)
+                ABORT("SymFact V2 async issue row destination buffer is missing.");
+            size_t slot = static_cast<size_t>(row_send_lk) *
+                              static_cast<size_t>(Pc) +
+                          static_cast<size_t>(pc_dest);
+            if (slot >= symV2RowDownSendSizes.size())
+                ABORT("SymFact V2 async issue row-down send slot is invalid.");
+            int total = symV2RowDownSendSizes[slot];
+            if (total <= 0)
+                return 0;
+            if (lpanel.isEmpty())
+                ABORT("SymFact V2 async issue active row-down source panel is missing.");
+            if (total > maxSymV2RowFragValSendCount)
+                ABORT("SymFact V2 async issue row-down packed destination exceeds capacity.");
+            if (ksupc <= 0 || total % ksupc != 0)
+                ABORT("SymFact V2 async issue row-down total has invalid width.");
+            if (slot >= symV2RowDownSendSegsGPU.size() ||
+                slot >= symV2RowDownSendSegCounts.size())
+                ABORT("SymFact V2 async issue row-down segment slot is invalid.");
+            int nsegments = symV2RowDownSendSegCounts[slot];
+            SymV2RowDownSendSegmentGPU *segments =
+                symV2RowDownSendSegsGPU[slot];
+            if (nsegments <= 0 || segments == NULL ||
+                symL2LSendMapPoolGPU == NULL)
+                ABORT("SymFact V2 async issue row-down descriptors are missing.");
+            int_t dst_lda = static_cast<int_t>(total / ksupc);
+            sym_l2u_pack_segments_kernel<<<nsegments, 256, 0, stream>>>(
+                lpanel.gpuPanel.val, dst_buf, symL2LSendMapPoolGPU,
+                segments, nsegments, ksupc, dst_lda);
+            return total;
+        };
+        for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
+        {
+            int off = state.row_send_offsets[static_cast<size_t>(pc_dest)];
+            int count = state.row_send_counts[static_cast<size_t>(pc_dest)];
+            if (count <= 0)
+                continue;
+            int packed = pack_row_destination(
+                pc_dest, A_gpu.symV2RowFragStageBufs[stream_offset] + off);
+            if (packed != count)
+                ABORT("SymFact V2 async issue row-down pack size mismatch.");
+            row_packed_any = true;
+        }
+        if (state.row_recv_total > 0 && static_cast<int>(kcol_) == mycol)
+        {
+            if (A_gpu.symV2RowFragValRecvBufs[stream_offset] == NULL)
+                ABORT("SymFact V2 async issue row self receive buffer is missing.");
+            int self_total = pack_row_destination(
+                mycol, A_gpu.symV2RowFragValRecvBufs[stream_offset]);
+            if (self_total != state.row_recv_total)
+                ABORT("SymFact V2 async issue row self pack size mismatch.");
+            row_packed_any = true;
+            state.row_self_values.resize(static_cast<size_t>(self_total));
+            gpuErrchk(cudaMemcpyAsync(
+                state.row_self_values.data(),
+                A_gpu.symV2RowFragValRecvBufs[stream_offset],
+                sizeof(double) * static_cast<size_t>(self_total),
+                cudaMemcpyDeviceToHost, stream));
+            row_self_d2h_any = true;
+            symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_SELF,
+                                   static_cast<long long>(self_total) *
+                                       static_cast<long long>(sizeof(double)));
+        }
+        if (row_packed_any)
+        {
+            gpuErrchk(cudaGetLastError());
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_ISSUE,
+                             SYM_GPU3D_T_ROW_LFRAG_PACK_ISSUE,
+                             SuperLU_timer_() - row_pack_issue_t);
+#endif
+        }
+        if (row_send_total > 0)
+        {
+            state.row_send_values.resize(static_cast<size_t>(row_send_total));
+            state.row_send_host_base = state.row_send_values.data();
+            if (state.row_send_host_base == NULL)
+                ABORT("SymFact V2 async issue row owned send staging is missing.");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double row_d2h_issue_t = SuperLU_timer_();
+#endif
+            gpuErrchk(cudaMemcpyAsync(
+                state.row_send_host_base,
+                A_gpu.symV2RowFragStageBufs[stream_offset],
+                sizeof(double) * static_cast<size_t>(row_send_total),
+                cudaMemcpyDeviceToHost, stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_D2H_STAGE_ISSUE,
+                             SYM_GPU3D_T_ROW_LFRAG_D2H_STAGE_ISSUE,
+                             SuperLU_timer_() - row_d2h_issue_t);
+            double row_pack_stage_sync_t = SuperLU_timer_();
+#endif
+            gpuErrchk(cudaStreamSynchronize(stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
+                             SYM_GPU3D_T_ROW_LFRAG_PACK_STAGE_SYNC,
+                             SuperLU_timer_() - row_pack_stage_sync_t);
+            double row_send_post_t = SuperLU_timer_();
+#endif
+            for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
+            {
+                int count = state.row_send_counts[static_cast<size_t>(pc_dest)];
+                if (count <= 0)
+                    continue;
+                int off = state.row_send_offsets[static_cast<size_t>(pc_dest)];
+                MPI_Request req;
+                MPI_Isend(state.row_send_host_base + off, count, MPI_DOUBLE,
+                          pc_dest, SLU_MPI_TAG(5, k), grid3d->rscp.comm,
+                          &req);
+                state.row_send_reqs.push_back(req);
+                symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_MPI_SEND,
+                                       static_cast<long long>(count) *
+                                           static_cast<long long>(sizeof(double)));
+            }
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_POST,
+                             SYM_GPU3D_T_ROW_LFRAG_SEND_POST,
+                             SuperLU_timer_() - row_send_post_t);
+            symStatAdd(SYM_GPU3D_S_L2U_SEND_REQUESTS,
+                       static_cast<long long>(state.row_send_reqs.size()));
+#endif
+        }
+        else if (row_self_d2h_any)
+        {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double row_self_stage_sync_t = SuperLU_timer_();
+#endif
+            gpuErrchk(cudaStreamSynchronize(stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
+                             SYM_GPU3D_T_ROW_LFRAG_PACK_STAGE_SYNC,
+                             SuperLU_timer_() - row_self_stage_sync_t);
+#endif
+        }
+        state.row_source_issued = 1;
+    }
+
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeCompleteGPU(
+    int_t k, int_t stream_offset)
+{
+    if (options->SymFact != YES || symGPU3DVersion != 2)
+        return 0;
+    if (k < 0 || k >= nsupers)
+        return 0;
+    if (!superlu_sym_v2_pcfrag_async_pipeline_stage2b())
+        return 0;
+    if (static_cast<size_t>(k) >= symV2PcFragAsyncStates.size())
+        return 0;
+    SymV2PcFragAsyncState &state =
+        symV2PcFragAsyncStates[static_cast<size_t>(k)];
+    if (!state.active)
+        return 0;
+    if (state.completed)
+        return 0;
+    if (stream_offset < 0)
+        stream_offset = state.stream_offset;
+    if (state.active_k != k || state.stream_offset != stream_offset)
+        ABORT("SymFact V2 Pc-fragment async complete has a stream mismatch.");
+
+    const int_t kcol_ = symV2PanelRoot(k);
+    const int_t ksupc = SuperSize(k);
+    cudaStream_t stream = superlu_sym_v2_async_factor()
+                              ? A_gpu.lookAheadUStream[stream_offset]
+                              : A_gpu.cuStreams[stream_offset];
+
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    double lfrag_total_t = SuperLU_timer_();
+#endif
+
+    auto partner_send_buffer_stage2 = [&](size_t flat, int size) -> double *
+    {
+        if (A_gpu.symPartnerLSendStageBufs[stream_offset] == NULL)
+            ABORT("SymFact V2 async complete partner-L stream send stage is missing.");
+        if (flat >= symV2PartnerLHostSendScratchOffsets.size())
+            ABORT("SymFact V2 async complete partner-L send staging offset is missing.");
+        size_t send_offset = symV2PartnerLHostSendScratchOffsets[flat];
+        size_t count = size > 0 ? static_cast<size_t>(size) : 0;
+        if (send_offset + count >
+                static_cast<size_t>(maxSymPartnerLSendStageCount) ||
+            send_offset + count < send_offset)
+            ABORT("SymFact V2 async complete partner-L stream send stage is too small.");
+        return A_gpu.symPartnerLSendStageBufs[stream_offset] + send_offset;
+    };
+
+    if (!state.partner_recv_reqs.empty())
+    {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double recv_wait_t = SuperLU_timer_();
+#endif
+        MPI_Waitall(static_cast<int>(state.partner_recv_reqs.size()),
+                    state.partner_recv_reqs.data(), MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAddBoth(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
+                         SYM_GPU3D_T_PARTNER_LFRAG_MPI_RECV_WAIT,
+                         SuperLU_timer_() - recv_wait_t);
+#endif
+        state.partner_recv_reqs.clear();
+    }
+
+    size_t recv_count_base = static_cast<size_t>(k) *
+                             static_cast<size_t>(Pr);
+    if (recv_count_base + static_cast<size_t>(Pr) >
+            symV2PartnerLRecvMap.size())
+        ABORT("SymFact V2 async complete partner receive maps are missing.");
+    if (static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
+        ABORT("SymFact V2 async complete partner cached index is missing.");
+    const std::vector<int_t> &cached_index = symV2PartnerLRecvIndex[k];
+    if (state.partner_recv_total > 0 && cached_index.empty())
+        ABORT("SymFact V2 async complete received partner fragments without metadata.");
+    int_t frag_nblocks = cached_index.empty() ? 0 : cached_index[0];
+    int_t frag_nrows = cached_index.empty() ? 0 : cached_index[1];
+    int_t frag_index_size = static_cast<int_t>(cached_index.size());
+    if (frag_index_size > maxSymPartnerLidxCount)
+        ABORT("SymFact V2 async complete partner index exceeds device buffer.");
+    if (static_cast<int64_t>(frag_nrows) *
+            static_cast<int64_t>(ksupc) >
+        static_cast<int64_t>(maxSymPartnerLvalCount))
+        ABORT("SymFact V2 async complete partner values exceed receive buffer.");
+
+    int_t empty_header[LPANEL_HEADER_SIZE] = {0, 0, 0, ksupc};
+    if (A_gpu.symPartnerLidxRecvBufs[stream_offset] == NULL)
+        ABORT("SymFact V2 async complete partner index buffer is missing.");
+    if (cached_index.empty())
+    {
+        gpuErrchk(cudaMemcpyAsync(
+            A_gpu.symPartnerLidxRecvBufs[stream_offset],
+            empty_header, sizeof(int_t) * LPANEL_HEADER_SIZE,
+            cudaMemcpyHostToDevice, stream));
+    }
+    else
+    {
+        gpuErrchk(cudaMemcpyAsync(
+            A_gpu.symPartnerLidxRecvBufs[stream_offset],
+            cached_index.data(),
+            sizeof(int_t) * static_cast<size_t>(frag_index_size),
+            cudaMemcpyHostToDevice, stream));
+    }
+
+    if (state.partner_recv_total > 0)
+    {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double h2d_issue_t = SuperLU_timer_();
+#endif
+        gpuErrchk(cudaMemcpyAsync(
+            A_gpu.symPartnerLStageBufs[stream_offset],
+            state.partner_recv_host_base,
+            sizeof(double) * static_cast<size_t>(state.partner_recv_total),
+            cudaMemcpyHostToDevice, stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAddBoth(SYM_GPU3D_T_LFRAG_H2D_STAGE_ISSUE,
+                         SYM_GPU3D_T_PARTNER_LFRAG_H2D_STAGE_ISSUE,
+                         SuperLU_timer_() - h2d_issue_t);
+#endif
+    }
+
+    if (frag_nblocks > 0 && frag_nrows > 0)
+    {
+        if (A_gpu.symPartnerLvalRecvBufs[stream_offset] == NULL ||
+            A_gpu.symPartnerLStageBufs[stream_offset] == NULL)
+            ABORT("SymFact V2 async complete partner device buffers are missing.");
+        gpuErrchk(cudaMemsetAsync(
+            A_gpu.symPartnerLvalRecvBufs[stream_offset], 0,
+            sizeof(double) * static_cast<size_t>(frag_nrows) *
+                static_cast<size_t>(ksupc),
+            stream));
+
+        for (int pr = 0; pr < Pr; ++pr)
+        {
+            int count = state.partner_recv_sizes[static_cast<size_t>(pr)];
+            if (count <= 0)
+                continue;
+            const std::vector<int_t> &recv_map =
+                symV2PartnerLRecvMap[recv_count_base +
+                                      static_cast<size_t>(pr)];
+            int src = PNUM(pr, kcol_, grid);
+            double *stage = NULL;
+            if (src == iam)
+            {
+                if (mycol != kcol_)
+                    ABORT("SymFact V2 async complete self partner source column is invalid.");
+                int_t send_lk = symV2PanelIndex(k);
+                size_t self_flat = static_cast<size_t>(send_lk) *
+                                       static_cast<size_t>(Pc) +
+                                   static_cast<size_t>(mycol);
+                if (self_flat >= symV2PartnerLSendSizes.size() ||
+                    symV2PartnerLSendSizes[self_flat] != count)
+                    ABORT("SymFact V2 async complete self partner size mismatch.");
+                if (state.partner_self_pr != pr ||
+                    state.partner_self_count != count ||
+                    state.partner_self_values.size() !=
+                        static_cast<size_t>(count))
+                    ABORT("SymFact V2 async complete self partner payload is missing.");
+                stage = partner_send_buffer_stage2(self_flat, count);
+                gpuErrchk(cudaMemcpyAsync(
+                    stage, state.partner_self_values.data(),
+                    sizeof(double) * static_cast<size_t>(count),
+                    cudaMemcpyHostToDevice, stream));
+            }
+            else
+            {
+                int off = state.partner_recv_offsets[static_cast<size_t>(pr)];
+                if (off < 0)
+                    ABORT("SymFact V2 async complete partner receive offset is invalid.");
+                stage = A_gpu.symPartnerLStageBufs[stream_offset] + off;
+            }
+            if (recv_map.size() % 3 != 0)
+                ABORT("SymFact V2 async complete partner receive map has invalid stride.");
+            int pieces = static_cast<int>(recv_map.size() / 3);
+            int_t *recv_map_gpu =
+                symV2PartnerLRecvMapsGPU[recv_count_base +
+                                          static_cast<size_t>(pr)];
+            if (pieces > 0 && recv_map_gpu == NULL)
+                ABORT("SymFact V2 async complete partner device receive map is missing.");
+            if (pieces > 0)
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                double assemble_issue_t = SuperLU_timer_();
+#endif
+                sym_lfrag_assemble_kernel<<<pieces, 256, 0, stream>>>(
+                    stage, A_gpu.symPartnerLvalRecvBufs[stream_offset],
+                    recv_map_gpu, pieces, ksupc, frag_nrows);
+                gpuErrchk(cudaGetLastError());
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_ASSEMBLE_ISSUE,
+                                 SYM_GPU3D_T_PARTNER_LFRAG_ASSEMBLE_ISSUE,
+                                 SuperLU_timer_() - assemble_issue_t);
+#endif
+            }
+        }
+    }
+
+    /* Row-down completion. */
+    if (static_cast<size_t>(k) >= symV2RowFragRecvIndex.size())
+        ABORT("SymFact V2 async complete row-fragment cached index is missing.");
+    const std::vector<int_t> &row_index = symV2RowFragRecvIndex[k];
+    int_t row_index_size =
+        row_index.empty() ? LPANEL_HEADER_SIZE
+                          : static_cast<int_t>(row_index.size());
+    if (row_index_size > maxSymV2RowFragIdxRecvCount)
+        ABORT("SymFact V2 async complete row index exceeds device buffer.");
+    if (A_gpu.symV2RowFragIdxRecvBufs[stream_offset] == NULL ||
+        A_gpu.symV2RowFragValRecvBufs[stream_offset] == NULL)
+        ABORT("SymFact V2 async complete row GPU buffers are missing.");
+    if (row_index.empty())
+    {
+        gpuErrchk(cudaMemcpyAsync(
+            A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
+            empty_header, sizeof(int_t) * LPANEL_HEADER_SIZE,
+            cudaMemcpyHostToDevice, stream));
+    }
+    else
+    {
+        if (row_index[3] != ksupc)
+            ABORT("SymFact V2 async complete row index has wrong panel width.");
+        gpuErrchk(cudaMemcpyAsync(
+            A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
+            row_index.data(),
+            sizeof(int_t) * static_cast<size_t>(row_index_size),
+            cudaMemcpyHostToDevice, stream));
+
+        int_t row_nrows = row_index[1];
+        int64_t row_value_count =
+            static_cast<int64_t>(row_nrows) *
+            static_cast<int64_t>(ksupc);
+        if (row_nrows <= 0 ||
+            row_value_count >
+                static_cast<int64_t>(maxSymV2RowFragValRecvCount))
+            ABORT("SymFact V2 async complete row value buffer is too small.");
+
+        if (!state.row_recv_reqs.empty())
+        {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double row_recv_wait_t = SuperLU_timer_();
+#endif
+            MPI_Waitall(static_cast<int>(state.row_recv_reqs.size()),
+                        state.row_recv_reqs.data(), MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_MPI_RECV_WAIT,
+                             SYM_GPU3D_T_ROW_LFRAG_MPI_RECV_WAIT,
+                             SuperLU_timer_() - row_recv_wait_t);
+#endif
+            state.row_recv_reqs.clear();
+        }
+
+        if (state.row_recv_total != row_value_count)
+            ABORT("SymFact V2 async complete direct row-L receive size mismatch.");
+        if (state.row_recv_total > 0 && static_cast<int>(kcol_) != mycol)
+        {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double row_h2d_issue_t = SuperLU_timer_();
+#endif
+            gpuErrchk(cudaMemcpyAsync(
+                A_gpu.symV2RowFragValRecvBufs[stream_offset],
+                state.row_recv_host_base,
+                sizeof(double) * static_cast<size_t>(state.row_recv_total),
+                cudaMemcpyHostToDevice, stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_H2D_STAGE_ISSUE,
+                             SYM_GPU3D_T_ROW_LFRAG_H2D_STAGE_ISSUE,
+                             SuperLU_timer_() - row_h2d_issue_t);
+#endif
+        }
+        else if (state.row_recv_total > 0)
+        {
+            if (state.row_self_values.size() !=
+                static_cast<size_t>(state.row_recv_total))
+                ABORT("SymFact V2 async complete row self payload is missing.");
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            double row_h2d_issue_t = SuperLU_timer_();
+#endif
+            gpuErrchk(cudaMemcpyAsync(
+                A_gpu.symV2RowFragValRecvBufs[stream_offset],
+                state.row_self_values.data(),
+                sizeof(double) * static_cast<size_t>(state.row_recv_total),
+                cudaMemcpyHostToDevice, stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+            symTimingAddBoth(SYM_GPU3D_T_LFRAG_H2D_STAGE_ISSUE,
+                             SYM_GPU3D_T_ROW_LFRAG_H2D_STAGE_ISSUE,
+                             SuperLU_timer_() - row_h2d_issue_t);
+#endif
+        }
+    }
+
+    if (!state.partner_send_reqs.empty())
+    {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double send_wait_t = SuperLU_timer_();
+#endif
+        MPI_Waitall(static_cast<int>(state.partner_send_reqs.size()),
+                    state.partner_send_reqs.data(), MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
+                         SYM_GPU3D_T_PARTNER_LFRAG_SEND_WAIT,
+                         SuperLU_timer_() - send_wait_t);
+#endif
+        state.partner_send_reqs.clear();
+    }
+    if (!state.row_send_reqs.empty())
+    {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        double row_send_wait_t = SuperLU_timer_();
+#endif
+        MPI_Waitall(static_cast<int>(state.row_send_reqs.size()),
+                    state.row_send_reqs.data(), MPI_STATUSES_IGNORE);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+        symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
+                         SYM_GPU3D_T_ROW_LFRAG_SEND_WAIT,
+                         SuperLU_timer_() - row_send_wait_t);
+#endif
+        state.row_send_reqs.clear();
+    }
+
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    double stream_sync_t = SuperLU_timer_();
+#endif
+    gpuErrchk(cudaStreamSynchronize(stream));
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+    symTimingAdd(SYM_GPU3D_T_LFRAG_STREAM_SYNC,
+                 SuperLU_timer_() - stream_sync_t);
+    symTimingAdd(SYM_GPU3D_T_LFRAG_EXCHANGE_TOTAL,
+                 SuperLU_timer_() - lfrag_total_t);
+#endif
+
+    state.completed = 1;
+    if (state.stream_offset >= 0 &&
+        static_cast<size_t>(state.stream_offset) <
+            symV2PcFragAsyncStreamOwner.size())
+        symV2PcFragAsyncStreamOwner[static_cast<size_t>(state.stream_offset)] =
+            static_cast<int_t>(-1);
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2LFragmentExchangeReleaseGPU(
+    int_t k, int_t stream_offset)
+{
+    return 0;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeReleaseGPU(
+    int_t k, int_t stream_offset)
+{
+    if (options->SymFact != YES || symGPU3DVersion != 2)
+        return 0;
+    if (!superlu_sym_v2_pcfrag_async_pipeline_stage2b())
+        return 0;
+    if (k < 0 || k >= nsupers ||
+        static_cast<size_t>(k) >= symV2PcFragAsyncStates.size())
+        return 0;
+
+    SymV2PcFragAsyncState &state =
+        symV2PcFragAsyncStates[static_cast<size_t>(k)];
+    if (!state.active)
+        return 0;
+
+    if (!state.completed)
+        dSymV2LFragmentExchangeCompleteGPU(k, stream_offset);
+
+    if (state.stream_offset >= 0 &&
+        static_cast<size_t>(state.stream_offset) <
+            symV2PcFragAsyncStreamOwner.size())
+        symV2PcFragAsyncStreamOwner[static_cast<size_t>(state.stream_offset)] =
+            static_cast<int_t>(-1);
+    state.reset();
+    return 0;
+}
+
 template <>
 inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     int_t k, int_t stream_offset)
@@ -643,12 +1696,19 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         superlu_sym_v2_row_l_compressed_plan() &&
         superlu_sym_v2_row_l_lazy_sendmap();
 // SYM_V2_PC2_ASYNC_EXCHANGE_FLAG_BEGIN
+    const bool pcfrag_async_pipeline_stage2b =
+        pc_fragment_schur &&
+        async_factor &&
+        row_down_lazy_sendmap &&
+        superlu_sym_v2_pc_fragment_ldl_native() &&
+        superlu_sym_v2_pcfrag_async_pipeline_stage2b();
     const bool pcfrag_async_pipeline =
         pc_fragment_schur &&
         async_factor &&
         row_down_lazy_sendmap &&
         superlu_sym_v2_pc_fragment_ldl_native() &&
-        superlu_sym_v2_pcfrag_async_pipeline();
+        (superlu_sym_v2_pcfrag_async_pipeline() ||
+         pcfrag_async_pipeline_stage2b);
     const bool pcfrag_async_exchange =
         pc_fragment_schur &&
         async_factor &&
