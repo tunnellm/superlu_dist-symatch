@@ -2725,7 +2725,8 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateDualFragmentsGPU(
         {
             if (!candidate.completed)
                 ABORT("SymFact V2 Pc-fragment progress lookahead consumed fragments before CompleteGPU.");
-            pcfrag_async_state = &candidate;
+            if (!candidate.progress_lean_path)
+                pcfrag_async_state = &candidate;
         }
     }
 
@@ -2812,7 +2813,8 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneDualFragmentsGPU(
         {
             if (!candidate.completed)
                 ABORT("SymFact V2 Pc-fragment progress lookahead consumed fragments before CompleteGPU.");
-            pcfrag_async_state = &candidate;
+            if (!candidate.progress_lean_path)
+                pcfrag_async_state = &candidate;
         }
     }
 

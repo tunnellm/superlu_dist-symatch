@@ -564,6 +564,7 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "pcfrag_async_blocking_complete_wall",
         "pcfrag_async_release_sync_wall",
         "pcfrag_async_event_wait",
+        "pcfrag_async_forced_owner_complete_wall",
         "partner_lfrag_mpi_recv_test",
         "row_lfrag_mpi_recv_test",
         "partner_lfrag_mpi_send_test",
@@ -641,6 +642,7 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "pcfrag_async_blocking_complete_wall",
         "pcfrag_async_release_sync_wall",
         "pcfrag_async_event_wait",
+        "pcfrag_async_forced_owner_complete_wall",
         "partner_lfrag_mpi_recv_test",
         "row_lfrag_mpi_recv_test",
         "partner_lfrag_mpi_send_test",
@@ -681,7 +683,8 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "pcfrag_async_partner_recv_posts",
         "pcfrag_async_row_recv_posts",
         "pcfrag_async_partner_send_posts",
-        "pcfrag_async_row_send_posts"
+        "pcfrag_async_row_send_posts",
+        "pcfrag_async_forced_owner_completes"
     };
     static const char *stat_labels_v2[SYM_GPU3D_S_COUNT] = {
         "factor_trees",
@@ -718,7 +721,8 @@ void xLUstruct_t<Ftype>::printSymGPU3DTiming()
         "pcfrag_async_partner_recv_posts",
         "pcfrag_async_row_recv_posts",
         "pcfrag_async_partner_send_posts",
-        "pcfrag_async_row_send_posts"
+        "pcfrag_async_row_send_posts",
+        "pcfrag_async_forced_owner_completes"
     };
 
     int mpi_initialized = 0;

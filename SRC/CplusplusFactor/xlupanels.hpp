@@ -746,6 +746,7 @@ struct xLUstruct_t
         SYM_GPU3D_T_PCFRAG_ASYNC_BLOCKING_COMPLETE_WALL,
         SYM_GPU3D_T_PCFRAG_ASYNC_RELEASE_SYNC_WALL,
         SYM_GPU3D_T_PCFRAG_ASYNC_EVENT_WAIT,
+        SYM_GPU3D_T_PCFRAG_ASYNC_FORCED_OWNER_COMPLETE_WALL,
         SYM_GPU3D_T_PARTNER_LFRAG_MPI_RECV_TEST,
         SYM_GPU3D_T_ROW_LFRAG_MPI_RECV_TEST,
         SYM_GPU3D_T_PARTNER_LFRAG_MPI_SEND_TEST,
@@ -790,6 +791,7 @@ struct xLUstruct_t
         SYM_GPU3D_S_PCFRAG_ASYNC_ROW_RECV_POSTS,
         SYM_GPU3D_S_PCFRAG_ASYNC_PARTNER_SEND_POSTS,
         SYM_GPU3D_S_PCFRAG_ASYNC_ROW_SEND_POSTS,
+        SYM_GPU3D_S_PCFRAG_ASYNC_FORCED_OWNER_COMPLETES,
         SYM_GPU3D_S_COUNT
     };
 
@@ -1015,6 +1017,7 @@ struct xLUstruct_t
         int stream_offset;
         int active;
         int progress_path;
+        int progress_lean_path;
         int partner_recvs_posted;
         int row_recvs_posted;
         int partner_source_issued;
@@ -1087,6 +1090,7 @@ struct xLUstruct_t
 
         SymV2PcFragAsyncState()
             : active_k(-1), stream_offset(-1), active(0), progress_path(0),
+              progress_lean_path(0),
               partner_recvs_posted(0), row_recvs_posted(0),
               partner_source_issued(0), row_source_issued(0),
               partner_recv_total(0), partner_send_total(0),
@@ -1151,6 +1155,7 @@ struct xLUstruct_t
             swap(stream_offset, other.stream_offset);
             swap(active, other.active);
             swap(progress_path, other.progress_path);
+            swap(progress_lean_path, other.progress_lean_path);
             swap(partner_recvs_posted, other.partner_recvs_posted);
             swap(row_recvs_posted, other.row_recvs_posted);
             swap(partner_source_issued, other.partner_source_issued);
@@ -1291,6 +1296,7 @@ struct xLUstruct_t
             stream_offset = -1;
             active = 0;
             progress_path = 0;
+            progress_lean_path = 0;
             partner_recvs_posted = 0;
             row_recvs_posted = 0;
             partner_source_issued = 0;
@@ -1340,6 +1346,12 @@ struct xLUstruct_t
     // SYM_V2_PCFRAG_ASYNC_PROGRESS_STATE_END
     std::vector<SymV2PcFragAsyncState> symV2PcFragAsyncStates;
     std::vector<int_t> symV2PcFragAsyncStreamOwner;
+
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_STATE_BEGIN
+    std::vector<int_t> symV2PcFragAsyncLivePanels;
+    std::vector<cudaEvent_t> symV2PcFragAsyncLeanD2HEvents;
+    std::vector<cudaEvent_t> symV2PcFragAsyncLeanReadyEvents;
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_STATE_END
 
     struct SymV2PcFragAsyncPinnedPool
     {
@@ -1705,6 +1717,16 @@ struct xLUstruct_t
                 cublasDestroy(A_gpu.lookAheadLHandle[stream]);
                 cublasDestroy(A_gpu.lookAheadUHandle[stream]);
             }
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_DTOR_BEGIN
+            for (size_t ev = 0; ev < symV2PcFragAsyncLeanD2HEvents.size(); ++ev)
+                if (symV2PcFragAsyncLeanD2HEvents[ev] != NULL)
+                    cudaEventDestroy(symV2PcFragAsyncLeanD2HEvents[ev]);
+            for (size_t ev = 0; ev < symV2PcFragAsyncLeanReadyEvents.size(); ++ev)
+                if (symV2PcFragAsyncLeanReadyEvents[ev] != NULL)
+                    cudaEventDestroy(symV2PcFragAsyncLeanReadyEvents[ev]);
+            symV2PcFragAsyncLeanD2HEvents.clear();
+            symV2PcFragAsyncLeanReadyEvents.clear();
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_DTOR_END
             if (A_gpu.symV2PanelLocalIndex != NULL)
                 cudaFree(A_gpu.symV2PanelLocalIndex);
             if (symV2StreamArenaGPU != NULL)
@@ -1970,6 +1992,15 @@ struct xLUstruct_t
         int_t k, int_t stream_offset, int final_sync);
     int_t dSymV2LFragmentExchangeFinalSyncGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeReleaseProgressGPU(int_t k, int_t stream_offset);
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_DECL_BEGIN
+    int_t dSymV2LFragmentExchangeIssueProgressLeanGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeProgressLeanGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeCompleteProgressLeanGPU(
+        int_t k, int_t stream_offset, int final_sync);
+    int_t dSymV2LFragmentExchangeReleaseProgressLeanGPU(int_t k, int_t stream_offset);
+    void dSymV2PcFragAsyncLiveAdd(int_t k);
+    void dSymV2PcFragAsyncLiveRemove(int_t k);
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_DECL_END
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_DECL_END
     int_t dSymV2LFragmentExchangeCompleteGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeReleaseGPU(int_t k, int_t stream_offset);

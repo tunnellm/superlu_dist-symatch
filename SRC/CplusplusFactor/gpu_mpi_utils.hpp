@@ -491,6 +491,33 @@ static inline bool superlu_sym_v2_pcfrag_async_progress()
 }
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_FLAG_END
 
+
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_FLAGS_BEGIN
+static inline bool superlu_sym_v2_pcfrag_async_progress_lean_buffers()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_LEAN_BUFFERS", 1);
+}
+
+static inline bool superlu_sym_v2_pcfrag_async_progress_liveset()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_LIVESET", 1);
+}
+
+static inline bool superlu_sym_v2_pcfrag_async_progress_poll_inner()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_POLL_INNER", 0);
+}
+
+static inline bool superlu_sym_v2_pcfrag_async_progress_release_nosync()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_RELEASE_NOSYNC", 1);
+}
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_FLAGS_END
+
 static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_CUDA_AWARE_EXPERIMENT", 0);

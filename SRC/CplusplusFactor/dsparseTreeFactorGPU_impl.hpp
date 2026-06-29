@@ -968,7 +968,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         // SYM_V2_PCFRAG_ASYNC_PROGRESS_SCHED_END
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
         {
-            dSymV2LFragmentExchangeProgressAllGPU();
+            if (superlu_sym_v2_pcfrag_async_progress_poll_inner())
+                dSymV2LFragmentExchangeProgressAllGPU();
             SymV2FactorProfileScope sym_v2_sched_scope(
                 (symGPU3DVersion == 2) ? this : NULL,
                 SYM_V2_FACTOR_SCHED_LOOKAHEAD_DISPATCH);
@@ -1015,7 +1016,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
                     SymV2FactorProfileScope sym_v2_la_scope(
                         this, SYM_V2_FACTOR_LOOKAHEAD_UPDATE);
-                    dSymV2LFragmentExchangeProgressAllGPU();
+                    dSymV2LFragmentExchangeProgressGPU(k, offset);
                     dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_PROGRESS_LOOKAHEAD_COMPLETE
                     dSymLookAheadUpdateWithLFragmentsGPU(offset, k, k_parent,
                                                          k_lpanel);
@@ -1201,7 +1202,7 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
                     SymV2FactorProfileScope sym_v2_exclude_scope(
                         this, SYM_V2_FACTOR_EXCLUDE_UPDATE);
-                    dSymV2LFragmentExchangeProgressAllGPU();
+                    dSymV2LFragmentExchangeProgressGPU(k, offset);
                     dSymV2LFragmentExchangeCompleteGPU(k, offset); // SYM_V2_PC2_ASYNC_PROGRESS_EXCLUDE_COMPLETE
                     dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(offset, k,
                                                                    k_parent,
@@ -1325,6 +1326,9 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             sym_sched_book_t = 0.0;
         }
 #endif
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_BEFORE_FINAL_SYNC_BEGIN
+        dSymV2LFragmentExchangeProgressAllGPU();
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_BEFORE_FINAL_SYNC_END
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + oldWinSize); ++k0)
         {
             SymV2FactorProfileScope sym_v2_final_sync_scope(
