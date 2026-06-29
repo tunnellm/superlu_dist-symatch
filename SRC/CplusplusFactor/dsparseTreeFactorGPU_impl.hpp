@@ -465,7 +465,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                     superlu_sym_v2_row_l_compressed_plan() &&
                     superlu_sym_v2_row_l_lazy_sendmap() &&
                     !superlu_sym_v2_row_l_lazy_warp_pack() &&
-                    superlu_sym_v2_pcfrag_async_pipeline_stage2b();
+                    (superlu_sym_v2_pcfrag_async_pipeline_stage2b() ||
+                     superlu_sym_v2_pcfrag_async_pipeline_stage3()); // SYM_V2_PC2_ASYNC_STAGE3_PANEL_ISSUE
                 if (pcfrag_async_stage2b_issue)
                     dSymV2LFragmentExchangeIssueGPU(k, offset);
                 else
@@ -489,7 +490,8 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
                 superlu_sym_v2_row_l_lazy_sendmap() &&
                 (superlu_sym_v2_pcfrag_async_exchange() ||
                  superlu_sym_v2_pcfrag_async_pipeline() ||
-                 superlu_sym_v2_pcfrag_async_pipeline_stage2b());
+                 superlu_sym_v2_pcfrag_async_pipeline_stage2b() ||
+                 superlu_sym_v2_pcfrag_async_pipeline_stage3()); // SYM_V2_PC2_ASYNC_STAGE3_PANEL_READY
             if (superlu_sym_v2_async_factor() &&
                 pcfrag_async_exchange_panel_ready &&
                 mycol == sym_panel_root &&
@@ -1341,7 +1343,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 superlu_sym_v2_row_l_compressed_plan() &&
                 superlu_sym_v2_row_l_lazy_sendmap() &&
                 !superlu_sym_v2_row_l_lazy_warp_pack() &&
-                superlu_sym_v2_pcfrag_async_pipeline_stage2b();
+                (superlu_sym_v2_pcfrag_async_pipeline_stage2b() ||
+                 superlu_sym_v2_pcfrag_async_pipeline_stage3()); // SYM_V2_PC2_ASYNC_STAGE3_FINAL_COMPLETE
             if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
                 pcfrag_stage2b_final_complete ||
                 (symGPU3DVersion != 2 &&
