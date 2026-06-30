@@ -962,6 +962,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     state.stream_offset = stream_offset;
     state.initialized = 1;
     state.exchange_posted = 1;
+    state.producer_exchange_active = 1;
     ++symV2PcFragTaskflowStats.taskflow_entries;
 
     const std::vector<int_t> &row_frag = symV2RowFragRecvIndex[k];
@@ -1578,6 +1579,24 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         }
         return false;
     };
+    auto task_stream_blocked =
+        [](const SymV2PcFragTaskDesc &task,
+           unsigned char blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT]) -> bool {
+        unsigned char kind = task.launch_stream_kind;
+        if (kind <= SYM_V2_PCFRAG_TASK_STREAM_NONE ||
+            kind >= SYM_V2_PCFRAG_TASK_STREAM_COUNT)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no stream order tag.");
+        return blocked[kind] != 0;
+    };
+    auto mark_task_stream_blocked =
+        [](const SymV2PcFragTaskDesc &task,
+           unsigned char blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT]) {
+        unsigned char kind = task.launch_stream_kind;
+        if (kind <= SYM_V2_PCFRAG_TASK_STREAM_NONE ||
+            kind >= SYM_V2_PCFRAG_TASK_STREAM_COUNT)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no stream order tag.");
+        blocked[kind] = 1;
+    };
     auto lock_outputs = [&](const SymV2PcFragTaskDesc &task) {
         if (!strict_output_conflicts)
             return;
@@ -1633,6 +1652,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         {
             int pending = 0;
             int completed_this_pass = 0;
+            unsigned char stream_blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT] =
+                {0, 0, 0, 0};
             for (size_t i = 0; i < state.launched_task_ids.size(); ++i)
             {
                 int tid = state.launched_task_ids[i];
@@ -1645,6 +1666,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                 if (task.done_event == NULL)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no completion event.");
                 ++pending;
+                if (task_stream_blocked(task, stream_blocked))
+                    continue;
                 cudaError_t event_rc = cudaEventQuery(task.done_event);
                 ++symV2PcFragTaskflowStats.task_completion_event_queries;
                 if (event_rc == cudaSuccess)
@@ -1657,6 +1680,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                 }
                 if (event_rc != cudaErrorNotReady)
                     gpuErrchk(event_rc);
+                mark_task_stream_blocked(task, stream_blocked);
             }
             if (!drain || pending == 0)
                 break;
@@ -1762,6 +1786,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             col.d_index, col.d_val,
             handle, stream, gemmBuff);
         task.launched = 1;
+        task.launch_stream_kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
         if (async_core)
         {
             if (task.done_event == NULL)
@@ -1800,6 +1825,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         state.producer_launch_cap_reported = 1;
     }
     if (state.incomplete_task_count == 0 &&
+        !state.producer_exchange_active &&
         !state.producer_exchange_pending)
         release_completed_state();
     return launched;
@@ -1850,6 +1876,32 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     return true;
             }
             return false;
+        };
+        auto task_stream_kind_for_launch_mode =
+            [](unsigned launch_mode) -> unsigned char {
+            if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+                return SYM_V2_PCFRAG_TASK_STREAM_LOOKAHEAD_L;
+            if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                return SYM_V2_PCFRAG_TASK_STREAM_LOOKAHEAD_U;
+            return SYM_V2_PCFRAG_TASK_STREAM_MAIN;
+        };
+        auto task_stream_blocked =
+            [](const SymV2PcFragTaskDesc &task,
+               unsigned char blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT]) -> bool {
+            unsigned char kind = task.launch_stream_kind;
+            if (kind <= SYM_V2_PCFRAG_TASK_STREAM_NONE ||
+                kind >= SYM_V2_PCFRAG_TASK_STREAM_COUNT)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no stream order tag.");
+            return blocked[kind] != 0;
+        };
+        auto mark_task_stream_blocked =
+            [](const SymV2PcFragTaskDesc &task,
+               unsigned char blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT]) {
+            unsigned char kind = task.launch_stream_kind;
+            if (kind <= SYM_V2_PCFRAG_TASK_STREAM_NONE ||
+                kind >= SYM_V2_PCFRAG_TASK_STREAM_COUNT)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no stream order tag.");
+            blocked[kind] = 1;
         };
         auto lock_outputs = [&](const SymV2PcFragTaskDesc &task) {
             if (!strict_output_conflicts)
@@ -1906,6 +1958,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 int pending = 0;
                 int completed_this_pass = 0;
+                unsigned char stream_blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT] =
+                    {0, 0, 0, 0};
                 for (size_t i = 0; i < state.launched_task_ids.size(); ++i)
                 {
                     int tid = state.launched_task_ids[i];
@@ -1918,6 +1972,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     if (task.done_event == NULL)
                         ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no completion event.");
                     ++pending;
+                    if (task_stream_blocked(task, stream_blocked))
+                        continue;
                     cudaError_t event_rc = cudaEventQuery(task.done_event);
                     ++symV2PcFragTaskflowStats.task_completion_event_queries;
                     if (event_rc == cudaSuccess)
@@ -1930,6 +1986,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     }
                     if (event_rc != cudaErrorNotReady)
                         gpuErrchk(event_rc);
+                    mark_task_stream_blocked(task, stream_blocked);
                 }
                 if (!drain || pending == 0)
                     break;
@@ -2052,6 +2109,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     col.d_index, col.d_val,
                     handle, stream, gemmBuff);
                 task.launched = 1;
+                task.launch_stream_kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
                 if (async_core)
                 {
                     if (task.done_event == NULL)
@@ -2078,6 +2136,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             }
             progress_launched_tasks(drain ? 1 : 0);
             if (state.incomplete_task_count == 0 &&
+                !state.producer_exchange_active &&
                 !state.producer_exchange_pending)
             {
                 release_completed_state();
@@ -2291,6 +2350,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 col.d_index, col.d_val,
                 task_handle, task_stream, task_gemm);
             task.launched = 1;
+            task.launch_stream_kind =
+                task_stream_kind_for_launch_mode(launch_mode);
             if (async_core)
             {
                 if (task.done_event == NULL)
@@ -2671,6 +2732,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         }
         progress_launched_tasks(drain ? 1 : 0);
         if (state.incomplete_task_count == 0 &&
+            !state.producer_exchange_active &&
             !state.producer_exchange_pending)
         {
             release_completed_state();
@@ -2724,15 +2786,37 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     SymV2PcFragPanelTaskState &state =
         symV2PcFragTaskStates[static_cast<size_t>(k)];
     dSymV2PcFragTaskflowProgressExchangeGPU(k, 1);
+    if (state.producer_exchange_active)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW release found active producer exchange.");
     if (state.producer_exchange_pending)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found pending producer exchange.");
     if (superlu_sym_v2_pcfrag_taskflow_async_core())
     {
+        auto task_stream_blocked =
+            [](const SymV2PcFragTaskDesc &task,
+               unsigned char blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT]) -> bool {
+            unsigned char kind = task.launch_stream_kind;
+            if (kind <= SYM_V2_PCFRAG_TASK_STREAM_NONE ||
+                kind >= SYM_V2_PCFRAG_TASK_STREAM_COUNT)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no stream order tag.");
+            return blocked[kind] != 0;
+        };
+        auto mark_task_stream_blocked =
+            [](const SymV2PcFragTaskDesc &task,
+               unsigned char blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT]) {
+            unsigned char kind = task.launch_stream_kind;
+            if (kind <= SYM_V2_PCFRAG_TASK_STREAM_NONE ||
+                kind >= SYM_V2_PCFRAG_TASK_STREAM_COUNT)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no stream order tag.");
+            blocked[kind] = 1;
+        };
         int idle_polls = 0;
         for (;;)
         {
             int pending = 0;
             int completed_this_pass = 0;
+            unsigned char stream_blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT] =
+                {0, 0, 0, 0};
             for (size_t i = 0; i < state.launched_task_ids.size(); ++i)
             {
                 int tid = state.launched_task_ids[i];
@@ -2745,10 +2829,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
                 if (task.done_event == NULL)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW release found async task without completion event.");
                 ++pending;
+                if (task_stream_blocked(task, stream_blocked))
+                    continue;
                 cudaError_t event_rc = cudaEventQuery(task.done_event);
                 ++symV2PcFragTaskflowStats.task_completion_event_queries;
                 if (event_rc == cudaErrorNotReady)
+                {
+                    mark_task_stream_blocked(task, stream_blocked);
                     continue;
+                }
                 if (event_rc != cudaSuccess)
                     gpuErrchk(event_rc);
                 if (superlu_sym_v2_pcfrag_taskflow_strict())
@@ -6108,6 +6197,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         send_reqs.clear();
         }
     }
+
+    if (pcfrag_taskflow && taskflow_state != NULL &&
+        taskflow_state->initialized)
+        taskflow_state->producer_exchange_active = 0;
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double stream_sync_t = SuperLU_timer_();

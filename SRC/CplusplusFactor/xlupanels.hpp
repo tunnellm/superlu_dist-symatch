@@ -1006,6 +1006,15 @@ struct xLUstruct_t
         SYM_V2_PCFRAG_TASK_FULL = 8
     };
 
+    enum SymV2PcFragTaskStreamKind
+    {
+        SYM_V2_PCFRAG_TASK_STREAM_NONE = 0,
+        SYM_V2_PCFRAG_TASK_STREAM_MAIN = 1,
+        SYM_V2_PCFRAG_TASK_STREAM_LOOKAHEAD_L = 2,
+        SYM_V2_PCFRAG_TASK_STREAM_LOOKAHEAD_U = 3,
+        SYM_V2_PCFRAG_TASK_STREAM_COUNT = 4
+    };
+
     struct SymV2PcFragOutputKey
     {
         int_t gj;
@@ -1096,6 +1105,7 @@ struct xLUstruct_t
         std::vector<SymV2PcFragOutputKey> outputs;
         unsigned char launched;
         unsigned char complete;
+        unsigned char launch_stream_kind;
 #ifdef HAVE_CUDA
         cudaEvent_t done_event;
 #endif
@@ -1105,7 +1115,8 @@ struct xLUstruct_t
               row_piece_blk_begin(0), row_piece_blk_end(0),
               partner_piece_blk_begin(0), partner_piece_blk_end(0),
               gemm_m(0), gemm_n(0), gemm_k(0), mode_mask(0),
-              scatter_group(-1), launched(0), complete(0)
+              scatter_group(-1), launched(0), complete(0),
+              launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE)
 #ifdef HAVE_CUDA
               , done_event(NULL)
 #endif
@@ -1134,6 +1145,7 @@ struct xLUstruct_t
         int incomplete_task_count;
         int producer_tasks_launched;
         unsigned char producer_launch_cap_reported;
+        unsigned char producer_exchange_active;
         unsigned char producer_exchange_pending;
         size_t row_pieces_ready_count;
         size_t partner_pieces_ready_count;
@@ -1178,7 +1190,7 @@ struct xLUstruct_t
             : k(-1), stream_offset(-1), initialized(0),
               exchange_posted(0), closed(0), incomplete_task_count(0),
               producer_tasks_launched(0), producer_launch_cap_reported(0),
-              producer_exchange_pending(0),
+              producer_exchange_active(0), producer_exchange_pending(0),
               row_pieces_ready_count(0), partner_pieces_ready_count(0),
               producer_partner_recv_remaining(0),
               producer_row_recv_remaining(0), producer_ksupc(0)
@@ -1252,6 +1264,7 @@ struct xLUstruct_t
             incomplete_task_count = 0;
             producer_tasks_launched = 0;
             producer_launch_cap_reported = 0;
+            producer_exchange_active = 0;
             producer_exchange_pending = 0;
             row_pieces_ready_count = 0;
             partner_pieces_ready_count = 0;
