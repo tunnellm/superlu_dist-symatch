@@ -1163,6 +1163,27 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 }
             }
 
+            if (symGPU3DVersion == 2 &&
+                symV2UsePcFragmentTaskflowPanel(k))
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                if (sym_timing_enabled && sym_book_open)
+                {
+                    sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                    sym_book_open = 0;
+                }
+#endif
+                dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
+                dSymV2PcFragTaskflowProgressGPU(k, 0);
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                if (sym_timing_enabled)
+                {
+                    sym_book_start = SuperLU_timer_();
+                    sym_book_open = 1;
+                }
+#endif
+            }
+
             /*proceed with remaining SchurComplement update */
             if (symGPU3DVersion == 2)
             {
