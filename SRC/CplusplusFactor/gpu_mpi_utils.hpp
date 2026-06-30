@@ -479,6 +479,45 @@ static inline bool superlu_sym_v2_pcfrag_cuda_aware_experiment()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_CUDA_AWARE_EXPERIMENT", 0);
 }
 
+static inline bool superlu_sym_v2_pcfrag_taskflow()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW", 0);
+}
+
+static inline bool superlu_sym_v2_pcfrag_taskflow_strict()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_STRICT", 1);
+}
+
+static inline bool superlu_sym_v2_pcfrag_taskflow_validate()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_VALIDATE", 0);
+}
+
+static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
+{
+    static int cached = -1;
+    if (cached > 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PROGRESS_BUDGET");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 64;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 1 || value > 1048576L)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PROGRESS_BUDGET must be an integer in [1,1048576].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
+static inline bool superlu_sym_v2_pcfrag_taskflow_eager()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_EAGER", 1);
+}
+
 static inline bool superlu_sym_v2_recv_map_index()
 {
     return superlu_sym_v2_env_bool_flag(

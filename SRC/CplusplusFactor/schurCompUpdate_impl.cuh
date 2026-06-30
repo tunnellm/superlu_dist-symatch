@@ -2703,6 +2703,11 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateDualFragmentsGPU(
     int streamId, int_t k, int_t laIdx)
 {
+    if (symV2UsePcFragmentTaskflowPanel(k))
+    {
+        ++symV2PcFragTaskflowStats.legacy_wrapper_aborts;
+        ABORT("complete dual-fragment lookahead wrapper entered in GPU3DV2_PCFRAG_TASKFLOW mode.");
+    }
     if (!symV2UsePcFragmentSchurPanel(k))
         ABORT("SymFact V2 Pc-fragment lookahead called while disabled.");
     if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
@@ -2766,6 +2771,11 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneDualFragmentsGPU(
     int streamId, int_t k, int_t ex)
 {
+    if (symV2UsePcFragmentTaskflowPanel(k))
+    {
+        ++symV2PcFragTaskflowStats.legacy_wrapper_aborts;
+        ABORT("complete dual-fragment exclude wrapper entered in GPU3DV2_PCFRAG_TASKFLOW mode.");
+    }
     if (!symV2UsePcFragmentSchurPanel(k))
         ABORT("SymFact V2 Pc-fragment exclude called while disabled.");
     if (k < 0 || static_cast<size_t>(k) >= symV2PartnerLRecvIndex.size())
@@ -2818,6 +2828,14 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateWithLFragmentsGPU(
     int streamId,
     int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel)
 {
+    if (symV2UsePcFragmentTaskflowPanel(k))
+    {
+        return dSymV2PcFragTaskflowDispatchGPU(
+            streamId, k,
+            SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+                SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW,
+            laIdx, 0);
+    }
     if (symV2UsePcFragmentSchurPanel(k))
         return dSymLookAheadUpdateDualFragmentsGPU(streamId, k, laIdx);
     if (lpanel.isEmpty())
@@ -2895,6 +2913,11 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(
     int streamId,
     int_t k, int_t ex, xlpanel_t<Ftype> &lpanel)
 {
+    if (symV2UsePcFragmentTaskflowPanel(k))
+    {
+        return dSymV2PcFragTaskflowDispatchGPU(
+            streamId, k, SYM_V2_PCFRAG_TASK_EXCLUDE, ex, 0);
+    }
     if (symV2UsePcFragmentSchurPanel(k))
         return dSymSchurCompUpdateExcludeOneDualFragmentsGPU(streamId, k, ex);
     if (lpanel.isEmpty())

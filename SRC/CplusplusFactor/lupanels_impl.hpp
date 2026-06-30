@@ -6737,6 +6737,17 @@ bool xLUstruct_t<Ftype>::symV2UsePcFragmentSchurPanel(int_t k) const
 #endif
 }
 
+template <typename Ftype>
+bool xLUstruct_t<Ftype>::symV2UsePcFragmentTaskflowPanel(int_t k) const
+{
+#ifdef HAVE_CUDA
+    return superlu_sym_v2_pcfrag_taskflow() &&
+           symV2UsePcFragmentSchurPanel(k);
+#else
+    return false;
+#endif
+}
+
 template <>
 inline int xLUstruct_t<double>::freeSymFactWorkspace()
 {

@@ -9,6 +9,7 @@
 #include "lupanels_GPU.cuh"
 #include "xlupanels_GPU.cuh"
 #include "gpuCommon.hpp"
+#include "gpu_mpi_utils.hpp"
 #endif
 #include "commWrapper.hpp"
 #include "anc25d.hpp"
@@ -990,6 +991,279 @@ struct xLUstruct_t
     std::vector<SymV2RowExchangeState> symV2RowExchangeStates;
 // SYM_V2_PC2_PHASE6_XLU_EXCHANGE_STATE_END
 
+// SYM_V2_PCFRAG_TASKFLOW_STATE_BEGIN
+    enum SymV2PcFragPieceKind
+    {
+        SYM_V2_PCFRAG_PIECE_ROW = 0,
+        SYM_V2_PCFRAG_PIECE_PARTNER = 1
+    };
+
+    enum SymV2PcFragTaskMode
+    {
+        SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL = 1,
+        SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW = 2,
+        SYM_V2_PCFRAG_TASK_EXCLUDE = 4,
+        SYM_V2_PCFRAG_TASK_FULL = 8
+    };
+
+    struct SymV2PcFragOutputKey
+    {
+        int_t gj;
+        int_t gi;
+        int_t local_panel_j;
+        int_t local_block_i;
+
+        SymV2PcFragOutputKey()
+            : gj(GLOBAL_BLOCK_NOT_FOUND), gi(GLOBAL_BLOCK_NOT_FOUND),
+              local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
+              local_block_i(GLOBAL_BLOCK_NOT_FOUND)
+        {
+        }
+
+        SymV2PcFragOutputKey(int_t gj_, int_t gi_)
+            : gj(gj_), gi(gi_), local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
+              local_block_i(GLOBAL_BLOCK_NOT_FOUND)
+        {
+        }
+
+        unsigned long long packed() const
+        {
+            return (static_cast<unsigned long long>(
+                        static_cast<unsigned int>(gj)) << 32) |
+                   static_cast<unsigned int>(gi);
+        }
+    };
+
+    struct SymV2PcFragPieceDesc
+    {
+        int_t k;
+        unsigned char kind;
+        int piece_id;
+        int_t frag_blk_begin;
+        int_t frag_blk_end;
+        int_t frag_row_offset;
+        int_t nblocks;
+        int_t gid_first;
+        int_t gid_last;
+        int_t nrows;
+        int_t ksupc;
+        int_t lda;
+        int_t index_count;
+        int_t value_count;
+        int_t filled_rows;
+        std::vector<int_t> h_index;
+        int_t *d_index;
+        Ftype *d_val;
+        Ftype *h_stage;
+        Ftype *d_stage;
+        unsigned char ready;
+        unsigned char released;
+        int pending_consumers;
+#ifdef HAVE_CUDA
+        cudaEvent_t ready_event;
+        cudaEvent_t done_event;
+#endif
+
+        SymV2PcFragPieceDesc()
+            : k(-1), kind(SYM_V2_PCFRAG_PIECE_ROW), piece_id(-1),
+              frag_blk_begin(0), frag_blk_end(0), frag_row_offset(0),
+              nblocks(0),
+              gid_first(GLOBAL_BLOCK_NOT_FOUND),
+              gid_last(GLOBAL_BLOCK_NOT_FOUND), nrows(0), ksupc(0),
+              lda(0), index_count(0), value_count(0), filled_rows(0),
+              d_index(NULL), d_val(NULL), h_stage(NULL), d_stage(NULL),
+              ready(0), released(0), pending_consumers(0)
+#ifdef HAVE_CUDA
+              , ready_event(NULL), done_event(NULL)
+#endif
+        {
+        }
+    };
+
+    struct SymV2PcFragTaskDesc
+    {
+        int_t k;
+        int task_id;
+        int row_piece;
+        int partner_piece;
+        int_t row_piece_blk_begin;
+        int_t row_piece_blk_end;
+        int_t partner_piece_blk_begin;
+        int_t partner_piece_blk_end;
+        int_t gemm_m;
+        int_t gemm_n;
+        int_t gemm_k;
+        unsigned char mode_mask;
+        int scatter_group;
+        std::vector<SymV2PcFragOutputKey> outputs;
+        unsigned char launched;
+        unsigned char complete;
+#ifdef HAVE_CUDA
+        cudaEvent_t done_event;
+#endif
+
+        SymV2PcFragTaskDesc()
+            : k(-1), task_id(-1), row_piece(-1), partner_piece(-1),
+              row_piece_blk_begin(0), row_piece_blk_end(0),
+              partner_piece_blk_begin(0), partner_piece_blk_end(0),
+              gemm_m(0), gemm_n(0), gemm_k(0), mode_mask(0),
+              scatter_group(-1), launched(0), complete(0)
+#ifdef HAVE_CUDA
+              , done_event(NULL)
+#endif
+        {
+        }
+    };
+
+    struct SymV2PcFragPanelTaskState
+    {
+        int_t k;
+        int stream_offset;
+        unsigned char initialized;
+        unsigned char exchange_posted;
+        unsigned char closed;
+        std::vector<SymV2PcFragPieceDesc> row_pieces;
+        std::vector<SymV2PcFragPieceDesc> partner_pieces;
+        std::vector<SymV2PcFragTaskDesc> tasks;
+        std::vector<int> pair_task_index;
+        std::vector<unsigned long long> active_output_keys;
+        int incomplete_task_count;
+#ifdef HAVE_CUDA
+        int_t *d_index_pool;
+        Ftype *d_value_pool;
+#endif
+        size_t index_pool_capacity;
+        size_t value_pool_capacity;
+        size_t index_pool_used;
+        size_t value_pool_used;
+
+        SymV2PcFragPanelTaskState()
+            : k(-1), stream_offset(-1), initialized(0),
+              exchange_posted(0), closed(0), incomplete_task_count(0)
+#ifdef HAVE_CUDA
+              , d_index_pool(NULL), d_value_pool(NULL)
+#endif
+              , index_pool_capacity(0), value_pool_capacity(0),
+              index_pool_used(0), value_pool_used(0)
+        {
+        }
+
+        void reset()
+        {
+            k = -1;
+            stream_offset = -1;
+            initialized = 0;
+            exchange_posted = 0;
+            closed = 0;
+            row_pieces.clear();
+            partner_pieces.clear();
+            tasks.clear();
+            pair_task_index.clear();
+            active_output_keys.clear();
+            incomplete_task_count = 0;
+#ifdef HAVE_CUDA
+            d_index_pool = NULL;
+            d_value_pool = NULL;
+#endif
+            index_pool_capacity = 0;
+            value_pool_capacity = 0;
+            index_pool_used = 0;
+            value_pool_used = 0;
+        }
+    };
+
+    struct SymV2PcFragTaskflowStats
+    {
+        long long row_pieces_created;
+        long long partner_pieces_created;
+        long long row_pieces_ready;
+        long long partner_pieces_ready;
+        long long tasks_planned;
+        long long tasks_launched;
+        long long tasks_completed;
+        long long tasks_blocked_row;
+        long long tasks_blocked_partner;
+        long long tasks_blocked_output;
+        long long scatter_conflict_waits;
+        long long taskflow_entries;
+        long long legacy_wrapper_aborts;
+        long long early_task_launches_before_full_panel_ready;
+        long long arena_value_high_water;
+        long long arena_index_high_water;
+        long long arena_pinned_high_water;
+
+        SymV2PcFragTaskflowStats()
+            : row_pieces_created(0), partner_pieces_created(0),
+              row_pieces_ready(0), partner_pieces_ready(0),
+              tasks_planned(0), tasks_launched(0), tasks_completed(0),
+              tasks_blocked_row(0), tasks_blocked_partner(0),
+              tasks_blocked_output(0), scatter_conflict_waits(0),
+              taskflow_entries(0), legacy_wrapper_aborts(0),
+              early_task_launches_before_full_panel_ready(0),
+              arena_value_high_water(0), arena_index_high_water(0),
+              arena_pinned_high_water(0)
+        {
+        }
+    };
+
+    std::vector<SymV2PcFragPanelTaskState> symV2PcFragTaskStates;
+    SymV2PcFragTaskflowStats symV2PcFragTaskflowStats;
+
+    void symV2PcFragTaskflowPrintProfile()
+    {
+        if (!superlu_sym_v2_pcfrag_taskflow())
+            return;
+        long long local[17] = {
+            symV2PcFragTaskflowStats.row_pieces_created,
+            symV2PcFragTaskflowStats.partner_pieces_created,
+            symV2PcFragTaskflowStats.row_pieces_ready,
+            symV2PcFragTaskflowStats.partner_pieces_ready,
+            symV2PcFragTaskflowStats.tasks_planned,
+            symV2PcFragTaskflowStats.tasks_launched,
+            symV2PcFragTaskflowStats.tasks_completed,
+            symV2PcFragTaskflowStats.tasks_blocked_row,
+            symV2PcFragTaskflowStats.tasks_blocked_partner,
+            symV2PcFragTaskflowStats.tasks_blocked_output,
+            symV2PcFragTaskflowStats.scatter_conflict_waits,
+            symV2PcFragTaskflowStats.taskflow_entries,
+            symV2PcFragTaskflowStats.legacy_wrapper_aborts,
+            symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready,
+            symV2PcFragTaskflowStats.arena_value_high_water,
+            symV2PcFragTaskflowStats.arena_index_high_water,
+            symV2PcFragTaskflowStats.arena_pinned_high_water
+        };
+        long long global[17] = {};
+        if (grid3d != NULL)
+        {
+            MPI_Reduce(local, global, 17, MPI_LONG_LONG, MPI_SUM, 0,
+                       grid3d->comm);
+            if (grid3d->iam != 0)
+                return;
+        }
+        else
+        {
+            for (int i = 0; i < 17; ++i)
+                global[i] = local[i];
+        }
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow profile: "
+            "row_pieces_created=%lld partner_pieces_created=%lld "
+            "row_pieces_ready=%lld partner_pieces_ready=%lld "
+            "tasks_planned=%lld tasks_launched=%lld tasks_completed=%lld "
+            "tasks_blocked_row=%lld tasks_blocked_partner=%lld "
+            "tasks_blocked_output=%lld scatter_conflict_waits=%lld "
+            "taskflow_entries=%lld legacy_wrapper_aborts=%lld "
+            "early_task_launches_before_full_panel_ready=%lld "
+            "arena_value_high_water=%lld arena_index_high_water=%lld "
+            "arena_pinned_high_water=%lld\n",
+            global[0], global[1], global[2], global[3], global[4],
+            global[5], global[6], global[7], global[8], global[9],
+            global[10], global[11], global[12], global[13], global[14],
+            global[15], global[16]);
+        std::fflush(stdout);
+    }
+// SYM_V2_PCFRAG_TASKFLOW_STATE_END
+
     void *symV2LPanelArenaGPU = NULL;
     void *symV2StreamArenaGPU = NULL;
     void *symV2GemmArenaGPU = NULL;
@@ -1221,6 +1495,10 @@ struct xLUstruct_t
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (options != NULL && options->SymFact == YES)
             printSymGPU3DTiming();
+#endif
+#ifdef HAVE_CUDA
+        if (options != NULL && options->SymFact == YES)
+            symV2PcFragTaskflowPrintProfile();
 #endif
 
         XLU_V2_DTOR_TRACE("begin");
@@ -1590,6 +1868,16 @@ struct xLUstruct_t
     int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
     bool symV2UsePcFragmentSchurPanel(int_t k) const;
+    bool symV2UsePcFragmentTaskflowPanel(int_t k) const;
+    int_t dSymV2PcFragTaskflowBeginGPU(int_t k, int_t stream_offset);
+    int_t dSymV2PcFragTaskflowProgressGPU(int_t k, int budget);
+    int_t dSymV2PcFragTaskflowDispatchGPU(
+        int streamId, int_t k, unsigned mode_mask, int_t mode_gid, int drain);
+    int_t dSymV2PcFragTaskflowDrainGPU(
+        int_t k, unsigned mode_mask, int_t mode_gid);
+    int_t dSymV2PcFragTaskflowPopulateFromScratchGPU(
+        int_t k, int_t stream_offset);
+    int_t dSymV2PcFragTaskflowReleaseGPU(int_t k);
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);
