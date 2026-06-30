@@ -1128,6 +1128,8 @@ struct xLUstruct_t
         std::vector<int> pair_task_index;
         std::vector<unsigned long long> active_output_keys;
         int incomplete_task_count;
+        int producer_tasks_launched;
+        unsigned char producer_launch_cap_reported;
 #ifdef HAVE_CUDA
         int_t *d_index_pool;
         Ftype *d_value_pool;
@@ -1143,7 +1145,8 @@ struct xLUstruct_t
 
         SymV2PcFragPanelTaskState()
             : k(-1), stream_offset(-1), initialized(0),
-              exchange_posted(0), closed(0), incomplete_task_count(0)
+              exchange_posted(0), closed(0), incomplete_task_count(0),
+              producer_tasks_launched(0), producer_launch_cap_reported(0)
 #ifdef HAVE_CUDA
               , d_index_pool(NULL), d_value_pool(NULL),
               d_group_index_pool(NULL), d_group_value_pool(NULL)
@@ -1167,6 +1170,8 @@ struct xLUstruct_t
             pair_task_index.clear();
             active_output_keys.clear();
             incomplete_task_count = 0;
+            producer_tasks_launched = 0;
+            producer_launch_cap_reported = 0;
 #ifdef HAVE_CUDA
             d_index_pool = NULL;
             d_value_pool = NULL;
@@ -1225,6 +1230,8 @@ struct xLUstruct_t
         long long producer_returns_all_tasks_complete;
         long long producer_returns_incomplete_tasks;
         long long producer_return_incomplete_task_sum;
+        long long producer_task_launch_cap_hits;
+        long long producer_task_launch_cap_deferred;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -1249,7 +1256,9 @@ struct xLUstruct_t
               producer_return_unready_pieces(0),
               producer_returns_all_tasks_complete(0),
               producer_returns_incomplete_tasks(0),
-              producer_return_incomplete_task_sum(0)
+              producer_return_incomplete_task_sum(0),
+              producer_task_launch_cap_hits(0),
+              producer_task_launch_cap_deferred(0)
         {
         }
     };
@@ -1261,7 +1270,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[41] = {
+        long long local[43] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1302,19 +1311,21 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_return_unready_pieces,
             symV2PcFragTaskflowStats.producer_returns_all_tasks_complete,
             symV2PcFragTaskflowStats.producer_returns_incomplete_tasks,
-            symV2PcFragTaskflowStats.producer_return_incomplete_task_sum
+            symV2PcFragTaskflowStats.producer_return_incomplete_task_sum,
+            symV2PcFragTaskflowStats.producer_task_launch_cap_hits,
+            symV2PcFragTaskflowStats.producer_task_launch_cap_deferred
         };
-        long long global[41] = {};
+        long long global[43] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 41, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 43, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 41; ++i)
+            for (int i = 0; i < 43; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1344,7 +1355,9 @@ struct xLUstruct_t
             "producer_return_unready_pieces=%lld "
             "producer_returns_all_tasks_complete=%lld "
             "producer_returns_incomplete_tasks=%lld "
-            "producer_return_incomplete_task_sum=%lld\n",
+            "producer_return_incomplete_task_sum=%lld "
+            "producer_task_launch_cap_hits=%lld "
+            "producer_task_launch_cap_deferred=%lld\n",
             global[0], global[1], global[2], global[3], global[4],
             global[5], global[6], global[7], global[8], global[9],
             global[10], global[11], global[12], global[13], global[14],
@@ -1353,7 +1366,7 @@ struct xLUstruct_t
             global[25], global[26], global[27], global[28], global[29],
             global[30], global[31], global[32], global[33], global[34],
             global[35], global[36], global[37], global[38], global[39],
-            global[40]);
+            global[40], global[41], global[42]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END

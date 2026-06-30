@@ -951,6 +951,26 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     double *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
     if (budget <= 0)
         budget = superlu_sym_v2_pcfrag_taskflow_progress_budget();
+    const int producer_task_limit =
+        superlu_sym_v2_pcfrag_taskflow_producer_task_limit();
+    if (producer_task_limit > 0)
+    {
+        const int producer_tasks_remaining =
+            producer_task_limit - state.producer_tasks_launched;
+        if (producer_tasks_remaining <= 0)
+        {
+            if (!state.producer_launch_cap_reported &&
+                state.incomplete_task_count > 0)
+            {
+                ++symV2PcFragTaskflowStats.producer_task_launch_cap_hits;
+                symV2PcFragTaskflowStats.producer_task_launch_cap_deferred +=
+                    static_cast<long long>(state.incomplete_task_count);
+                state.producer_launch_cap_reported = 1;
+            }
+            return 0;
+        }
+        budget = SUPERLU_MIN(budget, producer_tasks_remaining);
+    }
     const bool strict_output_conflicts =
         superlu_sym_v2_pcfrag_taskflow_strict();
 
@@ -1095,7 +1115,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         ++symV2PcFragTaskflowStats.tasks_launched;
         ++symV2PcFragTaskflowStats.tasks_completed;
         ++symV2PcFragTaskflowStats.tasks_launched_progress;
+        ++state.producer_tasks_launched;
         ++launched;
+    }
+    if (producer_task_limit > 0 &&
+        state.incomplete_task_count > 0 &&
+        state.producer_tasks_launched >= producer_task_limit &&
+        !state.producer_launch_cap_reported)
+    {
+        ++symV2PcFragTaskflowStats.producer_task_launch_cap_hits;
+        symV2PcFragTaskflowStats.producer_task_launch_cap_deferred +=
+            static_cast<long long>(state.incomplete_task_count);
+        state.producer_launch_cap_reported = 1;
     }
     if (state.incomplete_task_count == 0)
         release_completed_state();
@@ -1439,6 +1470,73 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 dst += piece.nrows;
             }
         };
+        auto launch_single_task =
+            [&](SymV2PcFragTaskDesc &task,
+                cublasHandle_t task_handle,
+                cudaStream_t task_stream,
+                double *task_gemm,
+                unsigned launch_mode) -> int {
+            if (task.complete ||
+                !task_matches_launch_mode(task, launch_mode))
+                return 0;
+            SymV2PcFragPieceDesc &row =
+                state.row_pieces[static_cast<size_t>(task.row_piece)];
+            SymV2PcFragPieceDesc &col =
+                state.partner_pieces[static_cast<size_t>(task.partner_piece)];
+            if (!row.ready)
+            {
+                ++symV2PcFragTaskflowStats.tasks_blocked_row;
+                return 0;
+            }
+            if (!col.ready)
+            {
+                ++symV2PcFragTaskflowStats.tasks_blocked_partner;
+                return 0;
+            }
+            if (output_locked(task))
+            {
+                ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                return 0;
+            }
+            if (row.d_index == NULL || row.d_val == NULL ||
+                col.d_index == NULL || col.d_val == NULL ||
+                task_handle == NULL || task_stream == NULL ||
+                task_gemm == NULL)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW single task is missing owned resources.");
+            if (static_cast<int64_t>(row.nrows) *
+                    static_cast<int64_t>(col.nrows) >
+                static_cast<int64_t>(A_gpu.gemmBufferSize))
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW single task tiling is not implemented.");
+            if (!all_pieces_ready())
+                ++symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready;
+            lock_outputs(task);
+            if (row.ready_event != NULL)
+                gpuErrchk(cudaStreamWaitEvent(
+                    task_stream, row.ready_event, 0));
+            if (col.ready_event != NULL)
+                gpuErrchk(cudaStreamWaitEvent(
+                    task_stream, col.ready_event, 0));
+            dSymSchurCompUpdateTaskDualPiecesGPU(
+                k,
+                row.h_index, col.h_index,
+                row.d_index, row.d_val,
+                col.d_index, col.d_val,
+                task_handle, task_stream, task_gemm);
+            gpuErrchk(cudaStreamSynchronize(task_stream));
+            unlock_outputs(task);
+            task.launched = 1;
+            task.complete = 1;
+            --state.incomplete_task_count;
+            --row.pending_consumers;
+            --col.pending_consumers;
+            if (row.pending_consumers < 0 || col.pending_consumers < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+            ++symV2PcFragTaskflowStats.tasks_launched;
+            ++symV2PcFragTaskflowStats.tasks_completed;
+            count_task_launch_mode(launch_mode);
+            return 1;
+        };
         auto launch_group =
             [&](int_t row_start, int_t row_end,
                 int_t col_start, int_t col_end,
@@ -1449,6 +1547,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (row_start >= row_end || col_start >= col_end)
                 return;
             int pair_count = 0;
+            int completed_pair_count = 0;
             for (int_t rb = row_start; rb < row_end; ++rb)
             {
                 if (!state.row_pieces[static_cast<size_t>(rb)].ready)
@@ -1464,13 +1563,35 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         return;
                     }
                     SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                    if (task != NULL && !task->complete &&
+                    if (task != NULL &&
                         task_matches_launch_mode(*task, launch_mode))
-                        ++pair_count;
+                    {
+                        if (task->complete)
+                            ++completed_pair_count;
+                        else
+                            ++pair_count;
+                    }
                 }
             }
             if (pair_count == 0)
                 return;
+            if (completed_pair_count > 0)
+            {
+                for (int_t rb = row_start; rb < row_end; ++rb)
+                {
+                    for (int_t cb = col_start; cb < col_end; ++cb)
+                    {
+                        SymV2PcFragTaskDesc *task = pair_task(rb, cb);
+                        if (task == NULL || task->complete ||
+                            !task_matches_launch_mode(*task, launch_mode))
+                            continue;
+                        launch_single_task(
+                            *task, group_handle, group_stream, group_gemm,
+                            launch_mode);
+                    }
+                }
+                return;
+            }
             std::vector<SymV2PcFragTaskDesc *> locked_tasks;
             if (strict_output_conflicts)
             {
