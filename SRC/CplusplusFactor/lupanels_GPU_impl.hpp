@@ -1745,8 +1745,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
 
     int launched = 0;
     progress_launched_tasks(0);
-    for (size_t i = 0;
-         i < state.runnable_task_ids.size() && launched < budget; ++i)
+    size_t runnable_write = 0;
+    for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
     {
         int tid = state.runnable_task_ids[i];
         if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
@@ -1755,6 +1755,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             state.tasks[static_cast<size_t>(tid)];
         if (task.launched || task.complete)
             continue;
+        if (launched >= budget)
+        {
+            state.runnable_task_ids[runnable_write++] = tid;
+            continue;
+        }
         SymV2PcFragPieceDesc &row =
             state.row_pieces[static_cast<size_t>(task.row_piece)];
         SymV2PcFragPieceDesc &col =
@@ -1764,11 +1769,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!col.ready)
             ++symV2PcFragTaskflowStats.tasks_blocked_partner;
         if (!row.ready || !col.ready)
+        {
+            state.runnable_task_ids[runnable_write++] = tid;
             continue;
+        }
         if (output_locked(task))
         {
             ++symV2PcFragTaskflowStats.tasks_blocked_output;
             ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+            state.runnable_task_ids[runnable_write++] = tid;
             continue;
         }
         if (row.d_index == NULL || row.d_val == NULL ||
@@ -1820,6 +1829,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         ++state.producer_tasks_launched;
         ++launched;
     }
+    if (runnable_write != state.runnable_task_ids.size())
+        state.runnable_task_ids.resize(runnable_write);
     progress_launched_tasks(0);
     if (producer_task_limit > 0 &&
         state.incomplete_task_count > 0 &&
@@ -2076,6 +2087,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             superlu_sym_v2_pcfrag_taskflow_eager() &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
         {
+            size_t runnable_write = 0;
             for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
             {
                 int tid = state.runnable_task_ids[i];
@@ -2094,11 +2106,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (!col.ready)
                     ++symV2PcFragTaskflowStats.tasks_blocked_partner;
                 if (!row.ready || !col.ready)
+                {
+                    state.runnable_task_ids[runnable_write++] = tid;
                     continue;
+                }
                 if (output_locked(task))
                 {
                     ++symV2PcFragTaskflowStats.tasks_blocked_output;
                     ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                    state.runnable_task_ids[runnable_write++] = tid;
                     continue;
                 }
                 if (row.d_index == NULL || row.d_val == NULL ||
@@ -2148,6 +2164,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 ++symV2PcFragTaskflowStats.tasks_launched;
                 ++symV2PcFragTaskflowStats.tasks_launched_eager_full;
             }
+            if (runnable_write != state.runnable_task_ids.size())
+                state.runnable_task_ids.resize(runnable_write);
             progress_launched_tasks(drain ? 1 : 0);
             if (state.incomplete_task_count == 0 &&
                 !state.producer_exchange_active &&
