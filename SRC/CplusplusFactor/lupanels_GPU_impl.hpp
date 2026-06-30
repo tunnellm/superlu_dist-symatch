@@ -2643,6 +2643,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
     bool recv_h2d_issued = false;
     bool pipeline_large_receives = false;
+    std::vector<unsigned char> taskflow_partner_progressive_assembled;
+    if (pcfrag_taskflow)
+        taskflow_partner_progressive_assembled.assign(
+            static_cast<size_t>(Pr), 0);
     if (superlu_sym_v2_large_recv_pipeline())
     {
         if (cuda_aware)
@@ -2671,7 +2675,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         double recv_wait_t = SuperLU_timer_();
         double progressive_h2d_issue = 0.0;
 #endif
-        if (!pipeline_large_receives)
+        const bool taskflow_progressive_receives =
+            pcfrag_taskflow && !recv_reqs.empty();
+        if (!pipeline_large_receives && !taskflow_progressive_receives)
         {
             if (pcfrag_taskflow)
             {
@@ -2735,6 +2741,20 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     progressive_h2d_issue +=
                         SuperLU_timer_() - h2d_issue_t;
 #endif
+                    if (pcfrag_taskflow)
+                    {
+                        size_t recv_map_pos =
+                            recv_count_base + static_cast<size_t>(pr);
+                        if (recv_map_pos >= symV2PartnerLRecvMap.size())
+                            ABORT("GPU3DV2_PCFRAG_TASKFLOW progressive partner receive map is missing.");
+                        taskflow_assemble_owned_pieces(
+                            SYM_V2_PCFRAG_PIECE_PARTNER,
+                            A_gpu.symPartnerLStageBufs[stream_offset] +
+                                recv_offsets[pr],
+                            symV2PartnerLRecvMap[recv_map_pos]);
+                        taskflow_partner_progressive_assembled[
+                            static_cast<size_t>(pr)] = 1;
+                    }
                 }
                 remaining -= completed;
             }
@@ -2901,8 +2921,14 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
                 if (pcfrag_taskflow)
                 {
-                    taskflow_assemble_owned_pieces(
-                        SYM_V2_PCFRAG_PIECE_PARTNER, stage, recv_map);
+                    if (static_cast<size_t>(pr) >=
+                            taskflow_partner_progressive_assembled.size() ||
+                        !taskflow_partner_progressive_assembled[
+                            static_cast<size_t>(pr)])
+                    {
+                        taskflow_assemble_owned_pieces(
+                            SYM_V2_PCFRAG_PIECE_PARTNER, stage, recv_map);
+                    }
                 }
                 if (!pcfrag_taskflow || pcfrag_taskflow_validate)
                 {
