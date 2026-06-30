@@ -643,6 +643,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
 static inline double *dSymV2PcFragTaskflowEnsurePinnedHost(
     std::vector<xLUstruct_t<double>::SymV2PcFragHostValueBlock> &pool,
     double **buffer, size_t *capacity, size_t count,
+    bool allow_late_alloc,
     long long *late_allocs = NULL)
 {
     if (count == 0)
@@ -676,6 +677,8 @@ static inline double *dSymV2PcFragTaskflowEnsurePinnedHost(
         }
         else
         {
+            if (!allow_late_alloc)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE pinned host arena missed a required block.");
             gpuErrchk(cudaMallocHost(
                 reinterpret_cast<void **>(buffer),
                 sizeof(double) * count));
@@ -739,7 +742,8 @@ static inline void dSymV2PcFragTaskflowRecycleEvent(
 
 static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
     std::vector<xLUstruct_t<double>::SymV2PcFragGpuIndexBlock> &pool,
-    size_t count, size_t *capacity, long long *late_allocs = NULL)
+    size_t count, size_t *capacity, bool allow_late_alloc,
+    long long *late_allocs = NULL)
 {
     if (capacity == NULL)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW index block capacity handle is missing.");
@@ -766,6 +770,8 @@ static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
         pool.pop_back();
         return ptr;
     }
+    if (!allow_late_alloc)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE index arena missed a required block.");
     int_t *ptr = NULL;
     gpuErrchk(cudaMalloc(
         reinterpret_cast<void **>(&ptr), sizeof(int_t) * count));
@@ -777,7 +783,8 @@ static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
 
 static inline double *dSymV2PcFragTaskflowAcquireValueBlock(
     std::vector<xLUstruct_t<double>::SymV2PcFragGpuValueBlock> &pool,
-    size_t count, size_t *capacity, long long *late_allocs = NULL)
+    size_t count, size_t *capacity, bool allow_late_alloc,
+    long long *late_allocs = NULL)
 {
     if (capacity == NULL)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW value block capacity handle is missing.");
@@ -804,6 +811,8 @@ static inline double *dSymV2PcFragTaskflowAcquireValueBlock(
         pool.pop_back();
         return ptr;
     }
+    if (!allow_late_alloc)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE value arena missed a required block.");
     double *ptr = NULL;
     gpuErrchk(cudaMalloc(
         reinterpret_cast<void **>(&ptr), sizeof(double) * count));
@@ -862,6 +871,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         symV2PcFragTaskStates.resize(static_cast<size_t>(nsupers));
     SymV2PcFragPanelTaskState &state =
         symV2PcFragTaskStates[static_cast<size_t>(k)];
+    const bool allow_taskflow_late_alloc =
+        !superlu_sym_v2_pcfrag_taskflow_async_core();
 
     auto release_taskflow_state = [&](SymV2PcFragPanelTaskState &s) {
         for (size_t i = 0; i < s.row_pieces.size(); ++i)
@@ -1003,6 +1014,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowAcquireIndexBlock(
                 symV2PcFragTaskflowIndexBlockPool,
                 total_index_count, &state.index_pool_capacity,
+                allow_taskflow_late_alloc,
                 &symV2PcFragTaskflowStats.arena_index_late_allocs);
     }
     if (total_value_count > 0)
@@ -1011,6 +1023,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowAcquireValueBlock(
                 symV2PcFragTaskflowValueBlockPool,
                 total_value_count, &state.value_pool_capacity,
+                allow_taskflow_late_alloc,
                 &symV2PcFragTaskflowStats.arena_value_late_allocs);
         gpuErrchk(cudaMemset(
             state.d_value_pool, 0, sizeof(double) * total_value_count));
@@ -1021,6 +1034,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowAcquireIndexBlock(
                 symV2PcFragTaskflowIndexBlockPool,
                 total_index_count, &state.group_index_pool_capacity,
+                allow_taskflow_late_alloc,
                 &symV2PcFragTaskflowStats.arena_index_late_allocs);
     }
     if (total_value_count > 0)
@@ -1029,6 +1043,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowAcquireValueBlock(
                 symV2PcFragTaskflowValueBlockPool,
                 total_value_count, &state.group_value_pool_capacity,
+                allow_taskflow_late_alloc,
                 &symV2PcFragTaskflowStats.arena_value_late_allocs);
     }
 
@@ -2804,6 +2819,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     const bool pcfrag_taskflow_async_pieces =
         pcfrag_taskflow && !pcfrag_taskflow_validate &&
         superlu_sym_v2_pcfrag_taskflow_async_pieces();
+    const bool allow_taskflow_late_alloc =
+        !(pcfrag_taskflow && superlu_sym_v2_pcfrag_taskflow_async_core());
     auto taskflow_assemble_owned_pieces =
         [&](unsigned char kind, const double *stage,
             const std::vector<int_t> &recv_map) {
@@ -3129,6 +3146,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     &taskflow_state->producer_partner_recv_host_values,
                     &taskflow_state->producer_partner_recv_host_capacity,
                     static_cast<size_t>(recv_total),
+                    allow_taskflow_late_alloc,
                     &symV2PcFragTaskflowStats.arena_pinned_late_allocs);
                 symV2PcFragTaskflowStats.arena_pinned_high_water =
                     SUPERLU_MAX(
@@ -5524,6 +5542,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                             &taskflow_state->producer_row_recv_host_values,
                             &taskflow_state->producer_row_recv_host_capacity,
                             static_cast<size_t>(row_recv_total),
+                            allow_taskflow_late_alloc,
                             &symV2PcFragTaskflowStats.arena_pinned_late_allocs);
                     symV2PcFragTaskflowStats.arena_pinned_high_water =
                         SUPERLU_MAX(
