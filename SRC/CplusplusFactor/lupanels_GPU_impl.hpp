@@ -640,6 +640,42 @@ int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     return 0;
 }
 
+static inline double *dSymV2PcFragTaskflowEnsurePinnedHost(
+    double **buffer, size_t *capacity, size_t count)
+{
+    if (count == 0)
+        return NULL;
+    if (buffer == NULL || capacity == NULL)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW pinned host buffer handle is missing.");
+    if (*capacity < count)
+    {
+        if (*buffer != NULL)
+            gpuErrchk(cudaFreeHost(*buffer));
+        gpuErrchk(cudaMallocHost(
+            reinterpret_cast<void **>(buffer),
+            sizeof(double) * count));
+        *capacity = count;
+    }
+    return *buffer;
+}
+
+static inline void dSymV2PcFragTaskflowReleasePinnedHost(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state)
+{
+    if (state.producer_partner_recv_host_values != NULL)
+    {
+        gpuErrchk(cudaFreeHost(state.producer_partner_recv_host_values));
+        state.producer_partner_recv_host_values = NULL;
+    }
+    if (state.producer_row_recv_host_values != NULL)
+    {
+        gpuErrchk(cudaFreeHost(state.producer_row_recv_host_values));
+        state.producer_row_recv_host_values = NULL;
+    }
+    state.producer_partner_recv_host_capacity = 0;
+    state.producer_row_recv_host_capacity = 0;
+}
+
 template <>
 inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     int_t k, int_t stream_offset)
@@ -727,6 +763,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             gpuErrchk(cudaFree(s.d_group_index_pool));
         if (s.d_group_value_pool != NULL)
             gpuErrchk(cudaFree(s.d_group_value_pool));
+        dSymV2PcFragTaskflowReleasePinnedHost(s);
         s.reset();
     };
     release_taskflow_state(state);
@@ -1079,11 +1116,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
         if (A_gpu.symPartnerLStageBufs[streamId] == NULL)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW partner stage buffer is missing.");
         if (static_cast<size_t>(offset) + static_cast<size_t>(count) >
-            state.producer_partner_recv_host_values.size())
+            state.producer_partner_recv_host_capacity ||
+            state.producer_partner_recv_host_values == NULL)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW partner receive host buffer is too small.");
         gpuErrchk(cudaMemcpyAsync(
             A_gpu.symPartnerLStageBufs[streamId] + offset,
-            state.producer_partner_recv_host_values.data() + offset,
+            state.producer_partner_recv_host_values + offset,
             sizeof(double) * static_cast<size_t>(count),
             cudaMemcpyHostToDevice, stream));
         size_t recv_map_pos =
@@ -1123,9 +1161,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
             if (row_index.empty() || row_index[1] <= 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW row aggregate index is invalid.");
             int_t row_nrows = row_index[1];
-            if (state.producer_row_recv_host_values.size() <
+            if (state.producer_row_recv_host_capacity <
                 static_cast<size_t>(row_nrows) *
-                    static_cast<size_t>(state.producer_ksupc))
+                    static_cast<size_t>(state.producer_ksupc) ||
+                state.producer_row_recv_host_values == NULL)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW row aggregate host buffer is too small.");
             for (size_t p = 0; p < state.row_pieces.size(); ++p)
             {
@@ -1140,7 +1179,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
                 gpuErrchk(cudaMemcpy2DAsync(
                     piece.d_val,
                     sizeof(double) * static_cast<size_t>(piece.lda),
-                    state.producer_row_recv_host_values.data() +
+                    state.producer_row_recv_host_values +
                         piece.frag_row_offset,
                     sizeof(double) * static_cast<size_t>(row_nrows),
                     sizeof(double) * static_cast<size_t>(piece.nrows),
@@ -1159,11 +1198,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
             if (pc < 0 || pc >= Pc || count <= 0 || offset < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW row receive metadata is invalid.");
             if (static_cast<size_t>(offset) + static_cast<size_t>(count) >
-                state.producer_row_recv_host_values.size())
+                state.producer_row_recv_host_capacity ||
+                state.producer_row_recv_host_values == NULL)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW row receive host buffer is too small.");
             gpuErrchk(cudaMemcpyAsync(
                 A_gpu.symV2RowFragStageBufs[streamId] + offset,
-                state.producer_row_recv_host_values.data() + offset,
+                state.producer_row_recv_host_values + offset,
                 sizeof(double) * static_cast<size_t>(count),
                 cudaMemcpyHostToDevice, stream));
             size_t row_pos =
@@ -1246,13 +1286,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
         state.producer_partner_recv_sizes.clear();
         state.producer_partner_recv_offsets.clear();
         state.producer_partner_recv_done.clear();
-        state.producer_partner_recv_host_values.clear();
         state.producer_row_recv_reqs.clear();
         state.producer_row_recv_pcs.clear();
         state.producer_row_recv_sizes.clear();
         state.producer_row_recv_offsets.clear();
         state.producer_row_recv_done.clear();
-        state.producer_row_recv_host_values.clear();
     }
     return progressed;
 }
@@ -1446,6 +1484,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             gpuErrchk(cudaFree(state.d_group_index_pool));
         if (state.d_group_value_pool != NULL)
             gpuErrchk(cudaFree(state.d_group_value_pool));
+        dSymV2PcFragTaskflowReleasePinnedHost(state);
         state.reset();
     };
 
@@ -1716,6 +1755,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 gpuErrchk(cudaFree(state.d_group_index_pool));
             if (state.d_group_value_pool != NULL)
                 gpuErrchk(cudaFree(state.d_group_value_pool));
+            dSymV2PcFragTaskflowReleasePinnedHost(state);
             state.reset();
         };
 
@@ -2524,6 +2564,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         gpuErrchk(cudaFree(state.d_group_index_pool));
     if (state.d_group_value_pool != NULL)
         gpuErrchk(cudaFree(state.d_group_value_pool));
+    dSymV2PcFragTaskflowReleasePinnedHost(state);
     state.reset();
     return 0;
 }
@@ -2952,10 +2993,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             {
                 if (taskflow_state == NULL)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW async partner receive has no state.");
-                taskflow_state->producer_partner_recv_host_values.assign(
-                    static_cast<size_t>(recv_total), 0.0);
-                recv_host_base =
-                    taskflow_state->producer_partner_recv_host_values.data();
+                recv_host_base = dSymV2PcFragTaskflowEnsurePinnedHost(
+                    &taskflow_state->producer_partner_recv_host_values,
+                    &taskflow_state->producer_partner_recv_host_capacity,
+                    static_cast<size_t>(recv_total));
+                symV2PcFragTaskflowStats.arena_pinned_high_water =
+                    SUPERLU_MAX(
+                        symV2PcFragTaskflowStats.arena_pinned_high_water,
+                        static_cast<long long>(
+                            (taskflow_state->producer_partner_recv_host_capacity +
+                             taskflow_state->producer_row_recv_host_capacity) *
+                            sizeof(double)));
             }
             else
             {
@@ -5337,10 +5385,18 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 {
                     if (taskflow_state == NULL)
                         ABORT("GPU3DV2_PCFRAG_TASKFLOW async row receive has no state.");
-                    taskflow_state->producer_row_recv_host_values.assign(
-                        static_cast<size_t>(row_recv_total), 0.0);
                     row_recv_host_base =
-                        taskflow_state->producer_row_recv_host_values.data();
+                        dSymV2PcFragTaskflowEnsurePinnedHost(
+                            &taskflow_state->producer_row_recv_host_values,
+                            &taskflow_state->producer_row_recv_host_capacity,
+                            static_cast<size_t>(row_recv_total));
+                    symV2PcFragTaskflowStats.arena_pinned_high_water =
+                        SUPERLU_MAX(
+                            symV2PcFragTaskflowStats.arena_pinned_high_water,
+                            static_cast<long long>(
+                                (taskflow_state->producer_partner_recv_host_capacity +
+                                 taskflow_state->producer_row_recv_host_capacity) *
+                                sizeof(double)));
                 }
                 else
                 {
