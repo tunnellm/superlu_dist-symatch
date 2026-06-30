@@ -2800,20 +2800,24 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     int_t empty_header[LPANEL_HEADER_SIZE] = {0, 0, 0, ksupc};
     if (A_gpu.symPartnerLidxRecvBufs[stream_offset] == NULL)
         ABORT("SymFact V2 true symmetric L-fragment device index buffer is missing.");
-    if (cached_index.empty())
+    if (!pcfrag_taskflow || pcfrag_taskflow_validate)
     {
-        gpuErrchk(cudaMemcpyAsync(A_gpu.symPartnerLidxRecvBufs[stream_offset],
-                                  empty_header,
-                                  sizeof(int_t) * LPANEL_HEADER_SIZE,
-                                  cudaMemcpyHostToDevice, stream));
-    }
-    else
-    {
-        gpuErrchk(cudaMemcpyAsync(A_gpu.symPartnerLidxRecvBufs[stream_offset],
-                                  cached_index.data(),
-                                  sizeof(int_t) *
-                                      static_cast<size_t>(frag_index_size),
-                                  cudaMemcpyHostToDevice, stream));
+        if (cached_index.empty())
+        {
+            gpuErrchk(cudaMemcpyAsync(
+                A_gpu.symPartnerLidxRecvBufs[stream_offset], empty_header,
+                sizeof(int_t) * LPANEL_HEADER_SIZE,
+                cudaMemcpyHostToDevice, stream));
+        }
+        else
+        {
+            gpuErrchk(cudaMemcpyAsync(
+                A_gpu.symPartnerLidxRecvBufs[stream_offset],
+                cached_index.data(),
+                sizeof(int_t) *
+                    static_cast<size_t>(frag_index_size),
+                cudaMemcpyHostToDevice, stream));
+        }
     }
 
     if (!cuda_aware && !recv_reqs.empty() && !recv_h2d_issued)
@@ -3338,22 +3342,25 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
             }
 
-            if (row_index.empty())
+            if (!pcfrag_taskflow || pcfrag_taskflow_validate)
             {
-                gpuErrchk(cudaMemcpyAsync(
-                    A_gpu.symV2RowFragIdxRecvBufs[stream_offset], empty_header,
-                    sizeof(int_t) * LPANEL_HEADER_SIZE,
-                    cudaMemcpyHostToDevice, stream));
-            }
-            else
-            {
-                if (row_index[3] != ksupc)
-                    ABORT("SymFact V2 row-fragment index has wrong panel width.");
-                gpuErrchk(cudaMemcpyAsync(
-                    A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
-                    row_index.data(),
-                    sizeof(int_t) * static_cast<size_t>(row_index_size),
-                    cudaMemcpyHostToDevice, stream));
+                if (row_index.empty())
+                {
+                    gpuErrchk(cudaMemcpyAsync(
+                        A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
+                        empty_header, sizeof(int_t) * LPANEL_HEADER_SIZE,
+                        cudaMemcpyHostToDevice, stream));
+                }
+                else
+                {
+                    if (row_index[3] != ksupc)
+                        ABORT("SymFact V2 row-fragment index has wrong panel width.");
+                    gpuErrchk(cudaMemcpyAsync(
+                        A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
+                        row_index.data(),
+                        sizeof(int_t) * static_cast<size_t>(row_index_size),
+                        cudaMemcpyHostToDevice, stream));
+                }
             }
 
             if (!row_index.empty())
@@ -4440,22 +4447,25 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             }
         }
 
-        if (row_index.empty())
+        if (!pcfrag_taskflow || pcfrag_taskflow_validate)
         {
-            gpuErrchk(cudaMemcpyAsync(
-                A_gpu.symV2RowFragIdxRecvBufs[stream_offset], empty_header,
-                sizeof(int_t) * LPANEL_HEADER_SIZE,
-                cudaMemcpyHostToDevice, stream));
-        }
-        else
-        {
-            if (row_index[3] != ksupc)
-                ABORT("SymFact V2 row-fragment index has wrong panel width.");
-            gpuErrchk(cudaMemcpyAsync(
-                A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
-                row_index.data(),
-                sizeof(int_t) * static_cast<size_t>(row_index_size),
-                cudaMemcpyHostToDevice, stream));
+            if (row_index.empty())
+            {
+                gpuErrchk(cudaMemcpyAsync(
+                    A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
+                    empty_header, sizeof(int_t) * LPANEL_HEADER_SIZE,
+                    cudaMemcpyHostToDevice, stream));
+            }
+            else
+            {
+                if (row_index[3] != ksupc)
+                    ABORT("SymFact V2 row-fragment index has wrong panel width.");
+                gpuErrchk(cudaMemcpyAsync(
+                    A_gpu.symV2RowFragIdxRecvBufs[stream_offset],
+                    row_index.data(),
+                    sizeof(int_t) * static_cast<size_t>(row_index_size),
+                    cudaMemcpyHostToDevice, stream));
+            }
         }
 
         if (!row_index.empty())
