@@ -1195,6 +1195,10 @@ struct xLUstruct_t
         long long dispatch_calls_lookahead;
         long long dispatch_calls_exclude;
         long long dispatch_calls_full;
+        long long drain_calls_lookahead;
+        long long drain_calls_exclude;
+        long long drain_calls_full;
+        long long drain_incomplete_tasks;
         long long taskflow_entries;
         long long legacy_wrapper_aborts;
         long long early_task_launches_before_full_panel_ready;
@@ -1216,6 +1220,8 @@ struct xLUstruct_t
               tasks_launched_lookahead(0), tasks_launched_exclude(0),
               tasks_launched_full(0), dispatch_calls_lookahead(0),
               dispatch_calls_exclude(0), dispatch_calls_full(0),
+              drain_calls_lookahead(0), drain_calls_exclude(0),
+              drain_calls_full(0), drain_incomplete_tasks(0),
               taskflow_entries(0), legacy_wrapper_aborts(0),
               early_task_launches_before_full_panel_ready(0),
               arena_value_high_water(0), arena_index_high_water(0),
@@ -1232,7 +1238,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[30] = {
+        long long local[34] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1254,6 +1260,10 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.dispatch_calls_lookahead,
             symV2PcFragTaskflowStats.dispatch_calls_exclude,
             symV2PcFragTaskflowStats.dispatch_calls_full,
+            symV2PcFragTaskflowStats.drain_calls_lookahead,
+            symV2PcFragTaskflowStats.drain_calls_exclude,
+            symV2PcFragTaskflowStats.drain_calls_full,
+            symV2PcFragTaskflowStats.drain_incomplete_tasks,
             symV2PcFragTaskflowStats.taskflow_entries,
             symV2PcFragTaskflowStats.legacy_wrapper_aborts,
             symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready,
@@ -1264,17 +1274,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_send_wait_calls,
             symV2PcFragTaskflowStats.producer_mpi_wait_requests
         };
-        long long global[30] = {};
+        long long global[34] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 30, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 34, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 30; ++i)
+            for (int i = 0; i < 34; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1290,6 +1300,8 @@ struct xLUstruct_t
             "tasks_launched_full=%lld "
             "dispatch_calls_lookahead=%lld dispatch_calls_exclude=%lld "
             "dispatch_calls_full=%lld "
+            "drain_calls_lookahead=%lld drain_calls_exclude=%lld "
+            "drain_calls_full=%lld drain_incomplete_tasks=%lld "
             "taskflow_entries=%lld legacy_wrapper_aborts=%lld "
             "early_task_launches_before_full_panel_ready=%lld "
             "arena_value_high_water=%lld arena_index_high_water=%lld "
@@ -1301,7 +1313,8 @@ struct xLUstruct_t
             global[10], global[11], global[12], global[13], global[14],
             global[15], global[16], global[17], global[18], global[19],
             global[20], global[21], global[22], global[23], global[24],
-            global[25], global[26], global[27], global[28], global[29]);
+            global[25], global[26], global[27], global[28], global[29],
+            global[30], global[31], global[32], global[33]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END

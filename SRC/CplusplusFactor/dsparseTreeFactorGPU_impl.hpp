@@ -1022,12 +1022,25 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
         {
-            // int_t k = perm_c_supno[k0];
+            int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
             SymV2FactorProfileScope sym_v2_la_sync_scope(
                 (symGPU3DVersion == 2) ? this : NULL,
                 SYM_V2_FACTOR_LOOKAHEAD_SYNC);
-            SyncLookAheadUpdate(offset);
+            if (symGPU3DVersion == 2 &&
+                symV2UsePcFragmentTaskflowPanel(k))
+            {
+                int_t k_parent = gEtreeInfo->setree[k];
+                dSymV2PcFragTaskflowDrainGPU(
+                    k,
+                    SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+                        SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW,
+                    k_parent);
+            }
+            else
+            {
+                SyncLookAheadUpdate(offset);
+            }
         }
 
         if (local_sym_singleton)
@@ -1309,7 +1322,22 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             //     offset+= halfWin;
             int_t offset = getBufferOffset(k0, k1, oldWinSize, winParity, halfWin);
             // printf("Syncing stream %d on offset %d\n", k0, offset);
-            if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
+            if (symGPU3DVersion == 2 &&
+                symV2UsePcFragmentTaskflowPanel(k))
+            {
+#ifdef SLU_ENABLE_SYM_GPU3D_TIMING
+                if (sym_timing_enabled && sym_book_open)
+                {
+                    sym_sched_book_t += SuperLU_timer_() - sym_book_start;
+                    sym_book_open = 0;
+                }
+#endif
+                dSymV2PcFragTaskflowDrainGPU(
+                    k, SYM_V2_PCFRAG_TASK_FULL,
+                    GLOBAL_BLOCK_NOT_FOUND);
+                dSymV2PcFragTaskflowReleaseGPU(k);
+            }
+            else if ((symGPU3DVersion == 2 && LidxSendCounts[k] > 0) ||
                 (symGPU3DVersion != 2 &&
                  UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0))
             {

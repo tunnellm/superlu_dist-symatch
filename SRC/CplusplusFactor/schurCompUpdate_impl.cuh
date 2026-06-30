@@ -2964,8 +2964,9 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneWithLFragmentsGPU(
 {
     if (symV2UsePcFragmentTaskflowPanel(k))
     {
-        return dSymV2PcFragTaskflowDispatchGPU(
-            streamId, k, SYM_V2_PCFRAG_TASK_EXCLUDE, ex, 0);
+        (void)streamId;
+        return dSymV2PcFragTaskflowDrainGPU(
+            k, SYM_V2_PCFRAG_TASK_EXCLUDE, ex);
     }
     if (symV2UsePcFragmentSchurPanel(k))
         return dSymSchurCompUpdateExcludeOneDualFragmentsGPU(streamId, k, ex);

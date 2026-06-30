@@ -1778,6 +1778,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         }
         if (!drain)
             return 0;
+        if (!(mode_mask & SYM_V2_PCFRAG_TASK_FULL))
+            return 0;
     }
     ABORT("GPU3DV2_PCFRAG_TASKFLOW reached Schur dispatch before piece-owned exchange/task execution is implemented.");
     return 0;
@@ -1787,8 +1789,30 @@ template <>
 inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
     int_t k, unsigned mode_mask, int_t mode_gid)
 {
+    if (!symV2UsePcFragmentTaskflowPanel(k))
+        return 0;
+    int streamId = 0;
+    if (k < 0 || static_cast<size_t>(k) >= symV2PcFragTaskStates.size())
+        return 0;
+    SymV2PcFragPanelTaskState &state =
+        symV2PcFragTaskStates[static_cast<size_t>(k)];
+    if (!state.initialized)
+        return 0;
+    if (state.stream_offset >= 0 &&
+        state.stream_offset < A_gpu.numCudaStreams)
+        streamId = state.stream_offset;
+    if (state.incomplete_task_count > 0)
+        symV2PcFragTaskflowStats.drain_incomplete_tasks +=
+            state.incomplete_task_count;
+    if (mode_mask & (SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+                     SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW))
+        ++symV2PcFragTaskflowStats.drain_calls_lookahead;
+    if (mode_mask & SYM_V2_PCFRAG_TASK_EXCLUDE)
+        ++symV2PcFragTaskflowStats.drain_calls_exclude;
+    if (mode_mask & SYM_V2_PCFRAG_TASK_FULL)
+        ++symV2PcFragTaskflowStats.drain_calls_full;
     return dSymV2PcFragTaskflowDispatchGPU(
-        0, k, mode_mask, mode_gid, 1);
+        streamId, k, mode_mask, mode_gid, 1);
 }
 
 template <>
