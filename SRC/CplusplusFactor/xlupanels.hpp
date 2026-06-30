@@ -1187,6 +1187,14 @@ struct xLUstruct_t
         long long scatter_conflict_waits;
         long long output_locks_acquired;
         long long output_lock_high_water;
+        long long tasks_launched_progress;
+        long long tasks_launched_eager_full;
+        long long tasks_launched_lookahead;
+        long long tasks_launched_exclude;
+        long long tasks_launched_full;
+        long long dispatch_calls_lookahead;
+        long long dispatch_calls_exclude;
+        long long dispatch_calls_full;
         long long taskflow_entries;
         long long legacy_wrapper_aborts;
         long long early_task_launches_before_full_panel_ready;
@@ -1204,6 +1212,10 @@ struct xLUstruct_t
               tasks_blocked_row(0), tasks_blocked_partner(0),
               tasks_blocked_output(0), scatter_conflict_waits(0),
               output_locks_acquired(0), output_lock_high_water(0),
+              tasks_launched_progress(0), tasks_launched_eager_full(0),
+              tasks_launched_lookahead(0), tasks_launched_exclude(0),
+              tasks_launched_full(0), dispatch_calls_lookahead(0),
+              dispatch_calls_exclude(0), dispatch_calls_full(0),
               taskflow_entries(0), legacy_wrapper_aborts(0),
               early_task_launches_before_full_panel_ready(0),
               arena_value_high_water(0), arena_index_high_water(0),
@@ -1220,7 +1232,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[22] = {
+        long long local[30] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1234,6 +1246,14 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.scatter_conflict_waits,
             symV2PcFragTaskflowStats.output_locks_acquired,
             symV2PcFragTaskflowStats.output_lock_high_water,
+            symV2PcFragTaskflowStats.tasks_launched_progress,
+            symV2PcFragTaskflowStats.tasks_launched_eager_full,
+            symV2PcFragTaskflowStats.tasks_launched_lookahead,
+            symV2PcFragTaskflowStats.tasks_launched_exclude,
+            symV2PcFragTaskflowStats.tasks_launched_full,
+            symV2PcFragTaskflowStats.dispatch_calls_lookahead,
+            symV2PcFragTaskflowStats.dispatch_calls_exclude,
+            symV2PcFragTaskflowStats.dispatch_calls_full,
             symV2PcFragTaskflowStats.taskflow_entries,
             symV2PcFragTaskflowStats.legacy_wrapper_aborts,
             symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready,
@@ -1244,17 +1264,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_send_wait_calls,
             symV2PcFragTaskflowStats.producer_mpi_wait_requests
         };
-        long long global[22] = {};
+        long long global[30] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 22, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 30, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 22; ++i)
+            for (int i = 0; i < 30; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1265,6 +1285,11 @@ struct xLUstruct_t
             "tasks_blocked_row=%lld tasks_blocked_partner=%lld "
             "tasks_blocked_output=%lld scatter_conflict_waits=%lld "
             "output_locks_acquired=%lld output_lock_high_water=%lld "
+            "tasks_launched_progress=%lld tasks_launched_eager_full=%lld "
+            "tasks_launched_lookahead=%lld tasks_launched_exclude=%lld "
+            "tasks_launched_full=%lld "
+            "dispatch_calls_lookahead=%lld dispatch_calls_exclude=%lld "
+            "dispatch_calls_full=%lld "
             "taskflow_entries=%lld legacy_wrapper_aborts=%lld "
             "early_task_launches_before_full_panel_ready=%lld "
             "arena_value_high_water=%lld arena_index_high_water=%lld "
@@ -1275,7 +1300,8 @@ struct xLUstruct_t
             global[5], global[6], global[7], global[8], global[9],
             global[10], global[11], global[12], global[13], global[14],
             global[15], global[16], global[17], global[18], global[19],
-            global[20], global[21]);
+            global[20], global[21], global[22], global[23], global[24],
+            global[25], global[26], global[27], global[28], global[29]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END

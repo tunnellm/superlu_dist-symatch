@@ -1031,6 +1031,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
         ++symV2PcFragTaskflowStats.tasks_launched;
         ++symV2PcFragTaskflowStats.tasks_completed;
+        ++symV2PcFragTaskflowStats.tasks_launched_progress;
         ++launched;
     }
     if (state.incomplete_task_count == 0)
@@ -1104,6 +1105,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (it != state.active_output_keys.end())
                     state.active_output_keys.erase(it);
             }
+        };
+        auto count_task_launch_mode = [&](unsigned launch_mode) {
+            if (launch_mode &
+                (SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW))
+                ++symV2PcFragTaskflowStats.tasks_launched_lookahead;
+            else if (launch_mode & SYM_V2_PCFRAG_TASK_EXCLUDE)
+                ++symV2PcFragTaskflowStats.tasks_launched_exclude;
+            else if (launch_mode & SYM_V2_PCFRAG_TASK_FULL)
+                ++symV2PcFragTaskflowStats.tasks_launched_full;
         };
         auto release_completed_state = [&]() {
             auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
@@ -1182,6 +1193,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
                 ++symV2PcFragTaskflowStats.tasks_launched;
                 ++symV2PcFragTaskflowStats.tasks_completed;
+                ++symV2PcFragTaskflowStats.tasks_launched_eager_full;
             }
             if (state.incomplete_task_count == 0)
             {
@@ -1345,7 +1357,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 int_t col_start, int_t col_end,
                 cublasHandle_t group_handle,
                 cudaStream_t group_stream,
-                double *group_gemm) {
+                double *group_gemm,
+                unsigned launch_mode) {
             if (row_start >= row_end || col_start >= col_end)
                 return;
             int pair_count = 0;
@@ -1486,6 +1499,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
                     ++symV2PcFragTaskflowStats.tasks_launched;
                     ++symV2PcFragTaskflowStats.tasks_completed;
+                    count_task_launch_mode(launch_mode);
                 }
             }
             if (row_group_gpu != NULL)
@@ -1502,7 +1516,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 int_t col_start, int_t col_end,
                 cublasHandle_t group_handle,
                 cudaStream_t group_stream,
-                double *group_gemm) {
+                double *group_gemm,
+                unsigned launch_mode) {
             int_t nrow = frag_nblocks(row_frag);
             int_t ncol = frag_nblocks(col_frag);
             row_start = SUPERLU_MAX((int_t)0, row_start);
@@ -1580,6 +1595,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
                         ++symV2PcFragTaskflowStats.tasks_launched;
                         ++symV2PcFragTaskflowStats.tasks_completed;
+                        count_task_launch_mode(launch_mode);
                     }
                 return;
             }
@@ -1667,7 +1683,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     if (iEnd <= iSt)
                         iEnd = iSt + 1;
                     launch_group(iSt, iEnd, jSt, jNext,
-                                 group_handle, group_stream, group_gemm);
+                                 group_handle, group_stream, group_gemm,
+                                 launch_mode);
                 }
                 jSt = jNext;
             }
@@ -1680,6 +1697,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         if (mode_mask & (SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
                          SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW))
         {
+            ++symV2PcFragTaskflowStats.dispatch_calls_lookahead;
             int_t row_loc = frag_find(row_frag, mode_gid);
             int_t col_loc = frag_find(col_frag, mode_gid);
             int_t row_ranges[3][2];
@@ -1691,7 +1709,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                      col_loc, col_loc + 1,
                                      A_gpu.lookAheadLHandle[streamId],
                                      A_gpu.lookAheadLStream[streamId],
-                                     A_gpu.lookAheadLGemmBuffer[streamId]);
+                                     A_gpu.lookAheadLGemmBuffer[streamId],
+                                     SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL);
             if (row_loc != GLOBAL_BLOCK_NOT_FOUND && row_loc != diag_row)
             {
                 int_t col_ranges[3][2];
@@ -1702,11 +1721,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                      col_ranges[c][0], col_ranges[c][1],
                                      A_gpu.lookAheadUHandle[streamId],
                                      A_gpu.lookAheadUStream[streamId],
-                                     A_gpu.gpuGemmBuffs[streamId]);
+                                     A_gpu.gpuGemmBuffs[streamId],
+                                     SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW);
             }
         }
         if (mode_mask & SYM_V2_PCFRAG_TASK_EXCLUDE)
         {
+            ++symV2PcFragTaskflowStats.dispatch_calls_exclude;
             int_t row_loc = frag_find(row_frag, mode_gid);
             int_t col_loc = frag_find(col_frag, mode_gid);
             int_t row_ranges[3][2];
@@ -1719,10 +1740,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 for (int c = 0; c < n_col_ranges; ++c)
                     dispatch_limited(row_ranges[r][0], row_ranges[r][1],
                                      col_ranges[c][0], col_ranges[c][1],
-                                     handle, stream, gemmBuff);
+                                     handle, stream, gemmBuff,
+                                     SYM_V2_PCFRAG_TASK_EXCLUDE);
         }
         if (mode_mask & SYM_V2_PCFRAG_TASK_FULL)
         {
+            ++symV2PcFragTaskflowStats.dispatch_calls_full;
             int_t row_ranges[3][2];
             int_t col_ranges[3][2];
             int n_row_ranges = ranges_excluding(
@@ -1733,7 +1756,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 for (int c = 0; c < n_col_ranges; ++c)
                     dispatch_limited(row_ranges[r][0], row_ranges[r][1],
                                      col_ranges[c][0], col_ranges[c][1],
-                                     handle, stream, gemmBuff);
+                                     handle, stream, gemmBuff,
+                                     SYM_V2_PCFRAG_TASK_FULL);
         }
         if (state.incomplete_task_count == 0)
         {
