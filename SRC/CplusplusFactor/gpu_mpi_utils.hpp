@@ -494,6 +494,11 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_validate()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_VALIDATE", 0);
 }
 
+static inline bool superlu_sym_v2_pcfrag_taskflow_scheduler()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_SCHEDULER", 0);
+}
+
 static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
 {
     static int cached = -1;
@@ -515,6 +520,8 @@ static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
 
 static inline bool superlu_sym_v2_pcfrag_taskflow_eager()
 {
+    if (superlu_sym_v2_pcfrag_taskflow_scheduler())
+        return false;
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_EAGER", 1);
 }
 
