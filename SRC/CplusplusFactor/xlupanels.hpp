@@ -1130,6 +1130,22 @@ struct xLUstruct_t
         int incomplete_task_count;
         int producer_tasks_launched;
         unsigned char producer_launch_cap_reported;
+        unsigned char producer_exchange_pending;
+        int producer_partner_recv_remaining;
+        int producer_row_recv_remaining;
+        int producer_ksupc;
+        std::vector<MPI_Request> producer_partner_recv_reqs;
+        std::vector<int> producer_partner_recv_prs;
+        std::vector<int> producer_partner_recv_sizes;
+        std::vector<int> producer_partner_recv_offsets;
+        std::vector<unsigned char> producer_partner_recv_done;
+        std::vector<Ftype> producer_partner_recv_host_values;
+        std::vector<MPI_Request> producer_row_recv_reqs;
+        std::vector<int> producer_row_recv_pcs;
+        std::vector<int> producer_row_recv_sizes;
+        std::vector<int> producer_row_recv_offsets;
+        std::vector<unsigned char> producer_row_recv_done;
+        std::vector<Ftype> producer_row_recv_host_values;
 #ifdef HAVE_CUDA
         int_t *d_index_pool;
         Ftype *d_value_pool;
@@ -1146,7 +1162,10 @@ struct xLUstruct_t
         SymV2PcFragPanelTaskState()
             : k(-1), stream_offset(-1), initialized(0),
               exchange_posted(0), closed(0), incomplete_task_count(0),
-              producer_tasks_launched(0), producer_launch_cap_reported(0)
+              producer_tasks_launched(0), producer_launch_cap_reported(0),
+              producer_exchange_pending(0),
+              producer_partner_recv_remaining(0),
+              producer_row_recv_remaining(0), producer_ksupc(0)
 #ifdef HAVE_CUDA
               , d_index_pool(NULL), d_value_pool(NULL),
               d_group_index_pool(NULL), d_group_value_pool(NULL)
@@ -1172,6 +1191,22 @@ struct xLUstruct_t
             incomplete_task_count = 0;
             producer_tasks_launched = 0;
             producer_launch_cap_reported = 0;
+            producer_exchange_pending = 0;
+            producer_partner_recv_remaining = 0;
+            producer_row_recv_remaining = 0;
+            producer_ksupc = 0;
+            producer_partner_recv_reqs.clear();
+            producer_partner_recv_prs.clear();
+            producer_partner_recv_sizes.clear();
+            producer_partner_recv_offsets.clear();
+            producer_partner_recv_done.clear();
+            producer_partner_recv_host_values.clear();
+            producer_row_recv_reqs.clear();
+            producer_row_recv_pcs.clear();
+            producer_row_recv_sizes.clear();
+            producer_row_recv_offsets.clear();
+            producer_row_recv_done.clear();
+            producer_row_recv_host_values.clear();
 #ifdef HAVE_CUDA
             d_index_pool = NULL;
             d_value_pool = NULL;
@@ -1232,6 +1267,11 @@ struct xLUstruct_t
         long long producer_return_incomplete_task_sum;
         long long producer_task_launch_cap_hits;
         long long producer_task_launch_cap_deferred;
+        long long producer_exchange_progress_calls;
+        long long producer_exchange_drain_calls;
+        long long producer_recv_test_calls;
+        long long producer_recv_test_completions;
+        long long producer_returns_with_pending_recvs;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -1258,7 +1298,12 @@ struct xLUstruct_t
               producer_returns_incomplete_tasks(0),
               producer_return_incomplete_task_sum(0),
               producer_task_launch_cap_hits(0),
-              producer_task_launch_cap_deferred(0)
+              producer_task_launch_cap_deferred(0),
+              producer_exchange_progress_calls(0),
+              producer_exchange_drain_calls(0),
+              producer_recv_test_calls(0),
+              producer_recv_test_completions(0),
+              producer_returns_with_pending_recvs(0)
         {
         }
     };
@@ -1270,7 +1315,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[43] = {
+        long long local[48] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1313,19 +1358,24 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_returns_incomplete_tasks,
             symV2PcFragTaskflowStats.producer_return_incomplete_task_sum,
             symV2PcFragTaskflowStats.producer_task_launch_cap_hits,
-            symV2PcFragTaskflowStats.producer_task_launch_cap_deferred
+            symV2PcFragTaskflowStats.producer_task_launch_cap_deferred,
+            symV2PcFragTaskflowStats.producer_exchange_progress_calls,
+            symV2PcFragTaskflowStats.producer_exchange_drain_calls,
+            symV2PcFragTaskflowStats.producer_recv_test_calls,
+            symV2PcFragTaskflowStats.producer_recv_test_completions,
+            symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
         };
-        long long global[43] = {};
+        long long global[48] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 43, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 48, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 43; ++i)
+            for (int i = 0; i < 48; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1357,7 +1407,12 @@ struct xLUstruct_t
             "producer_returns_incomplete_tasks=%lld "
             "producer_return_incomplete_task_sum=%lld "
             "producer_task_launch_cap_hits=%lld "
-            "producer_task_launch_cap_deferred=%lld\n",
+            "producer_task_launch_cap_deferred=%lld "
+            "producer_exchange_progress_calls=%lld "
+            "producer_exchange_drain_calls=%lld "
+            "producer_recv_test_calls=%lld "
+            "producer_recv_test_completions=%lld "
+            "producer_returns_with_pending_recvs=%lld\n",
             global[0], global[1], global[2], global[3], global[4],
             global[5], global[6], global[7], global[8], global[9],
             global[10], global[11], global[12], global[13], global[14],
@@ -1366,7 +1421,8 @@ struct xLUstruct_t
             global[25], global[26], global[27], global[28], global[29],
             global[30], global[31], global[32], global[33], global[34],
             global[35], global[36], global[37], global[38], global[39],
-            global[40], global[41], global[42]);
+            global[40], global[41], global[42], global[43], global[44],
+            global[45], global[46], global[47]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END
@@ -1994,6 +2050,11 @@ struct xLUstruct_t
     bool symV2UsePcFragmentSchurPanel(int_t k) const;
     bool symV2UsePcFragmentTaskflowPanel(int_t k) const;
     int_t dSymV2PcFragTaskflowBeginGPU(int_t k, int_t stream_offset);
+    int_t dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
+        int_t k, unsigned char kind, const Ftype *stage,
+        const std::vector<int_t> &recv_map, int_t ksupc,
+        cudaStream_t stream);
+    int_t dSymV2PcFragTaskflowProgressExchangeGPU(int_t k, int drain);
     int_t dSymV2PcFragTaskflowProgressGPU(int_t k, int budget);
     int_t dSymV2PcFragTaskflowDispatchGPU(
         int streamId, int_t k, unsigned mode_mask, int_t mode_gid, int drain);

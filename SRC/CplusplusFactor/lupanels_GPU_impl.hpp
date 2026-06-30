@@ -580,6 +580,29 @@ int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowBeginGPU(
 }
 
 template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
+    int_t k, unsigned char kind, const Ftype *stage,
+    const std::vector<int_t> &recv_map, int_t ksupc, cudaStream_t stream)
+{
+    (void)k;
+    (void)kind;
+    (void)stage;
+    (void)recv_map;
+    (void)ksupc;
+    (void)stream;
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowProgressExchangeGPU(
+    int_t k, int drain)
+{
+    (void)k;
+    (void)drain;
+    return 0;
+}
+
+template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowProgressGPU(
     int_t k, int budget)
 {
@@ -929,6 +952,289 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
 }
 
 template <>
+inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
+    int_t k, unsigned char kind, const double *stage,
+    const std::vector<int_t> &recv_map, int_t ksupc, cudaStream_t stream)
+{
+    if (!symV2UsePcFragmentTaskflowPanel(k))
+        return 0;
+    if (stage == NULL)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW piece assembly has no source.");
+    if (recv_map.empty())
+        return 0;
+    if (recv_map.size() % 3 != 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW piece receive map has invalid stride.");
+    if (static_cast<size_t>(k) >= symV2PcFragTaskStates.size())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW piece assembly has no state.");
+    SymV2PcFragPanelTaskState &state =
+        symV2PcFragTaskStates[static_cast<size_t>(k)];
+    if (!state.initialized)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW piece assembly has uninitialized state.");
+    std::vector<SymV2PcFragPieceDesc> &pieces =
+        (kind == SYM_V2_PCFRAG_PIECE_ROW)
+            ? state.row_pieces
+            : state.partner_pieces;
+    int ready_count = 0;
+    size_t map_pos = 0;
+    while (map_pos < recv_map.size())
+    {
+        int_t dst_offset = recv_map[map_pos++];
+        int_t nrows = recv_map[map_pos++];
+        int_t src_offset = recv_map[map_pos++];
+        if (nrows <= 0)
+            continue;
+        SymV2PcFragPieceDesc *piece = NULL;
+        for (size_t p = 0; p < pieces.size(); ++p)
+        {
+            int_t begin = pieces[p].frag_row_offset;
+            int_t end = begin + pieces[p].nrows;
+            if (dst_offset >= begin && dst_offset + nrows <= end)
+            {
+                piece = &pieces[p];
+                break;
+            }
+        }
+        if (piece == NULL)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW receive map does not match a piece.");
+        if (piece->d_val == NULL || piece->lda <= 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW piece value storage is missing.");
+        if (piece->filled_rows > piece->nrows - nrows)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW piece assembly overfills a piece.");
+        int_t row_offset = dst_offset - piece->frag_row_offset;
+        gpuErrchk(cudaMemcpy2DAsync(
+            piece->d_val + row_offset,
+            sizeof(double) * static_cast<size_t>(piece->lda),
+            stage + src_offset,
+            sizeof(double) * static_cast<size_t>(nrows),
+            sizeof(double) * static_cast<size_t>(nrows),
+            static_cast<size_t>(ksupc),
+            cudaMemcpyDeviceToDevice, stream));
+        piece->filled_rows += nrows;
+        if (!piece->ready && piece->filled_rows == piece->nrows)
+        {
+            if (piece->ready_event != NULL)
+                gpuErrchk(cudaEventRecord(piece->ready_event, stream));
+            piece->ready = 1;
+            if (kind == SYM_V2_PCFRAG_PIECE_ROW)
+                ++symV2PcFragTaskflowStats.row_pieces_ready;
+            else
+                ++symV2PcFragTaskflowStats.partner_pieces_ready;
+            ++ready_count;
+        }
+    }
+    return ready_count;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
+    int_t k, int drain)
+{
+    if (!symV2UsePcFragmentTaskflowPanel(k))
+        return 0;
+    if (k < 0 || static_cast<size_t>(k) >= symV2PcFragTaskStates.size())
+        return 0;
+    SymV2PcFragPanelTaskState &state =
+        symV2PcFragTaskStates[static_cast<size_t>(k)];
+    if (!state.initialized || !state.producer_exchange_pending)
+        return 0;
+    int streamId = state.stream_offset >= 0 ? state.stream_offset : 0;
+    if (streamId < 0 || streamId >= A_gpu.numCudaStreams)
+        streamId = 0;
+    cudaStream_t stream = superlu_sym_v2_async_factor()
+                              ? A_gpu.lookAheadUStream[streamId]
+                              : A_gpu.cuStreams[streamId];
+    if (stream == NULL)
+        stream = A_gpu.cuStreams[streamId];
+    int progressed = 0;
+    ++symV2PcFragTaskflowStats.producer_exchange_progress_calls;
+    if (drain)
+        ++symV2PcFragTaskflowStats.producer_exchange_drain_calls;
+
+    auto complete_partner_recv = [&](int req_index) {
+        if (req_index < 0 ||
+            static_cast<size_t>(req_index) >=
+                state.producer_partner_recv_reqs.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner receive completion index is invalid.");
+        if (state.producer_partner_recv_done[static_cast<size_t>(req_index)])
+            return;
+        int pr = state.producer_partner_recv_prs[static_cast<size_t>(req_index)];
+        int count = state.producer_partner_recv_sizes[static_cast<size_t>(req_index)];
+        int offset = state.producer_partner_recv_offsets[static_cast<size_t>(req_index)];
+        if (pr < 0 || pr >= Pr || count <= 0 || offset < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner receive metadata is invalid.");
+        if (A_gpu.symPartnerLStageBufs[streamId] == NULL)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner stage buffer is missing.");
+        if (static_cast<size_t>(offset) + static_cast<size_t>(count) >
+            state.producer_partner_recv_host_values.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner receive host buffer is too small.");
+        gpuErrchk(cudaMemcpyAsync(
+            A_gpu.symPartnerLStageBufs[streamId] + offset,
+            state.producer_partner_recv_host_values.data() + offset,
+            sizeof(double) * static_cast<size_t>(count),
+            cudaMemcpyHostToDevice, stream));
+        size_t recv_map_pos =
+            static_cast<size_t>(k) * static_cast<size_t>(Pr) +
+            static_cast<size_t>(pr);
+        if (recv_map_pos >= symV2PartnerLRecvMap.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner receive map is missing.");
+        dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
+            k, SYM_V2_PCFRAG_PIECE_PARTNER,
+            A_gpu.symPartnerLStageBufs[streamId] + offset,
+            symV2PartnerLRecvMap[recv_map_pos],
+            state.producer_ksupc, stream);
+        state.producer_partner_recv_done[static_cast<size_t>(req_index)] = 1;
+        --state.producer_partner_recv_remaining;
+        ++symV2PcFragTaskflowStats.producer_recv_test_completions;
+        ++progressed;
+    };
+
+    auto complete_row_recv = [&](int req_index) {
+        if (req_index < 0 ||
+            static_cast<size_t>(req_index) >=
+                state.producer_row_recv_reqs.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW row receive completion index is invalid.");
+        if (state.producer_row_recv_done[static_cast<size_t>(req_index)])
+            return;
+        int pc = state.producer_row_recv_pcs[static_cast<size_t>(req_index)];
+        int count = state.producer_row_recv_sizes[static_cast<size_t>(req_index)];
+        int offset = state.producer_row_recv_offsets[static_cast<size_t>(req_index)];
+        if (A_gpu.symV2RowFragStageBufs[streamId] == NULL)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW row stage buffer is missing.");
+        if (pc == -1)
+        {
+            if (static_cast<size_t>(k) >= symV2RowFragRecvIndex.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW row aggregate index is missing.");
+            const std::vector<int_t> &row_index =
+                symV2RowFragRecvIndex[static_cast<size_t>(k)];
+            if (row_index.empty() || row_index[1] <= 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW row aggregate index is invalid.");
+            int_t row_nrows = row_index[1];
+            if (state.producer_row_recv_host_values.size() <
+                static_cast<size_t>(row_nrows) *
+                    static_cast<size_t>(state.producer_ksupc))
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW row aggregate host buffer is too small.");
+            for (size_t p = 0; p < state.row_pieces.size(); ++p)
+            {
+                SymV2PcFragPieceDesc &piece = state.row_pieces[p];
+                if (piece.ready)
+                    continue;
+                if (piece.d_val == NULL || piece.lda <= 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW row piece storage is missing.");
+                if (piece.frag_row_offset < 0 ||
+                    piece.frag_row_offset + piece.nrows > row_nrows)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW row aggregate piece range is invalid.");
+                gpuErrchk(cudaMemcpy2DAsync(
+                    piece.d_val,
+                    sizeof(double) * static_cast<size_t>(piece.lda),
+                    state.producer_row_recv_host_values.data() +
+                        piece.frag_row_offset,
+                    sizeof(double) * static_cast<size_t>(row_nrows),
+                    sizeof(double) * static_cast<size_t>(piece.nrows),
+                    static_cast<size_t>(state.producer_ksupc),
+                    cudaMemcpyHostToDevice, stream));
+                piece.filled_rows = piece.nrows;
+                if (piece.ready_event != NULL)
+                    gpuErrchk(cudaEventRecord(piece.ready_event, stream));
+                piece.ready = 1;
+                ++symV2PcFragTaskflowStats.row_pieces_ready;
+            }
+        }
+        else
+        {
+            if (pc < 0 || pc >= Pc || count <= 0 || offset < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW row receive metadata is invalid.");
+            if (static_cast<size_t>(offset) + static_cast<size_t>(count) >
+                state.producer_row_recv_host_values.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW row receive host buffer is too small.");
+            gpuErrchk(cudaMemcpyAsync(
+                A_gpu.symV2RowFragStageBufs[streamId] + offset,
+                state.producer_row_recv_host_values.data() + offset,
+                sizeof(double) * static_cast<size_t>(count),
+                cudaMemcpyHostToDevice, stream));
+            size_t row_pos =
+                static_cast<size_t>(k) * static_cast<size_t>(Pc) +
+                static_cast<size_t>(pc);
+            if (row_pos >= symV2RowFragRecvMap.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW row receive map is missing.");
+            dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
+                k, SYM_V2_PCFRAG_PIECE_ROW,
+                A_gpu.symV2RowFragStageBufs[streamId] + offset,
+                symV2RowFragRecvMap[row_pos],
+                state.producer_ksupc, stream);
+        }
+        state.producer_row_recv_done[static_cast<size_t>(req_index)] = 1;
+        --state.producer_row_recv_remaining;
+        ++symV2PcFragTaskflowStats.producer_recv_test_completions;
+        ++progressed;
+    };
+
+    auto progress_requests =
+        [&](std::vector<MPI_Request> &reqs, int remaining,
+            void (*unused)(int), int kind) -> int {
+        (void)unused;
+        if (remaining <= 0 || reqs.empty())
+            return 0;
+        const int request_count = static_cast<int>(reqs.size());
+        std::vector<int> indices(static_cast<size_t>(request_count));
+        std::vector<MPI_Status> statuses(static_cast<size_t>(request_count));
+        int local_progress = 0;
+        do
+        {
+            int completed = 0;
+            ++symV2PcFragTaskflowStats.producer_recv_test_calls;
+            int mpi_rc = drain
+                ? MPI_Waitsome(request_count, reqs.data(), &completed,
+                               indices.data(), statuses.data())
+                : MPI_Testsome(request_count, reqs.data(), &completed,
+                               indices.data(), statuses.data());
+            if (mpi_rc != MPI_SUCCESS)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW receive progress failed.");
+            if (completed == MPI_UNDEFINED || completed == 0)
+                break;
+            for (int item = 0; item < completed; ++item)
+            {
+                int req_index = indices[static_cast<size_t>(item)];
+                if (kind == 0)
+                    complete_partner_recv(req_index);
+                else
+                    complete_row_recv(req_index);
+                ++local_progress;
+            }
+            remaining -= completed;
+        } while (drain && remaining > 0);
+        return local_progress;
+    };
+
+    progress_requests(state.producer_partner_recv_reqs,
+                      state.producer_partner_recv_remaining,
+                      NULL, 0);
+    progress_requests(state.producer_row_recv_reqs,
+                      state.producer_row_recv_remaining,
+                      NULL, 1);
+    if (state.producer_partner_recv_remaining < 0 ||
+        state.producer_row_recv_remaining < 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW receive remaining count underflowed.");
+    if (state.producer_partner_recv_remaining == 0 &&
+        state.producer_row_recv_remaining == 0)
+    {
+        state.producer_exchange_pending = 0;
+        state.producer_partner_recv_reqs.clear();
+        state.producer_partner_recv_prs.clear();
+        state.producer_partner_recv_sizes.clear();
+        state.producer_partner_recv_offsets.clear();
+        state.producer_partner_recv_done.clear();
+        state.producer_partner_recv_host_values.clear();
+        state.producer_row_recv_reqs.clear();
+        state.producer_row_recv_pcs.clear();
+        state.producer_row_recv_sizes.clear();
+        state.producer_row_recv_offsets.clear();
+        state.producer_row_recv_done.clear();
+        state.producer_row_recv_host_values.clear();
+    }
+    return progressed;
+}
+
+template <>
 inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     int_t k, int budget)
 {
@@ -1128,7 +1434,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             static_cast<long long>(state.incomplete_task_count);
         state.producer_launch_cap_reported = 1;
     }
-    if (state.incomplete_task_count == 0)
+    if (state.incomplete_task_count == 0 &&
+        !state.producer_exchange_pending)
         release_completed_state();
     return launched;
 }
@@ -1141,6 +1448,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         return 0;
     if (static_cast<size_t>(k) < symV2PcFragTaskStates.size())
     {
+        if (!drain)
+            dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
         SymV2PcFragPanelTaskState &state =
             symV2PcFragTaskStates[static_cast<size_t>(k)];
         if (streamId < 0 || streamId >= A_gpu.numCudaStreams)
@@ -1312,7 +1621,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 ++symV2PcFragTaskflowStats.tasks_completed;
                 ++symV2PcFragTaskflowStats.tasks_launched_eager_full;
             }
-            if (state.incomplete_task_count == 0)
+            if (state.incomplete_task_count == 0 &&
+                !state.producer_exchange_pending)
             {
                 release_completed_state();
                 return 0;
@@ -1887,7 +2197,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                      handle, stream, gemmBuff,
                                      SYM_V2_PCFRAG_TASK_FULL);
         }
-        if (state.incomplete_task_count == 0)
+        if (state.incomplete_task_count == 0 &&
+            !state.producer_exchange_pending)
         {
             release_completed_state();
             return 0;
@@ -1927,6 +2238,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
         ++symV2PcFragTaskflowStats.drain_calls_exclude;
     if (mode_mask & SYM_V2_PCFRAG_TASK_FULL)
         ++symV2PcFragTaskflowStats.drain_calls_full;
+    dSymV2PcFragTaskflowProgressExchangeGPU(k, 1);
     return dSymV2PcFragTaskflowDispatchGPU(
         streamId, k, mode_mask, mode_gid, 1);
 }
@@ -1938,6 +2250,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         return 0;
     SymV2PcFragPanelTaskState &state =
         symV2PcFragTaskStates[static_cast<size_t>(k)];
+    dSymV2PcFragTaskflowProgressExchangeGPU(k, 1);
+    if (state.producer_exchange_pending)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW release found pending producer exchange.");
     auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
         if (piece.pending_consumers != 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
@@ -2077,73 +2392,15 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         pcfrag_taskflow && superlu_sym_v2_pcfrag_taskflow_eager();
     const bool pcfrag_taskflow_validate =
         pcfrag_taskflow && superlu_sym_v2_pcfrag_taskflow_validate();
+    const bool pcfrag_taskflow_async_pieces =
+        pcfrag_taskflow && !pcfrag_taskflow_validate &&
+        superlu_sym_v2_pcfrag_taskflow_async_pieces();
     auto taskflow_assemble_owned_pieces =
         [&](unsigned char kind, const double *stage,
             const std::vector<int_t> &recv_map) {
-        if (!pcfrag_taskflow)
-            return;
-        if (taskflow_state == NULL || !taskflow_state->initialized)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW piece assembly has no state.");
-        if (stage == NULL)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW piece assembly has no source.");
-        if (recv_map.empty())
-            return;
-        if (recv_map.size() % 3 != 0)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW piece receive map has invalid stride.");
-        std::vector<SymV2PcFragPieceDesc> &pieces =
-            (kind == SYM_V2_PCFRAG_PIECE_ROW)
-                ? taskflow_state->row_pieces
-                : taskflow_state->partner_pieces;
-        size_t map_pos = 0;
-        while (map_pos < recv_map.size())
-        {
-            int_t dst_offset = recv_map[map_pos++];
-            int_t nrows = recv_map[map_pos++];
-            int_t src_offset = recv_map[map_pos++];
-            if (nrows <= 0)
-                continue;
-            SymV2PcFragPieceDesc *piece = NULL;
-            for (size_t p = 0; p < pieces.size(); ++p)
-            {
-                int_t begin = pieces[p].frag_row_offset;
-                int_t end = begin + pieces[p].nrows;
-                if (dst_offset >= begin && dst_offset + nrows <= end)
-                {
-                    piece = &pieces[p];
-                    break;
-                }
-            }
-            if (piece == NULL)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW receive map does not match a piece.");
-            if (piece->d_val == NULL || piece->lda <= 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW piece value storage is missing.");
-            if (piece->filled_rows > piece->nrows - nrows)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW piece assembly overfills a piece.");
-            int_t row_offset = dst_offset - piece->frag_row_offset;
-            gpuErrchk(cudaMemcpy2DAsync(
-                piece->d_val + row_offset,
-                sizeof(double) * static_cast<size_t>(piece->lda),
-                stage + src_offset,
-                sizeof(double) * static_cast<size_t>(nrows),
-                sizeof(double) * static_cast<size_t>(nrows),
-                static_cast<size_t>(ksupc),
-                cudaMemcpyDeviceToDevice, stream));
-            piece->filled_rows += nrows;
-            if (!piece->ready && piece->filled_rows == piece->nrows)
-            {
-                if (piece->ready_event != NULL)
-                    gpuErrchk(cudaEventRecord(piece->ready_event, stream));
-                piece->ready = 1;
-                if (kind == SYM_V2_PCFRAG_PIECE_ROW)
-                    ++symV2PcFragTaskflowStats.row_pieces_ready;
-                else
-                    ++symV2PcFragTaskflowStats.partner_pieces_ready;
-                if (pcfrag_taskflow_eager)
-                    dSymV2PcFragTaskflowProgressGPU(
-                        k,
-                        superlu_sym_v2_pcfrag_taskflow_progress_budget());
-            }
-        }
+        if (pcfrag_taskflow)
+            dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
+                k, kind, stage, recv_map, ksupc, stream);
     };
     auto taskflow_copy_owned_pieces_from_full =
         [&](unsigned char kind, const double *full, int_t full_lda,
@@ -2448,11 +2705,23 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         recv_host_base = NULL;
         if (!cuda_aware && recv_total > 0)
         {
-            if (static_cast<size_t>(stream_offset) >=
-                    symPartnerLvalRecvBufs.size() ||
-                symPartnerLvalRecvBufs[stream_offset] == NULL)
-                ABORT("SymFact V2 host receive staging buffer is missing.");
-            recv_host_base = symPartnerLvalRecvBufs[stream_offset];
+            if (pcfrag_taskflow_async_pieces)
+            {
+                if (taskflow_state == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW async partner receive has no state.");
+                taskflow_state->producer_partner_recv_host_values.assign(
+                    static_cast<size_t>(recv_total), 0.0);
+                recv_host_base =
+                    taskflow_state->producer_partner_recv_host_values.data();
+            }
+            else
+            {
+                if (static_cast<size_t>(stream_offset) >=
+                        symPartnerLvalRecvBufs.size() ||
+                    symPartnerLvalRecvBufs[stream_offset] == NULL)
+                    ABORT("SymFact V2 host receive staging buffer is missing.");
+                recv_host_base = symPartnerLvalRecvBufs[stream_offset];
+            }
         }
     };
 
@@ -2931,7 +3200,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     symStatAdd(SYM_GPU3D_S_L2U_SEND_REQUESTS,
                static_cast<long long>(send_reqs.size()));
 #endif
-    if (pcfrag_async_pipeline)
+    if (pcfrag_async_pipeline || pcfrag_taskflow_async_pieces)
         deferred_partner_send_req_count = send_reqs.size();
 
     bool recv_h2d_issued = false;
@@ -2960,6 +3229,40 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 break;
             }
         }
+    }
+
+    if (pcfrag_taskflow_async_pieces && !recv_reqs.empty())
+    {
+        if (taskflow_state == NULL || !taskflow_state->initialized)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW async partner receive has no state.");
+        taskflow_state->producer_exchange_pending = 1;
+        taskflow_state->producer_ksupc = static_cast<int>(ksupc);
+        taskflow_state->producer_partner_recv_reqs = recv_reqs;
+        taskflow_state->producer_partner_recv_prs = recv_request_peers;
+        taskflow_state->producer_partner_recv_sizes.clear();
+        taskflow_state->producer_partner_recv_offsets.clear();
+        taskflow_state->producer_partner_recv_sizes.reserve(
+            recv_request_peers.size());
+        taskflow_state->producer_partner_recv_offsets.reserve(
+            recv_request_peers.size());
+        for (size_t i = 0; i < recv_request_peers.size(); ++i)
+        {
+            int pr = recv_request_peers[i];
+            if (pr < 0 || pr >= Pr)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW async partner peer is invalid.");
+            taskflow_state->producer_partner_recv_sizes.push_back(
+                recv_sizes[static_cast<size_t>(pr)]);
+            taskflow_state->producer_partner_recv_offsets.push_back(
+                recv_offsets[static_cast<size_t>(pr)]);
+        }
+        taskflow_state->producer_partner_recv_done.assign(
+            recv_reqs.size(), 0);
+        taskflow_state->producer_partner_recv_remaining =
+            static_cast<int>(recv_reqs.size());
+        recv_reqs.clear();
+        recv_request_peers.clear();
+        recv_h2d_issued = true;
+        dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
     }
 
     if (!recv_reqs.empty())
@@ -3179,6 +3482,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             }
             else
             {
+                if (pcfrag_taskflow_async_pieces)
+                    continue;
                 stage = A_gpu.symPartnerLStageBufs[stream_offset] +
                         recv_offsets[pr];
             }
@@ -3247,7 +3552,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
     if (pc_fragment_schur)
     {
-        if (!pcfrag_async_pipeline && !send_reqs.empty())
+        if (!pcfrag_async_pipeline && !pcfrag_taskflow_async_pieces &&
+            !send_reqs.empty())
         {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double send_wait_t = SuperLU_timer_();
@@ -4784,11 +5090,23 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             std::vector<MPI_Request> row_recv_reqs;
             if (row_recv_total > 0 && row_src_pc != mycol)
             {
-                if (static_cast<size_t>(stream_offset) >=
-                        symV2RowFragHostRecvBufs.size() ||
-                    symV2RowFragHostRecvBufs[stream_offset] == NULL)
-                    ABORT("SymFact V2 row-fragment host receive staging is missing.");
-                row_recv_host_base = symV2RowFragHostRecvBufs[stream_offset];
+                if (pcfrag_taskflow_async_pieces)
+                {
+                    if (taskflow_state == NULL)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW async row receive has no state.");
+                    taskflow_state->producer_row_recv_host_values.assign(
+                        static_cast<size_t>(row_recv_total), 0.0);
+                    row_recv_host_base =
+                        taskflow_state->producer_row_recv_host_values.data();
+                }
+                else
+                {
+                    if (static_cast<size_t>(stream_offset) >=
+                            symV2RowFragHostRecvBufs.size() ||
+                        symV2RowFragHostRecvBufs[stream_offset] == NULL)
+                        ABORT("SymFact V2 row-fragment host receive staging is missing.");
+                    row_recv_host_base = symV2RowFragHostRecvBufs[stream_offset];
+                }
                 MPI_Request req;
                 long long recv_bytes =
                     static_cast<long long>(row_recv_total) *
@@ -4808,6 +5126,34 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                  SYM_GPU3D_T_ROW_LFRAG_RECV_POST,
                                  SuperLU_timer_() - row_recv_post_t);
 #endif
+            }
+            if (pcfrag_taskflow_async_pieces && !row_recv_reqs.empty())
+            {
+                if (taskflow_state == NULL || !taskflow_state->initialized)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW async row receive has no state.");
+                taskflow_state->producer_exchange_pending = 1;
+                taskflow_state->producer_ksupc = static_cast<int>(ksupc);
+                taskflow_state->producer_row_recv_reqs = row_recv_reqs;
+                taskflow_state->producer_row_recv_pcs.assign(
+                    row_recv_reqs.size(), -1);
+                taskflow_state->producer_row_recv_sizes.assign(
+                    static_cast<size_t>(Pc), 0);
+                taskflow_state->producer_row_recv_offsets =
+                    row_recv_offsets;
+                for (int pc = 0; pc < Pc; ++pc)
+                {
+                    size_t row_pos =
+                        row_recv_base + static_cast<size_t>(pc);
+                    taskflow_state->producer_row_recv_sizes[
+                        static_cast<size_t>(pc)] =
+                        symV2RowFragRecvSizes[row_pos];
+                }
+                taskflow_state->producer_row_recv_done.assign(
+                    row_recv_reqs.size(), 0);
+                taskflow_state->producer_row_recv_remaining =
+                    static_cast<int>(row_recv_reqs.size());
+                row_recv_reqs.clear();
+                dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
             }
             if (!row_recv_reqs.empty())
             {
@@ -4831,6 +5177,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             const bool taskflow_direct_row_host_to_piece =
                 pcfrag_taskflow && row_l_direct_recv &&
                 !pcfrag_taskflow_validate && row_src_pc != mycol;
+            const bool taskflow_async_row_pending =
+                pcfrag_taskflow_async_pieces && row_src_pc != mycol &&
+                taskflow_state != NULL &&
+                taskflow_state->producer_row_recv_remaining > 0;
             if (row_recv_total > 0 && row_src_pc != mycol &&
                 !taskflow_direct_row_host_to_piece)
             {
@@ -4876,7 +5226,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     ABORT("SymFact V2 direct row-L receive size does not match the row-fragment layout.");
                 if (pcfrag_taskflow)
                 {
-                    if (pcfrag_taskflow_validate &&
+                    if (!taskflow_async_row_pending &&
+                        pcfrag_taskflow_validate &&
                         A_gpu.symV2RowFragValRecvBufs[stream_offset] != NULL)
                     {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -4894,15 +5245,18 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                          SuperLU_timer_() - row_assemble_issue_t);
 #endif
                     }
-                    taskflow_copy_owned_pieces_from_full(
-                        SYM_V2_PCFRAG_PIECE_ROW,
-                        taskflow_direct_row_host_to_piece
-                            ? row_recv_host_base
-                            : A_gpu.symV2RowFragStageBufs[stream_offset],
-                        row_nrows,
-                        taskflow_direct_row_host_to_piece
-                            ? cudaMemcpyHostToDevice
-                            : cudaMemcpyDeviceToDevice);
+                    if (!taskflow_async_row_pending)
+                    {
+                        taskflow_copy_owned_pieces_from_full(
+                            SYM_V2_PCFRAG_PIECE_ROW,
+                            taskflow_direct_row_host_to_piece
+                                ? row_recv_host_base
+                                : A_gpu.symV2RowFragStageBufs[stream_offset],
+                            row_nrows,
+                            taskflow_direct_row_host_to_piece
+                                ? cudaMemcpyHostToDevice
+                                : cudaMemcpyDeviceToDevice);
+                    }
                 }
             }
             else
@@ -4980,22 +5334,39 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
             const int request_count = static_cast<int>(count);
             int remaining = request_count;
+            int idle_polls = 0;
             while (remaining > 0)
             {
                 int completed = 0;
                 ++symV2PcFragTaskflowStats.producer_send_wait_calls;
-                int mpi_rc = MPI_Waitsome(
-                    request_count, reqs, &completed, wait_indices.data(),
-                    wait_statuses.data());
-                if (mpi_rc != MPI_SUCCESS ||
-                    completed == MPI_UNDEFINED || completed <= 0 ||
-                    completed > remaining)
+                int mpi_rc = pcfrag_taskflow_async_pieces
+                    ? MPI_Testsome(request_count, reqs, &completed,
+                                   wait_indices.data(), wait_statuses.data())
+                    : MPI_Waitsome(request_count, reqs, &completed,
+                                   wait_indices.data(), wait_statuses.data());
+                if (mpi_rc != MPI_SUCCESS || completed == MPI_UNDEFINED ||
+                    completed < 0 || completed > remaining)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW send progressive wait failed.");
-                symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
-                    static_cast<long long>(completed);
-                dSymV2PcFragTaskflowProgressGPU(
-                    k, superlu_sym_v2_pcfrag_taskflow_progress_budget());
-                remaining -= completed;
+                if (pcfrag_taskflow_async_pieces)
+                    dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
+                if (completed > 0)
+                {
+                    symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                        static_cast<long long>(completed);
+                    dSymV2PcFragTaskflowProgressGPU(
+                        k, superlu_sym_v2_pcfrag_taskflow_progress_budget());
+                    remaining -= completed;
+                    idle_polls = 0;
+                }
+                else if (pcfrag_taskflow_async_pieces)
+                {
+                    if (++idle_polls > 10000000)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW send wait made no MPI progress.");
+                }
+                else
+                {
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW send wait returned no completions.");
+                }
             }
         };
         if (deferred_partner_send_req_count > 0)
@@ -5055,6 +5426,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 if (!taskflow_state->partner_pieces[p].ready)
                     ++unready_pieces;
             incomplete_tasks = taskflow_state->incomplete_task_count;
+            if (taskflow_state->producer_exchange_pending)
+                ++symV2PcFragTaskflowStats.producer_returns_with_pending_recvs;
         }
         if (unready_pieces == 0)
             ++symV2PcFragTaskflowStats.producer_returns_all_pieces_ready;
