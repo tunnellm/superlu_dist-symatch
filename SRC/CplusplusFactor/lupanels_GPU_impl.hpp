@@ -850,7 +850,9 @@ static inline void dSymV2PcFragTaskflowNoteEventComplete(
 }
 
 static inline cudaEvent_t dSymV2PcFragTaskflowAcquireEvent(
-    std::vector<cudaEvent_t> &pool)
+    std::vector<cudaEvent_t> &pool,
+    bool allow_late_alloc = true,
+    long long *late_allocs = NULL)
 {
     cudaEvent_t event = NULL;
     if (!pool.empty())
@@ -860,8 +862,12 @@ static inline cudaEvent_t dSymV2PcFragTaskflowAcquireEvent(
     }
     else
     {
+        if (!allow_late_alloc)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE event pool missed a required event.");
         gpuErrchk(cudaEventCreateWithFlags(
             &event, cudaEventDisableTiming));
+        if (late_allocs != NULL)
+            ++(*late_allocs);
     }
     return event;
 }
@@ -1227,7 +1233,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             state.value_pool_used += count;
         }
         piece.ready_event =
-            dSymV2PcFragTaskflowAcquireEvent(symV2PcFragTaskflowEventPool);
+            dSymV2PcFragTaskflowAcquireEvent(
+                symV2PcFragTaskflowEventPool,
+                allow_taskflow_late_alloc,
+                &symV2PcFragTaskflowStats.arena_event_late_allocs);
         pieces.push_back(piece);
     };
 
@@ -1909,7 +1918,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             if (task.done_event == NULL)
                 task.done_event =
                     dSymV2PcFragTaskflowAcquireEvent(
-                        symV2PcFragTaskflowEventPool);
+                        symV2PcFragTaskflowEventPool,
+                        !async_core,
+                        &symV2PcFragTaskflowStats.arena_event_late_allocs);
             gpuErrchk(cudaEventRecord(task.done_event, stream));
             state.launched_task_ids.push_back(task.task_id);
         }
@@ -2248,7 +2259,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     if (task.done_event == NULL)
                         task.done_event =
                             dSymV2PcFragTaskflowAcquireEvent(
-                                symV2PcFragTaskflowEventPool);
+                                symV2PcFragTaskflowEventPool,
+                                !async_core,
+                                &symV2PcFragTaskflowStats.arena_event_late_allocs);
                     gpuErrchk(cudaEventRecord(task.done_event, stream));
                     state.launched_task_ids.push_back(task.task_id);
                 }
@@ -2492,7 +2505,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (task.done_event == NULL)
                     task.done_event =
                         dSymV2PcFragTaskflowAcquireEvent(
-                            symV2PcFragTaskflowEventPool);
+                            symV2PcFragTaskflowEventPool,
+                            !async_core,
+                            &symV2PcFragTaskflowStats.arena_event_late_allocs);
                 gpuErrchk(cudaEventRecord(task.done_event, task_stream));
                 state.launched_task_ids.push_back(task.task_id);
             }

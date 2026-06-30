@@ -1365,9 +1365,11 @@ struct xLUstruct_t
         long long arena_index_prewarm_blocks;
         long long arena_value_prewarm_blocks;
         long long arena_pinned_prewarm_blocks;
+        long long arena_event_prewarm_blocks;
         long long arena_index_late_allocs;
         long long arena_value_late_allocs;
         long long arena_pinned_late_allocs;
+        long long arena_event_late_allocs;
         long long producer_recv_wait_calls;
         long long producer_send_wait_calls;
         long long producer_mpi_wait_requests;
@@ -1408,8 +1410,9 @@ struct xLUstruct_t
               arena_index_prewarm_blocks(0),
               arena_value_prewarm_blocks(0),
               arena_pinned_prewarm_blocks(0),
+              arena_event_prewarm_blocks(0),
               arena_index_late_allocs(0), arena_value_late_allocs(0),
-              arena_pinned_late_allocs(0),
+              arena_pinned_late_allocs(0), arena_event_late_allocs(0),
               producer_recv_wait_calls(0),
               producer_send_wait_calls(0), producer_mpi_wait_requests(0),
               producer_returns(0), producer_returns_all_pieces_ready(0),
@@ -1477,7 +1480,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[57] = {
+        long long local[59] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1515,9 +1518,11 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.arena_index_prewarm_blocks,
             symV2PcFragTaskflowStats.arena_value_prewarm_blocks,
             symV2PcFragTaskflowStats.arena_pinned_prewarm_blocks,
+            symV2PcFragTaskflowStats.arena_event_prewarm_blocks,
             symV2PcFragTaskflowStats.arena_index_late_allocs,
             symV2PcFragTaskflowStats.arena_value_late_allocs,
             symV2PcFragTaskflowStats.arena_pinned_late_allocs,
+            symV2PcFragTaskflowStats.arena_event_late_allocs,
             symV2PcFragTaskflowStats.producer_recv_wait_calls,
             symV2PcFragTaskflowStats.producer_send_wait_calls,
             symV2PcFragTaskflowStats.producer_mpi_wait_requests,
@@ -1536,17 +1541,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_recv_test_completions,
             symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
         };
-        long long global[57] = {};
+        long long global[59] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 57, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 59, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 57; ++i)
+            for (int i = 0; i < 59; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1574,9 +1579,11 @@ struct xLUstruct_t
             "arena_index_prewarm_blocks=%lld "
             "arena_value_prewarm_blocks=%lld "
             "arena_pinned_prewarm_blocks=%lld "
+            "arena_event_prewarm_blocks=%lld "
             "arena_index_late_allocs=%lld "
             "arena_value_late_allocs=%lld "
             "arena_pinned_late_allocs=%lld "
+            "arena_event_late_allocs=%lld "
             "producer_recv_wait_calls=%lld producer_send_wait_calls=%lld "
             "producer_mpi_wait_requests=%lld "
             "producer_returns=%lld "
@@ -1604,7 +1611,7 @@ struct xLUstruct_t
             global[40], global[41], global[42], global[43], global[44],
             global[45], global[46], global[47], global[48], global[49],
             global[50], global[51], global[52], global[53], global[54],
-            global[55], global[56]);
+            global[55], global[56], global[57], global[58]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END

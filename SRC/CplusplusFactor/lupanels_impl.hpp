@@ -6732,6 +6732,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 std::vector<size_t> taskflow_index_counts;
                 std::vector<size_t> taskflow_value_counts;
                 std::vector<size_t> taskflow_pinned_counts;
+                std::vector<size_t> taskflow_event_counts;
                 auto add_fragment_taskflow_counts =
                     [&](const std::vector<int_t> &frag, int_t k0,
                         size_t &index_total, size_t &value_total) {
@@ -6788,12 +6789,20 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                 xlu_checked_product(
                                     nrows, static_cast<size_t>(ksupc),
                                     "taskflow prewarm value count");
-                            value_total =
-                                xlu_checked_sum_size(value_total,
-                                                     piece_value_count,
-                                                     "taskflow prewarm value total");
-                        }
-                    };
+	                            value_total =
+	                                xlu_checked_sum_size(value_total,
+	                                                     piece_value_count,
+	                                                     "taskflow prewarm value total");
+	                        }
+	                    };
+                auto taskflow_frag_nblocks =
+                    [](const std::vector<int_t> &frag) -> int_t {
+                    return frag.empty() ? 0 : frag[0];
+                };
+                auto taskflow_frag_gid =
+                    [](const std::vector<int_t> &frag, int_t b) -> int_t {
+                    return frag[LPANEL_HEADER_SIZE + b];
+                };
 
                 for (int_t k0 = 0; k0 < nsupers; ++k0)
                 {
@@ -6806,14 +6815,39 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     size_t value_total = 0;
                     add_fragment_taskflow_counts(symV2RowFragRecvIndex[k0],
                                                  k0, index_total, value_total);
-                    add_fragment_taskflow_counts(symV2PartnerLRecvIndex[k0],
-                                                 k0, index_total, value_total);
-                    if (index_total > 0)
-                        taskflow_index_counts.push_back(index_total);
-                    if (value_total > 0)
-                        taskflow_value_counts.push_back(value_total);
-                    size_t partner_recv_base =
-                        static_cast<size_t>(k0) * static_cast<size_t>(Pr);
+	                    add_fragment_taskflow_counts(symV2PartnerLRecvIndex[k0],
+	                                                 k0, index_total, value_total);
+	                    if (index_total > 0)
+	                        taskflow_index_counts.push_back(index_total);
+	                    if (value_total > 0)
+	                        taskflow_value_counts.push_back(value_total);
+	                    const std::vector<int_t> &row_frag =
+	                        symV2RowFragRecvIndex[k0];
+	                    const std::vector<int_t> &partner_frag =
+	                        symV2PartnerLRecvIndex[k0];
+	                    int_t nr = taskflow_frag_nblocks(row_frag);
+	                    int_t nc = taskflow_frag_nblocks(partner_frag);
+	                    size_t event_total = xlu_checked_sum_size(
+	                        static_cast<size_t>(nr),
+	                        static_cast<size_t>(nc),
+	                        "taskflow prewarm piece events");
+	                    for (int_t rp = 0; rp < nr; ++rp)
+	                    {
+	                        int_t gi = taskflow_frag_gid(row_frag, rp);
+	                        for (int_t cp = 0; cp < nc; ++cp)
+	                        {
+	                            int_t gj = taskflow_frag_gid(partner_frag, cp);
+	                            if (gi < gj || gi == k0 || gj == k0)
+	                                continue;
+	                            event_total = xlu_checked_sum_size(
+	                                event_total, static_cast<size_t>(1),
+	                                "taskflow prewarm task events");
+	                        }
+	                    }
+	                    if (event_total > 0)
+	                        taskflow_event_counts.push_back(event_total);
+	                    size_t partner_recv_base =
+	                        static_cast<size_t>(k0) * static_cast<size_t>(Pr);
                     if (partner_recv_base + static_cast<size_t>(Pr) >
                         symV2PartnerLRecvSizes.size())
                         ABORT("SymFact V2 taskflow prewarm partner sizes are missing.");
@@ -6936,16 +6970,21 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 std::sort(taskflow_value_counts.begin(),
                           taskflow_value_counts.end(),
                           [](size_t a, size_t b) { return a > b; });
-                std::sort(taskflow_pinned_counts.begin(),
-                          taskflow_pinned_counts.end(),
-                          [](size_t a, size_t b) { return a > b; });
-                if (taskflow_index_counts.size() > active_slots)
-                    taskflow_index_counts.resize(active_slots);
-                if (taskflow_value_counts.size() > active_slots)
-                    taskflow_value_counts.resize(active_slots);
-                size_t pinned_slots =
-                    xlu_checked_product(active_slots, 4,
-                                        "taskflow prewarm pinned slots");
+	                std::sort(taskflow_pinned_counts.begin(),
+	                          taskflow_pinned_counts.end(),
+	                          [](size_t a, size_t b) { return a > b; });
+	                std::sort(taskflow_event_counts.begin(),
+	                          taskflow_event_counts.end(),
+	                          [](size_t a, size_t b) { return a > b; });
+	                if (taskflow_index_counts.size() > active_slots)
+	                    taskflow_index_counts.resize(active_slots);
+	                if (taskflow_value_counts.size() > active_slots)
+	                    taskflow_value_counts.resize(active_slots);
+	                if (taskflow_event_counts.size() > active_slots)
+	                    taskflow_event_counts.resize(active_slots);
+	                size_t pinned_slots =
+	                    xlu_checked_product(active_slots, 4,
+	                                        "taskflow prewarm pinned slots");
                 if (taskflow_pinned_counts.size() > pinned_slots)
                     taskflow_pinned_counts.resize(pinned_slots);
                 size_t temporal_pinned_slots =
@@ -7050,14 +7089,29 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     gpuErrchk(cudaMallocHost(
                         reinterpret_cast<void **>(&ptr),
                         sizeof(double) * capacity));
-                    symV2PcFragTaskflowPinnedBlockPool.push_back(
-                        SymV2PcFragHostValueBlock(ptr, capacity));
-                    matched_pinned_blocks.push_back(1);
-                    ++symV2PcFragTaskflowStats
-                          .arena_pinned_prewarm_blocks;
-                }
-            }
-        }
+	                    symV2PcFragTaskflowPinnedBlockPool.push_back(
+	                        SymV2PcFragHostValueBlock(ptr, capacity));
+	                    matched_pinned_blocks.push_back(1);
+	                    ++symV2PcFragTaskflowStats
+	                          .arena_pinned_prewarm_blocks;
+	                }
+
+	                size_t event_target = 0;
+	                for (size_t i = 0; i < taskflow_event_counts.size(); ++i)
+	                    event_target = xlu_checked_sum_size(
+	                        event_target, taskflow_event_counts[i],
+	                        "taskflow prewarm event total");
+	                while (symV2PcFragTaskflowEventPool.size() < event_target)
+	                {
+	                    cudaEvent_t event = NULL;
+	                    gpuErrchk(cudaEventCreateWithFlags(
+	                        &event, cudaEventDisableTiming));
+	                    symV2PcFragTaskflowEventPool.push_back(event);
+	                    ++symV2PcFragTaskflowStats
+	                          .arena_event_prewarm_blocks;
+	                }
+	            }
+	        }
         xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after send GPU L2U map setup");
     }
 #endif
