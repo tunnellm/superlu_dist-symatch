@@ -998,6 +998,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
         superlu_sym_v2_pcfrag_taskflow_validate())
         ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE is incompatible with GPU3DV2_PCFRAG_TASKFLOW_VALIDATE.");
+    if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+        !superlu_sym_v2_pcfrag_taskflow_async_pieces())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE requires GPU3DV2_PCFRAG_TASKFLOW_ASYNC_PIECES=1.");
     if (!superlu_sym_v2_row_l_plan_v2_exchange() ||
         !superlu_sym_v2_row_l_direct_recv() ||
         !superlu_sym_v2_row_l_compressed_plan() ||
