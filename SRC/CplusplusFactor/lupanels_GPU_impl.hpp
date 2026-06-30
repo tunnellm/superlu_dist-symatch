@@ -1856,7 +1856,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         }
     };
     auto taskflow_copy_owned_pieces_from_full =
-        [&](unsigned char kind, const double *full, int_t full_lda) {
+        [&](unsigned char kind, const double *full, int_t full_lda,
+            cudaMemcpyKind copy_kind) {
         if (!pcfrag_taskflow)
             return;
         if (taskflow_state == NULL || !taskflow_state->initialized)
@@ -1884,7 +1885,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 sizeof(double) * static_cast<size_t>(full_lda),
                 sizeof(double) * static_cast<size_t>(piece.nrows),
                 static_cast<size_t>(ksupc),
-                cudaMemcpyDeviceToDevice, stream));
+                copy_kind, stream));
             piece.filled_rows = piece.nrows;
             piece.ready = 1;
             if (kind == SYM_V2_PCFRAG_PIECE_ROW)
@@ -4525,7 +4526,11 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                  SuperLU_timer_() - row_recv_wait_t);
 #endif
             }
-            if (row_recv_total > 0 && row_src_pc != mycol)
+            const bool taskflow_direct_row_host_to_piece =
+                pcfrag_taskflow && row_l_direct_recv &&
+                !pcfrag_taskflow_validate && row_src_pc != mycol;
+            if (row_recv_total > 0 && row_src_pc != mycol &&
+                !taskflow_direct_row_host_to_piece)
             {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 double row_h2d_issue_t = SuperLU_timer_();
@@ -4543,7 +4548,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                  SuperLU_timer_() - row_h2d_issue_t);
 #endif
             }
-            else if (row_recv_total > 0)
+            else if (row_recv_total > 0 && row_src_pc == mycol)
             {
                 int self_total = row_pack_destination(
                     mycol,
@@ -4589,8 +4594,13 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     }
                     taskflow_copy_owned_pieces_from_full(
                         SYM_V2_PCFRAG_PIECE_ROW,
-                        A_gpu.symV2RowFragStageBufs[stream_offset],
-                        row_nrows);
+                        taskflow_direct_row_host_to_piece
+                            ? row_recv_host_base
+                            : A_gpu.symV2RowFragStageBufs[stream_offset],
+                        row_nrows,
+                        taskflow_direct_row_host_to_piece
+                            ? cudaMemcpyHostToDevice
+                            : cudaMemcpyDeviceToDevice);
                 }
             }
             else
