@@ -874,11 +874,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowRecycleEvent(
                 symV2PcFragTaskflowEventPool,
                 s.row_pieces[i].done_event);
-            if (s.row_pieces[i].d_stage != NULL)
-                gpuErrchk(cudaFree(s.row_pieces[i].d_stage));
             s.row_pieces[i].d_index = NULL;
             s.row_pieces[i].d_val = NULL;
-            s.row_pieces[i].d_stage = NULL;
             s.row_pieces[i].h_index.clear();
         }
         for (size_t i = 0; i < s.partner_pieces.size(); ++i)
@@ -891,11 +888,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowRecycleEvent(
                 symV2PcFragTaskflowEventPool,
                 s.partner_pieces[i].done_event);
-            if (s.partner_pieces[i].d_stage != NULL)
-                gpuErrchk(cudaFree(s.partner_pieces[i].d_stage));
             s.partner_pieces[i].d_index = NULL;
             s.partner_pieces[i].d_val = NULL;
-            s.partner_pieces[i].d_stage = NULL;
             s.partner_pieces[i].h_index.clear();
         }
         for (size_t i = 0; i < s.tasks.size(); ++i)
@@ -1613,11 +1607,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             dSymV2PcFragTaskflowRecycleEvent(
                 symV2PcFragTaskflowEventPool,
                 piece.done_event);
-            if (piece.d_stage != NULL)
-            {
-                gpuErrchk(cudaFree(piece.d_stage));
-                piece.d_stage = NULL;
-            }
             piece.d_index = NULL;
             piece.d_val = NULL;
             piece.h_index.clear();
@@ -1882,11 +1871,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 dSymV2PcFragTaskflowRecycleEvent(
                     symV2PcFragTaskflowEventPool,
                     piece.done_event);
-                if (piece.d_stage != NULL)
-                {
-                    gpuErrchk(cudaFree(piece.d_stage));
-                    piece.d_stage = NULL;
-                }
                 piece.d_index = NULL;
                 piece.d_val = NULL;
                 piece.h_index.clear();
@@ -2686,11 +2670,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         dSymV2PcFragTaskflowRecycleEvent(
             symV2PcFragTaskflowEventPool,
             piece.done_event);
-        if (piece.d_stage != NULL)
-        {
-            gpuErrchk(cudaFree(piece.d_stage));
-            piece.d_stage = NULL;
-        }
         piece.d_index = NULL;
         piece.d_val = NULL;
         piece.h_index.clear();

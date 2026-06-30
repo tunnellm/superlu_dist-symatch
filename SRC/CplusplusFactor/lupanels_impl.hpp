@@ -7262,8 +7262,6 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
                 gpuErrchk(cudaEventDestroy(state.row_pieces[p].ready_event));
             if (state.row_pieces[p].done_event != NULL)
                 gpuErrchk(cudaEventDestroy(state.row_pieces[p].done_event));
-            if (state.row_pieces[p].d_stage != NULL)
-                gpuErrchk(cudaFree(state.row_pieces[p].d_stage));
         }
         for (size_t p = 0; p < state.partner_pieces.size(); ++p)
         {
@@ -7271,8 +7269,6 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
                 gpuErrchk(cudaEventDestroy(state.partner_pieces[p].ready_event));
             if (state.partner_pieces[p].done_event != NULL)
                 gpuErrchk(cudaEventDestroy(state.partner_pieces[p].done_event));
-            if (state.partner_pieces[p].d_stage != NULL)
-                gpuErrchk(cudaFree(state.partner_pieces[p].d_stage));
         }
         for (size_t t = 0; t < state.tasks.size(); ++t)
             if (state.tasks[t].done_event != NULL)

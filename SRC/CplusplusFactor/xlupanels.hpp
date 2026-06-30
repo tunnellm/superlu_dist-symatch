@@ -1054,8 +1054,6 @@ struct xLUstruct_t
         std::vector<int_t> h_index;
         int_t *d_index;
         Ftype *d_val;
-        Ftype *h_stage;
-        Ftype *d_stage;
         unsigned char ready;
         unsigned char released;
         int pending_consumers;
@@ -1071,7 +1069,7 @@ struct xLUstruct_t
               gid_first(GLOBAL_BLOCK_NOT_FOUND),
               gid_last(GLOBAL_BLOCK_NOT_FOUND), nrows(0), ksupc(0),
               lda(0), index_count(0), value_count(0), filled_rows(0),
-              d_index(NULL), d_val(NULL), h_stage(NULL), d_stage(NULL),
+              d_index(NULL), d_val(NULL),
               ready(0), released(0), pending_consumers(0)
 #ifdef HAVE_CUDA
               , ready_event(NULL), done_event(NULL)
