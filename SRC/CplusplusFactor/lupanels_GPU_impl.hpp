@@ -746,6 +746,18 @@ static inline void dSymV2PcFragTaskflowWaitProducerSends(
     state.producer_send_reqs.clear();
 }
 
+static inline void dSymV2PcFragTaskflowEnsureProgressScratch(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    size_t request_count)
+{
+    if (request_count == 0)
+        return;
+    if (state.producer_progress_indices.size() < request_count)
+        state.producer_progress_indices.resize(request_count);
+    if (state.producer_progress_statuses.size() < request_count)
+        state.producer_progress_statuses.resize(request_count);
+}
+
 static inline void dSymV2PcFragTaskflowUnlockTaskOutputs(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
@@ -1536,13 +1548,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
             return 0;
         const int request_count = static_cast<int>(reqs.size());
         if (state.producer_progress_indices.size() <
-            static_cast<size_t>(request_count))
-            state.producer_progress_indices.resize(
-                static_cast<size_t>(request_count));
-        if (state.producer_progress_statuses.size() <
-            static_cast<size_t>(request_count))
-            state.producer_progress_statuses.resize(
-                static_cast<size_t>(request_count));
+                static_cast<size_t>(request_count) ||
+            state.producer_progress_statuses.size() <
+                static_cast<size_t>(request_count))
+        {
+            if (superlu_sym_v2_pcfrag_taskflow_async_core())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE progress scratch is undersized.");
+            dSymV2PcFragTaskflowEnsureProgressScratch(
+                state, static_cast<size_t>(request_count));
+        }
         int *indices = state.producer_progress_indices.data();
         MPI_Status *statuses = state.producer_progress_statuses.data();
         int local_progress = 0;
@@ -4128,6 +4142,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             recv_reqs.size(), 0);
         taskflow_state->producer_partner_recv_remaining =
             static_cast<int>(recv_reqs.size());
+        dSymV2PcFragTaskflowEnsureProgressScratch(
+            *taskflow_state, recv_reqs.size());
         recv_reqs.clear();
         recv_request_peers.clear();
         recv_h2d_issued = true;
@@ -6044,6 +6060,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     row_recv_reqs.size(), 0);
                 taskflow_state->producer_row_recv_remaining =
                     static_cast<int>(row_recv_reqs.size());
+                dSymV2PcFragTaskflowEnsureProgressScratch(
+                    *taskflow_state, row_recv_reqs.size());
                 row_recv_reqs.clear();
                 dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
             }
