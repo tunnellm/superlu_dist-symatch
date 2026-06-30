@@ -711,6 +711,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             s.partner_pieces[i].d_stage = NULL;
             s.partner_pieces[i].h_index.clear();
         }
+        for (size_t i = 0; i < s.tasks.size(); ++i)
+        {
+            if (s.tasks[i].done_event != NULL)
+            {
+                gpuErrchk(cudaEventDestroy(s.tasks[i].done_event));
+                s.tasks[i].done_event = NULL;
+            }
+        }
         if (s.d_index_pool != NULL)
             gpuErrchk(cudaFree(s.d_index_pool));
         if (s.d_value_pool != NULL)
@@ -1279,6 +1287,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     }
     const bool strict_output_conflicts =
         superlu_sym_v2_pcfrag_taskflow_strict();
+    const bool async_core =
+        superlu_sym_v2_pcfrag_taskflow_async_core();
 
     auto all_pieces_ready = [&]() -> bool {
         for (size_t p = 0; p < state.row_pieces.size(); ++p)
@@ -1327,7 +1337,62 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                 state.active_output_keys.erase(it);
         }
     };
+    auto complete_launched_task = [&](SymV2PcFragTaskDesc &task) {
+        if (task.complete)
+            return;
+        SymV2PcFragPieceDesc &row =
+            state.row_pieces[static_cast<size_t>(task.row_piece)];
+        SymV2PcFragPieceDesc &col =
+            state.partner_pieces[static_cast<size_t>(task.partner_piece)];
+        unlock_outputs(task);
+        task.complete = 1;
+        --state.incomplete_task_count;
+        --row.pending_consumers;
+        --col.pending_consumers;
+        if (row.pending_consumers < 0 || col.pending_consumers < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+        ++symV2PcFragTaskflowStats.tasks_completed;
+        ++symV2PcFragTaskflowStats.tasks_completed_async_core;
+    };
+    auto progress_launched_tasks = [&](int drain) -> int {
+        if (!async_core)
+            return 0;
+        int completed = 0;
+        for (size_t i = 0; i < state.tasks.size(); ++i)
+        {
+            SymV2PcFragTaskDesc &task = state.tasks[i];
+            if (!task.launched || task.complete)
+                continue;
+            if (task.done_event == NULL)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no completion event.");
+            cudaError_t event_rc = cudaEventQuery(task.done_event);
+            ++symV2PcFragTaskflowStats.task_completion_event_queries;
+            if (event_rc == cudaSuccess)
+            {
+                complete_launched_task(task);
+                ++completed;
+                continue;
+            }
+            if (event_rc != cudaErrorNotReady)
+                gpuErrchk(event_rc);
+            if (!drain)
+                continue;
+            ++symV2PcFragTaskflowStats.task_completion_event_waits;
+            gpuErrchk(cudaEventSynchronize(task.done_event));
+            complete_launched_task(task);
+            ++completed;
+        }
+        return completed;
+    };
     auto release_completed_state = [&]() {
+        for (size_t i = 0; i < state.tasks.size(); ++i)
+        {
+            if (state.tasks[i].done_event != NULL)
+            {
+                gpuErrchk(cudaEventDestroy(state.tasks[i].done_event));
+                state.tasks[i].done_event = NULL;
+            }
+        }
         auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
             if (piece.pending_consumers != 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
@@ -1366,11 +1431,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     };
 
     int launched = 0;
+    progress_launched_tasks(0);
     for (size_t i = 0;
          i < state.tasks.size() && launched < budget; ++i)
     {
         SymV2PcFragTaskDesc &task = state.tasks[i];
-        if (task.complete)
+        if (task.launched || task.complete)
             continue;
         SymV2PcFragPieceDesc &row =
             state.row_pieces[static_cast<size_t>(task.row_piece)];
@@ -1409,21 +1475,32 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             row.d_index, row.d_val,
             col.d_index, col.d_val,
             handle, stream, gemmBuff);
-        gpuErrchk(cudaStreamSynchronize(stream));
-        unlock_outputs(task);
         task.launched = 1;
-        task.complete = 1;
-        --state.incomplete_task_count;
-        --row.pending_consumers;
-        --col.pending_consumers;
-        if (row.pending_consumers < 0 || col.pending_consumers < 0)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+        if (async_core)
+        {
+            if (task.done_event == NULL)
+                gpuErrchk(cudaEventCreateWithFlags(
+                    &task.done_event, cudaEventDisableTiming));
+            gpuErrchk(cudaEventRecord(task.done_event, stream));
+        }
+        else
+        {
+            gpuErrchk(cudaStreamSynchronize(stream));
+            unlock_outputs(task);
+            task.complete = 1;
+            --state.incomplete_task_count;
+            --row.pending_consumers;
+            --col.pending_consumers;
+            if (row.pending_consumers < 0 || col.pending_consumers < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+            ++symV2PcFragTaskflowStats.tasks_completed;
+        }
         ++symV2PcFragTaskflowStats.tasks_launched;
-        ++symV2PcFragTaskflowStats.tasks_completed;
         ++symV2PcFragTaskflowStats.tasks_launched_progress;
         ++state.producer_tasks_launched;
         ++launched;
     }
+    progress_launched_tasks(0);
     if (producer_task_limit > 0 &&
         state.incomplete_task_count > 0 &&
         state.producer_tasks_launched >= producer_task_limit &&
@@ -1461,6 +1538,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         double *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
         const bool strict_output_conflicts =
             superlu_sym_v2_pcfrag_taskflow_strict();
+        const bool async_core =
+            superlu_sym_v2_pcfrag_taskflow_async_core();
 
         auto all_pieces_ready = [&]() -> bool {
             for (size_t p = 0; p < state.row_pieces.size(); ++p)
@@ -1509,6 +1588,53 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     state.active_output_keys.erase(it);
             }
         };
+        auto complete_launched_task = [&](SymV2PcFragTaskDesc &task) {
+            if (task.complete)
+                return;
+            SymV2PcFragPieceDesc &row =
+                state.row_pieces[static_cast<size_t>(task.row_piece)];
+            SymV2PcFragPieceDesc &col =
+                state.partner_pieces[static_cast<size_t>(task.partner_piece)];
+            unlock_outputs(task);
+            task.complete = 1;
+            --state.incomplete_task_count;
+            --row.pending_consumers;
+            --col.pending_consumers;
+            if (row.pending_consumers < 0 || col.pending_consumers < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+            ++symV2PcFragTaskflowStats.tasks_completed;
+            ++symV2PcFragTaskflowStats.tasks_completed_async_core;
+        };
+        auto progress_launched_tasks = [&](int drain) -> int {
+            if (!async_core)
+                return 0;
+            int completed = 0;
+            for (size_t i = 0; i < state.tasks.size(); ++i)
+            {
+                SymV2PcFragTaskDesc &task = state.tasks[i];
+                if (!task.launched || task.complete)
+                    continue;
+                if (task.done_event == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no completion event.");
+                cudaError_t event_rc = cudaEventQuery(task.done_event);
+                ++symV2PcFragTaskflowStats.task_completion_event_queries;
+                if (event_rc == cudaSuccess)
+                {
+                    complete_launched_task(task);
+                    ++completed;
+                    continue;
+                }
+                if (event_rc != cudaErrorNotReady)
+                    gpuErrchk(event_rc);
+                if (!drain)
+                    continue;
+                ++symV2PcFragTaskflowStats.task_completion_event_waits;
+                gpuErrchk(cudaEventSynchronize(task.done_event));
+                complete_launched_task(task);
+                ++completed;
+            }
+            return completed;
+        };
         auto count_task_launch_mode = [&](unsigned launch_mode) {
             if (launch_mode &
                 (SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
@@ -1525,6 +1651,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             return (task.mode_mask & launch_mode) != 0;
         };
         auto release_completed_state = [&]() {
+            for (size_t i = 0; i < state.tasks.size(); ++i)
+            {
+                if (state.tasks[i].done_event != NULL)
+                {
+                    gpuErrchk(cudaEventDestroy(state.tasks[i].done_event));
+                    state.tasks[i].done_event = NULL;
+                }
+            }
             auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
                 if (piece.pending_consumers != 0)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
@@ -1562,6 +1696,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             state.reset();
         };
 
+        progress_launched_tasks(drain ? 1 : 0);
         if ((mode_mask & SYM_V2_PCFRAG_TASK_FULL) &&
             superlu_sym_v2_pcfrag_taskflow_eager() &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
@@ -1569,7 +1704,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             for (size_t i = 0; i < state.tasks.size(); ++i)
             {
                 SymV2PcFragTaskDesc &task = state.tasks[i];
-                if (task.complete)
+                if (task.launched || task.complete)
                     continue;
                 SymV2PcFragPieceDesc &row =
                     state.row_pieces[static_cast<size_t>(task.row_piece)];
@@ -1608,19 +1743,30 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     row.d_index, row.d_val,
                     col.d_index, col.d_val,
                     handle, stream, gemmBuff);
-                gpuErrchk(cudaStreamSynchronize(stream));
-                unlock_outputs(task);
                 task.launched = 1;
-                task.complete = 1;
-                --state.incomplete_task_count;
-                --row.pending_consumers;
-                --col.pending_consumers;
-                if (row.pending_consumers < 0 || col.pending_consumers < 0)
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+                if (async_core)
+                {
+                    if (task.done_event == NULL)
+                        gpuErrchk(cudaEventCreateWithFlags(
+                            &task.done_event, cudaEventDisableTiming));
+                    gpuErrchk(cudaEventRecord(task.done_event, stream));
+                }
+                else
+                {
+                    gpuErrchk(cudaStreamSynchronize(stream));
+                    unlock_outputs(task);
+                    task.complete = 1;
+                    --state.incomplete_task_count;
+                    --row.pending_consumers;
+                    --col.pending_consumers;
+                    if (row.pending_consumers < 0 || col.pending_consumers < 0)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+                    ++symV2PcFragTaskflowStats.tasks_completed;
+                }
                 ++symV2PcFragTaskflowStats.tasks_launched;
-                ++symV2PcFragTaskflowStats.tasks_completed;
                 ++symV2PcFragTaskflowStats.tasks_launched_eager_full;
             }
+            progress_launched_tasks(drain ? 1 : 0);
             if (state.incomplete_task_count == 0 &&
                 !state.producer_exchange_pending)
             {
@@ -1787,6 +1933,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 double *task_gemm,
                 unsigned launch_mode) -> int {
             if (task.complete ||
+                task.launched ||
                 !task_matches_launch_mode(task, launch_mode))
                 return 0;
             SymV2PcFragPieceDesc &row =
@@ -1833,17 +1980,27 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 row.d_index, row.d_val,
                 col.d_index, col.d_val,
                 task_handle, task_stream, task_gemm);
-            gpuErrchk(cudaStreamSynchronize(task_stream));
-            unlock_outputs(task);
             task.launched = 1;
-            task.complete = 1;
-            --state.incomplete_task_count;
-            --row.pending_consumers;
-            --col.pending_consumers;
-            if (row.pending_consumers < 0 || col.pending_consumers < 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+            if (async_core)
+            {
+                if (task.done_event == NULL)
+                    gpuErrchk(cudaEventCreateWithFlags(
+                        &task.done_event, cudaEventDisableTiming));
+                gpuErrchk(cudaEventRecord(task.done_event, task_stream));
+            }
+            else
+            {
+                gpuErrchk(cudaStreamSynchronize(task_stream));
+                unlock_outputs(task);
+                task.complete = 1;
+                --state.incomplete_task_count;
+                --row.pending_consumers;
+                --col.pending_consumers;
+                if (row.pending_consumers < 0 || col.pending_consumers < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+                ++symV2PcFragTaskflowStats.tasks_completed;
+            }
             ++symV2PcFragTaskflowStats.tasks_launched;
-            ++symV2PcFragTaskflowStats.tasks_completed;
             count_task_launch_mode(launch_mode);
             return 1;
         };
@@ -1885,7 +2042,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             }
             if (pair_count == 0)
                 return;
-            if (completed_pair_count > 0)
+            if (async_core || completed_pair_count > 0)
             {
                 for (int_t rb = row_start; rb < row_end; ++rb)
                 {
@@ -2197,6 +2354,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                      handle, stream, gemmBuff,
                                      SYM_V2_PCFRAG_TASK_FULL);
         }
+        progress_launched_tasks(drain ? 1 : 0);
         if (state.incomplete_task_count == 0 &&
             !state.producer_exchange_pending)
         {
@@ -2253,6 +2411,47 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     dSymV2PcFragTaskflowProgressExchangeGPU(k, 1);
     if (state.producer_exchange_pending)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found pending producer exchange.");
+    if (superlu_sym_v2_pcfrag_taskflow_async_core())
+    {
+        for (size_t t = 0; t < state.tasks.size(); ++t)
+        {
+            SymV2PcFragTaskDesc &task = state.tasks[t];
+            if (!task.launched || task.complete)
+                continue;
+            if (task.done_event == NULL)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW release found async task without completion event.");
+            ++symV2PcFragTaskflowStats.task_completion_event_waits;
+            gpuErrchk(cudaEventSynchronize(task.done_event));
+            if (superlu_sym_v2_pcfrag_taskflow_strict())
+            {
+                for (size_t o = 0; o < task.outputs.size(); ++o)
+                {
+                    unsigned long long key = task.outputs[o].packed();
+                    std::vector<unsigned long long>::iterator it =
+                        std::find(state.active_output_keys.begin(),
+                                  state.active_output_keys.end(), key);
+                    if (it != state.active_output_keys.end())
+                        state.active_output_keys.erase(it);
+                }
+            }
+            SymV2PcFragPieceDesc &row =
+                state.row_pieces[static_cast<size_t>(task.row_piece)];
+            SymV2PcFragPieceDesc &col =
+                state.partner_pieces[static_cast<size_t>(task.partner_piece)];
+            task.complete = 1;
+            --state.incomplete_task_count;
+            --row.pending_consumers;
+            --col.pending_consumers;
+            if (row.pending_consumers < 0 || col.pending_consumers < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+            ++symV2PcFragTaskflowStats.tasks_completed;
+            ++symV2PcFragTaskflowStats.tasks_completed_async_core;
+        }
+    }
+    if (state.incomplete_task_count != 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW release found incomplete tasks.");
+    if (!state.active_output_keys.empty())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW release found active output locks.");
     auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
         if (piece.pending_consumers != 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
@@ -2279,6 +2478,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         release_piece_storage(state.row_pieces[i]);
     for (size_t i = 0; i < state.partner_pieces.size(); ++i)
         release_piece_storage(state.partner_pieces[i]);
+    for (size_t i = 0; i < state.tasks.size(); ++i)
+    {
+        if (state.tasks[i].done_event != NULL)
+        {
+            gpuErrchk(cudaEventDestroy(state.tasks[i].done_event));
+            state.tasks[i].done_event = NULL;
+        }
+    }
     if (state.d_index_pool != NULL)
         gpuErrchk(cudaFree(state.d_index_pool));
     if (state.d_value_pool != NULL)

@@ -1231,6 +1231,9 @@ struct xLUstruct_t
         long long tasks_planned;
         long long tasks_launched;
         long long tasks_completed;
+        long long tasks_completed_async_core;
+        long long task_completion_event_queries;
+        long long task_completion_event_waits;
         long long tasks_blocked_row;
         long long tasks_blocked_partner;
         long long tasks_blocked_output;
@@ -1277,6 +1280,8 @@ struct xLUstruct_t
             : row_pieces_created(0), partner_pieces_created(0),
               row_pieces_ready(0), partner_pieces_ready(0),
               tasks_planned(0), tasks_launched(0), tasks_completed(0),
+              tasks_completed_async_core(0), task_completion_event_queries(0),
+              task_completion_event_waits(0),
               tasks_blocked_row(0), tasks_blocked_partner(0),
               tasks_blocked_output(0), scatter_conflict_waits(0),
               output_locks_acquired(0), output_lock_high_water(0),
@@ -1315,7 +1320,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[48] = {
+        long long local[51] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1323,6 +1328,9 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.tasks_planned,
             symV2PcFragTaskflowStats.tasks_launched,
             symV2PcFragTaskflowStats.tasks_completed,
+            symV2PcFragTaskflowStats.tasks_completed_async_core,
+            symV2PcFragTaskflowStats.task_completion_event_queries,
+            symV2PcFragTaskflowStats.task_completion_event_waits,
             symV2PcFragTaskflowStats.tasks_blocked_row,
             symV2PcFragTaskflowStats.tasks_blocked_partner,
             symV2PcFragTaskflowStats.tasks_blocked_output,
@@ -1365,17 +1373,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_recv_test_completions,
             symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
         };
-        long long global[48] = {};
+        long long global[51] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 48, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 51, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 48; ++i)
+            for (int i = 0; i < 51; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1383,6 +1391,9 @@ struct xLUstruct_t
             "row_pieces_created=%lld partner_pieces_created=%lld "
             "row_pieces_ready=%lld partner_pieces_ready=%lld "
             "tasks_planned=%lld tasks_launched=%lld tasks_completed=%lld "
+            "tasks_completed_async_core=%lld "
+            "task_completion_event_queries=%lld "
+            "task_completion_event_waits=%lld "
             "tasks_blocked_row=%lld tasks_blocked_partner=%lld "
             "tasks_blocked_output=%lld scatter_conflict_waits=%lld "
             "output_locks_acquired=%lld output_lock_high_water=%lld "
@@ -1422,7 +1433,8 @@ struct xLUstruct_t
             global[30], global[31], global[32], global[33], global[34],
             global[35], global[36], global[37], global[38], global[39],
             global[40], global[41], global[42], global[43], global[44],
-            global[45], global[46], global[47]);
+            global[45], global[46], global[47], global[48], global[49],
+            global[50]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END
