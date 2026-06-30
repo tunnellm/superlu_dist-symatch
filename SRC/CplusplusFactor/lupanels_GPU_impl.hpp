@@ -2673,6 +2673,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
         if (!pipeline_large_receives)
         {
+            if (pcfrag_taskflow)
+            {
+                ++symV2PcFragTaskflowStats.producer_recv_wait_calls;
+                symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                    static_cast<long long>(recv_reqs.size());
+            }
             MPI_Waitall(static_cast<int>(recv_reqs.size()),
                         recv_reqs.data(),
                         MPI_STATUSES_IGNORE);
@@ -2693,12 +2699,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             while (remaining > 0)
             {
                 int completed = 0;
+                if (pcfrag_taskflow)
+                    ++symV2PcFragTaskflowStats.producer_recv_wait_calls;
                 int mpi_rc = MPI_Waitsome(
                     request_count, recv_reqs.data(), &completed,
                     wait_indices.data(), wait_statuses.data());
                 if (mpi_rc != MPI_SUCCESS || completed == MPI_UNDEFINED ||
                     completed <= 0 || completed > remaining)
                     ABORT("SymFact V2 progressive receive wait failed.");
+                if (pcfrag_taskflow)
+                    symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                        static_cast<long long>(completed);
 
                 for (int item = 0; item < completed; ++item)
                 {
@@ -2918,6 +2929,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double send_wait_t = SuperLU_timer_();
 #endif
+            if (pcfrag_taskflow)
+            {
+                ++symV2PcFragTaskflowStats.producer_send_wait_calls;
+                symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                    static_cast<long long>(send_reqs.size());
+            }
             MPI_Waitall(static_cast<int>(send_reqs.size()),
                         send_reqs.data(), MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -3381,6 +3398,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     double row_recv_wait_t = SuperLU_timer_();
 #endif
+                    if (pcfrag_taskflow)
+                    {
+                        ++symV2PcFragTaskflowStats.producer_recv_wait_calls;
+                        symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                            static_cast<long long>(row_recv_reqs.size());
+                    }
                     MPI_Waitall(static_cast<int>(row_recv_reqs.size()),
                                 row_recv_reqs.data(), MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -4280,6 +4303,11 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 symStatAdd(SYM_GPU3D_S_L2U_SEND_REQUESTS, 1);
                 double row_send_wait_t = SuperLU_timer_();
 #endif
+                if (pcfrag_taskflow)
+                {
+                    ++symV2PcFragTaskflowStats.producer_send_wait_calls;
+                    ++symV2PcFragTaskflowStats.producer_mpi_wait_requests;
+                }
                 MPI_Wait(&req, MPI_STATUS_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_WAIT,
@@ -4371,6 +4399,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 double row_recv_wait_t = SuperLU_timer_();
 #endif
+                if (pcfrag_taskflow)
+                {
+                    ++symV2PcFragTaskflowStats.producer_recv_wait_calls;
+                    symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                        static_cast<long long>(row_recv_reqs.size());
+                }
                 MPI_Waitall(static_cast<int>(row_recv_reqs.size()),
                             row_recv_reqs.data(), MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -4511,6 +4545,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double partner_send_wait_t = SuperLU_timer_();
 #endif
+            if (pcfrag_taskflow)
+            {
+                ++symV2PcFragTaskflowStats.producer_send_wait_calls;
+                symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                    static_cast<long long>(deferred_partner_send_req_count);
+            }
             MPI_Waitall(static_cast<int>(deferred_partner_send_req_count),
                         send_reqs.data(), MPI_STATUSES_IGNORE);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -4526,6 +4566,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double send_wait_t = SuperLU_timer_();
 #endif
+            if (pcfrag_taskflow)
+            {
+                ++symV2PcFragTaskflowStats.producer_send_wait_calls;
+                symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
+                    static_cast<long long>(row_send_req_count);
+            }
             MPI_Waitall(static_cast<int>(row_send_req_count),
                         send_reqs.data() + deferred_partner_send_req_count,
                         MPI_STATUSES_IGNORE);
