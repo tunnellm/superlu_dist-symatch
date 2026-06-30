@@ -527,7 +527,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_producer_task_limit()
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PRODUCER_TASK_LIMIT");
     if (env == NULL || env[0] == '\0')
     {
-        cached = 0;
+        cached = 1;
         return cached;
     }
     char *end = NULL;
