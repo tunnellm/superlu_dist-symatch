@@ -859,8 +859,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             task.gemm_k = SuperSize(k);
             task.mode_mask = SYM_V2_PCFRAG_TASK_FULL |
                              SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
-                             SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW |
                              SYM_V2_PCFRAG_TASK_EXCLUDE;
+            if (gi != gj)
+                task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
             task.outputs.push_back(SymV2PcFragOutputKey(gj, gi));
             state.tasks.push_back(task);
             state.pair_task_index[
@@ -1115,6 +1116,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 ++symV2PcFragTaskflowStats.tasks_launched_exclude;
             else if (launch_mode & SYM_V2_PCFRAG_TASK_FULL)
                 ++symV2PcFragTaskflowStats.tasks_launched_full;
+        };
+        auto task_matches_launch_mode =
+            [](const SymV2PcFragTaskDesc &task,
+               unsigned launch_mode) -> bool {
+            return (task.mode_mask & launch_mode) != 0;
         };
         auto release_completed_state = [&]() {
             auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
@@ -1377,7 +1383,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         return;
                     }
                     SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                    if (task != NULL && !task->complete)
+                    if (task != NULL && !task->complete &&
+                        task_matches_launch_mode(*task, launch_mode))
                         ++pair_count;
                 }
             }
@@ -1393,7 +1400,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     for (int_t cb = col_start; cb < col_end; ++cb)
                     {
                         SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                        if (task == NULL || task->complete)
+                        if (task == NULL || task->complete ||
+                            !task_matches_launch_mode(*task, launch_mode))
                             continue;
                         for (size_t o = 0; o < task->outputs.size(); ++o)
                         {
@@ -1487,7 +1495,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 for (int_t cb = col_start; cb < col_end; ++cb)
                 {
                     SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                    if (task == NULL || task->complete)
+                    if (task == NULL || task->complete ||
+                        !task_matches_launch_mode(*task, launch_mode))
                         continue;
                     task->launched = 1;
                     task->complete = 1;
@@ -1533,7 +1542,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     for (int_t cb = col_start; cb < col_end; ++cb)
                     {
                         SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                        if (task != NULL && !task->complete)
+                        if (task != NULL && !task->complete &&
+                            task_matches_launch_mode(*task, launch_mode))
                             ++pair_count;
                     }
                 if (pair_count == 0)
@@ -1547,7 +1557,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         for (int_t cb = col_start; cb < col_end; ++cb)
                         {
                             SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                            if (task == NULL || task->complete)
+                            if (task == NULL || task->complete ||
+                                !task_matches_launch_mode(*task, launch_mode))
                                 continue;
                             for (size_t o = 0; o < task->outputs.size(); ++o)
                             {
@@ -1583,7 +1594,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     for (int_t cb = col_start; cb < col_end; ++cb)
                     {
                         SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                        if (task == NULL || task->complete)
+                        if (task == NULL || task->complete ||
+                            !task_matches_launch_mode(*task, launch_mode))
                             continue;
                         task->launched = 1;
                         task->complete = 1;
