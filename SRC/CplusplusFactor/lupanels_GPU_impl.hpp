@@ -2042,14 +2042,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 state, task, symV2PcFragTaskflowStats,
                 strict_output_conflicts);
         };
-        auto progress_launched_tasks = [&](int drain) -> int {
+        auto progress_launched_tasks =
+            [&](int drain, unsigned required_mode_mask) -> int {
             if (!async_core)
                 return 0;
             int completed = 0;
             int idle_polls = 0;
             do
             {
-                int pending = 0;
+                int pending_required = 0;
                 int completed_this_pass = 0;
                 unsigned char stream_blocked[SYM_V2_PCFRAG_TASK_STREAM_COUNT] =
                     {0, 0, 0, 0};
@@ -2065,7 +2066,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         continue;
                     if (task.done_event == NULL)
                         ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no completion event.");
-                    ++pending;
+                    const bool required_task =
+                        !drain || required_mode_mask == 0 ||
+                        ((task.mode_mask & required_mode_mask) != 0);
+                    if (required_task)
+                        ++pending_required;
                     if (task_stream_blocked(task, stream_blocked))
                     {
                         state.launched_task_ids[launched_write++] = tid;
@@ -2085,7 +2090,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         complete_launched_task(task);
                         ++completed;
                         ++completed_this_pass;
-                        --pending;
+                        if (required_task)
+                            --pending_required;
                         continue;
                     }
                     if (event_rc != cudaErrorNotReady)
@@ -2096,7 +2102,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 }
                 if (launched_write != state.launched_task_ids.size())
                     state.launched_task_ids.resize(launched_write);
-                if (!drain || pending == 0)
+                if (!drain || pending_required == 0)
                     break;
                 if (completed_this_pass > 0)
                 {
@@ -2165,7 +2171,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             state.reset();
         };
 
-        progress_launched_tasks(drain ? 1 : 0);
+        progress_launched_tasks(drain ? 1 : 0, mode_mask);
         if ((mode_mask & SYM_V2_PCFRAG_TASK_FULL) &&
             superlu_sym_v2_pcfrag_taskflow_eager() &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
@@ -2249,7 +2255,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             }
             if (runnable_write != state.runnable_task_ids.size())
                 state.runnable_task_ids.resize(runnable_write);
-            progress_launched_tasks(drain ? 1 : 0);
+            progress_launched_tasks(drain ? 1 : 0, mode_mask);
             if (state.incomplete_task_count == 0 &&
                 !state.producer_exchange_active &&
                 !state.producer_exchange_pending)
@@ -2840,7 +2846,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                      handle, stream, gemmBuff,
                                      SYM_V2_PCFRAG_TASK_FULL);
         }
-        progress_launched_tasks(drain ? 1 : 0);
+        progress_launched_tasks(drain ? 1 : 0, mode_mask);
         if (state.incomplete_task_count == 0 &&
             !state.producer_exchange_active &&
             !state.producer_exchange_pending)
