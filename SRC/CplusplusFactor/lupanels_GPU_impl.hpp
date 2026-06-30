@@ -704,7 +704,7 @@ static inline void dSymV2PcFragTaskflowRecycleEvent(
 
 static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
     std::vector<xLUstruct_t<double>::SymV2PcFragGpuIndexBlock> &pool,
-    size_t count, size_t *capacity)
+    size_t count, size_t *capacity, long long *late_allocs = NULL)
 {
     if (capacity == NULL)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW index block capacity handle is missing.");
@@ -734,13 +734,15 @@ static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
     int_t *ptr = NULL;
     gpuErrchk(cudaMalloc(
         reinterpret_cast<void **>(&ptr), sizeof(int_t) * count));
+    if (late_allocs != NULL)
+        ++(*late_allocs);
     *capacity = count;
     return ptr;
 }
 
 static inline double *dSymV2PcFragTaskflowAcquireValueBlock(
     std::vector<xLUstruct_t<double>::SymV2PcFragGpuValueBlock> &pool,
-    size_t count, size_t *capacity)
+    size_t count, size_t *capacity, long long *late_allocs = NULL)
 {
     if (capacity == NULL)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW value block capacity handle is missing.");
@@ -770,6 +772,8 @@ static inline double *dSymV2PcFragTaskflowAcquireValueBlock(
     double *ptr = NULL;
     gpuErrchk(cudaMalloc(
         reinterpret_cast<void **>(&ptr), sizeof(double) * count));
+    if (late_allocs != NULL)
+        ++(*late_allocs);
     *capacity = count;
     return ptr;
 }
@@ -968,14 +972,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.d_index_pool =
             dSymV2PcFragTaskflowAcquireIndexBlock(
                 symV2PcFragTaskflowIndexBlockPool,
-                total_index_count, &state.index_pool_capacity);
+                total_index_count, &state.index_pool_capacity,
+                &symV2PcFragTaskflowStats.arena_index_late_allocs);
     }
     if (total_value_count > 0)
     {
         state.d_value_pool =
             dSymV2PcFragTaskflowAcquireValueBlock(
                 symV2PcFragTaskflowValueBlockPool,
-                total_value_count, &state.value_pool_capacity);
+                total_value_count, &state.value_pool_capacity,
+                &symV2PcFragTaskflowStats.arena_value_late_allocs);
         gpuErrchk(cudaMemset(
             state.d_value_pool, 0, sizeof(double) * total_value_count));
     }
@@ -984,14 +990,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.d_group_index_pool =
             dSymV2PcFragTaskflowAcquireIndexBlock(
                 symV2PcFragTaskflowIndexBlockPool,
-                total_index_count, &state.group_index_pool_capacity);
+                total_index_count, &state.group_index_pool_capacity,
+                &symV2PcFragTaskflowStats.arena_index_late_allocs);
     }
     if (total_value_count > 0)
     {
         state.d_group_value_pool =
             dSymV2PcFragTaskflowAcquireValueBlock(
                 symV2PcFragTaskflowValueBlockPool,
-                total_value_count, &state.group_value_pool_capacity);
+                total_value_count, &state.group_value_pool_capacity,
+                &symV2PcFragTaskflowStats.arena_value_late_allocs);
     }
 
     auto add_piece = [&](std::vector<SymV2PcFragPieceDesc> &pieces,

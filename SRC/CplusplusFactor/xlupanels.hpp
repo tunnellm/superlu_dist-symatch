@@ -1275,6 +1275,10 @@ struct xLUstruct_t
         long long arena_value_high_water;
         long long arena_index_high_water;
         long long arena_pinned_high_water;
+        long long arena_index_prewarm_blocks;
+        long long arena_value_prewarm_blocks;
+        long long arena_index_late_allocs;
+        long long arena_value_late_allocs;
         long long producer_recv_wait_calls;
         long long producer_send_wait_calls;
         long long producer_mpi_wait_requests;
@@ -1311,7 +1315,11 @@ struct xLUstruct_t
               taskflow_entries(0), legacy_wrapper_aborts(0),
               early_task_launches_before_full_panel_ready(0),
               arena_value_high_water(0), arena_index_high_water(0),
-              arena_pinned_high_water(0), producer_recv_wait_calls(0),
+              arena_pinned_high_water(0),
+              arena_index_prewarm_blocks(0),
+              arena_value_prewarm_blocks(0),
+              arena_index_late_allocs(0), arena_value_late_allocs(0),
+              producer_recv_wait_calls(0),
               producer_send_wait_calls(0), producer_mpi_wait_requests(0),
               producer_returns(0), producer_returns_all_pieces_ready(0),
               producer_returns_incomplete_pieces(0),
@@ -1366,7 +1374,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[51] = {
+        long long local[55] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1401,6 +1409,10 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.arena_value_high_water,
             symV2PcFragTaskflowStats.arena_index_high_water,
             symV2PcFragTaskflowStats.arena_pinned_high_water,
+            symV2PcFragTaskflowStats.arena_index_prewarm_blocks,
+            symV2PcFragTaskflowStats.arena_value_prewarm_blocks,
+            symV2PcFragTaskflowStats.arena_index_late_allocs,
+            symV2PcFragTaskflowStats.arena_value_late_allocs,
             symV2PcFragTaskflowStats.producer_recv_wait_calls,
             symV2PcFragTaskflowStats.producer_send_wait_calls,
             symV2PcFragTaskflowStats.producer_mpi_wait_requests,
@@ -1419,17 +1431,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_recv_test_completions,
             symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
         };
-        long long global[51] = {};
+        long long global[55] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 51, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 55, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 51; ++i)
+            for (int i = 0; i < 55; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1454,6 +1466,10 @@ struct xLUstruct_t
             "early_task_launches_before_full_panel_ready=%lld "
             "arena_value_high_water=%lld arena_index_high_water=%lld "
             "arena_pinned_high_water=%lld "
+            "arena_index_prewarm_blocks=%lld "
+            "arena_value_prewarm_blocks=%lld "
+            "arena_index_late_allocs=%lld "
+            "arena_value_late_allocs=%lld "
             "producer_recv_wait_calls=%lld producer_send_wait_calls=%lld "
             "producer_mpi_wait_requests=%lld "
             "producer_returns=%lld "
@@ -1480,7 +1496,7 @@ struct xLUstruct_t
             global[35], global[36], global[37], global[38], global[39],
             global[40], global[41], global[42], global[43], global[44],
             global[45], global[46], global[47], global[48], global[49],
-            global[50]);
+            global[50], global[51], global[52], global[53], global[54]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END
