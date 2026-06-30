@@ -1153,7 +1153,6 @@ struct xLUstruct_t
         std::vector<unsigned char> task_enqueued;
         std::vector<int> runnable_task_ids;
         std::vector<int> launched_task_ids;
-        std::vector<SymV2PcFragOutputKey> active_output_keys;
         std::set<SymV2PcFragOutputKey> active_output_key_set;
         int task_event_poll_skip[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int incomplete_task_count;
@@ -1276,7 +1275,6 @@ struct xLUstruct_t
             task_enqueued.clear();
             runnable_task_ids.clear();
             launched_task_ids.clear();
-            active_output_keys.clear();
             active_output_key_set.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
                 task_event_poll_skip[i] = 0;

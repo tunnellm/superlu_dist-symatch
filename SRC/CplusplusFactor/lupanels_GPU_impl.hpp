@@ -769,15 +769,6 @@ static inline void dSymV2PcFragTaskflowUnlockTaskOutputs(
     {
         const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
             task.outputs[o];
-        std::vector<xLUstruct_t<double>::SymV2PcFragOutputKey>::iterator it =
-            std::find_if(
-                state.active_output_keys.begin(),
-                state.active_output_keys.end(),
-                [&](const xLUstruct_t<double>::SymV2PcFragOutputKey &active) {
-                    return active.equals(key);
-                });
-        if (it != state.active_output_keys.end())
-            state.active_output_keys.erase(it);
         state.active_output_key_set.erase(key);
     }
 }
@@ -1717,16 +1708,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!strict_output_conflicts)
             return;
         for (size_t o = 0; o < task.outputs.size(); ++o)
-        {
-            state.active_output_keys.push_back(task.outputs[o]);
             state.active_output_key_set.insert(task.outputs[o]);
-        }
         symV2PcFragTaskflowStats.output_locks_acquired +=
             static_cast<long long>(task.outputs.size());
-        if (static_cast<long long>(state.active_output_keys.size()) >
+        if (static_cast<long long>(state.active_output_key_set.size()) >
             symV2PcFragTaskflowStats.output_lock_high_water)
             symV2PcFragTaskflowStats.output_lock_high_water =
-                static_cast<long long>(state.active_output_keys.size());
+                static_cast<long long>(state.active_output_key_set.size());
     };
     auto unlock_outputs = [&](const SymV2PcFragTaskDesc &task) {
         if (!strict_output_conflicts)
@@ -1734,15 +1722,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
             const SymV2PcFragOutputKey &key = task.outputs[o];
-            std::vector<SymV2PcFragOutputKey>::iterator it =
-                std::find_if(
-                    state.active_output_keys.begin(),
-                    state.active_output_keys.end(),
-                    [&](const SymV2PcFragOutputKey &active) {
-                        return active.equals(key);
-                    });
-            if (it != state.active_output_keys.end())
-                state.active_output_keys.erase(it);
             state.active_output_key_set.erase(key);
         }
     };
@@ -2039,16 +2018,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (!strict_output_conflicts)
                 return;
             for (size_t o = 0; o < task.outputs.size(); ++o)
-            {
-                state.active_output_keys.push_back(task.outputs[o]);
                 state.active_output_key_set.insert(task.outputs[o]);
-            }
             symV2PcFragTaskflowStats.output_locks_acquired +=
                 static_cast<long long>(task.outputs.size());
-            if (static_cast<long long>(state.active_output_keys.size()) >
+            if (static_cast<long long>(state.active_output_key_set.size()) >
                 symV2PcFragTaskflowStats.output_lock_high_water)
                 symV2PcFragTaskflowStats.output_lock_high_water =
-                    static_cast<long long>(state.active_output_keys.size());
+                    static_cast<long long>(state.active_output_key_set.size());
         };
         auto unlock_outputs = [&](const SymV2PcFragTaskDesc &task) {
             if (!strict_output_conflicts)
@@ -2056,15 +2032,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             for (size_t o = 0; o < task.outputs.size(); ++o)
             {
                 const SymV2PcFragOutputKey &key = task.outputs[o];
-                std::vector<SymV2PcFragOutputKey>::iterator it =
-                    std::find_if(
-                        state.active_output_keys.begin(),
-                        state.active_output_keys.end(),
-                        [&](const SymV2PcFragOutputKey &active) {
-                            return active.equals(key);
-                        });
-                if (it != state.active_output_keys.end())
-                    state.active_output_keys.erase(it);
                 state.active_output_key_set.erase(key);
             }
         };
@@ -3026,8 +2993,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     }
     if (state.incomplete_task_count != 0)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found incomplete tasks.");
-    if (!state.active_output_keys.empty() ||
-        !state.active_output_key_set.empty())
+    if (!state.active_output_key_set.empty())
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found active output locks.");
     auto release_piece_storage = [&](SymV2PcFragPieceDesc &piece) {
         if (piece.pending_consumers != 0)
