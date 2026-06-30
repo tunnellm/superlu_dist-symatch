@@ -1330,9 +1330,35 @@ struct xLUstruct_t
         }
     };
 
+#ifdef HAVE_CUDA
+    struct SymV2PcFragGpuIndexBlock
+    {
+        int_t *ptr;
+        size_t capacity;
+
+        SymV2PcFragGpuIndexBlock() : ptr(NULL), capacity(0) {}
+        SymV2PcFragGpuIndexBlock(int_t *ptr_, size_t capacity_)
+            : ptr(ptr_), capacity(capacity_) {}
+    };
+
+    struct SymV2PcFragGpuValueBlock
+    {
+        Ftype *ptr;
+        size_t capacity;
+
+        SymV2PcFragGpuValueBlock() : ptr(NULL), capacity(0) {}
+        SymV2PcFragGpuValueBlock(Ftype *ptr_, size_t capacity_)
+            : ptr(ptr_), capacity(capacity_) {}
+    };
+#endif
+
     std::vector<SymV2PcFragPanelTaskState> symV2PcFragTaskStates;
 #ifdef HAVE_CUDA
     std::vector<cudaEvent_t> symV2PcFragTaskflowEventPool;
+    std::vector<SymV2PcFragGpuIndexBlock>
+        symV2PcFragTaskflowIndexBlockPool;
+    std::vector<SymV2PcFragGpuValueBlock>
+        symV2PcFragTaskflowValueBlockPool;
 #endif
     SymV2PcFragTaskflowStats symV2PcFragTaskflowStats;
 

@@ -702,6 +702,100 @@ static inline void dSymV2PcFragTaskflowRecycleEvent(
     event = NULL;
 }
 
+static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
+    std::vector<xLUstruct_t<double>::SymV2PcFragGpuIndexBlock> &pool,
+    size_t count, size_t *capacity)
+{
+    if (capacity == NULL)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW index block capacity handle is missing.");
+    *capacity = 0;
+    if (count == 0)
+        return NULL;
+    size_t best = pool.size();
+    size_t best_capacity = 0;
+    for (size_t i = 0; i < pool.size(); ++i)
+    {
+        if (pool[i].ptr == NULL || pool[i].capacity < count)
+            continue;
+        if (best == pool.size() || pool[i].capacity < best_capacity)
+        {
+            best = i;
+            best_capacity = pool[i].capacity;
+        }
+    }
+    if (best != pool.size())
+    {
+        int_t *ptr = pool[best].ptr;
+        *capacity = pool[best].capacity;
+        pool[best] = pool.back();
+        pool.pop_back();
+        return ptr;
+    }
+    int_t *ptr = NULL;
+    gpuErrchk(cudaMalloc(
+        reinterpret_cast<void **>(&ptr), sizeof(int_t) * count));
+    *capacity = count;
+    return ptr;
+}
+
+static inline double *dSymV2PcFragTaskflowAcquireValueBlock(
+    std::vector<xLUstruct_t<double>::SymV2PcFragGpuValueBlock> &pool,
+    size_t count, size_t *capacity)
+{
+    if (capacity == NULL)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW value block capacity handle is missing.");
+    *capacity = 0;
+    if (count == 0)
+        return NULL;
+    size_t best = pool.size();
+    size_t best_capacity = 0;
+    for (size_t i = 0; i < pool.size(); ++i)
+    {
+        if (pool[i].ptr == NULL || pool[i].capacity < count)
+            continue;
+        if (best == pool.size() || pool[i].capacity < best_capacity)
+        {
+            best = i;
+            best_capacity = pool[i].capacity;
+        }
+    }
+    if (best != pool.size())
+    {
+        double *ptr = pool[best].ptr;
+        *capacity = pool[best].capacity;
+        pool[best] = pool.back();
+        pool.pop_back();
+        return ptr;
+    }
+    double *ptr = NULL;
+    gpuErrchk(cudaMalloc(
+        reinterpret_cast<void **>(&ptr), sizeof(double) * count));
+    *capacity = count;
+    return ptr;
+}
+
+static inline void dSymV2PcFragTaskflowRecycleIndexBlock(
+    std::vector<xLUstruct_t<double>::SymV2PcFragGpuIndexBlock> &pool,
+    int_t *&ptr, size_t &capacity)
+{
+    if (ptr != NULL)
+        pool.push_back(
+            xLUstruct_t<double>::SymV2PcFragGpuIndexBlock(ptr, capacity));
+    ptr = NULL;
+    capacity = 0;
+}
+
+static inline void dSymV2PcFragTaskflowRecycleValueBlock(
+    std::vector<xLUstruct_t<double>::SymV2PcFragGpuValueBlock> &pool,
+    double *&ptr, size_t &capacity)
+{
+    if (ptr != NULL)
+        pool.push_back(
+            xLUstruct_t<double>::SymV2PcFragGpuValueBlock(ptr, capacity));
+    ptr = NULL;
+    capacity = 0;
+}
+
 template <>
 inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     int_t k, int_t stream_offset)
@@ -769,14 +863,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowRecycleEvent(
                 symV2PcFragTaskflowEventPool,
                 s.tasks[i].done_event);
-        if (s.d_index_pool != NULL)
-            gpuErrchk(cudaFree(s.d_index_pool));
-        if (s.d_value_pool != NULL)
-            gpuErrchk(cudaFree(s.d_value_pool));
-        if (s.d_group_index_pool != NULL)
-            gpuErrchk(cudaFree(s.d_group_index_pool));
-        if (s.d_group_value_pool != NULL)
-            gpuErrchk(cudaFree(s.d_group_value_pool));
+        dSymV2PcFragTaskflowRecycleIndexBlock(
+            symV2PcFragTaskflowIndexBlockPool,
+            s.d_index_pool, s.index_pool_capacity);
+        dSymV2PcFragTaskflowRecycleValueBlock(
+            symV2PcFragTaskflowValueBlockPool,
+            s.d_value_pool, s.value_pool_capacity);
+        dSymV2PcFragTaskflowRecycleIndexBlock(
+            symV2PcFragTaskflowIndexBlockPool,
+            s.d_group_index_pool, s.group_index_pool_capacity);
+        dSymV2PcFragTaskflowRecycleValueBlock(
+            symV2PcFragTaskflowValueBlockPool,
+            s.d_group_value_pool, s.group_value_pool_capacity);
         dSymV2PcFragTaskflowReleasePinnedHost(s);
         s.reset();
     };
@@ -867,33 +965,33 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     }
     if (total_index_count > 0)
     {
-        gpuErrchk(cudaMalloc(
-            reinterpret_cast<void **>(&state.d_index_pool),
-            sizeof(int_t) * total_index_count));
-        state.index_pool_capacity = total_index_count;
+        state.d_index_pool =
+            dSymV2PcFragTaskflowAcquireIndexBlock(
+                symV2PcFragTaskflowIndexBlockPool,
+                total_index_count, &state.index_pool_capacity);
     }
     if (total_value_count > 0)
     {
-        gpuErrchk(cudaMalloc(
-            reinterpret_cast<void **>(&state.d_value_pool),
-            sizeof(double) * total_value_count));
+        state.d_value_pool =
+            dSymV2PcFragTaskflowAcquireValueBlock(
+                symV2PcFragTaskflowValueBlockPool,
+                total_value_count, &state.value_pool_capacity);
         gpuErrchk(cudaMemset(
             state.d_value_pool, 0, sizeof(double) * total_value_count));
-        state.value_pool_capacity = total_value_count;
     }
     if (total_index_count > 0)
     {
-        gpuErrchk(cudaMalloc(
-            reinterpret_cast<void **>(&state.d_group_index_pool),
-            sizeof(int_t) * total_index_count));
-        state.group_index_pool_capacity = total_index_count;
+        state.d_group_index_pool =
+            dSymV2PcFragTaskflowAcquireIndexBlock(
+                symV2PcFragTaskflowIndexBlockPool,
+                total_index_count, &state.group_index_pool_capacity);
     }
     if (total_value_count > 0)
     {
-        gpuErrchk(cudaMalloc(
-            reinterpret_cast<void **>(&state.d_group_value_pool),
-            sizeof(double) * total_value_count));
-        state.group_value_pool_capacity = total_value_count;
+        state.d_group_value_pool =
+            dSymV2PcFragTaskflowAcquireValueBlock(
+                symV2PcFragTaskflowValueBlockPool,
+                total_value_count, &state.group_value_pool_capacity);
     }
 
     auto add_piece = [&](std::vector<SymV2PcFragPieceDesc> &pieces,
@@ -1482,14 +1580,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             release_piece_storage(state.row_pieces[p]);
         for (size_t p = 0; p < state.partner_pieces.size(); ++p)
             release_piece_storage(state.partner_pieces[p]);
-        if (state.d_index_pool != NULL)
-            gpuErrchk(cudaFree(state.d_index_pool));
-        if (state.d_value_pool != NULL)
-            gpuErrchk(cudaFree(state.d_value_pool));
-        if (state.d_group_index_pool != NULL)
-            gpuErrchk(cudaFree(state.d_group_index_pool));
-        if (state.d_group_value_pool != NULL)
-            gpuErrchk(cudaFree(state.d_group_value_pool));
+        dSymV2PcFragTaskflowRecycleIndexBlock(
+            symV2PcFragTaskflowIndexBlockPool,
+            state.d_index_pool, state.index_pool_capacity);
+        dSymV2PcFragTaskflowRecycleValueBlock(
+            symV2PcFragTaskflowValueBlockPool,
+            state.d_value_pool, state.value_pool_capacity);
+        dSymV2PcFragTaskflowRecycleIndexBlock(
+            symV2PcFragTaskflowIndexBlockPool,
+            state.d_group_index_pool, state.group_index_pool_capacity);
+        dSymV2PcFragTaskflowRecycleValueBlock(
+            symV2PcFragTaskflowValueBlockPool,
+            state.d_group_value_pool, state.group_value_pool_capacity);
         dSymV2PcFragTaskflowReleasePinnedHost(state);
         state.reset();
     };
@@ -1746,14 +1848,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 release_piece_storage(state.row_pieces[p]);
             for (size_t p = 0; p < state.partner_pieces.size(); ++p)
                 release_piece_storage(state.partner_pieces[p]);
-            if (state.d_index_pool != NULL)
-                gpuErrchk(cudaFree(state.d_index_pool));
-            if (state.d_value_pool != NULL)
-                gpuErrchk(cudaFree(state.d_value_pool));
-            if (state.d_group_index_pool != NULL)
-                gpuErrchk(cudaFree(state.d_group_index_pool));
-            if (state.d_group_value_pool != NULL)
-                gpuErrchk(cudaFree(state.d_group_value_pool));
+            dSymV2PcFragTaskflowRecycleIndexBlock(
+                symV2PcFragTaskflowIndexBlockPool,
+                state.d_index_pool, state.index_pool_capacity);
+            dSymV2PcFragTaskflowRecycleValueBlock(
+                symV2PcFragTaskflowValueBlockPool,
+                state.d_value_pool, state.value_pool_capacity);
+            dSymV2PcFragTaskflowRecycleIndexBlock(
+                symV2PcFragTaskflowIndexBlockPool,
+                state.d_group_index_pool, state.group_index_pool_capacity);
+            dSymV2PcFragTaskflowRecycleValueBlock(
+                symV2PcFragTaskflowValueBlockPool,
+                state.d_group_value_pool, state.group_value_pool_capacity);
             dSymV2PcFragTaskflowReleasePinnedHost(state);
             state.reset();
         };
@@ -2549,14 +2655,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         dSymV2PcFragTaskflowRecycleEvent(
             symV2PcFragTaskflowEventPool,
             state.tasks[i].done_event);
-    if (state.d_index_pool != NULL)
-        gpuErrchk(cudaFree(state.d_index_pool));
-    if (state.d_value_pool != NULL)
-        gpuErrchk(cudaFree(state.d_value_pool));
-    if (state.d_group_index_pool != NULL)
-        gpuErrchk(cudaFree(state.d_group_index_pool));
-    if (state.d_group_value_pool != NULL)
-        gpuErrchk(cudaFree(state.d_group_value_pool));
+    dSymV2PcFragTaskflowRecycleIndexBlock(
+        symV2PcFragTaskflowIndexBlockPool,
+        state.d_index_pool, state.index_pool_capacity);
+    dSymV2PcFragTaskflowRecycleValueBlock(
+        symV2PcFragTaskflowValueBlockPool,
+        state.d_value_pool, state.value_pool_capacity);
+    dSymV2PcFragTaskflowRecycleIndexBlock(
+        symV2PcFragTaskflowIndexBlockPool,
+        state.d_group_index_pool, state.group_index_pool_capacity);
+    dSymV2PcFragTaskflowRecycleValueBlock(
+        symV2PcFragTaskflowValueBlockPool,
+        state.d_group_value_pool, state.group_value_pool_capacity);
     dSymV2PcFragTaskflowReleasePinnedHost(state);
     state.reset();
     return 0;

@@ -7016,6 +7016,14 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
         if (symV2PcFragTaskflowEventPool[ev] != NULL)
             gpuErrchk(cudaEventDestroy(symV2PcFragTaskflowEventPool[ev]));
     symV2PcFragTaskflowEventPool.clear();
+    for (size_t b = 0; b < symV2PcFragTaskflowIndexBlockPool.size(); ++b)
+        if (symV2PcFragTaskflowIndexBlockPool[b].ptr != NULL)
+            gpuErrchk(cudaFree(symV2PcFragTaskflowIndexBlockPool[b].ptr));
+    symV2PcFragTaskflowIndexBlockPool.clear();
+    for (size_t b = 0; b < symV2PcFragTaskflowValueBlockPool.size(); ++b)
+        if (symV2PcFragTaskflowValueBlockPool[b].ptr != NULL)
+            gpuErrchk(cudaFree(symV2PcFragTaskflowValueBlockPool[b].ptr));
+    symV2PcFragTaskflowValueBlockPool.clear();
 // SYM_V2_PC2_PHASE6_FREE_EXCHANGE_STATES_BEGIN
     for (size_t sx = 0; sx < symV2RowExchangeStates.size(); ++sx)
     {
