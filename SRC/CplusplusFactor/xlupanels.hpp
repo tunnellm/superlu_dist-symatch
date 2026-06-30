@@ -1131,6 +1131,8 @@ struct xLUstruct_t
         int producer_tasks_launched;
         unsigned char producer_launch_cap_reported;
         unsigned char producer_exchange_pending;
+        size_t row_pieces_ready_count;
+        size_t partner_pieces_ready_count;
         int producer_partner_recv_remaining;
         int producer_row_recv_remaining;
         int producer_ksupc;
@@ -1166,6 +1168,7 @@ struct xLUstruct_t
               exchange_posted(0), closed(0), incomplete_task_count(0),
               producer_tasks_launched(0), producer_launch_cap_reported(0),
               producer_exchange_pending(0),
+              row_pieces_ready_count(0), partner_pieces_ready_count(0),
               producer_partner_recv_remaining(0),
               producer_row_recv_remaining(0), producer_ksupc(0)
 #ifdef HAVE_CUDA
@@ -1194,6 +1197,8 @@ struct xLUstruct_t
             producer_tasks_launched = 0;
             producer_launch_cap_reported = 0;
             producer_exchange_pending = 0;
+            row_pieces_ready_count = 0;
+            partner_pieces_ready_count = 0;
             producer_partner_recv_remaining = 0;
             producer_row_recv_remaining = 0;
             producer_ksupc = 0;

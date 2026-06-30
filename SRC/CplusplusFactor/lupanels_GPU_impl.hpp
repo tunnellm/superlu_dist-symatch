@@ -1024,9 +1024,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
                 gpuErrchk(cudaEventRecord(piece->ready_event, stream));
             piece->ready = 1;
             if (kind == SYM_V2_PCFRAG_PIECE_ROW)
+            {
                 ++symV2PcFragTaskflowStats.row_pieces_ready;
+                ++state.row_pieces_ready_count;
+            }
             else
+            {
                 ++symV2PcFragTaskflowStats.partner_pieces_ready;
+                ++state.partner_pieces_ready_count;
+            }
             ++ready_count;
         }
     }
@@ -1144,6 +1150,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
                 if (piece.ready_event != NULL)
                     gpuErrchk(cudaEventRecord(piece.ready_event, stream));
                 piece.ready = 1;
+                ++state.row_pieces_ready_count;
                 ++symV2PcFragTaskflowStats.row_pieces_ready;
             }
         }
@@ -1299,13 +1306,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         superlu_sym_v2_pcfrag_taskflow_async_core();
 
     auto all_pieces_ready = [&]() -> bool {
-        for (size_t p = 0; p < state.row_pieces.size(); ++p)
-            if (!state.row_pieces[p].ready)
-                return false;
-        for (size_t p = 0; p < state.partner_pieces.size(); ++p)
-            if (!state.partner_pieces[p].ready)
-                return false;
-        return true;
+        return state.row_pieces_ready_count ==
+                   state.row_pieces.size() &&
+               state.partner_pieces_ready_count ==
+                   state.partner_pieces.size();
     };
     auto output_locked = [&](const SymV2PcFragTaskDesc &task) -> bool {
         if (!strict_output_conflicts)
@@ -1557,13 +1561,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             superlu_sym_v2_pcfrag_taskflow_async_core();
 
         auto all_pieces_ready = [&]() -> bool {
-            for (size_t p = 0; p < state.row_pieces.size(); ++p)
-                if (!state.row_pieces[p].ready)
-                    return false;
-            for (size_t p = 0; p < state.partner_pieces.size(); ++p)
-                if (!state.partner_pieces[p].ready)
-                    return false;
-            return true;
+            return state.row_pieces_ready_count ==
+                       state.row_pieces.size() &&
+                   state.partner_pieces_ready_count ==
+                       state.partner_pieces.size();
         };
         auto output_locked = [&](const SymV2PcFragTaskDesc &task) -> bool {
             if (!strict_output_conflicts)
@@ -2674,9 +2675,15 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 gpuErrchk(cudaEventRecord(piece.ready_event, stream));
             piece.ready = 1;
             if (kind == SYM_V2_PCFRAG_PIECE_ROW)
+            {
                 ++symV2PcFragTaskflowStats.row_pieces_ready;
+                ++taskflow_state->row_pieces_ready_count;
+            }
             else
+            {
                 ++symV2PcFragTaskflowStats.partner_pieces_ready;
+                ++taskflow_state->partner_pieces_ready_count;
+            }
             if (pcfrag_taskflow_eager)
                 dSymV2PcFragTaskflowProgressGPU(
                     k, superlu_sym_v2_pcfrag_taskflow_progress_budget());
@@ -5654,13 +5661,16 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         int incomplete_tasks = 0;
         if (taskflow_state != NULL && taskflow_state->initialized)
         {
-            for (size_t p = 0; p < taskflow_state->row_pieces.size(); ++p)
-                if (!taskflow_state->row_pieces[p].ready)
-                    ++unready_pieces;
-            for (size_t p = 0;
-                 p < taskflow_state->partner_pieces.size(); ++p)
-                if (!taskflow_state->partner_pieces[p].ready)
-                    ++unready_pieces;
+            if (taskflow_state->row_pieces_ready_count >
+                    taskflow_state->row_pieces.size() ||
+                taskflow_state->partner_pieces_ready_count >
+                    taskflow_state->partner_pieces.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW ready piece count is inconsistent.");
+            unready_pieces =
+                static_cast<long long>(taskflow_state->row_pieces.size()) -
+                static_cast<long long>(taskflow_state->row_pieces_ready_count) +
+                static_cast<long long>(taskflow_state->partner_pieces.size()) -
+                static_cast<long long>(taskflow_state->partner_pieces_ready_count);
             incomplete_tasks = taskflow_state->incomplete_task_count;
             if (taskflow_state->producer_exchange_pending)
                 ++symV2PcFragTaskflowStats.producer_returns_with_pending_recvs;
