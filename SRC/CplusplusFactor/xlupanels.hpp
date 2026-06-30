@@ -1331,6 +1331,9 @@ struct xLUstruct_t
     };
 
     std::vector<SymV2PcFragPanelTaskState> symV2PcFragTaskStates;
+#ifdef HAVE_CUDA
+    std::vector<cudaEvent_t> symV2PcFragTaskflowEventPool;
+#endif
     SymV2PcFragTaskflowStats symV2PcFragTaskflowStats;
 
     void symV2PcFragTaskflowPrintProfile()

@@ -676,6 +676,32 @@ static inline void dSymV2PcFragTaskflowReleasePinnedHost(
     state.producer_row_recv_host_capacity = 0;
 }
 
+static inline cudaEvent_t dSymV2PcFragTaskflowAcquireEvent(
+    std::vector<cudaEvent_t> &pool)
+{
+    cudaEvent_t event = NULL;
+    if (!pool.empty())
+    {
+        event = pool.back();
+        pool.pop_back();
+    }
+    else
+    {
+        gpuErrchk(cudaEventCreateWithFlags(
+            &event, cudaEventDisableTiming));
+    }
+    return event;
+}
+
+static inline void dSymV2PcFragTaskflowRecycleEvent(
+    std::vector<cudaEvent_t> &pool, cudaEvent_t &event)
+{
+    if (event == NULL)
+        return;
+    pool.push_back(event);
+    event = NULL;
+}
+
 template <>
 inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     int_t k, int_t stream_offset)
@@ -704,21 +730,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     SymV2PcFragPanelTaskState &state =
         symV2PcFragTaskStates[static_cast<size_t>(k)];
 
-    auto release_taskflow_state = [](SymV2PcFragPanelTaskState &s) {
+    auto release_taskflow_state = [&](SymV2PcFragPanelTaskState &s) {
         for (size_t i = 0; i < s.row_pieces.size(); ++i)
         {
             if (s.row_pieces[i].pending_consumers != 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a row piece with pending consumers.");
-            if (s.row_pieces[i].ready_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(s.row_pieces[i].ready_event));
-                s.row_pieces[i].ready_event = NULL;
-            }
-            if (s.row_pieces[i].done_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(s.row_pieces[i].done_event));
-                s.row_pieces[i].done_event = NULL;
-            }
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                s.row_pieces[i].ready_event);
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                s.row_pieces[i].done_event);
             if (s.row_pieces[i].d_stage != NULL)
                 gpuErrchk(cudaFree(s.row_pieces[i].d_stage));
             s.row_pieces[i].d_index = NULL;
@@ -730,16 +752,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         {
             if (s.partner_pieces[i].pending_consumers != 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a partner piece with pending consumers.");
-            if (s.partner_pieces[i].ready_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(s.partner_pieces[i].ready_event));
-                s.partner_pieces[i].ready_event = NULL;
-            }
-            if (s.partner_pieces[i].done_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(s.partner_pieces[i].done_event));
-                s.partner_pieces[i].done_event = NULL;
-            }
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                s.partner_pieces[i].ready_event);
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                s.partner_pieces[i].done_event);
             if (s.partner_pieces[i].d_stage != NULL)
                 gpuErrchk(cudaFree(s.partner_pieces[i].d_stage));
             s.partner_pieces[i].d_index = NULL;
@@ -748,13 +766,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             s.partner_pieces[i].h_index.clear();
         }
         for (size_t i = 0; i < s.tasks.size(); ++i)
-        {
-            if (s.tasks[i].done_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(s.tasks[i].done_event));
-                s.tasks[i].done_event = NULL;
-            }
-        }
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                s.tasks[i].done_event);
         if (s.d_index_pool != NULL)
             gpuErrchk(cudaFree(s.d_index_pool));
         if (s.d_value_pool != NULL)
@@ -923,8 +937,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             piece.d_val = state.d_value_pool + state.value_pool_used;
             state.value_pool_used += count;
         }
-        gpuErrchk(cudaEventCreateWithFlags(
-            &piece.ready_event, cudaEventDisableTiming));
+        piece.ready_event =
+            dSymV2PcFragTaskflowAcquireEvent(symV2PcFragTaskflowEventPool);
         pieces.push_back(piece);
     };
 
@@ -1443,26 +1457,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     };
     auto release_completed_state = [&]() {
         for (size_t i = 0; i < state.tasks.size(); ++i)
-        {
-            if (state.tasks[i].done_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(state.tasks[i].done_event));
-                state.tasks[i].done_event = NULL;
-            }
-        }
-        auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                state.tasks[i].done_event);
+        auto release_piece_storage = [&](SymV2PcFragPieceDesc &piece) {
             if (piece.pending_consumers != 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
-            if (piece.ready_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(piece.ready_event));
-                piece.ready_event = NULL;
-            }
-            if (piece.done_event != NULL)
-            {
-                gpuErrchk(cudaEventDestroy(piece.done_event));
-                piece.done_event = NULL;
-            }
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                piece.ready_event);
+            dSymV2PcFragTaskflowRecycleEvent(
+                symV2PcFragTaskflowEventPool,
+                piece.done_event);
             if (piece.d_stage != NULL)
             {
                 gpuErrchk(cudaFree(piece.d_stage));
@@ -1537,8 +1543,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (async_core)
         {
             if (task.done_event == NULL)
-                gpuErrchk(cudaEventCreateWithFlags(
-                    &task.done_event, cudaEventDisableTiming));
+                task.done_event =
+                    dSymV2PcFragTaskflowAcquireEvent(
+                        symV2PcFragTaskflowEventPool);
             gpuErrchk(cudaEventRecord(task.done_event, stream));
         }
         else
@@ -1714,26 +1721,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         };
         auto release_completed_state = [&]() {
             for (size_t i = 0; i < state.tasks.size(); ++i)
-            {
-                if (state.tasks[i].done_event != NULL)
-                {
-                    gpuErrchk(cudaEventDestroy(state.tasks[i].done_event));
-                    state.tasks[i].done_event = NULL;
-                }
-            }
-            auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
+                dSymV2PcFragTaskflowRecycleEvent(
+                    symV2PcFragTaskflowEventPool,
+                    state.tasks[i].done_event);
+            auto release_piece_storage = [&](SymV2PcFragPieceDesc &piece) {
                 if (piece.pending_consumers != 0)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
-                if (piece.ready_event != NULL)
-                {
-                    gpuErrchk(cudaEventDestroy(piece.ready_event));
-                    piece.ready_event = NULL;
-                }
-                if (piece.done_event != NULL)
-                {
-                    gpuErrchk(cudaEventDestroy(piece.done_event));
-                    piece.done_event = NULL;
-                }
+                dSymV2PcFragTaskflowRecycleEvent(
+                    symV2PcFragTaskflowEventPool,
+                    piece.ready_event);
+                dSymV2PcFragTaskflowRecycleEvent(
+                    symV2PcFragTaskflowEventPool,
+                    piece.done_event);
                 if (piece.d_stage != NULL)
                 {
                     gpuErrchk(cudaFree(piece.d_stage));
@@ -1810,8 +1809,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (async_core)
                 {
                     if (task.done_event == NULL)
-                        gpuErrchk(cudaEventCreateWithFlags(
-                            &task.done_event, cudaEventDisableTiming));
+                        task.done_event =
+                            dSymV2PcFragTaskflowAcquireEvent(
+                                symV2PcFragTaskflowEventPool);
                     gpuErrchk(cudaEventRecord(task.done_event, stream));
                 }
                 else
@@ -2047,8 +2047,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (async_core)
             {
                 if (task.done_event == NULL)
-                    gpuErrchk(cudaEventCreateWithFlags(
-                        &task.done_event, cudaEventDisableTiming));
+                    task.done_event =
+                        dSymV2PcFragTaskflowAcquireEvent(
+                            symV2PcFragTaskflowEventPool);
                 gpuErrchk(cudaEventRecord(task.done_event, task_stream));
             }
             else
@@ -2522,19 +2523,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found incomplete tasks.");
     if (!state.active_output_keys.empty())
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found active output locks.");
-    auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
+    auto release_piece_storage = [&](SymV2PcFragPieceDesc &piece) {
         if (piece.pending_consumers != 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
-        if (piece.ready_event != NULL)
-        {
-            gpuErrchk(cudaEventDestroy(piece.ready_event));
-            piece.ready_event = NULL;
-        }
-        if (piece.done_event != NULL)
-        {
-            gpuErrchk(cudaEventDestroy(piece.done_event));
-            piece.done_event = NULL;
-        }
+        dSymV2PcFragTaskflowRecycleEvent(
+            symV2PcFragTaskflowEventPool,
+            piece.ready_event);
+        dSymV2PcFragTaskflowRecycleEvent(
+            symV2PcFragTaskflowEventPool,
+            piece.done_event);
         if (piece.d_stage != NULL)
         {
             gpuErrchk(cudaFree(piece.d_stage));
@@ -2549,13 +2546,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     for (size_t i = 0; i < state.partner_pieces.size(); ++i)
         release_piece_storage(state.partner_pieces[i]);
     for (size_t i = 0; i < state.tasks.size(); ++i)
-    {
-        if (state.tasks[i].done_event != NULL)
-        {
-            gpuErrchk(cudaEventDestroy(state.tasks[i].done_event));
-            state.tasks[i].done_event = NULL;
-        }
-    }
+        dSymV2PcFragTaskflowRecycleEvent(
+            symV2PcFragTaskflowEventPool,
+            state.tasks[i].done_event);
     if (state.d_index_pool != NULL)
         gpuErrchk(cudaFree(state.d_index_pool));
     if (state.d_value_pool != NULL)

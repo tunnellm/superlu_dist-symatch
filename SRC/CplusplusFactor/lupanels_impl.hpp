@@ -6973,6 +6973,49 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
     symPanelReadyEventIds.clear();
     symV2UsePcFragmentSchur.clear();
     symV2RawPanelNodes.clear();
+    for (size_t sx = 0; sx < symV2PcFragTaskStates.size(); ++sx)
+    {
+        SymV2PcFragPanelTaskState &state = symV2PcFragTaskStates[sx];
+        for (size_t p = 0; p < state.row_pieces.size(); ++p)
+        {
+            if (state.row_pieces[p].ready_event != NULL)
+                gpuErrchk(cudaEventDestroy(state.row_pieces[p].ready_event));
+            if (state.row_pieces[p].done_event != NULL)
+                gpuErrchk(cudaEventDestroy(state.row_pieces[p].done_event));
+            if (state.row_pieces[p].d_stage != NULL)
+                gpuErrchk(cudaFree(state.row_pieces[p].d_stage));
+        }
+        for (size_t p = 0; p < state.partner_pieces.size(); ++p)
+        {
+            if (state.partner_pieces[p].ready_event != NULL)
+                gpuErrchk(cudaEventDestroy(state.partner_pieces[p].ready_event));
+            if (state.partner_pieces[p].done_event != NULL)
+                gpuErrchk(cudaEventDestroy(state.partner_pieces[p].done_event));
+            if (state.partner_pieces[p].d_stage != NULL)
+                gpuErrchk(cudaFree(state.partner_pieces[p].d_stage));
+        }
+        for (size_t t = 0; t < state.tasks.size(); ++t)
+            if (state.tasks[t].done_event != NULL)
+                gpuErrchk(cudaEventDestroy(state.tasks[t].done_event));
+        if (state.producer_partner_recv_host_values != NULL)
+            gpuErrchk(cudaFreeHost(state.producer_partner_recv_host_values));
+        if (state.producer_row_recv_host_values != NULL)
+            gpuErrchk(cudaFreeHost(state.producer_row_recv_host_values));
+        if (state.d_index_pool != NULL)
+            gpuErrchk(cudaFree(state.d_index_pool));
+        if (state.d_value_pool != NULL)
+            gpuErrchk(cudaFree(state.d_value_pool));
+        if (state.d_group_index_pool != NULL)
+            gpuErrchk(cudaFree(state.d_group_index_pool));
+        if (state.d_group_value_pool != NULL)
+            gpuErrchk(cudaFree(state.d_group_value_pool));
+        state.reset();
+    }
+    symV2PcFragTaskStates.clear();
+    for (size_t ev = 0; ev < symV2PcFragTaskflowEventPool.size(); ++ev)
+        if (symV2PcFragTaskflowEventPool[ev] != NULL)
+            gpuErrchk(cudaEventDestroy(symV2PcFragTaskflowEventPool[ev]));
+    symV2PcFragTaskflowEventPool.clear();
 // SYM_V2_PC2_PHASE6_FREE_EXCHANGE_STATES_BEGIN
     for (size_t sx = 0; sx < symV2RowExchangeStates.size(); ++sx)
     {
