@@ -1124,6 +1124,12 @@ struct xLUstruct_t
         std::vector<SymV2PcFragPieceDesc> partner_pieces;
         std::vector<SymV2PcFragTaskDesc> tasks;
         std::vector<int> pair_task_index;
+        std::vector<std::vector<int> > row_piece_tasks;
+        std::vector<std::vector<int> > partner_piece_tasks;
+        std::vector<unsigned char> task_ready_inputs;
+        std::vector<unsigned char> task_enqueued;
+        std::vector<int> runnable_task_ids;
+        std::vector<int> launched_task_ids;
         std::vector<SymV2PcFragOutputKey> active_output_keys;
         int incomplete_task_count;
         int producer_tasks_launched;
@@ -1194,6 +1200,37 @@ struct xLUstruct_t
         {
         }
 
+        void note_piece_ready(unsigned char kind, int piece_id)
+        {
+            const std::vector<std::vector<int> > &adj =
+                (kind == SYM_V2_PCFRAG_PIECE_ROW)
+                    ? row_piece_tasks
+                    : partner_piece_tasks;
+            if (piece_id < 0 ||
+                static_cast<size_t>(piece_id) >= adj.size())
+                return;
+            const std::vector<int> &task_ids =
+                adj[static_cast<size_t>(piece_id)];
+            for (size_t i = 0; i < task_ids.size(); ++i)
+            {
+                int tid = task_ids[i];
+                if (tid < 0 || static_cast<size_t>(tid) >= tasks.size())
+                    continue;
+                size_t pos = static_cast<size_t>(tid);
+                if (pos >= task_ready_inputs.size() ||
+                    pos >= task_enqueued.size())
+                    continue;
+                if (task_ready_inputs[pos] < 2)
+                    ++task_ready_inputs[pos];
+                if (task_ready_inputs[pos] == 2 &&
+                    !task_enqueued[pos])
+                {
+                    runnable_task_ids.push_back(tid);
+                    task_enqueued[pos] = 1;
+                }
+            }
+        }
+
         void reset()
         {
             k = -1;
@@ -1205,6 +1242,12 @@ struct xLUstruct_t
             partner_pieces.clear();
             tasks.clear();
             pair_task_index.clear();
+            row_piece_tasks.clear();
+            partner_piece_tasks.clear();
+            task_ready_inputs.clear();
+            task_enqueued.clear();
+            runnable_task_ids.clear();
+            launched_task_ids.clear();
             active_output_keys.clear();
             incomplete_task_count = 0;
             producer_tasks_launched = 0;

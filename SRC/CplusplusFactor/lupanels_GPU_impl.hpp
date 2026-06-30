@@ -1140,6 +1140,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
 
     state.pair_task_index.assign(
         state.row_pieces.size() * state.partner_pieces.size(), -1);
+    state.row_piece_tasks.assign(state.row_pieces.size(),
+                                 std::vector<int>());
+    state.partner_piece_tasks.assign(state.partner_pieces.size(),
+                                     std::vector<int>());
     for (size_t rp = 0; rp < state.row_pieces.size(); ++rp)
     {
         int_t gi = state.row_pieces[rp].gid_first;
@@ -1170,9 +1174,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             if (gi != gj)
                 task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
             task.outputs.push_back(SymV2PcFragOutputKey(gj, gi));
+            int task_id = task.task_id;
             state.tasks.push_back(task);
+            state.task_ready_inputs.push_back(0);
+            state.task_enqueued.push_back(0);
             state.pair_task_index[
-                rp * state.partner_pieces.size() + cp] = task.task_id;
+                rp * state.partner_pieces.size() + cp] = task_id;
+            state.row_piece_tasks[rp].push_back(task_id);
+            state.partner_piece_tasks[cp].push_back(task_id);
             ++state.row_pieces[rp].pending_consumers;
             ++state.partner_pieces[cp].pending_consumers;
         }
@@ -1269,6 +1278,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
                 ++symV2PcFragTaskflowStats.partner_pieces_ready;
                 ++state.partner_pieces_ready_count;
             }
+            state.note_piece_ready(kind, piece->piece_id);
             ++ready_count;
         }
     }
@@ -1392,6 +1402,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
                 piece.ready = 1;
                 ++state.row_pieces_ready_count;
                 ++symV2PcFragTaskflowStats.row_pieces_ready;
+                state.note_piece_ready(
+                    SYM_V2_PCFRAG_PIECE_ROW, piece.piece_id);
             }
         }
         else
@@ -1616,9 +1628,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!async_core)
             return 0;
         int completed = 0;
-        for (size_t i = 0; i < state.tasks.size(); ++i)
+        for (size_t i = 0; i < state.launched_task_ids.size(); ++i)
         {
-            SymV2PcFragTaskDesc &task = state.tasks[i];
+            int tid = state.launched_task_ids[i];
+            if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW launched task id is invalid.");
+            SymV2PcFragTaskDesc &task =
+                state.tasks[static_cast<size_t>(tid)];
             if (!task.launched || task.complete)
                 continue;
             if (task.done_event == NULL)
@@ -1686,9 +1702,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     int launched = 0;
     progress_launched_tasks(0);
     for (size_t i = 0;
-         i < state.tasks.size() && launched < budget; ++i)
+         i < state.runnable_task_ids.size() && launched < budget; ++i)
     {
-        SymV2PcFragTaskDesc &task = state.tasks[i];
+        int tid = state.runnable_task_ids[i];
+        if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
+        SymV2PcFragTaskDesc &task =
+            state.tasks[static_cast<size_t>(tid)];
         if (task.launched || task.complete)
             continue;
         SymV2PcFragPieceDesc &row =
@@ -1736,6 +1756,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                     dSymV2PcFragTaskflowAcquireEvent(
                         symV2PcFragTaskflowEventPool);
             gpuErrchk(cudaEventRecord(task.done_event, stream));
+            state.launched_task_ids.push_back(task.task_id);
         }
         else
         {
@@ -1867,9 +1888,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (!async_core)
                 return 0;
             int completed = 0;
-            for (size_t i = 0; i < state.tasks.size(); ++i)
+            for (size_t i = 0; i < state.launched_task_ids.size(); ++i)
             {
-                SymV2PcFragTaskDesc &task = state.tasks[i];
+                int tid = state.launched_task_ids[i];
+                if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW launched task id is invalid.");
+                SymV2PcFragTaskDesc &task =
+                    state.tasks[static_cast<size_t>(tid)];
                 if (!task.launched || task.complete)
                     continue;
                 if (task.done_event == NULL)
@@ -1954,9 +1979,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             superlu_sym_v2_pcfrag_taskflow_eager() &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
         {
-            for (size_t i = 0; i < state.tasks.size(); ++i)
+            for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
             {
-                SymV2PcFragTaskDesc &task = state.tasks[i];
+                int tid = state.runnable_task_ids[i];
+                if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
+                SymV2PcFragTaskDesc &task =
+                    state.tasks[static_cast<size_t>(tid)];
                 if (task.launched || task.complete)
                     continue;
                 SymV2PcFragPieceDesc &row =
@@ -2004,6 +2033,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             dSymV2PcFragTaskflowAcquireEvent(
                                 symV2PcFragTaskflowEventPool);
                     gpuErrchk(cudaEventRecord(task.done_event, stream));
+                    state.launched_task_ids.push_back(task.task_id);
                 }
                 else
                 {
@@ -2242,6 +2272,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         dSymV2PcFragTaskflowAcquireEvent(
                             symV2PcFragTaskflowEventPool);
                 gpuErrchk(cudaEventRecord(task.done_event, task_stream));
+                state.launched_task_ids.push_back(task.task_id);
             }
             else
             {
@@ -2926,6 +2957,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 ++symV2PcFragTaskflowStats.partner_pieces_ready;
                 ++taskflow_state->partner_pieces_ready_count;
             }
+            taskflow_state->note_piece_ready(kind, piece.piece_id);
             if (pcfrag_taskflow_eager)
                 dSymV2PcFragTaskflowProgressGPU(
                     k, superlu_sym_v2_pcfrag_taskflow_progress_budget());
