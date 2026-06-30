@@ -1467,26 +1467,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (!all_pieces_ready())
                 symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready +=
                     pair_count;
-            if (superlu_sym_v2_pcfrag_taskflow_validate())
-            {
-                dSymSchurCompUpdatePartDualFragmentsGPU(
-                    row_start, row_end, col_start, col_end, k,
-                    row_frag, col_frag,
-                    A_gpu.symV2RowFragIdxRecvBufs[streamId],
-                    A_gpu.symV2RowFragValRecvBufs[streamId],
-                    A_gpu.symPartnerLidxRecvBufs[streamId],
-                    A_gpu.symPartnerLvalRecvBufs[streamId],
-                    group_handle, group_stream, group_gemm);
-            }
-            else
-            {
-                dSymSchurCompUpdateTaskDualPieceGroupGPU(
-                    0, row_end - row_start, 0, col_end - col_start, k,
-                    row_group, col_group,
-                    row_group_gpu, row_group_val,
-                    col_group_gpu, col_group_val,
-                    group_handle, group_stream, group_gemm);
-            }
+            dSymSchurCompUpdateTaskDualPieceGroupGPU(
+                0, row_end - row_start, 0, col_end - col_start, k,
+                row_group, col_group,
+                row_group_gpu, row_group_val,
+                col_group_gpu, col_group_val,
+                group_handle, group_stream, group_gemm);
             gpuErrchk(cudaStreamSynchronize(group_stream));
             for (size_t i = 0; i < locked_tasks.size(); ++i)
                 unlock_outputs(*locked_tasks[i]);
@@ -1535,82 +1521,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             col_end = SUPERLU_MIN(col_end, ncol);
             if (row_start >= row_end || col_start >= col_end)
                 return;
-            if (superlu_sym_v2_pcfrag_taskflow_validate())
-            {
-                int pair_count = 0;
-                for (int_t rb = row_start; rb < row_end; ++rb)
-                    for (int_t cb = col_start; cb < col_end; ++cb)
-                    {
-                        SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                        if (task != NULL && !task->complete &&
-                            task_matches_launch_mode(*task, launch_mode))
-                            ++pair_count;
-                    }
-                if (pair_count == 0)
-                    return;
-                std::vector<SymV2PcFragTaskDesc *> locked_tasks;
-                if (strict_output_conflicts)
-                {
-                    std::vector<unsigned long long> pending_keys =
-                        state.active_output_keys;
-                    for (int_t rb = row_start; rb < row_end; ++rb)
-                        for (int_t cb = col_start; cb < col_end; ++cb)
-                        {
-                            SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                            if (task == NULL || task->complete ||
-                                !task_matches_launch_mode(*task, launch_mode))
-                                continue;
-                            for (size_t o = 0; o < task->outputs.size(); ++o)
-                            {
-                                unsigned long long key =
-                                    task->outputs[o].packed();
-                                if (std::find(pending_keys.begin(),
-                                              pending_keys.end(), key) !=
-                                    pending_keys.end())
-                                {
-                                    ++symV2PcFragTaskflowStats.tasks_blocked_output;
-                                    ++symV2PcFragTaskflowStats.scatter_conflict_waits;
-                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW validation dispatch found an output conflict.");
-                                }
-                                pending_keys.push_back(key);
-                            }
-                            locked_tasks.push_back(task);
-                        }
-                    for (size_t i = 0; i < locked_tasks.size(); ++i)
-                        lock_outputs(*locked_tasks[i]);
-                }
-                dSymSchurCompUpLimitedMemDualFragmentsGPU(
-                    row_start, row_end, col_start, col_end, k,
-                    row_frag, col_frag,
-                    A_gpu.symV2RowFragIdxRecvBufs[streamId],
-                    A_gpu.symV2RowFragValRecvBufs[streamId],
-                    A_gpu.symPartnerLidxRecvBufs[streamId],
-                    A_gpu.symPartnerLvalRecvBufs[streamId],
-                    group_handle, group_stream, group_gemm);
-                gpuErrchk(cudaStreamSynchronize(group_stream));
-                for (size_t i = 0; i < locked_tasks.size(); ++i)
-                    unlock_outputs(*locked_tasks[i]);
-                for (int_t rb = row_start; rb < row_end; ++rb)
-                    for (int_t cb = col_start; cb < col_end; ++cb)
-                    {
-                        SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                        if (task == NULL || task->complete ||
-                            !task_matches_launch_mode(*task, launch_mode))
-                            continue;
-                        task->launched = 1;
-                        task->complete = 1;
-                        --state.incomplete_task_count;
-                        --state.row_pieces[static_cast<size_t>(rb)].pending_consumers;
-                        --state.partner_pieces[static_cast<size_t>(cb)].pending_consumers;
-                        if (state.row_pieces[static_cast<size_t>(rb)].pending_consumers < 0 ||
-                            state.partner_pieces[static_cast<size_t>(cb)].pending_consumers < 0)
-                            ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
-                        ++symV2PcFragTaskflowStats.tasks_launched;
-                        ++symV2PcFragTaskflowStats.tasks_completed;
-                        count_task_launch_mode(launch_mode);
-                    }
-                return;
-            }
             int max_block_rows = 1;
             for (int_t rb = row_start; rb < row_end; ++rb)
                 max_block_rows = SUPERLU_MAX(

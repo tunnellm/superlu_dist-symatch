@@ -2573,8 +2573,7 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartDualFragmentsGPU(
     cublasHandle_t handle, cudaStream_t cuStream,
     Ftype *gemmBuff)
 {
-    if (symV2UsePcFragmentTaskflowPanel(k) &&
-        !superlu_sym_v2_pcfrag_taskflow_validate())
+    if (symV2UsePcFragmentTaskflowPanel(k))
     {
         ++symV2PcFragTaskflowStats.legacy_wrapper_aborts;
         ABORT("complete dual-fragment partial wrapper entered in GPU3DV2_PCFRAG_TASKFLOW mode.");
@@ -2617,8 +2616,7 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemDualFragmentsGPU(
     cublasHandle_t handle, cudaStream_t cuStream,
     Ftype *gemmBuff)
 {
-    if (symV2UsePcFragmentTaskflowPanel(k) &&
-        !superlu_sym_v2_pcfrag_taskflow_validate())
+    if (symV2UsePcFragmentTaskflowPanel(k))
     {
         ++symV2PcFragTaskflowStats.legacy_wrapper_aborts;
         ABORT("complete dual-fragment limited-memory wrapper entered in GPU3DV2_PCFRAG_TASKFLOW mode.");
