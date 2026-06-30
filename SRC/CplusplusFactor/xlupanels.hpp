@@ -1155,6 +1155,7 @@ struct xLUstruct_t
         std::vector<int> launched_task_ids;
         std::vector<SymV2PcFragOutputKey> active_output_keys;
         std::set<SymV2PcFragOutputKey> active_output_key_set;
+        int task_event_poll_skip[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int incomplete_task_count;
         int producer_tasks_launched;
         unsigned char producer_launch_cap_reported;
@@ -1223,6 +1224,8 @@ struct xLUstruct_t
               group_index_pool_capacity(0), group_value_pool_capacity(0),
               index_pool_used(0), value_pool_used(0)
         {
+            for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
+                task_event_poll_skip[i] = 0;
         }
 
         void note_piece_ready(unsigned char kind, int piece_id)
@@ -1275,6 +1278,8 @@ struct xLUstruct_t
             launched_task_ids.clear();
             active_output_keys.clear();
             active_output_key_set.clear();
+            for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
+                task_event_poll_skip[i] = 0;
             incomplete_task_count = 0;
             producer_tasks_launched = 0;
             producer_launch_cap_reported = 0;

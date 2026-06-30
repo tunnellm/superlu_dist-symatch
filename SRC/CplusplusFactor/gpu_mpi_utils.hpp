@@ -528,6 +528,26 @@ static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
     return cached;
 }
 
+static inline int superlu_sym_v2_pcfrag_taskflow_event_poll_backoff()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env =
+        std::getenv("GPU3DV2_PCFRAG_TASKFLOW_EVENT_POLL_BACKOFF");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 1;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 1024L)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_EVENT_POLL_BACKOFF must be an integer in [0,1024].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
 static inline int superlu_sym_v2_pcfrag_taskflow_producer_task_limit()
 {
     static int cached = -1;
