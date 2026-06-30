@@ -6855,6 +6855,71 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         if (row_recv_total > 0)
                             taskflow_pinned_counts.push_back(row_recv_total);
                     }
+                    else
+                    {
+                        int_t lk0 = symV2PanelIndex(k0);
+                        if (lk0 < 0)
+                            ABORT("SymFact V2 taskflow prewarm has invalid local panel index.");
+
+                        size_t partner_send_total = 0;
+                        for (int pc = 0; pc < Pc; ++pc)
+                        {
+                            size_t flat =
+                                static_cast<size_t>(lk0) *
+                                    static_cast<size_t>(Pc) +
+                                static_cast<size_t>(pc);
+                            if (flat >= symV2PartnerLSendSizes.size())
+                                ABORT("SymFact V2 taskflow prewarm partner send size is missing.");
+                            int count = symV2PartnerLSendSizes[flat];
+                            if (count <= 0)
+                                continue;
+                            bool active_remote_dest = false;
+                            for (int pr = 0; pr < Pr; ++pr)
+                            {
+                                size_t active_pos =
+                                    flat * static_cast<size_t>(Pr) +
+                                    static_cast<size_t>(pr);
+                                if (active_pos >= symV2PartnerLSendRowActive.size())
+                                    ABORT("SymFact V2 taskflow prewarm partner send mask is missing.");
+                                if (symV2PartnerLSendRowActive[active_pos] &&
+                                    PNUM(pr, pc, grid) != iam)
+                                {
+                                    active_remote_dest = true;
+                                    break;
+                                }
+                            }
+                            if (active_remote_dest)
+                                partner_send_total = xlu_checked_sum_size(
+                                    partner_send_total,
+                                    static_cast<size_t>(count),
+                                    "taskflow prewarm partner send total");
+                        }
+                        if (partner_send_total > 0)
+                            taskflow_pinned_counts.push_back(partner_send_total);
+
+                        size_t row_send_total = 0;
+                        size_t row_send_base =
+                            static_cast<size_t>(lk0) *
+                            static_cast<size_t>(Pc);
+                        if (row_send_base + static_cast<size_t>(Pc) >
+                            symV2RowDownSendSizes.size())
+                            ABORT("SymFact V2 taskflow prewarm row send sizes are missing.");
+                        for (int pc = 0; pc < Pc; ++pc)
+                        {
+                            if (pc == mycol)
+                                continue;
+                            int count =
+                                symV2RowDownSendSizes[
+                                    row_send_base + static_cast<size_t>(pc)];
+                            if (count > 0)
+                                row_send_total = xlu_checked_sum_size(
+                                    row_send_total,
+                                    static_cast<size_t>(count),
+                                    "taskflow prewarm row send total");
+                        }
+                        if (row_send_total > 0)
+                            taskflow_pinned_counts.push_back(row_send_total);
+                    }
                 }
 
                 int_t num_lookahead = getNumLookAhead(options);
@@ -6879,7 +6944,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 if (taskflow_value_counts.size() > active_slots)
                     taskflow_value_counts.resize(active_slots);
                 size_t pinned_slots =
-                    xlu_checked_product(active_slots, 2,
+                    xlu_checked_product(active_slots, 4,
                                         "taskflow prewarm pinned slots");
                 if (taskflow_pinned_counts.size() > pinned_slots)
                     taskflow_pinned_counts.resize(pinned_slots);
@@ -7277,6 +7342,10 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
             gpuErrchk(cudaFreeHost(state.producer_partner_recv_host_values));
         if (state.producer_row_recv_host_values != NULL)
             gpuErrchk(cudaFreeHost(state.producer_row_recv_host_values));
+        if (state.producer_partner_send_host_values != NULL)
+            gpuErrchk(cudaFreeHost(state.producer_partner_send_host_values));
+        if (state.producer_row_send_host_values != NULL)
+            gpuErrchk(cudaFreeHost(state.producer_row_send_host_values));
         if (state.d_index_pool != NULL)
             gpuErrchk(cudaFree(state.d_index_pool));
         if (state.d_value_pool != NULL)

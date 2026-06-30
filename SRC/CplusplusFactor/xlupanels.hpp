@@ -1144,11 +1144,14 @@ struct xLUstruct_t
         std::vector<int> producer_row_recv_sizes;
         std::vector<int> producer_row_recv_offsets;
         std::vector<unsigned char> producer_row_recv_done;
+        std::vector<MPI_Request> producer_send_reqs;
         std::vector<int> producer_progress_indices;
         std::vector<MPI_Status> producer_progress_statuses;
 #ifdef HAVE_CUDA
         Ftype *producer_partner_recv_host_values;
         Ftype *producer_row_recv_host_values;
+        Ftype *producer_partner_send_host_values;
+        Ftype *producer_row_send_host_values;
         int_t *d_index_pool;
         Ftype *d_value_pool;
         int_t *d_group_index_pool;
@@ -1156,6 +1159,8 @@ struct xLUstruct_t
 #endif
         size_t producer_partner_recv_host_capacity;
         size_t producer_row_recv_host_capacity;
+        size_t producer_partner_send_host_capacity;
+        size_t producer_row_send_host_capacity;
         size_t index_pool_capacity;
         size_t value_pool_capacity;
         size_t group_index_pool_capacity;
@@ -1174,11 +1179,15 @@ struct xLUstruct_t
 #ifdef HAVE_CUDA
               , producer_partner_recv_host_values(NULL),
               producer_row_recv_host_values(NULL),
+              producer_partner_send_host_values(NULL),
+              producer_row_send_host_values(NULL),
               d_index_pool(NULL), d_value_pool(NULL),
               d_group_index_pool(NULL), d_group_value_pool(NULL)
 #endif
               , producer_partner_recv_host_capacity(0),
               producer_row_recv_host_capacity(0),
+              producer_partner_send_host_capacity(0),
+              producer_row_send_host_capacity(0),
               index_pool_capacity(0), value_pool_capacity(0),
               group_index_pool_capacity(0), group_value_pool_capacity(0),
               index_pool_used(0), value_pool_used(0)
@@ -1216,11 +1225,14 @@ struct xLUstruct_t
             producer_row_recv_sizes.clear();
             producer_row_recv_offsets.clear();
             producer_row_recv_done.clear();
+            producer_send_reqs.clear();
             producer_progress_indices.clear();
             producer_progress_statuses.clear();
 #ifdef HAVE_CUDA
             producer_partner_recv_host_values = NULL;
             producer_row_recv_host_values = NULL;
+            producer_partner_send_host_values = NULL;
+            producer_row_send_host_values = NULL;
             d_index_pool = NULL;
             d_value_pool = NULL;
             d_group_index_pool = NULL;
@@ -1228,6 +1240,8 @@ struct xLUstruct_t
 #endif
             producer_partner_recv_host_capacity = 0;
             producer_row_recv_host_capacity = 0;
+            producer_partner_send_host_capacity = 0;
+            producer_row_send_host_capacity = 0;
             index_pool_capacity = 0;
             value_pool_capacity = 0;
             group_index_pool_capacity = 0;
