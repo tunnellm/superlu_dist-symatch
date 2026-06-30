@@ -4919,6 +4919,39 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     symTimingAdd(SYM_GPU3D_T_LFRAG_EXCHANGE_TOTAL,
                  SuperLU_timer_() - lfrag_total_t);
 #endif
+    if (pcfrag_taskflow)
+    {
+        ++symV2PcFragTaskflowStats.producer_returns;
+        long long unready_pieces = 0;
+        int incomplete_tasks = 0;
+        if (taskflow_state != NULL && taskflow_state->initialized)
+        {
+            for (size_t p = 0; p < taskflow_state->row_pieces.size(); ++p)
+                if (!taskflow_state->row_pieces[p].ready)
+                    ++unready_pieces;
+            for (size_t p = 0;
+                 p < taskflow_state->partner_pieces.size(); ++p)
+                if (!taskflow_state->partner_pieces[p].ready)
+                    ++unready_pieces;
+            incomplete_tasks = taskflow_state->incomplete_task_count;
+        }
+        if (unready_pieces == 0)
+            ++symV2PcFragTaskflowStats.producer_returns_all_pieces_ready;
+        else
+        {
+            ++symV2PcFragTaskflowStats.producer_returns_incomplete_pieces;
+            symV2PcFragTaskflowStats.producer_return_unready_pieces +=
+                unready_pieces;
+        }
+        if (incomplete_tasks == 0)
+            ++symV2PcFragTaskflowStats.producer_returns_all_tasks_complete;
+        else
+        {
+            ++symV2PcFragTaskflowStats.producer_returns_incomplete_tasks;
+            symV2PcFragTaskflowStats.producer_return_incomplete_task_sum +=
+                static_cast<long long>(incomplete_tasks);
+        }
+    }
     if (pcfrag_taskflow_validate)
     {
         if (frag_nblocks > 0 && frag_nrows > 0)

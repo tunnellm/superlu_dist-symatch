@@ -1218,6 +1218,13 @@ struct xLUstruct_t
         long long producer_recv_wait_calls;
         long long producer_send_wait_calls;
         long long producer_mpi_wait_requests;
+        long long producer_returns;
+        long long producer_returns_all_pieces_ready;
+        long long producer_returns_incomplete_pieces;
+        long long producer_return_unready_pieces;
+        long long producer_returns_all_tasks_complete;
+        long long producer_returns_incomplete_tasks;
+        long long producer_return_incomplete_task_sum;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -1236,7 +1243,13 @@ struct xLUstruct_t
               early_task_launches_before_full_panel_ready(0),
               arena_value_high_water(0), arena_index_high_water(0),
               arena_pinned_high_water(0), producer_recv_wait_calls(0),
-              producer_send_wait_calls(0), producer_mpi_wait_requests(0)
+              producer_send_wait_calls(0), producer_mpi_wait_requests(0),
+              producer_returns(0), producer_returns_all_pieces_ready(0),
+              producer_returns_incomplete_pieces(0),
+              producer_return_unready_pieces(0),
+              producer_returns_all_tasks_complete(0),
+              producer_returns_incomplete_tasks(0),
+              producer_return_incomplete_task_sum(0)
         {
         }
     };
@@ -1248,7 +1261,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[34] = {
+        long long local[41] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1282,19 +1295,26 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.arena_pinned_high_water,
             symV2PcFragTaskflowStats.producer_recv_wait_calls,
             symV2PcFragTaskflowStats.producer_send_wait_calls,
-            symV2PcFragTaskflowStats.producer_mpi_wait_requests
+            symV2PcFragTaskflowStats.producer_mpi_wait_requests,
+            symV2PcFragTaskflowStats.producer_returns,
+            symV2PcFragTaskflowStats.producer_returns_all_pieces_ready,
+            symV2PcFragTaskflowStats.producer_returns_incomplete_pieces,
+            symV2PcFragTaskflowStats.producer_return_unready_pieces,
+            symV2PcFragTaskflowStats.producer_returns_all_tasks_complete,
+            symV2PcFragTaskflowStats.producer_returns_incomplete_tasks,
+            symV2PcFragTaskflowStats.producer_return_incomplete_task_sum
         };
-        long long global[34] = {};
+        long long global[41] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 34, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 41, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 34; ++i)
+            for (int i = 0; i < 41; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1317,14 +1337,23 @@ struct xLUstruct_t
             "arena_value_high_water=%lld arena_index_high_water=%lld "
             "arena_pinned_high_water=%lld "
             "producer_recv_wait_calls=%lld producer_send_wait_calls=%lld "
-            "producer_mpi_wait_requests=%lld\n",
+            "producer_mpi_wait_requests=%lld "
+            "producer_returns=%lld "
+            "producer_returns_all_pieces_ready=%lld "
+            "producer_returns_incomplete_pieces=%lld "
+            "producer_return_unready_pieces=%lld "
+            "producer_returns_all_tasks_complete=%lld "
+            "producer_returns_incomplete_tasks=%lld "
+            "producer_return_incomplete_task_sum=%lld\n",
             global[0], global[1], global[2], global[3], global[4],
             global[5], global[6], global[7], global[8], global[9],
             global[10], global[11], global[12], global[13], global[14],
             global[15], global[16], global[17], global[18], global[19],
             global[20], global[21], global[22], global[23], global[24],
             global[25], global[26], global[27], global[28], global[29],
-            global[30], global[31], global[32], global[33]);
+            global[30], global[31], global[32], global[33], global[34],
+            global[35], global[36], global[37], global[38], global[39],
+            global[40]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END
