@@ -1472,7 +1472,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             }
             else
             {
-                dSymSchurCompUpdatePartDualFragmentsGPU(
+                dSymSchurCompUpdateTaskDualPieceGroupGPU(
                     0, row_end - row_start, 0, col_end - col_start, k,
                     row_group, col_group,
                     row_group_gpu, row_group_val,

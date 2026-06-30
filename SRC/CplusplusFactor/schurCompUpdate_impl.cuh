@@ -2512,7 +2512,7 @@ static inline int xluSymFragHostRangesExcluding(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartDualFragmentsGPU(
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPieceGroupGPU(
     int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
     int_t k,
     const std::vector<int_t> &row_frag,
@@ -2563,6 +2563,31 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartDualFragmentsGPU(
 }
 
 template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartDualFragmentsGPU(
+    int_t iSt, int_t iEnd, int_t jSt, int_t jEnd,
+    int_t k,
+    const std::vector<int_t> &row_frag,
+    const std::vector<int_t> &col_frag,
+    int_t *row_frag_index, Ftype *row_frag_val,
+    int_t *col_frag_index, Ftype *col_frag_val,
+    cublasHandle_t handle, cudaStream_t cuStream,
+    Ftype *gemmBuff)
+{
+    if (symV2UsePcFragmentTaskflowPanel(k) &&
+        !superlu_sym_v2_pcfrag_taskflow_validate())
+    {
+        ++symV2PcFragTaskflowStats.legacy_wrapper_aborts;
+        ABORT("complete dual-fragment partial wrapper entered in GPU3DV2_PCFRAG_TASKFLOW mode.");
+    }
+    return dSymSchurCompUpdateTaskDualPieceGroupGPU(
+        iSt, iEnd, jSt, jEnd, k,
+        row_frag, col_frag,
+        row_frag_index, row_frag_val,
+        col_frag_index, col_frag_val,
+        handle, cuStream, gemmBuff);
+}
+
+template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPiecesGPU(
     int_t k,
     const std::vector<int_t> &row_piece,
@@ -2572,7 +2597,7 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPiecesGPU(
     cublasHandle_t handle, cudaStream_t cuStream,
     Ftype *gemmBuff)
 {
-    return dSymSchurCompUpdatePartDualFragmentsGPU(
+    return dSymSchurCompUpdateTaskDualPieceGroupGPU(
         0, 1, 0, 1, k,
         row_piece, col_piece,
         row_piece_index, row_piece_val,
@@ -2592,6 +2617,12 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemDualFragmentsGPU(
     cublasHandle_t handle, cudaStream_t cuStream,
     Ftype *gemmBuff)
 {
+    if (symV2UsePcFragmentTaskflowPanel(k) &&
+        !superlu_sym_v2_pcfrag_taskflow_validate())
+    {
+        ++symV2PcFragTaskflowStats.legacy_wrapper_aborts;
+        ABORT("complete dual-fragment limited-memory wrapper entered in GPU3DV2_PCFRAG_TASKFLOW mode.");
+    }
     if (row_frag.empty() || col_frag.empty() ||
         row_frag_index == NULL || row_frag_val == NULL ||
         col_frag_index == NULL || col_frag_val == NULL)
