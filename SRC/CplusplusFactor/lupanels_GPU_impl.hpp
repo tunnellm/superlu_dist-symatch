@@ -1569,12 +1569,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
             const SymV2PcFragOutputKey &key = task.outputs[o];
-            if (std::find_if(
-                    state.active_output_keys.begin(),
-                    state.active_output_keys.end(),
-                    [&](const SymV2PcFragOutputKey &active) {
-                        return active.equals(key);
-                    }) != state.active_output_keys.end())
+            if (state.active_output_key_set.find(key) !=
+                state.active_output_key_set.end())
                 return true;
         }
         return false;
@@ -1601,7 +1597,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!strict_output_conflicts)
             return;
         for (size_t o = 0; o < task.outputs.size(); ++o)
+        {
             state.active_output_keys.push_back(task.outputs[o]);
+            state.active_output_key_set.insert(task.outputs[o]);
+        }
         symV2PcFragTaskflowStats.output_locks_acquired +=
             static_cast<long long>(task.outputs.size());
         if (static_cast<long long>(state.active_output_keys.size()) >
@@ -1624,6 +1623,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                     });
             if (it != state.active_output_keys.end())
                 state.active_output_keys.erase(it);
+            state.active_output_key_set.erase(key);
         }
     };
     auto complete_launched_task = [&](SymV2PcFragTaskDesc &task) {
@@ -1885,12 +1885,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             for (size_t o = 0; o < task.outputs.size(); ++o)
             {
                 const SymV2PcFragOutputKey &key = task.outputs[o];
-                if (std::find_if(
-                        state.active_output_keys.begin(),
-                        state.active_output_keys.end(),
-                        [&](const SymV2PcFragOutputKey &active) {
-                            return active.equals(key);
-                        }) != state.active_output_keys.end())
+                if (state.active_output_key_set.find(key) !=
+                    state.active_output_key_set.end())
                     return true;
             }
             return false;
@@ -1925,7 +1921,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (!strict_output_conflicts)
                 return;
             for (size_t o = 0; o < task.outputs.size(); ++o)
+            {
                 state.active_output_keys.push_back(task.outputs[o]);
+                state.active_output_key_set.insert(task.outputs[o]);
+            }
             symV2PcFragTaskflowStats.output_locks_acquired +=
                 static_cast<long long>(task.outputs.size());
             if (static_cast<long long>(state.active_output_keys.size()) >
@@ -1948,6 +1947,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         });
                 if (it != state.active_output_keys.end())
                     state.active_output_keys.erase(it);
+                state.active_output_key_set.erase(key);
             }
         };
         auto complete_launched_task = [&](SymV2PcFragTaskDesc &task) {
@@ -2467,8 +2467,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             std::vector<SymV2PcFragTaskDesc *> locked_tasks;
             if (strict_output_conflicts)
             {
-                std::vector<SymV2PcFragOutputKey> pending_keys =
-                    state.active_output_keys;
+                std::set<SymV2PcFragOutputKey> pending_keys =
+                    state.active_output_key_set;
                 for (int_t rb = row_start; rb < row_end; ++rb)
                 {
                     for (int_t cb = col_start; cb < col_end; ++cb)
@@ -2481,18 +2481,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         {
                             const SymV2PcFragOutputKey &key =
                                 task->outputs[o];
-                            if (std::find_if(
-                                    pending_keys.begin(),
-                                    pending_keys.end(),
-                                    [&](const SymV2PcFragOutputKey &active) {
-                                        return active.equals(key);
-                                    }) != pending_keys.end())
+                            if (pending_keys.find(key) != pending_keys.end())
                             {
                                 ++symV2PcFragTaskflowStats.tasks_blocked_output;
                                 ++symV2PcFragTaskflowStats.scatter_conflict_waits;
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped dispatch found an output conflict.");
                             }
-                            pending_keys.push_back(key);
+                            pending_keys.insert(key);
                         }
                         locked_tasks.push_back(task);
                     }
@@ -2891,6 +2886,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
                                 });
                         if (it != state.active_output_keys.end())
                             state.active_output_keys.erase(it);
+                        state.active_output_key_set.erase(key);
                     }
                 }
                 SymV2PcFragPieceDesc &row =
@@ -2924,7 +2920,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     }
     if (state.incomplete_task_count != 0)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found incomplete tasks.");
-    if (!state.active_output_keys.empty())
+    if (!state.active_output_keys.empty() ||
+        !state.active_output_key_set.empty())
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found active output locks.");
     auto release_piece_storage = [&](SymV2PcFragPieceDesc &piece) {
         if (piece.pending_consumers != 0)

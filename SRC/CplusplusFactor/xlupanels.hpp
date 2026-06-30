@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <set>
 #include <iostream>
 #include <cstdlib>
 #include <cstdio>
@@ -1041,6 +1042,17 @@ struct xLUstruct_t
                    local_panel_j == other.local_panel_j &&
                    local_block_i == other.local_block_i;
         }
+
+        bool operator<(const SymV2PcFragOutputKey &other) const
+        {
+            if (gj != other.gj)
+                return gj < other.gj;
+            if (gi != other.gi)
+                return gi < other.gi;
+            if (local_panel_j != other.local_panel_j)
+                return local_panel_j < other.local_panel_j;
+            return local_block_i < other.local_block_i;
+        }
     };
 
     struct SymV2PcFragPieceDesc
@@ -1142,6 +1154,7 @@ struct xLUstruct_t
         std::vector<int> runnable_task_ids;
         std::vector<int> launched_task_ids;
         std::vector<SymV2PcFragOutputKey> active_output_keys;
+        std::set<SymV2PcFragOutputKey> active_output_key_set;
         int incomplete_task_count;
         int producer_tasks_launched;
         unsigned char producer_launch_cap_reported;
@@ -1261,6 +1274,7 @@ struct xLUstruct_t
             runnable_task_ids.clear();
             launched_task_ids.clear();
             active_output_keys.clear();
+            active_output_key_set.clear();
             incomplete_task_count = 0;
             producer_tasks_launched = 0;
             producer_launch_cap_reported = 0;
