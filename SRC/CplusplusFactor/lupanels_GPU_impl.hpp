@@ -1312,10 +1312,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             return false;
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
-            unsigned long long key = task.outputs[o].packed();
-            if (std::find(state.active_output_keys.begin(),
-                          state.active_output_keys.end(),
-                          key) != state.active_output_keys.end())
+            const SymV2PcFragOutputKey &key = task.outputs[o];
+            if (std::find_if(
+                    state.active_output_keys.begin(),
+                    state.active_output_keys.end(),
+                    [&](const SymV2PcFragOutputKey &active) {
+                        return active.equals(key);
+                    }) != state.active_output_keys.end())
                 return true;
         }
         return false;
@@ -1324,7 +1327,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!strict_output_conflicts)
             return;
         for (size_t o = 0; o < task.outputs.size(); ++o)
-            state.active_output_keys.push_back(task.outputs[o].packed());
+            state.active_output_keys.push_back(task.outputs[o]);
         symV2PcFragTaskflowStats.output_locks_acquired +=
             static_cast<long long>(task.outputs.size());
         if (static_cast<long long>(state.active_output_keys.size()) >
@@ -1337,10 +1340,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             return;
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
-            unsigned long long key = task.outputs[o].packed();
-            std::vector<unsigned long long>::iterator it =
-                std::find(state.active_output_keys.begin(),
-                          state.active_output_keys.end(), key);
+            const SymV2PcFragOutputKey &key = task.outputs[o];
+            std::vector<SymV2PcFragOutputKey>::iterator it =
+                std::find_if(
+                    state.active_output_keys.begin(),
+                    state.active_output_keys.end(),
+                    [&](const SymV2PcFragOutputKey &active) {
+                        return active.equals(key);
+                    });
             if (it != state.active_output_keys.end())
                 state.active_output_keys.erase(it);
         }
@@ -1563,10 +1570,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 return false;
             for (size_t o = 0; o < task.outputs.size(); ++o)
             {
-                unsigned long long key = task.outputs[o].packed();
-                if (std::find(state.active_output_keys.begin(),
-                              state.active_output_keys.end(),
-                              key) != state.active_output_keys.end())
+                const SymV2PcFragOutputKey &key = task.outputs[o];
+                if (std::find_if(
+                        state.active_output_keys.begin(),
+                        state.active_output_keys.end(),
+                        [&](const SymV2PcFragOutputKey &active) {
+                            return active.equals(key);
+                        }) != state.active_output_keys.end())
                     return true;
             }
             return false;
@@ -1575,7 +1585,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (!strict_output_conflicts)
                 return;
             for (size_t o = 0; o < task.outputs.size(); ++o)
-                state.active_output_keys.push_back(task.outputs[o].packed());
+                state.active_output_keys.push_back(task.outputs[o]);
             symV2PcFragTaskflowStats.output_locks_acquired +=
                 static_cast<long long>(task.outputs.size());
             if (static_cast<long long>(state.active_output_keys.size()) >
@@ -1588,10 +1598,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 return;
             for (size_t o = 0; o < task.outputs.size(); ++o)
             {
-                unsigned long long key = task.outputs[o].packed();
-                std::vector<unsigned long long>::iterator it =
-                    std::find(state.active_output_keys.begin(),
-                              state.active_output_keys.end(), key);
+                const SymV2PcFragOutputKey &key = task.outputs[o];
+                std::vector<SymV2PcFragOutputKey>::iterator it =
+                    std::find_if(
+                        state.active_output_keys.begin(),
+                        state.active_output_keys.end(),
+                        [&](const SymV2PcFragOutputKey &active) {
+                            return active.equals(key);
+                        });
                 if (it != state.active_output_keys.end())
                     state.active_output_keys.erase(it);
             }
@@ -2070,7 +2084,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             std::vector<SymV2PcFragTaskDesc *> locked_tasks;
             if (strict_output_conflicts)
             {
-                std::vector<unsigned long long> pending_keys =
+                std::vector<SymV2PcFragOutputKey> pending_keys =
                     state.active_output_keys;
                 for (int_t rb = row_start; rb < row_end; ++rb)
                 {
@@ -2082,11 +2096,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             continue;
                         for (size_t o = 0; o < task->outputs.size(); ++o)
                         {
-                            unsigned long long key =
-                                task->outputs[o].packed();
-                            if (std::find(pending_keys.begin(),
-                                          pending_keys.end(), key) !=
-                                pending_keys.end())
+                            const SymV2PcFragOutputKey &key =
+                                task->outputs[o];
+                            if (std::find_if(
+                                    pending_keys.begin(),
+                                    pending_keys.end(),
+                                    [&](const SymV2PcFragOutputKey &active) {
+                                        return active.equals(key);
+                                    }) != pending_keys.end())
                             {
                                 ++symV2PcFragTaskflowStats.tasks_blocked_output;
                                 ++symV2PcFragTaskflowStats.scatter_conflict_waits;
@@ -2434,10 +2451,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
             {
                 for (size_t o = 0; o < task.outputs.size(); ++o)
                 {
-                    unsigned long long key = task.outputs[o].packed();
-                    std::vector<unsigned long long>::iterator it =
-                        std::find(state.active_output_keys.begin(),
-                                  state.active_output_keys.end(), key);
+                    const SymV2PcFragOutputKey &key = task.outputs[o];
+                    std::vector<SymV2PcFragOutputKey>::iterator it =
+                        std::find_if(
+                            state.active_output_keys.begin(),
+                            state.active_output_keys.end(),
+                            [&](const SymV2PcFragOutputKey &active) {
+                                return active.equals(key);
+                            });
                     if (it != state.active_output_keys.end())
                         state.active_output_keys.erase(it);
                 }

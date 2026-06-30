@@ -1026,11 +1026,11 @@ struct xLUstruct_t
         {
         }
 
-        unsigned long long packed() const
+        bool equals(const SymV2PcFragOutputKey &other) const
         {
-            return (static_cast<unsigned long long>(
-                        static_cast<unsigned int>(gj)) << 32) |
-                   static_cast<unsigned int>(gi);
+            return gj == other.gj && gi == other.gi &&
+                   local_panel_j == other.local_panel_j &&
+                   local_block_i == other.local_block_i;
         }
     };
 
@@ -1126,7 +1126,7 @@ struct xLUstruct_t
         std::vector<SymV2PcFragPieceDesc> partner_pieces;
         std::vector<SymV2PcFragTaskDesc> tasks;
         std::vector<int> pair_task_index;
-        std::vector<unsigned long long> active_output_keys;
+        std::vector<SymV2PcFragOutputKey> active_output_keys;
         int incomplete_task_count;
         int producer_tasks_launched;
         unsigned char producer_launch_cap_reported;
