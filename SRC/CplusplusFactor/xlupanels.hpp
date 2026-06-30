@@ -1131,9 +1131,13 @@ struct xLUstruct_t
 #ifdef HAVE_CUDA
         int_t *d_index_pool;
         Ftype *d_value_pool;
+        int_t *d_group_index_pool;
+        Ftype *d_group_value_pool;
 #endif
         size_t index_pool_capacity;
         size_t value_pool_capacity;
+        size_t group_index_pool_capacity;
+        size_t group_value_pool_capacity;
         size_t index_pool_used;
         size_t value_pool_used;
 
@@ -1141,9 +1145,11 @@ struct xLUstruct_t
             : k(-1), stream_offset(-1), initialized(0),
               exchange_posted(0), closed(0), incomplete_task_count(0)
 #ifdef HAVE_CUDA
-              , d_index_pool(NULL), d_value_pool(NULL)
+              , d_index_pool(NULL), d_value_pool(NULL),
+              d_group_index_pool(NULL), d_group_value_pool(NULL)
 #endif
               , index_pool_capacity(0), value_pool_capacity(0),
+              group_index_pool_capacity(0), group_value_pool_capacity(0),
               index_pool_used(0), value_pool_used(0)
         {
         }
@@ -1164,9 +1170,13 @@ struct xLUstruct_t
 #ifdef HAVE_CUDA
             d_index_pool = NULL;
             d_value_pool = NULL;
+            d_group_index_pool = NULL;
+            d_group_value_pool = NULL;
 #endif
             index_pool_capacity = 0;
             value_pool_capacity = 0;
+            group_index_pool_capacity = 0;
+            group_value_pool_capacity = 0;
             index_pool_used = 0;
             value_pool_used = 0;
         }

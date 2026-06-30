@@ -672,6 +672,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             gpuErrchk(cudaFree(s.d_index_pool));
         if (s.d_value_pool != NULL)
             gpuErrchk(cudaFree(s.d_value_pool));
+        if (s.d_group_index_pool != NULL)
+            gpuErrchk(cudaFree(s.d_group_index_pool));
+        if (s.d_group_value_pool != NULL)
+            gpuErrchk(cudaFree(s.d_group_value_pool));
         s.reset();
     };
     release_taskflow_state(state);
@@ -775,6 +779,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             state.d_value_pool, 0, sizeof(double) * total_value_count));
         state.value_pool_capacity = total_value_count;
     }
+    if (total_index_count > 0)
+    {
+        gpuErrchk(cudaMalloc(
+            reinterpret_cast<void **>(&state.d_group_index_pool),
+            sizeof(int_t) * total_index_count));
+        state.group_index_pool_capacity = total_index_count;
+    }
+    if (total_value_count > 0)
+    {
+        gpuErrchk(cudaMalloc(
+            reinterpret_cast<void **>(&state.d_group_value_pool),
+            sizeof(double) * total_value_count));
+        state.group_value_pool_capacity = total_value_count;
+    }
 
     auto add_piece = [&](std::vector<SymV2PcFragPieceDesc> &pieces,
                          const std::vector<int_t> &frag,
@@ -875,12 +893,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         static_cast<long long>(state.tasks.size());
     symV2PcFragTaskflowStats.arena_index_high_water =
         SUPERLU_MAX(symV2PcFragTaskflowStats.arena_index_high_water,
-                    static_cast<long long>(state.index_pool_used *
-                                           sizeof(int_t)));
+                    static_cast<long long>(
+                        (state.index_pool_capacity +
+                         state.group_index_pool_capacity) *
+                        sizeof(int_t)));
     symV2PcFragTaskflowStats.arena_value_high_water =
         SUPERLU_MAX(symV2PcFragTaskflowStats.arena_value_high_water,
-                    static_cast<long long>(state.value_pool_used *
-                                           sizeof(double)));
+                    static_cast<long long>(
+                        (state.value_pool_capacity +
+                         state.group_value_pool_capacity) *
+                        sizeof(double)));
     return 0;
 }
 
@@ -978,6 +1000,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             gpuErrchk(cudaFree(state.d_index_pool));
         if (state.d_value_pool != NULL)
             gpuErrchk(cudaFree(state.d_value_pool));
+        if (state.d_group_index_pool != NULL)
+            gpuErrchk(cudaFree(state.d_group_index_pool));
+        if (state.d_group_value_pool != NULL)
+            gpuErrchk(cudaFree(state.d_group_value_pool));
         state.reset();
     };
 
@@ -1143,6 +1169,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 gpuErrchk(cudaFree(state.d_index_pool));
             if (state.d_value_pool != NULL)
                 gpuErrchk(cudaFree(state.d_value_pool));
+            if (state.d_group_index_pool != NULL)
+                gpuErrchk(cudaFree(state.d_group_index_pool));
+            if (state.d_group_value_pool != NULL)
+                gpuErrchk(cudaFree(state.d_group_value_pool));
             state.reset();
         };
 
@@ -1330,15 +1360,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         auto build_group_values =
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
                 int_t begin, int_t end, int_t group_lda,
-                cudaStream_t group_stream) -> double * {
-            double *group_val = NULL;
+                double *group_val, cudaStream_t group_stream) {
             int_t ksupc = SuperSize(k);
             size_t value_count =
                 static_cast<size_t>(group_lda) * static_cast<size_t>(ksupc);
             if (value_count == 0)
-                return NULL;
-            gpuErrchk(cudaMalloc(reinterpret_cast<void **>(&group_val),
-                                 sizeof(double) * value_count));
+                return;
+            if (group_val == NULL)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped value pool is missing.");
             int_t dst = 0;
             for (int_t b = begin; b < end; ++b)
             {
@@ -1356,7 +1385,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     cudaMemcpyDeviceToDevice, group_stream));
                 dst += piece.nrows;
             }
-            return group_val;
         };
         auto launch_group =
             [&](int_t row_start, int_t row_end,
@@ -1440,30 +1468,42 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 build_group_index(state.row_pieces, row_start, row_end);
             std::vector<int_t> col_group =
                 build_group_index(state.partner_pieces, col_start, col_end);
-            int_t *row_group_gpu = NULL;
-            int_t *col_group_gpu = NULL;
-            double *row_group_val = NULL;
-            double *col_group_val = NULL;
-            gpuErrchk(cudaMalloc(
-                reinterpret_cast<void **>(&row_group_gpu),
-                sizeof(int_t) * row_group.size()));
-            gpuErrchk(cudaMalloc(
-                reinterpret_cast<void **>(&col_group_gpu),
-                sizeof(int_t) * col_group.size()));
+            size_t row_index_count = row_group.size();
+            size_t col_index_count = col_group.size();
+            size_t row_value_count =
+                static_cast<size_t>(row_lda) *
+                static_cast<size_t>(SuperSize(k));
+            size_t col_value_count =
+                static_cast<size_t>(col_lda) *
+                static_cast<size_t>(SuperSize(k));
+            if (state.d_group_index_pool == NULL ||
+                row_index_count + col_index_count >
+                    state.group_index_pool_capacity)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped index arena exhausted.");
+            if (state.d_group_value_pool == NULL ||
+                row_value_count + col_value_count >
+                    state.group_value_pool_capacity)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped value arena exhausted.");
+            int_t *row_group_gpu = state.d_group_index_pool;
+            int_t *col_group_gpu =
+                state.d_group_index_pool + row_index_count;
+            double *row_group_val = state.d_group_value_pool;
+            double *col_group_val =
+                state.d_group_value_pool + row_value_count;
             gpuErrchk(cudaMemcpyAsync(
                 row_group_gpu, row_group.data(),
-                sizeof(int_t) * row_group.size(),
+                sizeof(int_t) * row_index_count,
                 cudaMemcpyHostToDevice, group_stream));
             gpuErrchk(cudaMemcpyAsync(
                 col_group_gpu, col_group.data(),
-                sizeof(int_t) * col_group.size(),
+                sizeof(int_t) * col_index_count,
                 cudaMemcpyHostToDevice, group_stream));
-            row_group_val = build_group_values(
+            build_group_values(
                 state.row_pieces, row_start, row_end, row_lda,
-                group_stream);
-            col_group_val = build_group_values(
+                row_group_val, group_stream);
+            build_group_values(
                 state.partner_pieces, col_start, col_end, col_lda,
-                group_stream);
+                col_group_val, group_stream);
             if (!all_pieces_ready())
                 symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready +=
                     pair_count;
@@ -1497,14 +1537,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     count_task_launch_mode(launch_mode);
                 }
             }
-            if (row_group_gpu != NULL)
-                gpuErrchk(cudaFree(row_group_gpu));
-            if (col_group_gpu != NULL)
-                gpuErrchk(cudaFree(col_group_gpu));
-            if (row_group_val != NULL)
-                gpuErrchk(cudaFree(row_group_val));
-            if (col_group_val != NULL)
-                gpuErrchk(cudaFree(col_group_val));
         };
         auto dispatch_limited =
             [&](int_t row_start, int_t row_end,
@@ -1752,6 +1784,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         gpuErrchk(cudaFree(state.d_index_pool));
     if (state.d_value_pool != NULL)
         gpuErrchk(cudaFree(state.d_value_pool));
+    if (state.d_group_index_pool != NULL)
+        gpuErrchk(cudaFree(state.d_group_index_pool));
+    if (state.d_group_value_pool != NULL)
+        gpuErrchk(cudaFree(state.d_group_value_pool));
     state.reset();
     return 0;
 }
