@@ -1183,8 +1183,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
         if (remaining <= 0 || reqs.empty())
             return 0;
         const int request_count = static_cast<int>(reqs.size());
-        std::vector<int> indices(static_cast<size_t>(request_count));
-        std::vector<MPI_Status> statuses(static_cast<size_t>(request_count));
+        if (state.producer_progress_indices.size() <
+            static_cast<size_t>(request_count))
+            state.producer_progress_indices.resize(
+                static_cast<size_t>(request_count));
+        if (state.producer_progress_statuses.size() <
+            static_cast<size_t>(request_count))
+            state.producer_progress_statuses.resize(
+                static_cast<size_t>(request_count));
+        int *indices = state.producer_progress_indices.data();
+        MPI_Status *statuses = state.producer_progress_statuses.data();
         int local_progress = 0;
         do
         {
@@ -1192,16 +1200,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
             ++symV2PcFragTaskflowStats.producer_recv_test_calls;
             int mpi_rc = drain
                 ? MPI_Waitsome(request_count, reqs.data(), &completed,
-                               indices.data(), statuses.data())
+                               indices, statuses)
                 : MPI_Testsome(request_count, reqs.data(), &completed,
-                               indices.data(), statuses.data());
+                               indices, statuses);
             if (mpi_rc != MPI_SUCCESS)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW receive progress failed.");
             if (completed == MPI_UNDEFINED || completed == 0)
                 break;
             for (int item = 0; item < completed; ++item)
             {
-                int req_index = indices[static_cast<size_t>(item)];
+                int req_index = indices[item];
                 if (kind == 0)
                     complete_partner_recv(req_index);
                 else

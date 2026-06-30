@@ -1146,6 +1146,8 @@ struct xLUstruct_t
         std::vector<int> producer_row_recv_offsets;
         std::vector<unsigned char> producer_row_recv_done;
         std::vector<Ftype> producer_row_recv_host_values;
+        std::vector<int> producer_progress_indices;
+        std::vector<MPI_Status> producer_progress_statuses;
 #ifdef HAVE_CUDA
         int_t *d_index_pool;
         Ftype *d_value_pool;
@@ -1207,6 +1209,8 @@ struct xLUstruct_t
             producer_row_recv_offsets.clear();
             producer_row_recv_done.clear();
             producer_row_recv_host_values.clear();
+            producer_progress_indices.clear();
+            producer_progress_statuses.clear();
 #ifdef HAVE_CUDA
             d_index_pool = NULL;
             d_value_pool = NULL;
