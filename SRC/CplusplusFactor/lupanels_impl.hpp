@@ -6818,7 +6818,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         symV2PartnerLRecvSizes.size())
                         ABORT("SymFact V2 taskflow prewarm partner sizes are missing.");
                     size_t partner_recv_total = 0;
-                    int_t kcol0 = kcol(k0);
+                    int_t kcol0 = symV2PanelRoot(k0);
                     for (int pr = 0; pr < Pr; ++pr)
                     {
                         size_t pos = partner_recv_base +
