@@ -1152,7 +1152,8 @@ struct xLUstruct_t
         std::vector<unsigned char> task_ready_inputs;
         std::vector<unsigned char> task_enqueued;
         std::vector<int> runnable_task_ids;
-        std::vector<int> launched_task_ids;
+        std::vector<int> launched_task_ids_by_stream[
+            SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         std::set<SymV2PcFragOutputKey> active_output_key_set;
         int task_event_poll_skip[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int incomplete_task_count;
@@ -1274,7 +1275,8 @@ struct xLUstruct_t
             task_ready_inputs.clear();
             task_enqueued.clear();
             runnable_task_ids.clear();
-            launched_task_ids.clear();
+            for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
+                launched_task_ids_by_stream[i].clear();
             active_output_key_set.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
                 task_event_poll_skip[i] = 0;
@@ -1336,6 +1338,12 @@ struct xLUstruct_t
         long long tasks_completed_async_core;
         long long task_completion_event_queries;
         long long task_completion_event_waits;
+        long long task_completion_poll_calls;
+        long long task_completion_poll_task_scans;
+        long long task_completion_poll_required_seen;
+        long long task_completion_drain_poll_calls;
+        long long task_completion_drain_task_scans;
+        long long task_completion_drain_required_seen;
         long long tasks_blocked_row;
         long long tasks_blocked_partner;
         long long tasks_blocked_output;
@@ -1392,6 +1400,12 @@ struct xLUstruct_t
               tasks_planned(0), tasks_launched(0), tasks_completed(0),
               tasks_completed_async_core(0), task_completion_event_queries(0),
               task_completion_event_waits(0),
+              task_completion_poll_calls(0),
+              task_completion_poll_task_scans(0),
+              task_completion_poll_required_seen(0),
+              task_completion_drain_poll_calls(0),
+              task_completion_drain_task_scans(0),
+              task_completion_drain_required_seen(0),
               tasks_blocked_row(0), tasks_blocked_partner(0),
               tasks_blocked_output(0), scatter_conflict_waits(0),
               output_locks_acquired(0), output_lock_high_water(0),
@@ -1478,7 +1492,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[59] = {
+        long long local[65] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1489,6 +1503,12 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.tasks_completed_async_core,
             symV2PcFragTaskflowStats.task_completion_event_queries,
             symV2PcFragTaskflowStats.task_completion_event_waits,
+            symV2PcFragTaskflowStats.task_completion_poll_calls,
+            symV2PcFragTaskflowStats.task_completion_poll_task_scans,
+            symV2PcFragTaskflowStats.task_completion_poll_required_seen,
+            symV2PcFragTaskflowStats.task_completion_drain_poll_calls,
+            symV2PcFragTaskflowStats.task_completion_drain_task_scans,
+            symV2PcFragTaskflowStats.task_completion_drain_required_seen,
             symV2PcFragTaskflowStats.tasks_blocked_row,
             symV2PcFragTaskflowStats.tasks_blocked_partner,
             symV2PcFragTaskflowStats.tasks_blocked_output,
@@ -1539,17 +1559,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_recv_test_completions,
             symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
         };
-        long long global[59] = {};
+        long long global[65] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 59, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 65, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 59; ++i)
+            for (int i = 0; i < 65; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1560,6 +1580,12 @@ struct xLUstruct_t
             "tasks_completed_async_core=%lld "
             "task_completion_event_queries=%lld "
             "task_completion_event_waits=%lld "
+            "task_completion_poll_calls=%lld "
+            "task_completion_poll_task_scans=%lld "
+            "task_completion_poll_required_seen=%lld "
+            "task_completion_drain_poll_calls=%lld "
+            "task_completion_drain_task_scans=%lld "
+            "task_completion_drain_required_seen=%lld "
             "tasks_blocked_row=%lld tasks_blocked_partner=%lld "
             "tasks_blocked_output=%lld scatter_conflict_waits=%lld "
             "output_locks_acquired=%lld output_lock_high_water=%lld "
@@ -1609,7 +1635,8 @@ struct xLUstruct_t
             global[40], global[41], global[42], global[43], global[44],
             global[45], global[46], global[47], global[48], global[49],
             global[50], global[51], global[52], global[53], global[54],
-            global[55], global[56], global[57], global[58]);
+            global[55], global[56], global[57], global[58], global[59],
+            global[60], global[61], global[62], global[63], global[64]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END
