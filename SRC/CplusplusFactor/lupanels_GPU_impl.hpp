@@ -648,6 +648,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     auto release_taskflow_state = [](SymV2PcFragPanelTaskState &s) {
         for (size_t i = 0; i < s.row_pieces.size(); ++i)
         {
+            if (s.row_pieces[i].pending_consumers != 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a row piece with pending consumers.");
             if (s.row_pieces[i].d_stage != NULL)
                 gpuErrchk(cudaFree(s.row_pieces[i].d_stage));
             s.row_pieces[i].d_index = NULL;
@@ -657,6 +659,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         }
         for (size_t i = 0; i < s.partner_pieces.size(); ++i)
         {
+            if (s.partner_pieces[i].pending_consumers != 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a partner piece with pending consumers.");
             if (s.partner_pieces[i].d_stage != NULL)
                 gpuErrchk(cudaFree(s.partner_pieces[i].d_stage));
             s.partner_pieces[i].d_index = NULL;
@@ -948,6 +952,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     };
     auto release_completed_state = [&]() {
         auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
+            if (piece.pending_consumers != 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
             if (piece.d_stage != NULL)
             {
                 gpuErrchk(cudaFree(piece.d_stage));
@@ -1087,6 +1093,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         };
         auto release_completed_state = [&]() {
             auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
+                if (piece.pending_consumers != 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
                 if (piece.d_stage != NULL)
                 {
                     gpuErrchk(cudaFree(piece.d_stage));
@@ -1667,6 +1675,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     SymV2PcFragPanelTaskState &state =
         symV2PcFragTaskStates[static_cast<size_t>(k)];
     auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
+        if (piece.pending_consumers != 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
         if (piece.d_stage != NULL)
         {
             gpuErrchk(cudaFree(piece.d_stage));
