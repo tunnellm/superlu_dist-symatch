@@ -1008,8 +1008,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!all_pieces_ready())
             ++symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready;
         lock_outputs(task);
-        dSymSchurCompUpdatePartDualFragmentsGPU(
-            0, 1, 0, 1, k,
+        dSymSchurCompUpdateTaskDualPiecesGPU(
+            k,
             row.h_index, col.h_index,
             row.d_index, row.d_val,
             col.d_index, col.d_val,
@@ -1151,8 +1151,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (!all_pieces_ready())
                     ++symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready;
                 lock_outputs(task);
-                dSymSchurCompUpdatePartDualFragmentsGPU(
-                    0, 1, 0, 1, k,
+                dSymSchurCompUpdateTaskDualPiecesGPU(
+                    k,
                     row.h_index, col.h_index,
                     row.d_index, row.d_val,
                     col.d_index, col.d_val,

@@ -2563,6 +2563,24 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdatePartDualFragmentsGPU(
 }
 
 template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPiecesGPU(
+    int_t k,
+    const std::vector<int_t> &row_piece,
+    const std::vector<int_t> &col_piece,
+    int_t *row_piece_index, Ftype *row_piece_val,
+    int_t *col_piece_index, Ftype *col_piece_val,
+    cublasHandle_t handle, cudaStream_t cuStream,
+    Ftype *gemmBuff)
+{
+    return dSymSchurCompUpdatePartDualFragmentsGPU(
+        0, 1, 0, 1, k,
+        row_piece, col_piece,
+        row_piece_index, row_piece_val,
+        col_piece_index, col_piece_val,
+        handle, cuStream, gemmBuff);
+}
+
+template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymSchurCompUpLimitedMemDualFragmentsGPU(
     int_t rowStart, int_t rowEnd,
     int_t colStart, int_t colEnd,
