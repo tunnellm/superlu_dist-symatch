@@ -611,15 +611,6 @@ int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowDrainGPU(
 }
 
 template <typename Ftype>
-int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowPopulateFromScratchGPU(
-    int_t k, int_t stream_offset)
-{
-    (void)k;
-    (void)stream_offset;
-    return 0;
-}
-
-template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
 {
     (void)k;
@@ -1535,99 +1526,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
 {
     return dSymV2PcFragTaskflowDispatchGPU(
         0, k, mode_mask, mode_gid, 1);
-}
-
-template <>
-inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowPopulateFromScratchGPU(
-    int_t k, int_t stream_offset)
-{
-    if (!symV2UsePcFragmentTaskflowPanel(k))
-        return 0;
-    if (k < 0 || static_cast<size_t>(k) >= symV2PcFragTaskStates.size())
-        return 0;
-    if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
-        stream_offset = 0;
-    SymV2PcFragPanelTaskState &state =
-        symV2PcFragTaskStates[static_cast<size_t>(k)];
-    if (!state.initialized)
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW populate called before begin.");
-    if (static_cast<size_t>(stream_offset) >= A_gpu.numCudaStreams)
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW populate stream is invalid.");
-
-    cudaStream_t stream = A_gpu.cuStreams[stream_offset];
-    double *row_full = A_gpu.symV2RowFragValRecvBufs[stream_offset];
-    double *partner_full = A_gpu.symPartnerLvalRecvBufs[stream_offset];
-    if ((!state.row_pieces.empty() && row_full == NULL) ||
-        (!state.partner_pieces.empty() && partner_full == NULL))
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW scratch source buffers are missing.");
-
-    auto copy_piece_from_full =
-        [&](SymV2PcFragPieceDesc &piece, double *full_val) {
-        if (piece.ready)
-            return;
-        if (piece.value_count <= 0)
-            return;
-        if (piece.d_val == NULL || full_val == NULL)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW piece value storage is missing.");
-        size_t width = sizeof(double) * static_cast<size_t>(piece.nrows);
-        size_t height = static_cast<size_t>(piece.ksupc);
-        size_t dst_pitch = sizeof(double) * static_cast<size_t>(piece.lda);
-        size_t src_pitch = sizeof(double) * static_cast<size_t>(
-            piece.kind == SYM_V2_PCFRAG_PIECE_ROW
-                ? symV2RowFragRecvIndex[k][1]
-                : symV2PartnerLRecvIndex[k][1]);
-        gpuErrchk(cudaMemcpy2DAsync(
-            piece.d_val, dst_pitch,
-            full_val + piece.frag_row_offset, src_pitch,
-            width, height, cudaMemcpyDeviceToDevice, stream));
-        piece.ready = 1;
-        if (piece.kind == SYM_V2_PCFRAG_PIECE_ROW)
-            ++symV2PcFragTaskflowStats.row_pieces_ready;
-        else
-            ++symV2PcFragTaskflowStats.partner_pieces_ready;
-    };
-
-    for (size_t i = 0; i < state.row_pieces.size(); ++i)
-    {
-        copy_piece_from_full(state.row_pieces[i], row_full);
-        dSymV2PcFragTaskflowDispatchGPU(
-            stream_offset, k, SYM_V2_PCFRAG_TASK_FULL,
-            GLOBAL_BLOCK_NOT_FOUND, 0);
-    }
-    for (size_t i = 0; i < state.partner_pieces.size(); ++i)
-    {
-        copy_piece_from_full(state.partner_pieces[i], partner_full);
-        dSymV2PcFragTaskflowDispatchGPU(
-            stream_offset, k, SYM_V2_PCFRAG_TASK_FULL,
-            GLOBAL_BLOCK_NOT_FOUND, 0);
-    }
-    gpuErrchk(cudaStreamSynchronize(stream));
-    int_t status = dSymV2PcFragTaskflowDispatchGPU(
-        stream_offset, k, SYM_V2_PCFRAG_TASK_FULL,
-        GLOBAL_BLOCK_NOT_FOUND, 1);
-    if (status == 0)
-    {
-        auto release_piece_storage = [](SymV2PcFragPieceDesc &piece) {
-            if (piece.d_stage != NULL)
-            {
-                gpuErrchk(cudaFree(piece.d_stage));
-                piece.d_stage = NULL;
-            }
-            piece.d_index = NULL;
-            piece.d_val = NULL;
-            piece.h_index.clear();
-        };
-        for (size_t i = 0; i < state.row_pieces.size(); ++i)
-            release_piece_storage(state.row_pieces[i]);
-        for (size_t i = 0; i < state.partner_pieces.size(); ++i)
-            release_piece_storage(state.partner_pieces[i]);
-        if (state.d_index_pool != NULL)
-            gpuErrchk(cudaFree(state.d_index_pool));
-        if (state.d_value_pool != NULL)
-            gpuErrchk(cudaFree(state.d_value_pool));
-        state.reset();
-    }
-    return status;
 }
 
 template <>

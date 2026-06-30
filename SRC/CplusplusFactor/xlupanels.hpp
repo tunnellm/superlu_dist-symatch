@@ -1875,8 +1875,6 @@ struct xLUstruct_t
         int streamId, int_t k, unsigned mode_mask, int_t mode_gid, int drain);
     int_t dSymV2PcFragTaskflowDrainGPU(
         int_t k, unsigned mode_mask, int_t mode_gid);
-    int_t dSymV2PcFragTaskflowPopulateFromScratchGPU(
-        int_t k, int_t stream_offset);
     int_t dSymV2PcFragTaskflowReleaseGPU(int_t k);
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
