@@ -6731,6 +6731,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
             {
                 std::vector<size_t> taskflow_index_counts;
                 std::vector<size_t> taskflow_value_counts;
+                std::vector<size_t> taskflow_pinned_counts;
                 auto add_fragment_taskflow_counts =
                     [&](const std::vector<int_t> &frag, int_t k0,
                         size_t &index_total, size_t &value_total) {
@@ -6811,6 +6812,49 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         taskflow_index_counts.push_back(index_total);
                     if (value_total > 0)
                         taskflow_value_counts.push_back(value_total);
+                    size_t partner_recv_base =
+                        static_cast<size_t>(k0) * static_cast<size_t>(Pr);
+                    if (partner_recv_base + static_cast<size_t>(Pr) >
+                        symV2PartnerLRecvSizes.size())
+                        ABORT("SymFact V2 taskflow prewarm partner sizes are missing.");
+                    size_t partner_recv_total = 0;
+                    int_t kcol0 = kcol(k0);
+                    for (int pr = 0; pr < Pr; ++pr)
+                    {
+                        size_t pos = partner_recv_base +
+                                     static_cast<size_t>(pr);
+                        int count = symV2PartnerLRecvSizes[pos];
+                        int src = PNUM(pr, kcol0, grid);
+                        if (count > 0 && src != iam)
+                            partner_recv_total = xlu_checked_sum_size(
+                                partner_recv_total,
+                                static_cast<size_t>(count),
+                                "taskflow prewarm partner receive total");
+                    }
+                    if (partner_recv_total > 0)
+                        taskflow_pinned_counts.push_back(partner_recv_total);
+
+                    size_t row_recv_base =
+                        static_cast<size_t>(k0) * static_cast<size_t>(Pc);
+                    if (row_recv_base + static_cast<size_t>(Pc) >
+                        symV2RowFragRecvSizes.size())
+                        ABORT("SymFact V2 taskflow prewarm row sizes are missing.");
+                    if (kcol0 != mycol)
+                    {
+                        size_t row_recv_total = 0;
+                        for (int pc = 0; pc < Pc; ++pc)
+                        {
+                            int count = symV2RowFragRecvSizes[
+                                row_recv_base + static_cast<size_t>(pc)];
+                            if (count > 0)
+                                row_recv_total = xlu_checked_sum_size(
+                                    row_recv_total,
+                                    static_cast<size_t>(count),
+                                    "taskflow prewarm row receive total");
+                        }
+                        if (row_recv_total > 0)
+                            taskflow_pinned_counts.push_back(row_recv_total);
+                    }
                 }
 
                 int_t num_lookahead = getNumLookAhead(options);
@@ -6819,16 +6863,32 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 size_t active_slots =
                     static_cast<size_t>(SUPERLU_MAX(static_cast<int_t>(1),
                                                     num_lookahead));
+                std::vector<size_t> taskflow_pinned_counts_by_panel =
+                    taskflow_pinned_counts;
                 std::sort(taskflow_index_counts.begin(),
                           taskflow_index_counts.end(),
                           [](size_t a, size_t b) { return a > b; });
                 std::sort(taskflow_value_counts.begin(),
                           taskflow_value_counts.end(),
                           [](size_t a, size_t b) { return a > b; });
+                std::sort(taskflow_pinned_counts.begin(),
+                          taskflow_pinned_counts.end(),
+                          [](size_t a, size_t b) { return a > b; });
                 if (taskflow_index_counts.size() > active_slots)
                     taskflow_index_counts.resize(active_slots);
                 if (taskflow_value_counts.size() > active_slots)
                     taskflow_value_counts.resize(active_slots);
+                size_t pinned_slots =
+                    xlu_checked_product(active_slots, 2,
+                                        "taskflow prewarm pinned slots");
+                if (taskflow_pinned_counts.size() > pinned_slots)
+                    taskflow_pinned_counts.resize(pinned_slots);
+                size_t temporal_pinned_slots =
+                    SUPERLU_MIN(pinned_slots,
+                                taskflow_pinned_counts_by_panel.size());
+                for (size_t i = 0; i < temporal_pinned_slots; ++i)
+                    taskflow_pinned_counts.push_back(
+                        taskflow_pinned_counts_by_panel[i]);
 
                 std::vector<unsigned char> matched_index_blocks(
                     symV2PcFragTaskflowIndexBlockPool.size(), 0);
@@ -6898,6 +6958,38 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         ++symV2PcFragTaskflowStats
                               .arena_value_prewarm_blocks;
                     }
+                }
+
+                std::vector<unsigned char> matched_pinned_blocks(
+                    symV2PcFragTaskflowPinnedBlockPool.size(), 0);
+                auto pinned_pool_has_block = [&](size_t capacity) -> bool {
+                    for (size_t i = 0;
+                         i < symV2PcFragTaskflowPinnedBlockPool.size(); ++i)
+                    {
+                        if (matched_pinned_blocks[i] ||
+                            symV2PcFragTaskflowPinnedBlockPool[i].ptr == NULL ||
+                            symV2PcFragTaskflowPinnedBlockPool[i].capacity <
+                                capacity)
+                            continue;
+                        matched_pinned_blocks[i] = 1;
+                        return true;
+                    }
+                    return false;
+                };
+                for (size_t i = 0; i < taskflow_pinned_counts.size(); ++i)
+                {
+                    size_t capacity = taskflow_pinned_counts[i];
+                    if (capacity == 0 || pinned_pool_has_block(capacity))
+                        continue;
+                    double *ptr = NULL;
+                    gpuErrchk(cudaMallocHost(
+                        reinterpret_cast<void **>(&ptr),
+                        sizeof(double) * capacity));
+                    symV2PcFragTaskflowPinnedBlockPool.push_back(
+                        SymV2PcFragHostValueBlock(ptr, capacity));
+                    matched_pinned_blocks.push_back(1);
+                    ++symV2PcFragTaskflowStats
+                          .arena_pinned_prewarm_blocks;
                 }
             }
         }
@@ -7212,6 +7304,11 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
         if (symV2PcFragTaskflowValueBlockPool[b].ptr != NULL)
             gpuErrchk(cudaFree(symV2PcFragTaskflowValueBlockPool[b].ptr));
     symV2PcFragTaskflowValueBlockPool.clear();
+    for (size_t b = 0; b < symV2PcFragTaskflowPinnedBlockPool.size(); ++b)
+        if (symV2PcFragTaskflowPinnedBlockPool[b].ptr != NULL)
+            gpuErrchk(cudaFreeHost(
+                symV2PcFragTaskflowPinnedBlockPool[b].ptr));
+    symV2PcFragTaskflowPinnedBlockPool.clear();
 // SYM_V2_PC2_PHASE6_FREE_EXCHANGE_STATES_BEGIN
     for (size_t sx = 0; sx < symV2RowExchangeStates.size(); ++sx)
     {
