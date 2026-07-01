@@ -1122,6 +1122,42 @@ static inline void dSymV2PcFragTaskflowRecycleEvent(
     event = NULL;
 }
 
+static inline int dSymV2PcFragTaskflowProducerStreamComplete(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state, int drain)
+{
+    if (!state.producer_stream_pending)
+        return 1;
+    auto piece_ready_on_stream = [&](
+        const xLUstruct_t<double>::SymV2PcFragPieceDesc &piece) -> int {
+        if (!piece.ready)
+        {
+            if (drain)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream drain saw an unready piece.");
+            return 0;
+        }
+        if (piece.ready_event == NULL)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream piece has no ready event.");
+        cudaError_t status = drain
+            ? cudaEventSynchronize(piece.ready_event)
+            : cudaEventQuery(piece.ready_event);
+        if (status == cudaSuccess)
+            return 1;
+        if (!drain && status == cudaErrorNotReady)
+            return 0;
+        gpuErrchk(status);
+        return 0;
+    };
+    for (size_t i = 0; i < state.row_pieces.size(); ++i)
+        if (!piece_ready_on_stream(state.row_pieces[i]))
+            return 0;
+    for (size_t i = 0; i < state.partner_pieces.size(); ++i)
+        if (!piece_ready_on_stream(state.partner_pieces[i]))
+            return 0;
+    state.producer_stream_pending = 0;
+    state.producer_exchange_active = 0;
+    return 1;
+}
+
 static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
     std::vector<xLUstruct_t<double>::SymV2PcFragGpuIndexBlock> &pool,
     size_t count, size_t *capacity, bool allow_late_alloc,
@@ -1295,6 +1331,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             dSymV2PcFragTaskflowRecycleEvent(
                 symV2PcFragTaskflowEventPool,
                 s.tasks[i].done_event);
+        dSymV2PcFragTaskflowProducerStreamComplete(s, 1);
         dSymV2PcFragTaskflowRecycleIndexBlock(
             symV2PcFragTaskflowIndexBlockPool,
             s.d_index_pool, s.index_pool_capacity);
@@ -1996,6 +2033,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             dSymV2PcFragTaskflowRecycleEvent(
                 symV2PcFragTaskflowEventPool,
                 state.tasks[i].done_event);
+        dSymV2PcFragTaskflowProducerStreamComplete(state, 1);
         auto release_piece_storage = [&](SymV2PcFragPieceDesc &piece) {
             if (piece.pending_consumers != 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW attempted to release a piece with pending consumers.");
@@ -2134,8 +2172,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         state.producer_launch_cap_reported = 1;
     }
     if (state.incomplete_task_count == 0 &&
-        !state.producer_exchange_active &&
-        !state.producer_exchange_pending)
+        !state.producer_exchange_pending &&
+        dSymV2PcFragTaskflowProducerStreamComplete(state, 0) &&
+        !state.producer_exchange_active)
         release_completed_state();
     return launched;
 }
@@ -2977,8 +3016,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         }
         progress_launched_tasks(drain ? 1 : 0, mode_mask);
         if (state.incomplete_task_count == 0 &&
-            !state.producer_exchange_active &&
-            !state.producer_exchange_pending)
+            !state.producer_exchange_pending &&
+            dSymV2PcFragTaskflowProducerStreamComplete(state, 0) &&
+            !state.producer_exchange_active)
         {
             release_completed_state();
             return 0;
@@ -3031,6 +3071,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     SymV2PcFragPanelTaskState &state =
         symV2PcFragTaskStates[static_cast<size_t>(k)];
     dSymV2PcFragTaskflowProgressExchangeGPU(k, 1);
+    dSymV2PcFragTaskflowProducerStreamComplete(state, 1);
     if (state.producer_exchange_active)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found active producer exchange.");
     if (state.producer_exchange_pending)
@@ -3083,6 +3124,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         dSymV2PcFragTaskflowRecycleEvent(
             symV2PcFragTaskflowEventPool,
             state.tasks[i].done_event);
+    dSymV2PcFragTaskflowProducerStreamComplete(state, 1);
     dSymV2PcFragTaskflowRecycleIndexBlock(
         symV2PcFragTaskflowIndexBlockPool,
         state.d_index_pool, state.index_pool_capacity);
@@ -6380,17 +6422,27 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         }
     }
 
+    const bool pcfrag_taskflow_skip_return_sync =
+        pcfrag_taskflow_async_pieces &&
+        superlu_sym_v2_pcfrag_taskflow_async_core();
     if (pcfrag_taskflow && taskflow_state != NULL &&
         taskflow_state->initialized)
-        taskflow_state->producer_exchange_active = 0;
+    {
+        if (pcfrag_taskflow_skip_return_sync)
+            taskflow_state->producer_stream_pending = 1;
+        else
+            taskflow_state->producer_exchange_active = 0;
+    }
 
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
     double stream_sync_t = SuperLU_timer_();
 #endif
-    gpuErrchk(cudaStreamSynchronize(stream));
+    if (!pcfrag_taskflow_skip_return_sync)
+        gpuErrchk(cudaStreamSynchronize(stream));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-    symTimingAdd(SYM_GPU3D_T_LFRAG_STREAM_SYNC,
-                 SuperLU_timer_() - stream_sync_t);
+    if (!pcfrag_taskflow_skip_return_sync)
+        symTimingAdd(SYM_GPU3D_T_LFRAG_STREAM_SYNC,
+                     SuperLU_timer_() - stream_sync_t);
     symTimingAdd(SYM_GPU3D_T_LFRAG_EXCHANGE_TOTAL,
                  SuperLU_timer_() - lfrag_total_t);
 #endif
