@@ -1335,6 +1335,19 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             sym_sched_book_t = 0.0;
         }
 #endif
+        if (symGPU3DVersion == 2)
+        {
+            for (int_t k0 = k1;
+                 k0 < SUPERLU_MIN(nnodes, k1 + oldWinSize); ++k0)
+            {
+                int_t k = perm_c_supno[k0];
+                if (!symV2UsePcFragmentTaskflowPanel(k))
+                    continue;
+                dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
+                dSymV2PcFragTaskflowProgressGPU(k, 0);
+            }
+        }
+
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + oldWinSize); ++k0)
         {
             SymV2FactorProfileScope sym_v2_final_sync_scope(
