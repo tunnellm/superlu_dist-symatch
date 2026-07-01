@@ -2852,6 +2852,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             superlu_sym_v2_pcfrag_taskflow_eager() &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
         {
+            int launched_this_call = 0;
             size_t runnable_write = 0;
             for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
             {
@@ -2928,6 +2929,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 }
                 ++symV2PcFragTaskflowStats.tasks_launched;
                 ++symV2PcFragTaskflowStats.tasks_launched_eager_full;
+                ++launched_this_call;
             }
             if (runnable_write != state.runnable_task_ids.size())
                 state.runnable_task_ids.resize(runnable_write);
@@ -2937,10 +2939,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 !state.producer_exchange_pending)
             {
                 release_completed_state();
-                return 0;
+                return launched_this_call;
             }
             if (!drain)
-                return 0;
+                return launched_this_call;
         }
 
         const std::vector<int_t> &row_frag = symV2RowFragRecvIndex[k];
@@ -3470,6 +3472,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             superlu_sym_v2_pcfrag_taskflow_eager() &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
         {
+            int launched_this_call = 0;
             for (unsigned single_mode = 1; single_mode < 16;
                  single_mode <<= 1)
             {
@@ -3536,6 +3539,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             task, task_handle, task_stream, task_gemm,
                             launch_mode))
                         queue[runnable_write++] = tid;
+                    else
+                        ++launched_this_call;
                 }
                 if (runnable_write != queue.size())
                     queue.resize(runnable_write);
@@ -3545,7 +3550,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 !state.producer_exchange_active &&
                 !state.producer_exchange_pending)
                 release_completed_state();
-            return 0;
+            return launched_this_call;
         }
         auto dispatch_limited =
             [&](int_t row_start, int_t row_end,

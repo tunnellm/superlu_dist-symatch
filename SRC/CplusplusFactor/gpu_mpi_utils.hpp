@@ -574,6 +574,46 @@ static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
     return cached;
 }
 
+static inline int superlu_sym_v2_pcfrag_taskflow_final_predrain_rounds()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env =
+        std::getenv("GPU3DV2_PCFRAG_TASKFLOW_FINAL_PREDRAIN_ROUNDS");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 128L)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_FINAL_PREDRAIN_ROUNDS must be an integer in [0,128].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
+static inline int superlu_sym_v2_pcfrag_taskflow_final_progress_rounds()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env =
+        std::getenv("GPU3DV2_PCFRAG_TASKFLOW_FINAL_PROGRESS_ROUNDS");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 1;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 1 || value > 128L)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_FINAL_PROGRESS_ROUNDS must be an integer in [1,128].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
 static inline int superlu_sym_v2_pcfrag_taskflow_event_poll_backoff()
 {
     static int cached = -1;

@@ -1337,14 +1337,55 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
 #endif
         if (symGPU3DVersion == 2)
         {
-            for (int_t k0 = k1;
-                 k0 < SUPERLU_MIN(nnodes, k1 + oldWinSize); ++k0)
+            const int taskflow_final_progress_rounds =
+                superlu_sym_v2_pcfrag_taskflow_final_progress_rounds();
+            const int taskflow_final_predrain_rounds =
+                superlu_sym_v2_pcfrag_taskflow_final_predrain_rounds();
+            const int taskflow_final_rounds =
+                SUPERLU_MAX(taskflow_final_progress_rounds,
+                            taskflow_final_predrain_rounds);
+            for (int round = 0; round < taskflow_final_rounds; ++round)
             {
-                int_t k = perm_c_supno[k0];
-                if (!symV2UsePcFragmentTaskflowPanel(k))
-                    continue;
-                dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
-                dSymV2PcFragTaskflowProgressGPU(k, 0);
+                int_t round_progress_launched = 0;
+                int_t round_launched = 0;
+                int round_dispatches = 0;
+                for (int_t k0 = k1;
+                     k0 < SUPERLU_MIN(nnodes, k1 + oldWinSize); ++k0)
+                {
+                    int_t k = perm_c_supno[k0];
+                    if (!symV2UsePcFragmentTaskflowPanel(k))
+                        continue;
+                    dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
+                    const long long completed_before =
+                        symV2PcFragTaskflowStats.tasks_completed_async_core;
+                    round_progress_launched +=
+                        dSymV2PcFragTaskflowProgressGPU(k, 0);
+                    symV2PcFragTaskflowStats.final_progress_tasks_completed +=
+                        symV2PcFragTaskflowStats.tasks_completed_async_core -
+                        completed_before;
+                    if (round >= taskflow_final_predrain_rounds)
+                        continue;
+                    int_t offset = getBufferOffset(
+                        k0, k1, oldWinSize, winParity, halfWin);
+                    round_launched += dSymV2PcFragTaskflowDispatchGPU(
+                        offset, k, SYM_V2_PCFRAG_TASK_FULL,
+                        GLOBAL_BLOCK_NOT_FOUND, 0);
+                    ++round_dispatches;
+                }
+                if (round < taskflow_final_progress_rounds)
+                {
+                    ++symV2PcFragTaskflowStats.final_progress_rounds;
+                    symV2PcFragTaskflowStats.final_progress_tasks_launched +=
+                        round_progress_launched;
+                }
+                if (round < taskflow_final_predrain_rounds)
+                {
+                    ++symV2PcFragTaskflowStats.final_predrain_rounds;
+                    symV2PcFragTaskflowStats.final_predrain_dispatch_calls +=
+                        round_dispatches;
+                    symV2PcFragTaskflowStats.final_predrain_tasks_launched +=
+                        round_launched;
+                }
             }
         }
 

@@ -1489,6 +1489,12 @@ struct xLUstruct_t
         long long producer_send_test_calls;
         long long producer_send_test_completions;
         long long producer_returns_with_pending_recvs;
+        long long final_progress_rounds;
+        long long final_progress_tasks_launched;
+        long long final_progress_tasks_completed;
+        long long final_predrain_rounds;
+        long long final_predrain_dispatch_calls;
+        long long final_predrain_tasks_launched;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -1539,7 +1545,11 @@ struct xLUstruct_t
               producer_recv_test_completions(0),
               producer_send_test_calls(0),
               producer_send_test_completions(0),
-              producer_returns_with_pending_recvs(0)
+              producer_returns_with_pending_recvs(0),
+              final_progress_rounds(0), final_progress_tasks_launched(0),
+              final_progress_tasks_completed(0),
+              final_predrain_rounds(0), final_predrain_dispatch_calls(0),
+              final_predrain_tasks_launched(0)
         {
         }
     };
@@ -1592,7 +1602,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[70] = {
+        long long local[76] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1662,19 +1672,25 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_recv_test_completions,
             symV2PcFragTaskflowStats.producer_send_test_calls,
             symV2PcFragTaskflowStats.producer_send_test_completions,
-            symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
+            symV2PcFragTaskflowStats.producer_returns_with_pending_recvs,
+            symV2PcFragTaskflowStats.final_progress_rounds,
+            symV2PcFragTaskflowStats.final_progress_tasks_launched,
+            symV2PcFragTaskflowStats.final_progress_tasks_completed,
+            symV2PcFragTaskflowStats.final_predrain_rounds,
+            symV2PcFragTaskflowStats.final_predrain_dispatch_calls,
+            symV2PcFragTaskflowStats.final_predrain_tasks_launched
         };
-        long long global[70] = {};
+        long long global[76] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 70, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 76, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 70; ++i)
+            for (int i = 0; i < 76; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1733,7 +1749,13 @@ struct xLUstruct_t
             "producer_recv_test_completions=%lld "
             "producer_send_test_calls=%lld "
             "producer_send_test_completions=%lld "
-            "producer_returns_with_pending_recvs=%lld\n",
+            "producer_returns_with_pending_recvs=%lld "
+            "final_progress_rounds=%lld "
+            "final_progress_tasks_launched=%lld "
+            "final_progress_tasks_completed=%lld "
+            "final_predrain_rounds=%lld "
+            "final_predrain_dispatch_calls=%lld "
+            "final_predrain_tasks_launched=%lld\n",
             global[0], global[1], global[2], global[3], global[4],
             global[5], global[6], global[7], global[8], global[9],
             global[10], global[11], global[12], global[13], global[14],
@@ -1747,7 +1769,9 @@ struct xLUstruct_t
             global[50], global[51], global[52], global[53], global[54],
             global[55], global[56], global[57], global[58], global[59],
             global[60], global[61], global[62], global[63], global[64],
-            global[65], global[66], global[67], global[68], global[69]);
+            global[65], global[66], global[67], global[68], global[69],
+            global[70], global[71], global[72], global[73], global[74],
+            global[75]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =
