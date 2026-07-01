@@ -1146,6 +1146,8 @@ struct xLUstruct_t
         std::vector<SymV2PcFragPieceDesc> row_pieces;
         std::vector<SymV2PcFragPieceDesc> partner_pieces;
         std::vector<SymV2PcFragTaskDesc> tasks;
+        std::vector<int> row_block_piece;
+        std::vector<int> partner_block_piece;
         std::vector<int> pair_task_index;
         std::vector<std::vector<int> > row_piece_tasks;
         std::vector<std::vector<int> > partner_piece_tasks;
@@ -1289,6 +1291,8 @@ struct xLUstruct_t
             row_pieces.clear();
             partner_pieces.clear();
             tasks.clear();
+            row_block_piece.clear();
+            partner_block_piece.clear();
             pair_task_index.clear();
             row_piece_tasks.clear();
             partner_piece_tasks.clear();

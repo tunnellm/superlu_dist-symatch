@@ -2670,8 +2670,14 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPiecesGPU(
     cublasHandle_t handle, cudaStream_t cuStream,
     Ftype *gemmBuff)
 {
+    if (row_piece.empty() || col_piece.empty())
+        return 0;
+    int_t row_blocks = row_piece[0];
+    int_t col_blocks = col_piece[0];
+    if (row_blocks <= 0 || col_blocks <= 0)
+        return 0;
     return dSymSchurCompUpdateTaskDualPieceGroupGPU(
-        0, 1, 0, 1, k,
+        0, row_blocks, 0, col_blocks, k,
         row_piece, col_piece,
         row_piece_index, row_piece_val,
         col_piece_index, col_piece_val,

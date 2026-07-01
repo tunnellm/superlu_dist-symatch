@@ -1468,14 +1468,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         return frag[LPANEL_HEADER_SIZE + nb + b];
     };
     auto compact_piece_index =
-        [&](const std::vector<int_t> &frag, int_t b) -> std::vector<int_t> {
+        [&](const std::vector<int_t> &frag,
+            int_t begin, int_t end) -> std::vector<int_t> {
         if (frag.size() < LPANEL_HEADER_SIZE)
             ABORT("SymFact V2 Pc-fragment taskflow has truncated metadata.");
         int_t nb = frag[0];
-        if (b < 0 || b >= nb)
+        if (begin < 0 || begin >= end || end > nb)
             ABORT("SymFact V2 Pc-fragment taskflow block index is invalid.");
-        int_t row_begin = strow_at(frag, b);
-        int_t row_end = strow_at(frag, b + 1);
+        int_t row_begin = strow_at(frag, begin);
+        int_t row_end = strow_at(frag, end);
         if (row_begin < 0 || row_end < row_begin)
             ABORT("SymFact V2 Pc-fragment taskflow block row range is invalid.");
         int_t nrows = row_end - row_begin;
@@ -1485,33 +1486,44 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         if (src_rows_end > frag.size() || src_rows_end < src_rows)
             ABORT("SymFact V2 Pc-fragment taskflow row-list range is invalid.");
 
+        int_t piece_blocks = end - begin;
         std::vector<int_t> piece_index(
-            static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * 1 + 1 + nrows));
-        piece_index[0] = 1;
+            static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * piece_blocks +
+                                1 + nrows));
+        piece_index[0] = piece_blocks;
         piece_index[1] = nrows;
         piece_index[2] = 0;
         piece_index[3] = frag[3];
-        piece_index[LPANEL_HEADER_SIZE] = gid_at(frag, b);
-        piece_index[LPANEL_HEADER_SIZE + 1] = 0;
-        piece_index[LPANEL_HEADER_SIZE + 2] = nrows;
+        for (int_t local = 0; local < piece_blocks; ++local)
+            piece_index[LPANEL_HEADER_SIZE + local] =
+                gid_at(frag, begin + local);
+        size_t px_base = static_cast<size_t>(LPANEL_HEADER_SIZE +
+                                             piece_blocks);
+        for (int_t local = 0; local <= piece_blocks; ++local)
+            piece_index[px_base + static_cast<size_t>(local)] =
+                strow_at(frag, begin + local) - row_begin;
         std::copy(frag.begin() + static_cast<std::ptrdiff_t>(src_rows),
                   frag.begin() + static_cast<std::ptrdiff_t>(src_rows_end),
-                  piece_index.begin() + LPANEL_HEADER_SIZE + 3);
+                  piece_index.begin() + static_cast<std::ptrdiff_t>(
+                      LPANEL_HEADER_SIZE + 2 * piece_blocks + 1));
         return piece_index;
     };
     auto piece_index_count =
-        [&](const std::vector<int_t> &frag, int_t b) -> size_t {
-        int_t row_begin = strow_at(frag, b);
-        int_t row_end = strow_at(frag, b + 1);
+        [&](const std::vector<int_t> &frag,
+            int_t begin, int_t end) -> size_t {
+        int_t row_begin = strow_at(frag, begin);
+        int_t row_end = strow_at(frag, end);
         if (row_begin < 0 || row_end < row_begin)
             ABORT("SymFact V2 Pc-fragment taskflow block row range is invalid.");
-        return static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * 1 + 1 +
+        return static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * (end - begin) +
+                                   1 +
                                    (row_end - row_begin));
     };
     auto piece_value_count =
-        [&](const std::vector<int_t> &frag, int_t b) -> size_t {
-        int_t row_begin = strow_at(frag, b);
-        int_t row_end = strow_at(frag, b + 1);
+        [&](const std::vector<int_t> &frag,
+            int_t begin, int_t end) -> size_t {
+        int_t row_begin = strow_at(frag, begin);
+        int_t row_end = strow_at(frag, end);
         if (row_begin < 0 || row_end < row_begin)
             ABORT("SymFact V2 Pc-fragment taskflow block row range is invalid.");
         int_t ksupc = frag.size() >= 4 ? frag[3] : SuperSize(k);
@@ -1519,23 +1531,70 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                static_cast<size_t>(ksupc);
     };
 
+    struct TaskflowPieceRange
+    {
+        int_t begin;
+        int_t end;
+    };
+    const int taskflow_piece_max_rows =
+        superlu_sym_v2_pcfrag_taskflow_piece_max_rows();
+    if (taskflow_piece_max_rows > 0 && !async_core)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS currently requires GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE=1.");
+    auto build_piece_ranges =
+        [&](const std::vector<int_t> &frag, int_t nb,
+            std::vector<TaskflowPieceRange> &ranges) {
+        ranges.clear();
+        ranges.reserve(static_cast<size_t>(nb));
+        for (int_t b = 0; b < nb;)
+        {
+            int_t begin = b;
+            int_t end = b + 1;
+            if (taskflow_piece_max_rows > 0 && gid_at(frag, begin) != k)
+            {
+                int_t row_begin = strow_at(frag, begin);
+                while (end < nb && gid_at(frag, end) != k)
+                {
+                    int_t candidate_rows = strow_at(frag, end + 1) -
+                                           row_begin;
+                    if (candidate_rows > taskflow_piece_max_rows)
+                        break;
+                    ++end;
+                }
+            }
+            ranges.push_back(TaskflowPieceRange{begin, end});
+            b = end;
+        }
+    };
+
     int_t nr = nblocks(row_frag);
     int_t nc = nblocks(partner_frag);
     if (nr < 0 || nc < 0)
         ABORT("SymFact V2 Pc-fragment taskflow block count is invalid.");
-    state.row_pieces.reserve(static_cast<size_t>(nr));
-    state.partner_pieces.reserve(static_cast<size_t>(nc));
+    std::vector<TaskflowPieceRange> row_piece_ranges;
+    std::vector<TaskflowPieceRange> partner_piece_ranges;
+    build_piece_ranges(row_frag, nr, row_piece_ranges);
+    build_piece_ranges(partner_frag, nc, partner_piece_ranges);
+    state.row_pieces.reserve(row_piece_ranges.size());
+    state.partner_pieces.reserve(partner_piece_ranges.size());
+    state.row_block_piece.assign(static_cast<size_t>(nr), -1);
+    state.partner_block_piece.assign(static_cast<size_t>(nc), -1);
     size_t total_index_count = 0;
     size_t total_value_count = 0;
-    for (int_t b = 0; b < nr; ++b)
+    for (size_t r = 0; r < row_piece_ranges.size(); ++r)
     {
-        total_index_count += piece_index_count(row_frag, b);
-        total_value_count += piece_value_count(row_frag, b);
+        total_index_count += piece_index_count(
+            row_frag, row_piece_ranges[r].begin, row_piece_ranges[r].end);
+        total_value_count += piece_value_count(
+            row_frag, row_piece_ranges[r].begin, row_piece_ranges[r].end);
     }
-    for (int_t b = 0; b < nc; ++b)
+    for (size_t r = 0; r < partner_piece_ranges.size(); ++r)
     {
-        total_index_count += piece_index_count(partner_frag, b);
-        total_value_count += piece_value_count(partner_frag, b);
+        total_index_count += piece_index_count(
+            partner_frag, partner_piece_ranges[r].begin,
+            partner_piece_ranges[r].end);
+        total_value_count += piece_value_count(
+            partner_frag, partner_piece_ranges[r].begin,
+            partner_piece_ranges[r].end);
     }
     if (total_index_count > 0)
     {
@@ -1578,21 +1637,22 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
 
     auto add_piece = [&](std::vector<SymV2PcFragPieceDesc> &pieces,
                          const std::vector<int_t> &frag,
-                         unsigned char kind, int_t b) {
+                         std::vector<int> &block_piece,
+                         unsigned char kind, int_t begin, int_t end) {
         SymV2PcFragPieceDesc piece;
         piece.k = k;
         piece.kind = kind;
         piece.piece_id = static_cast<int>(pieces.size());
-        piece.frag_blk_begin = b;
-        piece.frag_blk_end = b + 1;
-        piece.frag_row_offset = strow_at(frag, b);
-        piece.nblocks = 1;
-        piece.gid_first = gid_at(frag, b);
-        piece.gid_last = piece.gid_first;
+        piece.frag_blk_begin = begin;
+        piece.frag_blk_end = end;
+        piece.frag_row_offset = strow_at(frag, begin);
+        piece.nblocks = end - begin;
+        piece.gid_first = gid_at(frag, begin);
+        piece.gid_last = gid_at(frag, end - 1);
         piece.ksupc = frag.size() >= 4 ? frag[3] : SuperSize(k);
-        piece.nrows = strow_at(frag, b + 1) - strow_at(frag, b);
+        piece.nrows = strow_at(frag, end) - strow_at(frag, begin);
         piece.lda = piece.nrows;
-        piece.h_index = compact_piece_index(frag, b);
+        piece.h_index = compact_piece_index(frag, begin, end);
         piece.index_count = static_cast<int_t>(piece.h_index.size());
         piece.value_count = piece.nrows * piece.ksupc;
         if (piece.index_count > 0)
@@ -1622,15 +1682,25 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 symV2PcFragTaskflowEventPool,
                 allow_taskflow_late_alloc,
                 &symV2PcFragTaskflowStats.arena_event_late_allocs);
+        for (int_t b = begin; b < end; ++b)
+        {
+            if (b < 0 || static_cast<size_t>(b) >= block_piece.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW block-to-piece map is invalid.");
+            block_piece[static_cast<size_t>(b)] = piece.piece_id;
+        }
         pieces.push_back(piece);
     };
 
-    for (int_t b = 0; b < nr; ++b)
-        add_piece(state.row_pieces, row_frag,
-                  SYM_V2_PCFRAG_PIECE_ROW, b);
-    for (int_t b = 0; b < nc; ++b)
+    for (size_t r = 0; r < row_piece_ranges.size(); ++r)
+        add_piece(state.row_pieces, row_frag, state.row_block_piece,
+                  SYM_V2_PCFRAG_PIECE_ROW,
+                  row_piece_ranges[r].begin, row_piece_ranges[r].end);
+    for (size_t r = 0; r < partner_piece_ranges.size(); ++r)
         add_piece(state.partner_pieces, partner_frag,
-                  SYM_V2_PCFRAG_PIECE_PARTNER, b);
+                  state.partner_block_piece,
+                  SYM_V2_PCFRAG_PIECE_PARTNER,
+                  partner_piece_ranges[r].begin,
+                  partner_piece_ranges[r].end);
     symV2PcFragTaskflowStats.row_pieces_created +=
         static_cast<long long>(state.row_pieces.size());
     symV2PcFragTaskflowStats.partner_pieces_created +=
@@ -1645,16 +1715,42 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     std::vector<size_t> row_task_degrees(state.row_pieces.size(), 0);
     std::vector<size_t> partner_task_degrees(
         state.partner_pieces.size(), 0);
+    auto collect_task_outputs =
+        [&](size_t rp, size_t cp,
+            std::vector<SymV2PcFragOutputKey> *outputs,
+            bool *has_offdiag) -> size_t {
+        const SymV2PcFragPieceDesc &row_piece = state.row_pieces[rp];
+        const SymV2PcFragPieceDesc &partner_piece = state.partner_pieces[cp];
+        size_t count = 0;
+        if (has_offdiag != NULL)
+            *has_offdiag = false;
+        for (int_t rb = row_piece.frag_blk_begin;
+             rb < row_piece.frag_blk_end; ++rb)
+        {
+            int_t gi = gid_at(row_frag, rb);
+            if (gi == k)
+                continue;
+            for (int_t cb = partner_piece.frag_blk_begin;
+                 cb < partner_piece.frag_blk_end; ++cb)
+            {
+                int_t gj = gid_at(partner_frag, cb);
+                if (gj == k || gi < gj)
+                    continue;
+                if (outputs != NULL)
+                    outputs->push_back(SymV2PcFragOutputKey(gj, gi));
+                if (has_offdiag != NULL && gi != gj)
+                    *has_offdiag = true;
+                ++count;
+            }
+        }
+        return count;
+    };
     size_t planned_task_count = 0;
     for (size_t rp = 0; rp < state.row_pieces.size(); ++rp)
     {
-        int_t gi = state.row_pieces[rp].gid_first;
         for (size_t cp = 0; cp < state.partner_pieces.size(); ++cp)
         {
-            int_t gj = state.partner_pieces[cp].gid_first;
-            if (gi < gj)
-                continue;
-            if (gi == k || gj == k)
+            if (collect_task_outputs(rp, cp, NULL, NULL) == 0)
                 continue;
             ++planned_task_count;
             ++row_task_degrees[rp];
@@ -1679,13 +1775,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     std::set<SymV2PcFragOutputKey> planned_output_keys;
     for (size_t rp = 0; rp < state.row_pieces.size(); ++rp)
     {
-        int_t gi = state.row_pieces[rp].gid_first;
         for (size_t cp = 0; cp < state.partner_pieces.size(); ++cp)
         {
-            int_t gj = state.partner_pieces[cp].gid_first;
-            if (gi < gj)
-                continue;
-            if (gi == k || gj == k)
+            bool has_offdiag = false;
+            size_t output_count =
+                collect_task_outputs(rp, cp, NULL, &has_offdiag);
+            if (output_count == 0)
                 continue;
             SymV2PcFragTaskDesc task;
             task.k = k;
@@ -1704,10 +1799,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             task.mode_mask = SYM_V2_PCFRAG_TASK_FULL |
                              SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
                              SYM_V2_PCFRAG_TASK_EXCLUDE;
-            if (gi != gj)
+            if (has_offdiag)
                 task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
-            task.outputs.reserve(1);
-            task.outputs.push_back(SymV2PcFragOutputKey(gj, gi));
+            task.outputs.reserve(output_count);
+            collect_task_outputs(rp, cp, &task.outputs, NULL);
+            if (task.outputs.size() != output_count)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW output count changed during task planning.");
             for (size_t out = 0; out < task.outputs.size(); ++out)
             {
                 if (!planned_output_keys.insert(task.outputs[out]).second)
@@ -2641,19 +2738,47 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         auto pair_task =
             [&](int_t rb, int_t cb) -> SymV2PcFragTaskDesc * {
             if (rb < 0 || cb < 0 ||
-                static_cast<size_t>(rb) >= state.row_pieces.size() ||
-                static_cast<size_t>(cb) >= state.partner_pieces.size() ||
+                static_cast<size_t>(rb) >= state.row_block_piece.size() ||
+                static_cast<size_t>(cb) >= state.partner_block_piece.size() ||
                 state.partner_pieces.empty())
                 return NULL;
-            size_t pos = static_cast<size_t>(rb) *
+            int row_piece = state.row_block_piece[static_cast<size_t>(rb)];
+            int partner_piece =
+                state.partner_block_piece[static_cast<size_t>(cb)];
+            if (row_piece < 0 || partner_piece < 0 ||
+                static_cast<size_t>(row_piece) >= state.row_pieces.size() ||
+                static_cast<size_t>(partner_piece) >= state.partner_pieces.size())
+                return NULL;
+            size_t pos = static_cast<size_t>(row_piece) *
                              state.partner_pieces.size() +
-                         static_cast<size_t>(cb);
+                         static_cast<size_t>(partner_piece);
             if (pos >= state.pair_task_index.size())
                 return NULL;
             int tid = state.pair_task_index[pos];
             if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
                 return NULL;
             return &state.tasks[static_cast<size_t>(tid)];
+        };
+        auto row_piece_for_block = [&](int_t rb) -> SymV2PcFragPieceDesc * {
+            if (rb < 0 || static_cast<size_t>(rb) >=
+                              state.row_block_piece.size())
+                return NULL;
+            int piece_id = state.row_block_piece[static_cast<size_t>(rb)];
+            if (piece_id < 0 ||
+                static_cast<size_t>(piece_id) >= state.row_pieces.size())
+                return NULL;
+            return &state.row_pieces[static_cast<size_t>(piece_id)];
+        };
+        auto partner_piece_for_block =
+            [&](int_t cb) -> SymV2PcFragPieceDesc * {
+            if (cb < 0 || static_cast<size_t>(cb) >=
+                              state.partner_block_piece.size())
+                return NULL;
+            int piece_id = state.partner_block_piece[static_cast<size_t>(cb)];
+            if (piece_id < 0 || static_cast<size_t>(piece_id) >=
+                                    state.partner_pieces.size())
+                return NULL;
+            return &state.partner_pieces[static_cast<size_t>(piece_id)];
         };
         auto build_group_index =
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
@@ -2813,14 +2938,22 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             int completed_pair_count = 0;
             for (int_t rb = row_start; rb < row_end; ++rb)
             {
-                if (!state.row_pieces[static_cast<size_t>(rb)].ready)
+                SymV2PcFragPieceDesc *row_piece =
+                    row_piece_for_block(rb);
+                if (row_piece == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW row block has no owning piece.");
+                if (!row_piece->ready)
                 {
                     ++symV2PcFragTaskflowStats.tasks_blocked_row;
                     return;
                 }
                 for (int_t cb = col_start; cb < col_end; ++cb)
                 {
-                    if (!state.partner_pieces[static_cast<size_t>(cb)].ready)
+                    SymV2PcFragPieceDesc *partner_piece =
+                        partner_piece_for_block(cb);
+                    if (partner_piece == NULL)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW partner block has no owning piece.");
+                    if (!partner_piece->ready)
                     {
                         ++symV2PcFragTaskflowStats.tasks_blocked_partner;
                         return;
