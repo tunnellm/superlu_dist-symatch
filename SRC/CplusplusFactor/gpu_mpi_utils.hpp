@@ -623,7 +623,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_event_poll_backoff()
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_EVENT_POLL_BACKOFF");
     if (env == NULL || env[0] == '\0')
     {
-        cached = 1;
+        cached = superlu_sym_v2_pcfrag_taskflow_async_core() ? 4 : 1;
         return cached;
     }
     char *end = NULL;
@@ -645,7 +645,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_event_poll_backoff_max()
     {
         int base = superlu_sym_v2_pcfrag_taskflow_event_poll_backoff();
         if (superlu_sym_v2_pcfrag_taskflow_async_core() && base > 0)
-            cached = SUPERLU_MIN(base * 4, 1024);
+            cached = SUPERLU_MIN(base * 16, 1024);
         else
             cached = base;
         return cached;
