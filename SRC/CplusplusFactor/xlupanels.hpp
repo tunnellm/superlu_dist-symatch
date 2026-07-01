@@ -1158,6 +1158,8 @@ struct xLUstruct_t
         std::vector<int> runnable_task_ids_by_mode[16];
         std::map<int_t, std::vector<int> > runnable_lookahead_col_by_gid;
         std::map<int_t, std::vector<int> > runnable_lookahead_row_by_gid;
+        std::map<int_t, int> incomplete_lookahead_col_members_by_gid;
+        std::map<int_t, int> incomplete_lookahead_row_members_by_gid;
         std::vector<int> launched_task_ids_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int launched_task_pending_by_stream[
@@ -1345,6 +1347,8 @@ struct xLUstruct_t
                 runnable_task_ids_by_mode[mask].clear();
             runnable_lookahead_col_by_gid.clear();
             runnable_lookahead_row_by_gid.clear();
+            incomplete_lookahead_col_members_by_gid.clear();
+            incomplete_lookahead_row_members_by_gid.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
             {
                 launched_task_ids_by_stream[i].clear();

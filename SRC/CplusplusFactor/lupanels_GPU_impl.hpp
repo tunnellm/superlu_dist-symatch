@@ -879,6 +879,40 @@ static inline void dSymV2PcFragTaskflowUnlockTaskOutputs(
     }
 }
 
+static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (task.mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+    {
+        for (size_t o = 0; o < task.outputs.size(); ++o)
+        {
+            std::map<int_t, int>::iterator it =
+                state.incomplete_lookahead_col_members_by_gid.find(
+                    task.outputs[o].gj);
+            if (it == state.incomplete_lookahead_col_members_by_gid.end() ||
+                it->second <= 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column incomplete counter underflowed.");
+            --it->second;
+        }
+    }
+    if (task.mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+    {
+        for (size_t o = 0; o < task.outputs.size(); ++o)
+        {
+            std::map<int_t, int>::iterator it =
+                state.incomplete_lookahead_row_members_by_gid.find(
+                    task.outputs[o].gi);
+            if (it == state.incomplete_lookahead_row_members_by_gid.end() ||
+                it->second <= 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row incomplete counter underflowed.");
+            --it->second;
+        }
+    }
+}
+
 static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
@@ -898,6 +932,7 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
         state.partner_pieces[static_cast<size_t>(task.partner_piece)];
     dSymV2PcFragTaskflowUnlockTaskOutputs(
         state, task, strict_output_conflicts);
+    dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
     task.complete = 1;
     --state.incomplete_task_count;
     --row.pending_consumers;
@@ -1006,6 +1041,43 @@ static inline int dSymV2PcFragTaskflowModeMaskIndex(unsigned mode_mask)
          xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW |
          xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_EXCLUDE |
          xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL));
+}
+
+static inline int dSymV2PcFragTaskflowRequiredIncompleteFast(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    unsigned required_mode_mask,
+    int_t required_mode_gid,
+    int *known)
+{
+    *known = 0;
+    if (required_mode_gid == GLOBAL_BLOCK_NOT_FOUND)
+        return 0;
+    const unsigned supported =
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+    if ((required_mode_mask & ~supported) != 0)
+        return 0;
+    *known = 1;
+    int count = 0;
+    if (required_mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+    {
+        std::map<int_t, int>::const_iterator it =
+            state.incomplete_lookahead_col_members_by_gid.find(
+                required_mode_gid);
+        if (it != state.incomplete_lookahead_col_members_by_gid.end())
+            count += it->second;
+    }
+    if (required_mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+    {
+        std::map<int_t, int>::const_iterator it =
+            state.incomplete_lookahead_row_members_by_gid.find(
+                required_mode_gid);
+        if (it != state.incomplete_lookahead_row_members_by_gid.end())
+            count += it->second;
+    }
+    return count;
 }
 
 static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
@@ -1863,6 +1935,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             {
                 if (!planned_output_keys.insert(task.outputs[out]).second)
                     state.output_conflicts_possible = 1;
+                ++state.incomplete_lookahead_col_members_by_gid[
+                    task.outputs[out].gj];
+                if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                    ++state.incomplete_lookahead_row_members_by_gid[
+                        task.outputs[out].gi];
             }
             int task_id = task.task_id;
             state.tasks.push_back(task);
@@ -2461,6 +2538,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         {
             gpuErrchk(cudaStreamSynchronize(stream));
             unlock_outputs(task);
+            dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
+                state, task);
             task.complete = 1;
             --state.incomplete_task_count;
             --row.pending_consumers;
@@ -2755,6 +2834,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 {
                     gpuErrchk(cudaStreamSynchronize(stream));
                     unlock_outputs(task);
+                    dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
+                        state, task);
                     task.complete = 1;
                     --state.incomplete_task_count;
                     --row.pending_consumers;
@@ -3025,6 +3106,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 gpuErrchk(cudaStreamSynchronize(task_stream));
                 unlock_outputs(task);
+                dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
+                    state, task);
                 task.complete = 1;
                 --state.incomplete_task_count;
                 --row.pending_consumers;
@@ -3286,6 +3369,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         !task_matches_launch_mode(*task, launch_mode))
                         continue;
                     task->launched = 1;
+                    dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
+                        state, *task);
                     task->complete = 1;
                     --state.incomplete_task_count;
                     --state.row_pieces[static_cast<size_t>(rb)].pending_consumers;
@@ -3622,6 +3707,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
                 superlu_sym_v2_pcfrag_taskflow_strict() &&
                 state.output_conflicts_possible;
             auto required_incomplete = [&]() -> int {
+                int known = 0;
+                int fast_count =
+                    dSymV2PcFragTaskflowRequiredIncompleteFast(
+                        state, mode_mask, mode_gid, &known);
+                if (known)
+                    return fast_count;
                 int count = 0;
                 for (size_t i = 0; i < state.tasks.size(); ++i)
                 {
