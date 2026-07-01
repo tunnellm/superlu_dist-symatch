@@ -2546,19 +2546,93 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPieceGroupGPU(
     if (row_lda <= 0 || col_lda <= 0)
         ABORT("SymFact V2 Pc-fragment GEMM has invalid fragment LDA.");
 
-    Ftype alpha = one<Ftype>();
-    Ftype beta = zeroT<Ftype>();
     cublasSetStream(handle, cuStream);
-    myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
-                        gemm_m, gemm_n, gemm_k, &alpha,
-                        row_frag_val + row_start, row_lda,
-                        col_frag_val + col_start, col_lda, &beta,
-                        gemmBuff, gemm_m);
 
-    scatterSymLowerTwoLFragmentRangeGPU_driver<Ftype>(
-        iSt, iEnd, jSt, jEnd, gemmBuff, gemm_m,
-        A_gpu.maxSuperSize, ldt, row_frag_index, col_frag_index,
-        dA_gpu, cuStream);
+    const int64_t gemm_capacity = SUPERLU_MAX(
+        static_cast<int64_t>(1), static_cast<int64_t>(A_gpu.gemmBufferSize));
+    int max_block_rows = 1;
+    for (int_t ii = iSt; ii < iEnd; ++ii)
+        max_block_rows = SUPERLU_MAX(
+            max_block_rows,
+            static_cast<int>(xluSymFragHostNbrow(row_frag, ii)));
+
+    auto launch_tile = [&](int_t row_beg, int_t row_end,
+                           int_t col_beg, int_t col_end) {
+        int tile_m = xluSymFragHostStRow(row_frag, row_end) -
+                     xluSymFragHostStRow(row_frag, row_beg);
+        int tile_n = xluSymFragHostStRow(col_frag, col_end) -
+                     xluSymFragHostStRow(col_frag, col_beg);
+        if (tile_m <= 0 || tile_n <= 0)
+            return;
+        if (static_cast<int64_t>(tile_m) *
+                static_cast<int64_t>(tile_n) >
+            gemm_capacity)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW single block pair exceeds GEMM buffer.");
+        int tile_row_start = xluSymFragHostStRow(row_frag, row_beg);
+        int tile_col_start = xluSymFragHostStRow(col_frag, col_beg);
+        Ftype alpha = one<Ftype>();
+        Ftype beta = zeroT<Ftype>();
+        myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                            tile_m, tile_n, gemm_k, &alpha,
+                            row_frag_val + tile_row_start, row_lda,
+                            col_frag_val + tile_col_start, col_lda, &beta,
+                            gemmBuff, tile_m);
+
+        scatterSymLowerTwoLFragmentRangeGPU_driver<Ftype>(
+            row_beg, row_end, col_beg, col_end, gemmBuff, tile_m,
+            A_gpu.maxSuperSize, ldt, row_frag_index, col_frag_index,
+            dA_gpu, cuStream);
+    };
+
+    int_t col_beg = jSt;
+    while (col_beg < jEnd)
+    {
+        int64_t hard_col_limit =
+            gemm_capacity / static_cast<int64_t>(max_block_rows);
+        if (hard_col_limit < 1)
+            hard_col_limit = 1;
+        int remaining_cols =
+            xluSymFragHostStRow(col_frag, jEnd) -
+            xluSymFragHostStRow(col_frag, col_beg);
+        int col_limit = SUPERLU_MAX(
+            1, static_cast<int>(SUPERLU_MIN(
+                   hard_col_limit, static_cast<int64_t>(remaining_cols))));
+
+        int_t col_end = col_beg + 1;
+        while (col_end < jEnd)
+        {
+            int candidate_cols =
+                xluSymFragHostStRow(col_frag, col_end + 1) -
+                xluSymFragHostStRow(col_frag, col_beg);
+            if (candidate_cols > col_limit)
+                break;
+            ++col_end;
+        }
+
+        int tile_cols = xluSymFragHostStRow(col_frag, col_end) -
+                        xluSymFragHostStRow(col_frag, col_beg);
+        int max_tile_rows = static_cast<int>(
+            gemm_capacity / static_cast<int64_t>(SUPERLU_MAX(tile_cols, 1)));
+        max_tile_rows = SUPERLU_MAX(max_tile_rows, 1);
+
+        int_t row_beg = iSt;
+        while (row_beg < iEnd)
+        {
+            int_t row_end = row_beg + 1;
+            while (row_end < iEnd)
+            {
+                int candidate_rows =
+                    xluSymFragHostStRow(row_frag, row_end + 1) -
+                    xluSymFragHostStRow(row_frag, row_beg);
+                if (candidate_rows > max_tile_rows)
+                    break;
+                ++row_end;
+            }
+            launch_tile(row_beg, row_end, col_beg, col_end);
+            row_beg = row_end;
+        }
+        col_beg = col_end;
+    }
     return 0;
 }
 
