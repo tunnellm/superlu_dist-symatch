@@ -1160,6 +1160,7 @@ struct xLUstruct_t
             SYM_V2_PCFRAG_TASK_STREAM_COUNT][16];
         std::set<SymV2PcFragOutputKey> active_output_key_set;
         int task_event_poll_skip[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
+        int task_event_poll_backoff[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int incomplete_task_count;
         int producer_tasks_launched;
         unsigned char producer_launch_cap_reported;
@@ -1237,6 +1238,7 @@ struct xLUstruct_t
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
             {
                 task_event_poll_skip[i] = 0;
+                task_event_poll_backoff[i] = 0;
                 launched_task_pending_by_stream[i] = 0;
                 for (int mask = 0; mask < 16; ++mask)
                     launched_task_pending_mode_by_stream[i][mask] = 0;
@@ -1299,7 +1301,10 @@ struct xLUstruct_t
             }
             active_output_key_set.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
+            {
                 task_event_poll_skip[i] = 0;
+                task_event_poll_backoff[i] = 0;
+            }
             incomplete_task_count = 0;
             producer_tasks_launched = 0;
             producer_launch_cap_reported = 0;
@@ -1362,6 +1367,7 @@ struct xLUstruct_t
         long long tasks_completed;
         long long tasks_completed_async_core;
         long long task_completion_event_queries;
+        long long task_completion_event_query_skips;
         long long task_completion_event_waits;
         long long task_completion_poll_calls;
         long long task_completion_poll_task_scans;
@@ -1426,6 +1432,7 @@ struct xLUstruct_t
               row_pieces_ready(0), partner_pieces_ready(0),
               tasks_planned(0), tasks_launched(0), tasks_completed(0),
               tasks_completed_async_core(0), task_completion_event_queries(0),
+              task_completion_event_query_skips(0),
               task_completion_event_waits(0),
               task_completion_poll_calls(0),
               task_completion_poll_task_scans(0),
@@ -1521,7 +1528,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[67] = {
+        long long local[68] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1531,6 +1538,7 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.tasks_completed,
             symV2PcFragTaskflowStats.tasks_completed_async_core,
             symV2PcFragTaskflowStats.task_completion_event_queries,
+            symV2PcFragTaskflowStats.task_completion_event_query_skips,
             symV2PcFragTaskflowStats.task_completion_event_waits,
             symV2PcFragTaskflowStats.task_completion_poll_calls,
             symV2PcFragTaskflowStats.task_completion_poll_task_scans,
@@ -1590,17 +1598,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_send_test_completions,
             symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
         };
-        long long global[67] = {};
+        long long global[68] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 67, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 68, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 67; ++i)
+            for (int i = 0; i < 68; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1610,6 +1618,7 @@ struct xLUstruct_t
             "tasks_planned=%lld tasks_launched=%lld tasks_completed=%lld "
             "tasks_completed_async_core=%lld "
             "task_completion_event_queries=%lld "
+            "task_completion_event_query_skips=%lld "
             "task_completion_event_waits=%lld "
             "task_completion_poll_calls=%lld "
             "task_completion_poll_task_scans=%lld "
@@ -1670,7 +1679,7 @@ struct xLUstruct_t
             global[50], global[51], global[52], global[53], global[54],
             global[55], global[56], global[57], global[58], global[59],
             global[60], global[61], global[62], global[63], global[64],
-            global[65], global[66]);
+            global[65], global[66], global[67]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END

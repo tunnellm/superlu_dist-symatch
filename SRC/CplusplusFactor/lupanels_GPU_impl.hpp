@@ -900,12 +900,14 @@ static inline int dSymV2PcFragTaskflowTaskStreamKind(
 
 static inline bool dSymV2PcFragTaskflowSkipEventQuery(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
 {
     int kind = dSymV2PcFragTaskflowTaskStreamKind(task);
     if (state.task_event_poll_skip[kind] <= 0)
         return false;
     --state.task_event_poll_skip[kind];
+    ++stats.task_completion_event_query_skips;
     return true;
 }
 
@@ -914,8 +916,23 @@ static inline void dSymV2PcFragTaskflowNoteEventNotReady(
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
 {
     int kind = dSymV2PcFragTaskflowTaskStreamKind(task);
-    state.task_event_poll_skip[kind] =
-        superlu_sym_v2_pcfrag_taskflow_event_poll_backoff();
+    int base = superlu_sym_v2_pcfrag_taskflow_event_poll_backoff();
+    int cap = superlu_sym_v2_pcfrag_taskflow_event_poll_backoff_max();
+    if (cap < base)
+        cap = base;
+    if (base <= 0 || cap <= 0)
+    {
+        state.task_event_poll_backoff[kind] = 0;
+        state.task_event_poll_skip[kind] = 0;
+        return;
+    }
+    int current = state.task_event_poll_backoff[kind];
+    if (current <= 0)
+        current = base;
+    else
+        current = SUPERLU_MIN(cap, SUPERLU_MAX(base, current * 2));
+    state.task_event_poll_backoff[kind] = current;
+    state.task_event_poll_skip[kind] = current;
 }
 
 static inline void dSymV2PcFragTaskflowNoteEventComplete(
@@ -924,6 +941,7 @@ static inline void dSymV2PcFragTaskflowNoteEventComplete(
 {
     int kind = dSymV2PcFragTaskflowTaskStreamKind(task);
     state.task_event_poll_skip[kind] = 0;
+    state.task_event_poll_backoff[kind] = 0;
 }
 
 static inline bool dSymV2PcFragTaskflowTaskRequiredForMode(
@@ -1046,6 +1064,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
         if (state.task_event_poll_skip[kind] > 0)
         {
             --state.task_event_poll_skip[kind];
+            ++stats.task_completion_event_query_skips;
             pending_required +=
                 dSymV2PcFragTaskflowPendingLaunchedForMode(
                     state, kind, drain, required_mode_mask);
@@ -1075,7 +1094,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 if (drain)
                     ++stats.task_completion_drain_required_seen;
             }
-            if (dSymV2PcFragTaskflowSkipEventQuery(state, task))
+            if (dSymV2PcFragTaskflowSkipEventQuery(state, stats, task))
             {
                 task_ids[launched_write++] = tid;
                 if (required_task)
