@@ -517,7 +517,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
     const char *env = std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PROGRESS_BUDGET");
     if (env == NULL || env[0] == '\0')
     {
-        cached = 64;
+        cached = superlu_sym_v2_pcfrag_taskflow_async_core() ? 256 : 64;
         return cached;
     }
     char *end = NULL;
