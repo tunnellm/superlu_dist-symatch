@@ -1361,7 +1361,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 required_mode_gid);
         if (stream_pending_required <= 0)
             continue;
-        if (state.task_event_poll_skip[kind] > 0)
+        if (!drain && state.task_event_poll_skip[kind] > 0)
         {
             --state.task_event_poll_skip[kind];
             ++stats.task_completion_event_query_skips;
@@ -1392,7 +1392,8 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 if (drain)
                     ++stats.task_completion_drain_required_seen;
             }
-            if (dSymV2PcFragTaskflowSkipEventQuery(state, stats, task))
+            if (!drain &&
+                dSymV2PcFragTaskflowSkipEventQuery(state, stats, task))
             {
                 task_ids[launched_write++] = tid;
                 if (required_task)
