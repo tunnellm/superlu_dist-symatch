@@ -1270,6 +1270,9 @@ struct xLUstruct_t
                 if (task_ready_inputs[pos] == 2 &&
                     !task_enqueued[pos])
                 {
+                    if (runnable_task_ids.size() >=
+                        runnable_task_ids.capacity())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable queue capacity is undersized.");
                     runnable_task_ids.push_back(tid);
                     task_enqueued[pos] = 1;
                 }

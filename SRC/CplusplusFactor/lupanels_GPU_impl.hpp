@@ -1020,7 +1020,11 @@ static inline void dSymV2PcFragTaskflowRecordLaunchedTask(
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
 {
     int kind = dSymV2PcFragTaskflowTaskStreamKind(task);
-    state.launched_task_ids_by_stream[kind].push_back(task.task_id);
+    std::vector<int> &launched =
+        state.launched_task_ids_by_stream[kind];
+    dSymV2PcFragTaskflowEnsureVectorCapacity(
+        launched, launched.size() + 1);
+    launched.push_back(task.task_id);
     dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(state, task, 1);
 }
 
@@ -1360,8 +1364,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         symV2PcFragTaskStates.resize(static_cast<size_t>(nsupers));
     SymV2PcFragPanelTaskState &state =
         symV2PcFragTaskStates[static_cast<size_t>(k)];
+    const bool async_core =
+        superlu_sym_v2_pcfrag_taskflow_async_core();
     const bool allow_taskflow_late_alloc =
-        !superlu_sym_v2_pcfrag_taskflow_async_core();
+        !async_core;
 
     auto release_taskflow_state = [&](SymV2PcFragPanelTaskState &s) {
         for (size_t i = 0; i < s.row_pieces.size(); ++i)
@@ -1489,6 +1495,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
 
     int_t nr = nblocks(row_frag);
     int_t nc = nblocks(partner_frag);
+    if (nr < 0 || nc < 0)
+        ABORT("SymFact V2 Pc-fragment taskflow block count is invalid.");
+    state.row_pieces.reserve(static_cast<size_t>(nr));
+    state.partner_pieces.reserve(static_cast<size_t>(nc));
     size_t total_index_count = 0;
     size_t total_value_count = 0;
     for (int_t b = 0; b < nr; ++b)
@@ -1606,6 +1616,40 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                                  std::vector<int>());
     state.partner_piece_tasks.assign(state.partner_pieces.size(),
                                      std::vector<int>());
+    std::vector<size_t> row_task_degrees(state.row_pieces.size(), 0);
+    std::vector<size_t> partner_task_degrees(
+        state.partner_pieces.size(), 0);
+    size_t planned_task_count = 0;
+    for (size_t rp = 0; rp < state.row_pieces.size(); ++rp)
+    {
+        int_t gi = state.row_pieces[rp].gid_first;
+        for (size_t cp = 0; cp < state.partner_pieces.size(); ++cp)
+        {
+            int_t gj = state.partner_pieces[cp].gid_first;
+            if (gi < gj)
+                continue;
+            if (gi == k || gj == k)
+                continue;
+            ++planned_task_count;
+            ++row_task_degrees[rp];
+            ++partner_task_degrees[cp];
+        }
+    }
+    state.tasks.reserve(planned_task_count);
+    state.task_ready_inputs.reserve(planned_task_count);
+    state.task_enqueued.reserve(planned_task_count);
+    state.runnable_task_ids.reserve(planned_task_count);
+    if (async_core)
+    {
+        for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
+             kind < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
+            state.launched_task_ids_by_stream[kind].reserve(
+                planned_task_count);
+    }
+    for (size_t rp = 0; rp < row_task_degrees.size(); ++rp)
+        state.row_piece_tasks[rp].reserve(row_task_degrees[rp]);
+    for (size_t cp = 0; cp < partner_task_degrees.size(); ++cp)
+        state.partner_piece_tasks[cp].reserve(partner_task_degrees[cp]);
     std::set<SymV2PcFragOutputKey> planned_output_keys;
     for (size_t rp = 0; rp < state.row_pieces.size(); ++rp)
     {
@@ -1636,6 +1680,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                              SYM_V2_PCFRAG_TASK_EXCLUDE;
             if (gi != gj)
                 task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+            task.outputs.reserve(1);
             task.outputs.push_back(SymV2PcFragOutputKey(gj, gi));
             for (size_t out = 0; out < task.outputs.size(); ++out)
             {
