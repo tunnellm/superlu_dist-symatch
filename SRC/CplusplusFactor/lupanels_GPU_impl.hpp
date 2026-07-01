@@ -953,29 +953,59 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
     {
-        for (size_t o = 0; o < task.outputs.size(); ++o)
+        if (task.outputs.size() == 1 && task.lookahead_col_gid_index >= 0)
         {
-            auto it =
-                state.incomplete_lookahead_col_members_by_gid.find(
-                    task.outputs[o].gj);
-            if (it == state.incomplete_lookahead_col_members_by_gid.end() ||
-                it->second <= 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column incomplete counter underflowed.");
-            --it->second;
+            int idx = task.lookahead_col_gid_index;
+            if (static_cast<size_t>(idx) >=
+                    state.incomplete_lookahead_col_members_by_gid.size() ||
+                state.incomplete_lookahead_col_members_by_gid.gid_at(idx) !=
+                    task.outputs[0].gj ||
+                state.incomplete_lookahead_col_members_by_gid.value_at(idx) <=
+                    0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column incomplete compact counter underflowed.");
+            --state.incomplete_lookahead_col_members_by_gid.value_at(idx);
+        }
+        else
+        {
+            for (size_t o = 0; o < task.outputs.size(); ++o)
+            {
+                auto it =
+                    state.incomplete_lookahead_col_members_by_gid.find(
+                        task.outputs[o].gj);
+                if (it == state.incomplete_lookahead_col_members_by_gid.end() ||
+                    it->second <= 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column incomplete counter underflowed.");
+                --it->second;
+            }
         }
     }
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
     {
-        for (size_t o = 0; o < task.outputs.size(); ++o)
+        if (task.outputs.size() == 1 && task.lookahead_row_gid_index >= 0)
         {
-            auto it =
-                state.incomplete_lookahead_row_members_by_gid.find(
-                    task.outputs[o].gi);
-            if (it == state.incomplete_lookahead_row_members_by_gid.end() ||
-                it->second <= 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row incomplete counter underflowed.");
-            --it->second;
+            int idx = task.lookahead_row_gid_index;
+            if (static_cast<size_t>(idx) >=
+                    state.incomplete_lookahead_row_members_by_gid.size() ||
+                state.incomplete_lookahead_row_members_by_gid.gid_at(idx) !=
+                    task.outputs[0].gi ||
+                state.incomplete_lookahead_row_members_by_gid.value_at(idx) <=
+                    0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row incomplete compact counter underflowed.");
+            --state.incomplete_lookahead_row_members_by_gid.value_at(idx);
+        }
+        else
+        {
+            for (size_t o = 0; o < task.outputs.size(); ++o)
+            {
+                auto it =
+                    state.incomplete_lookahead_row_members_by_gid.find(
+                        task.outputs[o].gi);
+                if (it == state.incomplete_lookahead_row_members_by_gid.end() ||
+                    it->second <= 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row incomplete counter underflowed.");
+                --it->second;
+            }
         }
     }
 }
@@ -1329,51 +1359,103 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
     {
-        for (size_t o = 0; o < task.outputs.size(); ++o)
+        if (task.outputs.size() == 1 && task.lookahead_col_gid_index >= 0)
         {
-            auto it =
-                state.launched_lookahead_col_members_by_gid.find(
-                    task.outputs[o].gj);
-            if (it == state.launched_lookahead_col_members_by_gid.end())
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter is missing a gid.");
-            it->second += delta;
-            if (it->second < 0)
+            int idx = task.lookahead_col_gid_index;
+            if (static_cast<size_t>(idx) >=
+                    state.launched_lookahead_col_members_by_gid.size() ||
+                state.launched_lookahead_col_members_by_gid.gid_at(idx) !=
+                    task.outputs[0].gj ||
+                static_cast<size_t>(idx) >=
+                    state.launched_lookahead_col_members_by_gid_by_stream[
+                        kind].size() ||
+                state.launched_lookahead_col_members_by_gid_by_stream[
+                    kind].gid_at(idx) != task.outputs[0].gj)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched compact counter is missing a gid.");
+            state.launched_lookahead_col_members_by_gid.value_at(idx) +=
+                delta;
+            if (state.launched_lookahead_col_members_by_gid.value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter underflowed.");
-            auto stream_it =
-                state.launched_lookahead_col_members_by_gid_by_stream[
-                    kind].find(task.outputs[o].gj);
-            if (stream_it ==
-                state.launched_lookahead_col_members_by_gid_by_stream[
-                    kind].end())
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column stream launched counter is missing a gid.");
-            stream_it->second += delta;
-            if (stream_it->second < 0)
+            state.launched_lookahead_col_members_by_gid_by_stream[
+                kind].value_at(idx) += delta;
+            if (state.launched_lookahead_col_members_by_gid_by_stream[
+                    kind].value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column stream launched counter underflowed.");
+        }
+        else
+        {
+            for (size_t o = 0; o < task.outputs.size(); ++o)
+            {
+                auto it =
+                    state.launched_lookahead_col_members_by_gid.find(
+                        task.outputs[o].gj);
+                if (it == state.launched_lookahead_col_members_by_gid.end())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter is missing a gid.");
+                it->second += delta;
+                if (it->second < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter underflowed.");
+                auto stream_it =
+                    state.launched_lookahead_col_members_by_gid_by_stream[
+                        kind].find(task.outputs[o].gj);
+                if (stream_it ==
+                    state.launched_lookahead_col_members_by_gid_by_stream[
+                        kind].end())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column stream launched counter is missing a gid.");
+                stream_it->second += delta;
+                if (stream_it->second < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column stream launched counter underflowed.");
+            }
         }
     }
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
     {
-        for (size_t o = 0; o < task.outputs.size(); ++o)
+        if (task.outputs.size() == 1 && task.lookahead_row_gid_index >= 0)
         {
-            auto it =
-                state.launched_lookahead_row_members_by_gid.find(
-                    task.outputs[o].gi);
-            if (it == state.launched_lookahead_row_members_by_gid.end())
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter is missing a gid.");
-            it->second += delta;
-            if (it->second < 0)
+            int idx = task.lookahead_row_gid_index;
+            if (static_cast<size_t>(idx) >=
+                    state.launched_lookahead_row_members_by_gid.size() ||
+                state.launched_lookahead_row_members_by_gid.gid_at(idx) !=
+                    task.outputs[0].gi ||
+                static_cast<size_t>(idx) >=
+                    state.launched_lookahead_row_members_by_gid_by_stream[
+                        kind].size() ||
+                state.launched_lookahead_row_members_by_gid_by_stream[
+                    kind].gid_at(idx) != task.outputs[0].gi)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched compact counter is missing a gid.");
+            state.launched_lookahead_row_members_by_gid.value_at(idx) +=
+                delta;
+            if (state.launched_lookahead_row_members_by_gid.value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter underflowed.");
-            auto stream_it =
-                state.launched_lookahead_row_members_by_gid_by_stream[
-                    kind].find(task.outputs[o].gi);
-            if (stream_it ==
-                state.launched_lookahead_row_members_by_gid_by_stream[
-                    kind].end())
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row stream launched counter is missing a gid.");
-            stream_it->second += delta;
-            if (stream_it->second < 0)
+            state.launched_lookahead_row_members_by_gid_by_stream[
+                kind].value_at(idx) += delta;
+            if (state.launched_lookahead_row_members_by_gid_by_stream[
+                    kind].value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row stream launched counter underflowed.");
+        }
+        else
+        {
+            for (size_t o = 0; o < task.outputs.size(); ++o)
+            {
+                auto it =
+                    state.launched_lookahead_row_members_by_gid.find(
+                        task.outputs[o].gi);
+                if (it == state.launched_lookahead_row_members_by_gid.end())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter is missing a gid.");
+                it->second += delta;
+                if (it->second < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter underflowed.");
+                auto stream_it =
+                    state.launched_lookahead_row_members_by_gid_by_stream[
+                        kind].find(task.outputs[o].gi);
+                if (stream_it ==
+                    state.launched_lookahead_row_members_by_gid_by_stream[
+                        kind].end())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row stream launched counter is missing a gid.");
+                stream_it->second += delta;
+                if (stream_it->second < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row stream launched counter underflowed.");
+            }
         }
     }
 }
@@ -2447,6 +2529,44 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.row_piece_task_offsets;
     std::vector<int> partner_piece_task_write =
         state.partner_piece_task_offsets;
+    auto prebuild_gid_counter_maps =
+        [&](const SymV2PcFragGidCounterMap &degrees,
+            SymV2PcFragGidCounterMap &incomplete,
+            SymV2PcFragGidCounterMap &launched,
+            SymV2PcFragGidCounterMap launched_by_stream[
+                SYM_V2_PCFRAG_TASK_STREAM_COUNT]) {
+        incomplete.reserve(degrees.size());
+        launched.reserve(degrees.size());
+        for (SymV2PcFragGidCounterMap::const_iterator it =
+                 degrees.entries.begin();
+             it != degrees.entries.end(); ++it)
+        {
+            incomplete[it->first] = 0;
+            launched[it->first] = 0;
+        }
+        if (async_core)
+        {
+            for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
+                 kind < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
+            {
+                launched_by_stream[kind].reserve(degrees.size());
+                for (SymV2PcFragGidCounterMap::const_iterator it =
+                         degrees.entries.begin();
+                     it != degrees.entries.end(); ++it)
+                    launched_by_stream[kind][it->first] = 0;
+            }
+        }
+    };
+    prebuild_gid_counter_maps(
+        lookahead_col_degrees,
+        state.incomplete_lookahead_col_members_by_gid,
+        state.launched_lookahead_col_members_by_gid,
+        state.launched_lookahead_col_members_by_gid_by_stream);
+    prebuild_gid_counter_maps(
+        lookahead_row_degrees,
+        state.incomplete_lookahead_row_members_by_gid,
+        state.launched_lookahead_row_members_by_gid,
+        state.launched_lookahead_row_members_by_gid_by_stream);
     auto create_task_for_output =
         [&](int row_piece, int partner_piece,
             const SymV2PcFragOutputKey &output,
@@ -2473,22 +2593,22 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         task.mode_mask = mode_mask;
         task.outputs.reserve(1);
         task.outputs.push_back(output);
-        ++state.incomplete_lookahead_col_members_by_gid[output.gj];
-        state.launched_lookahead_col_members_by_gid[output.gj] = 0;
-        if (async_core)
-            for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
-                 kind < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
-                state.launched_lookahead_col_members_by_gid_by_stream[
-                    kind][output.gj] = 0;
+        task.lookahead_col_gid_index =
+            state.incomplete_lookahead_col_members_by_gid.index_of(
+                output.gj);
+        if (task.lookahead_col_gid_index < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column compact gid is missing.");
+        ++state.incomplete_lookahead_col_members_by_gid.value_at(
+            task.lookahead_col_gid_index);
         if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
         {
-            ++state.incomplete_lookahead_row_members_by_gid[output.gi];
-            state.launched_lookahead_row_members_by_gid[output.gi] = 0;
-            if (async_core)
-                for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
-                     kind < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
-                    state.launched_lookahead_row_members_by_gid_by_stream[
-                        kind][output.gi] = 0;
+            task.lookahead_row_gid_index =
+                state.incomplete_lookahead_row_members_by_gid.index_of(
+                    output.gi);
+            if (task.lookahead_row_gid_index < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row compact gid is missing.");
+            ++state.incomplete_lookahead_row_members_by_gid.value_at(
+                task.lookahead_row_gid_index);
         }
         int task_id = task.task_id;
         state.tasks.push_back(task);

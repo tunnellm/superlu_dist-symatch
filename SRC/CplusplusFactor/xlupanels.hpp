@@ -1178,6 +1178,8 @@ struct xLUstruct_t
         int_t gemm_k;
         unsigned char mode_mask;
         int scatter_group;
+        int lookahead_col_gid_index;
+        int lookahead_row_gid_index;
         SymV2PcFragTaskOutputList outputs;
         unsigned char launched;
         unsigned char complete;
@@ -1192,7 +1194,8 @@ struct xLUstruct_t
               row_piece_blk_begin(0), row_piece_blk_end(0),
               partner_piece_blk_begin(0), partner_piece_blk_end(0),
               gemm_m(0), gemm_n(0), gemm_k(0), mode_mask(0),
-              scatter_group(-1), launched(0), complete(0),
+              scatter_group(-1), lookahead_col_gid_index(-1),
+              lookahead_row_gid_index(-1), launched(0), complete(0),
               launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
               gemm_resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE)
 #ifdef HAVE_CUDA
@@ -1249,6 +1252,7 @@ struct xLUstruct_t
         typedef typename std::vector<Entry>::const_iterator const_iterator;
 
         void clear() { entries.clear(); }
+        void reserve(size_t count) { entries.reserve(count); }
         size_t size() const { return entries.size(); }
         iterator end() { return entries.end(); }
         const_iterator end() const { return entries.end(); }
@@ -1273,6 +1277,32 @@ struct xLUstruct_t
             if (it == entries.end() || it->first != gid)
                 it = entries.insert(it, Entry(gid, 0));
             return it->second;
+        }
+
+        int index_of(int_t gid) const
+        {
+            const_iterator it = lower_bound(gid);
+            if (it == entries.end() || it->first != gid)
+                return -1;
+            size_t idx = static_cast<size_t>(it - entries.begin());
+            if (idx > static_cast<size_t>(std::numeric_limits<int>::max()))
+                return -1;
+            return static_cast<int>(idx);
+        }
+
+        int_t gid_at(int index) const
+        {
+            return entries[static_cast<size_t>(index)].first;
+        }
+
+        int &value_at(int index)
+        {
+            return entries[static_cast<size_t>(index)].second;
+        }
+
+        const int &value_at(int index) const
+        {
+            return entries[static_cast<size_t>(index)].second;
         }
 
       private:
