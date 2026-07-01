@@ -1146,17 +1146,33 @@ static inline int dSymV2PcFragTaskflowProducerStreamComplete(
     }
     if (state.producer_last_ready_event == NULL)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream has no final ready event.");
-    cudaError_t status = drain
-        ? cudaEventSynchronize(state.producer_last_ready_event)
-        : cudaEventQuery(state.producer_last_ready_event);
+    cudaError_t status = cudaSuccess;
+    if (drain && !superlu_sym_v2_pcfrag_taskflow_async_core())
+    {
+        status = cudaEventSynchronize(state.producer_last_ready_event);
+    }
+    else
+    {
+        int idle_polls = 0;
+        for (;;)
+        {
+            status = cudaEventQuery(state.producer_last_ready_event);
+            if (status == cudaSuccess)
+                break;
+            if (status != cudaErrorNotReady)
+                gpuErrchk(status);
+            if (!drain)
+                return 0;
+            if (++idle_polls > 10000000)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream drain made no CUDA progress.");
+        }
+    }
     if (status == cudaSuccess)
     {
         state.producer_stream_pending = 0;
         state.producer_exchange_active = 0;
         return 1;
     }
-    if (!drain && status == cudaErrorNotReady)
-        return 0;
     gpuErrchk(status);
     return 0;
 }
