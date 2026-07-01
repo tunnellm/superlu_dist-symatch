@@ -4196,10 +4196,20 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 
     bool recv_h2d_issued = false;
     bool pipeline_large_receives = false;
-    std::vector<unsigned char> taskflow_partner_progressive_assembled;
+    std::vector<unsigned char> *taskflow_partner_progressive_assembled = NULL;
     if (pcfrag_taskflow)
-        taskflow_partner_progressive_assembled.assign(
+    {
+        if (taskflow_state == NULL || !taskflow_state->initialized)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW progressive partner scratch has no state.");
+        taskflow_partner_progressive_assembled =
+            &taskflow_state->producer_partner_progressive_assembled;
+        if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+            taskflow_partner_progressive_assembled->capacity() <
+                static_cast<size_t>(Pr))
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE progressive partner scratch is undersized.");
+        taskflow_partner_progressive_assembled->assign(
             static_cast<size_t>(Pr), 0);
+    }
     if (superlu_sym_v2_large_recv_pipeline())
     {
         if (cuda_aware)
@@ -4341,7 +4351,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                             A_gpu.symPartnerLStageBufs[stream_offset] +
                                 recv_offsets[pr],
                             symV2PartnerLRecvMap[recv_map_pos]);
-                        taskflow_partner_progressive_assembled[
+                        (*taskflow_partner_progressive_assembled)[
                             static_cast<size_t>(pr)] = 1;
                     }
                 }
@@ -4516,9 +4526,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #endif
                 if (pcfrag_taskflow)
                 {
-                    if (static_cast<size_t>(pr) >=
-                            taskflow_partner_progressive_assembled.size() ||
-                        !taskflow_partner_progressive_assembled[
+                    if (taskflow_partner_progressive_assembled == NULL ||
+                        static_cast<size_t>(pr) >=
+                            taskflow_partner_progressive_assembled->size() ||
+                        !(*taskflow_partner_progressive_assembled)[
                             static_cast<size_t>(pr)])
                     {
                         taskflow_assemble_owned_pieces(

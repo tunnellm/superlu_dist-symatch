@@ -6990,6 +6990,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             progress_scratch_count)
                             state.producer_progress_statuses.reserve(
                                 progress_scratch_count);
+                        if (state.producer_partner_progressive_assembled.capacity() <
+                            static_cast<size_t>(Pr))
+                            state.producer_partner_progressive_assembled.reserve(
+                                static_cast<size_t>(Pr));
                     }
                 }
                 std::vector<size_t> taskflow_pinned_counts_by_panel =

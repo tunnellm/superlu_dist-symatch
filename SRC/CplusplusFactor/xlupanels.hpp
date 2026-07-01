@@ -1177,6 +1177,7 @@ struct xLUstruct_t
         std::vector<int> producer_partner_recv_sizes;
         std::vector<int> producer_partner_recv_offsets;
         std::vector<unsigned char> producer_partner_recv_done;
+        std::vector<unsigned char> producer_partner_progressive_assembled;
         std::vector<MPI_Request> producer_row_recv_reqs;
         std::vector<int> producer_row_recv_pcs;
         std::vector<int> producer_row_recv_sizes;
@@ -1316,6 +1317,7 @@ struct xLUstruct_t
             producer_partner_recv_sizes.clear();
             producer_partner_recv_offsets.clear();
             producer_partner_recv_done.clear();
+            producer_partner_progressive_assembled.clear();
             producer_row_recv_reqs.clear();
             producer_row_recv_pcs.clear();
             producer_row_recv_sizes.clear();
