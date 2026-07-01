@@ -2296,10 +2296,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.runnable_task_ids_by_mode[mask].reserve(mode_counts[mask]);
     if (async_core)
     {
+        size_t launched_reserve =
+            static_cast<size_t>(
+                superlu_sym_v2_pcfrag_taskflow_progress_budget());
+        if (launched_reserve > planned_task_count)
+            launched_reserve = planned_task_count;
         for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
              kind < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
             state.launched_task_ids_by_stream[kind].reserve(
-                planned_task_count);
+                launched_reserve);
     }
     auto build_piece_task_offsets =
         [](const std::vector<size_t> &degrees,
@@ -3333,6 +3338,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             !superlu_sym_v2_pcfrag_taskflow_validate())
         {
             int launched_this_call = 0;
+            int pending_launched =
+                async_core ? dSymV2PcFragTaskflowPendingLaunchedAllForMode(
+                                 state, 0, 0, GLOBAL_BLOCK_NOT_FOUND)
+                           : 0;
+            const int in_flight_task_cap =
+                async_core ? superlu_sym_v2_pcfrag_taskflow_progress_budget()
+                           : 0;
             size_t runnable_write = 0;
             for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
             {
@@ -3343,6 +3355,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     state.tasks[static_cast<size_t>(tid)];
                 if (task.launched || task.complete)
                     continue;
+                if (async_core && pending_launched >= in_flight_task_cap)
+                {
+                    state.runnable_task_ids[runnable_write++] = tid;
+                    continue;
+                }
                 SymV2PcFragPieceDesc &row =
                     state.row_pieces[static_cast<size_t>(task.row_piece)];
                 SymV2PcFragPieceDesc &col =
@@ -3397,6 +3414,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     dSymV2PcFragTaskflowPublishGemmResourceTail(
                         *this, state, task, streamId, stream);
                     dSymV2PcFragTaskflowRecordLaunchedTask(state, task);
+                    ++pending_launched;
                     if (dSymV2PcFragTaskflowForceTaskSync())
                     {
                         ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
@@ -3406,6 +3424,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             *this, state, task, strict_output_conflicts);
                         dSymV2PcFragTaskflowRecycleEvent(
                             symV2PcFragTaskflowEventPool, task.done_event);
+                        --pending_launched;
                     }
                 }
                 else
