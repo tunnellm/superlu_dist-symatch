@@ -828,6 +828,22 @@ static inline int dSymV2PcFragTaskflowProgressProducerSends(
     return completed;
 }
 
+static inline int dSymV2PcFragTaskflowProducerSendsComplete(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats, int drain)
+{
+    dSymV2PcFragTaskflowCompactProducerSends(state);
+    if (state.producer_send_reqs.empty())
+        return 1;
+    if (drain || !superlu_sym_v2_pcfrag_taskflow_async_core())
+    {
+        dSymV2PcFragTaskflowWaitProducerSends(state, stats);
+        return 1;
+    }
+    dSymV2PcFragTaskflowProgressProducerSends(state, stats);
+    return state.producer_send_reqs.empty() ? 1 : 0;
+}
+
 static inline void dSymV2PcFragTaskflowUnlockTaskOutputs(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
@@ -2064,7 +2080,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         } while (drain);
         return completed;
     };
-    auto release_completed_state = [&]() {
+    auto release_completed_state = [&]() -> int {
+        if (!dSymV2PcFragTaskflowProducerSendsComplete(
+                state, symV2PcFragTaskflowStats, 0))
+            return 0;
         for (size_t i = 0; i < state.tasks.size(); ++i)
             dSymV2PcFragTaskflowRecycleEvent(
                 symV2PcFragTaskflowEventPool,
@@ -2099,11 +2118,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         dSymV2PcFragTaskflowRecycleValueBlock(
             symV2PcFragTaskflowValueBlockPool,
             state.d_group_value_pool, state.group_value_pool_capacity);
-        dSymV2PcFragTaskflowWaitProducerSends(
-            state, symV2PcFragTaskflowStats);
         dSymV2PcFragTaskflowReleasePinnedHost(
             symV2PcFragTaskflowPinnedBlockPool, state);
         state.reset();
+        return 1;
     };
 
     int launched = 0;
@@ -2330,7 +2348,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                unsigned launch_mode) -> bool {
             return (task.mode_mask & launch_mode) != 0;
         };
-        auto release_completed_state = [&]() {
+        auto release_completed_state = [&]() -> int {
+            if (!dSymV2PcFragTaskflowProducerSendsComplete(
+                    state, symV2PcFragTaskflowStats, 0))
+                return 0;
             for (size_t i = 0; i < state.tasks.size(); ++i)
                 dSymV2PcFragTaskflowRecycleEvent(
                     symV2PcFragTaskflowEventPool,
@@ -2364,11 +2385,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             dSymV2PcFragTaskflowRecycleValueBlock(
                 symV2PcFragTaskflowValueBlockPool,
                 state.d_group_value_pool, state.group_value_pool_capacity);
-            dSymV2PcFragTaskflowWaitProducerSends(
-                state, symV2PcFragTaskflowStats);
             dSymV2PcFragTaskflowReleasePinnedHost(
                 symV2PcFragTaskflowPinnedBlockPool, state);
             state.reset();
+            return 1;
         };
 
         progress_launched_tasks(drain ? 1 : 0, mode_mask);
