@@ -1833,6 +1833,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         superlu_sym_v2_pcfrag_taskflow_async_core();
     const bool allow_taskflow_late_alloc =
         !async_core;
+    const bool need_piece_pair_lookup = !async_core;
 
     auto release_taskflow_state = [&](SymV2PcFragPanelTaskState &s) {
         for (size_t i = 0; i < s.row_pieces.size(); ++i)
@@ -2253,8 +2254,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         byte_product_or_max(planned_task_count,
                             sizeof(SymV2PcFragTaskDesc));
     size_t estimated_pair_bytes =
-        byte_product_or_max(planned_task_count,
-                            sizeof(SymV2PcFragPairTaskEntry));
+        need_piece_pair_lookup
+            ? byte_product_or_max(planned_task_count,
+                                  sizeof(SymV2PcFragPairTaskEntry))
+            : 0;
     size_t estimated_ready_bytes =
         byte_product_or_max(planned_task_count, 2 * sizeof(unsigned char));
     size_t estimated_queue_bytes =
@@ -2284,7 +2287,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     }
 
     state.tasks.reserve(planned_task_count);
-    state.pair_task_entries.reserve(planned_task_count);
+    if (need_piece_pair_lookup)
+        state.pair_task_entries.reserve(planned_task_count);
     state.task_ready_inputs.reserve(planned_task_count);
     state.task_enqueued.reserve(planned_task_count);
     state.runnable_task_ids.reserve(planned_task_count);
@@ -2379,8 +2383,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.tasks.push_back(task);
         state.task_ready_inputs.push_back(0);
         state.task_enqueued.push_back(0);
-        state.pair_task_entries.push_back(
-            SymV2PcFragPairTaskEntry(row_piece, partner_piece, task_id));
+        if (need_piece_pair_lookup)
+            state.pair_task_entries.push_back(
+                SymV2PcFragPairTaskEntry(row_piece, partner_piece, task_id));
         int row_pos = row_piece_task_write[rp]++;
         int row_end = state.row_piece_task_offsets[rp + 1];
         if (row_pos < state.row_piece_task_offsets[rp] ||
@@ -2450,8 +2455,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         if (partner_piece_task_write[cp] !=
             state.partner_piece_task_offsets[cp + 1])
             ABORT("GPU3DV2_PCFRAG_TASKFLOW partner-piece task adjacency is incomplete.");
-    std::sort(state.pair_task_entries.begin(),
-              state.pair_task_entries.end());
+    if (need_piece_pair_lookup)
+        std::sort(state.pair_task_entries.begin(),
+                  state.pair_task_entries.end());
     for (std::map<int_t, size_t>::const_iterator it =
              lookahead_col_degrees.begin();
          it != lookahead_col_degrees.end(); ++it)
