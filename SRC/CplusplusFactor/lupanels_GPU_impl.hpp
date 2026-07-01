@@ -2587,6 +2587,36 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                unsigned launch_mode) -> bool {
             return (task.mode_mask & launch_mode) != 0;
         };
+        auto task_launch_mode_for_request =
+            [&](const SymV2PcFragTaskDesc &task,
+                unsigned requested_mode_mask,
+                int_t requested_gid) -> unsigned {
+            if ((requested_mode_mask & SYM_V2_PCFRAG_TASK_FULL) &&
+                (task.mode_mask & SYM_V2_PCFRAG_TASK_FULL))
+                return SYM_V2_PCFRAG_TASK_FULL;
+            if ((requested_mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL) &&
+                (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL))
+            {
+                if (requested_gid == GLOBAL_BLOCK_NOT_FOUND)
+                    return SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL;
+                for (size_t o = 0; o < task.outputs.size(); ++o)
+                    if (task.outputs[o].gj == requested_gid)
+                        return SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL;
+            }
+            if ((requested_mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW) &&
+                (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW))
+            {
+                if (requested_gid == GLOBAL_BLOCK_NOT_FOUND)
+                    return SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+                for (size_t o = 0; o < task.outputs.size(); ++o)
+                    if (task.outputs[o].gi == requested_gid)
+                        return SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+            }
+            if ((requested_mode_mask & SYM_V2_PCFRAG_TASK_EXCLUDE) &&
+                (task.mode_mask & SYM_V2_PCFRAG_TASK_EXCLUDE))
+                return SYM_V2_PCFRAG_TASK_EXCLUDE;
+            return 0;
+        };
         auto release_completed_state = [&]() -> int {
             if (!dSymV2PcFragTaskflowProducerSendsComplete(
                     state, symV2PcFragTaskflowStats, 0))
@@ -3243,6 +3273,58 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 }
             }
         };
+        if (async_core && !drain &&
+            superlu_sym_v2_pcfrag_taskflow_eager() &&
+            !superlu_sym_v2_pcfrag_taskflow_validate())
+        {
+            size_t runnable_write = 0;
+            for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
+            {
+                int tid = state.runnable_task_ids[i];
+                if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
+                SymV2PcFragTaskDesc &task =
+                    state.tasks[static_cast<size_t>(tid)];
+                if (task.launched || task.complete)
+                    continue;
+                unsigned launch_mode =
+                    task_launch_mode_for_request(task, mode_mask, mode_gid);
+                if (launch_mode == 0 ||
+                    !dSymV2PcFragTaskflowTaskRequiredForMode(
+                        task, 1, mode_mask, mode_gid))
+                {
+                    state.runnable_task_ids[runnable_write++] = tid;
+                    continue;
+                }
+                cublasHandle_t task_handle = handle;
+                cudaStream_t task_stream = stream;
+                double *task_gemm = gemmBuff;
+                if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+                {
+                    task_handle = A_gpu.lookAheadLHandle[streamId];
+                    task_stream = A_gpu.lookAheadLStream[streamId];
+                    task_gemm = A_gpu.lookAheadLGemmBuffer[streamId];
+                }
+                else if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                {
+                    task_handle = A_gpu.lookAheadUHandle[streamId];
+                    task_stream = A_gpu.lookAheadUStream[streamId];
+                    task_gemm = A_gpu.gpuGemmBuffs[streamId];
+                }
+                if (!launch_single_task(
+                        task, task_handle, task_stream, task_gemm,
+                        launch_mode))
+                    state.runnable_task_ids[runnable_write++] = tid;
+            }
+            if (runnable_write != state.runnable_task_ids.size())
+                state.runnable_task_ids.resize(runnable_write);
+            progress_launched_tasks(0, mode_mask);
+            if (state.incomplete_task_count == 0 &&
+                !state.producer_exchange_active &&
+                !state.producer_exchange_pending)
+                release_completed_state();
+            return 0;
+        }
         auto dispatch_limited =
             [&](int_t row_start, int_t row_end,
                 int_t col_start, int_t col_end,
