@@ -732,10 +732,25 @@ static inline void dSymV2PcFragTaskflowReleasePinnedHost(
     state.producer_row_send_host_capacity = 0;
 }
 
+static inline void dSymV2PcFragTaskflowCompactProducerSends(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state)
+{
+    size_t write = 0;
+    for (size_t i = 0; i < state.producer_send_reqs.size(); ++i)
+    {
+        if (state.producer_send_reqs[i] == MPI_REQUEST_NULL)
+            continue;
+        state.producer_send_reqs[write++] = state.producer_send_reqs[i];
+    }
+    if (write != state.producer_send_reqs.size())
+        state.producer_send_reqs.resize(write);
+}
+
 static inline void dSymV2PcFragTaskflowWaitProducerSends(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats)
 {
+    dSymV2PcFragTaskflowCompactProducerSends(state);
     if (state.producer_send_reqs.empty())
         return;
     ++stats.producer_send_wait_calls;
@@ -756,6 +771,46 @@ static inline void dSymV2PcFragTaskflowEnsureProgressScratch(
         state.producer_progress_indices.resize(request_count);
     if (state.producer_progress_statuses.size() < request_count)
         state.producer_progress_statuses.resize(request_count);
+}
+
+static inline int dSymV2PcFragTaskflowProgressProducerSends(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats)
+{
+    dSymV2PcFragTaskflowCompactProducerSends(state);
+    if (state.producer_send_reqs.empty())
+        return 0;
+    const int request_count =
+        static_cast<int>(state.producer_send_reqs.size());
+    if (state.producer_progress_indices.size() <
+            static_cast<size_t>(request_count) ||
+        state.producer_progress_statuses.size() <
+            static_cast<size_t>(request_count))
+    {
+        if (superlu_sym_v2_pcfrag_taskflow_async_core())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE send progress scratch is undersized.");
+        dSymV2PcFragTaskflowEnsureProgressScratch(
+            state, static_cast<size_t>(request_count));
+    }
+    int completed = 0;
+    ++stats.producer_send_test_calls;
+    int mpi_rc = MPI_Testsome(
+        request_count, state.producer_send_reqs.data(), &completed,
+        state.producer_progress_indices.data(),
+        state.producer_progress_statuses.data());
+    if (mpi_rc != MPI_SUCCESS)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW send progress failed.");
+    if (completed == MPI_UNDEFINED)
+    {
+        state.producer_send_reqs.clear();
+        return 0;
+    }
+    if (completed <= 0)
+        return 0;
+    stats.producer_send_test_completions +=
+        static_cast<long long>(completed);
+    dSymV2PcFragTaskflowCompactProducerSends(state);
+    return completed;
 }
 
 static inline void dSymV2PcFragTaskflowUnlockTaskOutputs(
@@ -1608,8 +1663,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
         symV2PcFragTaskStates[static_cast<size_t>(k)];
     if (!state.initialized)
         return 0;
+    int progressed = dSymV2PcFragTaskflowProgressProducerSends(
+        state, symV2PcFragTaskflowStats);
     if (!state.producer_exchange_pending)
-        return 0;
+        return progressed;
     int streamId = state.stream_offset >= 0 ? state.stream_offset : 0;
     if (streamId < 0 || streamId >= A_gpu.numCudaStreams)
         streamId = 0;
@@ -1618,7 +1675,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
                               : A_gpu.cuStreams[streamId];
     if (stream == NULL)
         stream = A_gpu.cuStreams[streamId];
-    int progressed = 0;
     ++symV2PcFragTaskflowStats.producer_exchange_progress_calls;
     if (drain)
         ++symV2PcFragTaskflowStats.producer_exchange_drain_calls;
@@ -6233,6 +6289,9 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             if (!taskflow_state->producer_send_reqs.empty())
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW found pending producer sends before exchange return.");
             taskflow_state->producer_send_reqs = send_reqs;
+            dSymV2PcFragTaskflowEnsureProgressScratch(
+                *taskflow_state,
+                taskflow_state->producer_send_reqs.size());
             send_reqs.clear();
         }
         else

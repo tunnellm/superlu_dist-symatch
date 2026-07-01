@@ -1409,6 +1409,8 @@ struct xLUstruct_t
         long long producer_exchange_drain_calls;
         long long producer_recv_test_calls;
         long long producer_recv_test_completions;
+        long long producer_send_test_calls;
+        long long producer_send_test_completions;
         long long producer_returns_with_pending_recvs;
 
         SymV2PcFragTaskflowStats()
@@ -1456,6 +1458,8 @@ struct xLUstruct_t
               producer_exchange_drain_calls(0),
               producer_recv_test_calls(0),
               producer_recv_test_completions(0),
+              producer_send_test_calls(0),
+              producer_send_test_completions(0),
               producer_returns_with_pending_recvs(0)
         {
         }
@@ -1509,7 +1513,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[65] = {
+        long long local[67] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1574,19 +1578,21 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_exchange_drain_calls,
             symV2PcFragTaskflowStats.producer_recv_test_calls,
             symV2PcFragTaskflowStats.producer_recv_test_completions,
+            symV2PcFragTaskflowStats.producer_send_test_calls,
+            symV2PcFragTaskflowStats.producer_send_test_completions,
             symV2PcFragTaskflowStats.producer_returns_with_pending_recvs
         };
-        long long global[65] = {};
+        long long global[67] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 65, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 67, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 65; ++i)
+            for (int i = 0; i < 67; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1640,6 +1646,8 @@ struct xLUstruct_t
             "producer_exchange_drain_calls=%lld "
             "producer_recv_test_calls=%lld "
             "producer_recv_test_completions=%lld "
+            "producer_send_test_calls=%lld "
+            "producer_send_test_completions=%lld "
             "producer_returns_with_pending_recvs=%lld\n",
             global[0], global[1], global[2], global[3], global[4],
             global[5], global[6], global[7], global[8], global[9],
@@ -1653,7 +1661,8 @@ struct xLUstruct_t
             global[45], global[46], global[47], global[48], global[49],
             global[50], global[51], global[52], global[53], global[54],
             global[55], global[56], global[57], global[58], global[59],
-            global[60], global[61], global[62], global[63], global[64]);
+            global[60], global[61], global[62], global[63], global[64],
+            global[65], global[66]);
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END
