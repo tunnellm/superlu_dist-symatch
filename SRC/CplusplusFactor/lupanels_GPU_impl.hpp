@@ -849,39 +849,67 @@ static inline bool dSymV2PcFragTaskflowTaskRequiredForMode(
            ((task.mode_mask & required_mode_mask) != 0);
 }
 
+static inline int dSymV2PcFragTaskflowModeMaskIndex(unsigned mode_mask)
+{
+    return static_cast<int>(
+        mode_mask &
+        (xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW |
+         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_EXCLUDE |
+         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL));
+}
+
+static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
+    int delta)
+{
+    int kind = dSymV2PcFragTaskflowTaskStreamKind(task);
+    state.launched_task_pending_by_stream[kind] += delta;
+    if (state.launched_task_pending_by_stream[kind] < 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW launched stream pending count underflowed.");
+    int task_mask = dSymV2PcFragTaskflowModeMaskIndex(task.mode_mask);
+    for (int mask = 1; mask < 16; ++mask)
+    {
+        if ((task_mask & mask) == 0)
+            continue;
+        state.launched_task_pending_mode_by_stream[kind][mask] += delta;
+        if (state.launched_task_pending_mode_by_stream[kind][mask] < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW launched mode pending count underflowed.");
+    }
+}
+
+static inline int dSymV2PcFragTaskflowPendingLaunchedForMode(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    int kind,
+    int drain,
+    unsigned required_mode_mask)
+{
+    if (kind <= xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_NONE ||
+        kind >= xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_COUNT)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW pending-count stream is invalid.");
+    if (!drain || required_mode_mask == 0)
+        return state.launched_task_pending_by_stream[kind];
+    int mask = dSymV2PcFragTaskflowModeMaskIndex(required_mode_mask);
+    if (mask <= 0 || mask >= 16)
+        return 0;
+    return state.launched_task_pending_mode_by_stream[kind][mask];
+}
+
 static inline void dSymV2PcFragTaskflowRecordLaunchedTask(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
 {
     int kind = dSymV2PcFragTaskflowTaskStreamKind(task);
     state.launched_task_ids_by_stream[kind].push_back(task.task_id);
+    dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(state, task, 1);
 }
 
-static inline bool dSymV2PcFragTaskflowRemainingStreamHasRequiredTask(
+static inline void dSymV2PcFragTaskflowUnrecordLaunchedTask(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
-    const std::vector<int> &task_ids,
-    size_t begin,
-    int drain,
-    unsigned required_mode_mask)
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
 {
-    if (!drain)
-        return begin < task_ids.size();
-    if (required_mode_mask == 0)
-        return begin < task_ids.size();
-    for (size_t i = begin; i < task_ids.size(); ++i)
-    {
-        int tid = task_ids[i];
-        if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW launched task id is invalid.");
-        const xLUstruct_t<double>::SymV2PcFragTaskDesc &task =
-            state.tasks[static_cast<size_t>(tid)];
-        if (!task.launched || task.complete)
-            continue;
-        if (dSymV2PcFragTaskflowTaskRequiredForMode(
-                task, drain, required_mode_mask))
-            return true;
-    }
-    return false;
+    dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(state, task, -1);
 }
 
 static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
@@ -903,6 +931,16 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
         std::vector<int> &task_ids =
             state.launched_task_ids_by_stream[kind];
         size_t launched_write = 0;
+        if (task_ids.empty())
+            continue;
+        if (state.task_event_poll_skip[kind] > 0)
+        {
+            --state.task_event_poll_skip[kind];
+            pending_required +=
+                dSymV2PcFragTaskflowPendingLaunchedForMode(
+                    state, kind, drain, required_mode_mask);
+            continue;
+        }
         for (size_t i = 0; i < task_ids.size(); ++i)
         {
             int tid = task_ids[i];
@@ -930,10 +968,11 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
             if (dSymV2PcFragTaskflowSkipEventQuery(state, task))
             {
                 task_ids[launched_write++] = tid;
-                if (pending_required == 0 &&
-                    dSymV2PcFragTaskflowRemainingStreamHasRequiredTask(
-                        state, task_ids, i + 1, drain, required_mode_mask))
-                    pending_required = 1;
+                if (required_task)
+                    --pending_required;
+                pending_required +=
+                    dSymV2PcFragTaskflowPendingLaunchedForMode(
+                        state, kind, drain, required_mode_mask);
                 for (size_t j = i + 1; j < task_ids.size(); ++j)
                     task_ids[launched_write++] = task_ids[j];
                 break;
@@ -943,6 +982,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
             if (event_rc == cudaSuccess)
             {
                 dSymV2PcFragTaskflowNoteEventComplete(state, task);
+                dSymV2PcFragTaskflowUnrecordLaunchedTask(state, task);
                 dSymV2PcFragTaskflowCompleteLaunchedTask(
                     state, task, stats, strict_output_conflicts);
                 ++completed;
@@ -954,10 +994,11 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 gpuErrchk(event_rc);
             dSymV2PcFragTaskflowNoteEventNotReady(state, task);
             task_ids[launched_write++] = tid;
-            if (pending_required == 0 &&
-                dSymV2PcFragTaskflowRemainingStreamHasRequiredTask(
-                    state, task_ids, i + 1, drain, required_mode_mask))
-                pending_required = 1;
+            if (required_task)
+                --pending_required;
+            pending_required +=
+                dSymV2PcFragTaskflowPendingLaunchedForMode(
+                    state, kind, drain, required_mode_mask);
             for (size_t j = i + 1; j < task_ids.size(); ++j)
                 task_ids[launched_write++] = task_ids[j];
             break;

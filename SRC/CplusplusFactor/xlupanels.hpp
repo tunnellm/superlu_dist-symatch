@@ -1154,6 +1154,10 @@ struct xLUstruct_t
         std::vector<int> runnable_task_ids;
         std::vector<int> launched_task_ids_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
+        int launched_task_pending_by_stream[
+            SYM_V2_PCFRAG_TASK_STREAM_COUNT];
+        int launched_task_pending_mode_by_stream[
+            SYM_V2_PCFRAG_TASK_STREAM_COUNT][16];
         std::set<SymV2PcFragOutputKey> active_output_key_set;
         int task_event_poll_skip[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int incomplete_task_count;
@@ -1225,7 +1229,12 @@ struct xLUstruct_t
               index_pool_used(0), value_pool_used(0)
         {
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
+            {
                 task_event_poll_skip[i] = 0;
+                launched_task_pending_by_stream[i] = 0;
+                for (int mask = 0; mask < 16; ++mask)
+                    launched_task_pending_mode_by_stream[i][mask] = 0;
+            }
         }
 
         void note_piece_ready(unsigned char kind, int piece_id)
@@ -1276,7 +1285,12 @@ struct xLUstruct_t
             task_enqueued.clear();
             runnable_task_ids.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
+            {
                 launched_task_ids_by_stream[i].clear();
+                launched_task_pending_by_stream[i] = 0;
+                for (int mask = 0; mask < 16; ++mask)
+                    launched_task_pending_mode_by_stream[i][mask] = 0;
+            }
             active_output_key_set.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
                 task_event_poll_skip[i] = 0;
