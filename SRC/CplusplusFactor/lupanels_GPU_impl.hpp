@@ -1876,6 +1876,30 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             ++state.partner_pieces[cp].pending_consumers;
         }
     }
+    std::map<int_t, size_t> lookahead_col_degrees;
+    std::map<int_t, size_t> lookahead_row_degrees;
+    for (size_t t = 0; t < state.tasks.size(); ++t)
+    {
+        const SymV2PcFragTaskDesc &task = state.tasks[t];
+        if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+        {
+            for (size_t o = 0; o < task.outputs.size(); ++o)
+                ++lookahead_col_degrees[task.outputs[o].gj];
+        }
+        if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+        {
+            for (size_t o = 0; o < task.outputs.size(); ++o)
+                ++lookahead_row_degrees[task.outputs[o].gi];
+        }
+    }
+    for (std::map<int_t, size_t>::const_iterator it =
+             lookahead_col_degrees.begin();
+         it != lookahead_col_degrees.end(); ++it)
+        state.runnable_lookahead_col_by_gid[it->first].reserve(it->second);
+    for (std::map<int_t, size_t>::const_iterator it =
+             lookahead_row_degrees.begin();
+         it != lookahead_row_degrees.end(); ++it)
+        state.runnable_lookahead_row_by_gid[it->first].reserve(it->second);
     state.incomplete_task_count = static_cast<int>(state.tasks.size());
     symV2PcFragTaskflowStats.tasks_planned +=
         static_cast<long long>(state.tasks.size());
@@ -3284,8 +3308,27 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 if ((mode_mask & single_mode) == 0)
                     continue;
-                std::vector<int> &queue =
-                    state.runnable_task_ids_by_mode[single_mode];
+                std::vector<int> *queue_ptr =
+                    &state.runnable_task_ids_by_mode[single_mode];
+                if (mode_gid != GLOBAL_BLOCK_NOT_FOUND &&
+                    single_mode == SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+                {
+                    std::map<int_t, std::vector<int> >::iterator it =
+                        state.runnable_lookahead_col_by_gid.find(mode_gid);
+                    if (it == state.runnable_lookahead_col_by_gid.end())
+                        continue;
+                    queue_ptr = &it->second;
+                }
+                else if (mode_gid != GLOBAL_BLOCK_NOT_FOUND &&
+                         single_mode == SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                {
+                    std::map<int_t, std::vector<int> >::iterator it =
+                        state.runnable_lookahead_row_by_gid.find(mode_gid);
+                    if (it == state.runnable_lookahead_row_by_gid.end())
+                        continue;
+                    queue_ptr = &it->second;
+                }
+                std::vector<int> &queue = *queue_ptr;
                 size_t runnable_write = 0;
                 for (size_t i = 0; i < queue.size(); ++i)
                 {

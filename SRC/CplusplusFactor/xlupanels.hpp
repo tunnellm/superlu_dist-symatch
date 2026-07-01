@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <set>
+#include <map>
 #include <iostream>
 #include <cstdlib>
 #include <cstdio>
@@ -1155,6 +1156,8 @@ struct xLUstruct_t
         std::vector<unsigned char> task_enqueued;
         std::vector<int> runnable_task_ids;
         std::vector<int> runnable_task_ids_by_mode[16];
+        std::map<int_t, std::vector<int> > runnable_lookahead_col_by_gid;
+        std::map<int_t, std::vector<int> > runnable_lookahead_row_by_gid;
         std::vector<int> launched_task_ids_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int launched_task_pending_by_stream[
@@ -1287,6 +1290,34 @@ struct xLUstruct_t
                             ABORT("GPU3DV2_PCFRAG_TASKFLOW mode runnable queue capacity is undersized.");
                         runnable_task_ids_by_mode[mask].push_back(tid);
                     }
+                    if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+                    {
+                        for (size_t o = 0; o < tasks[pos].outputs.size(); ++o)
+                        {
+                            int_t gid = tasks[pos].outputs[o].gj;
+                            std::map<int_t, std::vector<int> >::iterator it =
+                                runnable_lookahead_col_by_gid.find(gid);
+                            if (it == runnable_lookahead_col_by_gid.end())
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable map is missing a gid.");
+                            if (it->second.size() >= it->second.capacity())
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable queue capacity is undersized.");
+                            it->second.push_back(tid);
+                        }
+                    }
+                    if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                    {
+                        for (size_t o = 0; o < tasks[pos].outputs.size(); ++o)
+                        {
+                            int_t gid = tasks[pos].outputs[o].gi;
+                            std::map<int_t, std::vector<int> >::iterator it =
+                                runnable_lookahead_row_by_gid.find(gid);
+                            if (it == runnable_lookahead_row_by_gid.end())
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable map is missing a gid.");
+                            if (it->second.size() >= it->second.capacity())
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable queue capacity is undersized.");
+                            it->second.push_back(tid);
+                        }
+                    }
                     task_enqueued[pos] = 1;
                 }
             }
@@ -1312,6 +1343,8 @@ struct xLUstruct_t
             runnable_task_ids.clear();
             for (int mask = 0; mask < 16; ++mask)
                 runnable_task_ids_by_mode[mask].clear();
+            runnable_lookahead_col_by_gid.clear();
+            runnable_lookahead_row_by_gid.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
             {
                 launched_task_ids_by_stream[i].clear();
