@@ -4852,82 +4852,122 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             in_flight_task_cap - pending_launched;
                         if (available_group_slots > 1)
                         {
-                            const bool group_by_partner =
+                            auto collect_candidate_tids =
+                                [&](bool group_by_partner) {
+                                    std::vector<int> candidates;
+                                    candidates.reserve(static_cast<size_t>(
+                                        available_group_slots));
+                                    candidates.push_back(tid);
+                                    for (size_t j = i + 1;
+                                         j < queue.size() &&
+                                         static_cast<int>(candidates.size()) <
+                                             available_group_slots;
+                                         ++j)
+                                    {
+                                        int cand_tid = queue[j];
+                                        if (cand_tid < 0 ||
+                                            static_cast<size_t>(cand_tid) >=
+                                                state.tasks.size())
+                                            ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
+                                        SymV2PcFragTaskDesc &candidate =
+                                            state.tasks[static_cast<size_t>(
+                                                cand_tid)];
+                                        if (candidate.launched ||
+                                            candidate.complete)
+                                            continue;
+                                        if (task_launch_mode_for_request(
+                                                candidate, single_mode,
+                                                mode_gid) != launch_mode ||
+                                            !dSymV2PcFragTaskflowTaskRequiredForMode(
+                                                candidate, 1, single_mode,
+                                                mode_gid))
+                                            continue;
+                                        if (group_by_partner)
+                                        {
+                                            if (candidate.partner_piece !=
+                                                task.partner_piece)
+                                                continue;
+                                            bool seen_row_piece = false;
+                                            for (size_t ci = 0;
+                                                 ci < candidates.size();
+                                                 ++ci)
+                                            {
+                                                const SymV2PcFragTaskDesc
+                                                    &seen = state.tasks
+                                                        [static_cast<size_t>(
+                                                            candidates[ci])];
+                                                if (seen.row_piece ==
+                                                    candidate.row_piece)
+                                                {
+                                                    seen_row_piece = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (seen_row_piece)
+                                                continue;
+                                        }
+                                        else
+                                        {
+                                            if (candidate.row_piece !=
+                                                task.row_piece)
+                                                continue;
+                                            bool seen_partner_piece = false;
+                                            for (size_t ci = 0;
+                                                 ci < candidates.size();
+                                                 ++ci)
+                                            {
+                                                const SymV2PcFragTaskDesc
+                                                    &seen = state.tasks
+                                                        [static_cast<size_t>(
+                                                            candidates[ci])];
+                                                if (seen.partner_piece ==
+                                                    candidate.partner_piece)
+                                                {
+                                                    seen_partner_piece = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (seen_partner_piece)
+                                                continue;
+                                        }
+                                        candidates.push_back(cand_tid);
+                                    }
+                                    return candidates;
+                                };
+                            bool group_by_partner =
                                 single_mode !=
                                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
                             std::vector<int> candidate_tids;
-                            candidate_tids.reserve(
-                                static_cast<size_t>(available_group_slots));
-                            candidate_tids.push_back(tid);
-                            for (size_t j = i + 1;
-                                 j < queue.size() &&
-                                 static_cast<int>(candidate_tids.size()) <
-                                     available_group_slots;
-                                 ++j)
+                            if (single_mode ==
+                                SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                             {
-                                int cand_tid = queue[j];
-                                if (cand_tid < 0 ||
-                                    static_cast<size_t>(cand_tid) >=
-                                        state.tasks.size())
-                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
-                                SymV2PcFragTaskDesc &candidate =
-                                    state.tasks[
-                                        static_cast<size_t>(cand_tid)];
-                                if (candidate.launched ||
-                                    candidate.complete)
-                                    continue;
-                                if (task_launch_mode_for_request(
-                                        candidate, single_mode,
-                                        mode_gid) != launch_mode ||
-                                    !dSymV2PcFragTaskflowTaskRequiredForMode(
-                                        candidate, 1, single_mode,
-                                        mode_gid))
-                                    continue;
-                                if (group_by_partner)
+                                group_by_partner = true;
+                                candidate_tids =
+                                    collect_candidate_tids(true);
+                            }
+                            else if (single_mode ==
+                                     SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                            {
+                                group_by_partner = false;
+                                candidate_tids =
+                                    collect_candidate_tids(false);
+                            }
+                            else
+                            {
+                                std::vector<int> by_partner =
+                                    collect_candidate_tids(true);
+                                std::vector<int> by_row =
+                                    collect_candidate_tids(false);
+                                if (by_row.size() > by_partner.size())
                                 {
-                                    if (candidate.partner_piece !=
-                                        task.partner_piece)
-                                        continue;
-                                    bool seen_row_piece = false;
-                                    for (size_t ci = 0;
-                                         ci < candidate_tids.size(); ++ci)
-                                    {
-                                        const SymV2PcFragTaskDesc &seen =
-                                            state.tasks[static_cast<size_t>(
-                                                candidate_tids[ci])];
-                                        if (seen.row_piece ==
-                                            candidate.row_piece)
-                                        {
-                                            seen_row_piece = true;
-                                            break;
-                                        }
-                                    }
-                                    if (seen_row_piece)
-                                        continue;
+                                    group_by_partner = false;
+                                    candidate_tids.swap(by_row);
                                 }
                                 else
                                 {
-                                    if (candidate.row_piece !=
-                                        task.row_piece)
-                                        continue;
-                                    bool seen_partner_piece = false;
-                                    for (size_t ci = 0;
-                                         ci < candidate_tids.size(); ++ci)
-                                    {
-                                        const SymV2PcFragTaskDesc &seen =
-                                            state.tasks[static_cast<size_t>(
-                                                candidate_tids[ci])];
-                                        if (seen.partner_piece ==
-                                            candidate.partner_piece)
-                                        {
-                                            seen_partner_piece = true;
-                                            break;
-                                        }
-                                    }
-                                    if (seen_partner_piece)
-                                        continue;
+                                    group_by_partner = true;
+                                    candidate_tids.swap(by_partner);
                                 }
-                                candidate_tids.push_back(cand_tid);
                             }
                             if (candidate_tids.size() > 1)
                             {
