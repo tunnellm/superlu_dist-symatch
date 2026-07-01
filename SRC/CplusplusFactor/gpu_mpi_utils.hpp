@@ -515,6 +515,26 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch()
         "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_GROUPED_DISPATCH", 0);
 }
 
+static inline int superlu_sym_v2_pcfrag_taskflow_group_budget()
+{
+    static int cached = -1;
+    if (cached > 0)
+        return cached;
+    const char *env =
+        std::getenv("GPU3DV2_PCFRAG_TASKFLOW_GROUP_BUDGET");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = superlu_sym_v2_pcfrag_taskflow_async_core() ? 32 : 8;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 1 || value > 1048576L)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_GROUP_BUDGET must be an integer in [1,1048576].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_core_check()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK", 1);

@@ -4849,7 +4849,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         !state.group_scratch_in_use)
                     {
                         int available_group_slots =
-                            in_flight_task_cap - pending_launched;
+                            superlu_sym_v2_pcfrag_taskflow_group_budget();
+                        if (available_group_slots <= 0)
+                            available_group_slots =
+                                in_flight_task_cap - pending_launched;
                         if (available_group_slots > 1)
                         {
                             auto task_ready_for_group =
