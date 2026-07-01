@@ -1154,6 +1154,7 @@ struct xLUstruct_t
         std::vector<unsigned char> task_ready_inputs;
         std::vector<unsigned char> task_enqueued;
         std::vector<int> runnable_task_ids;
+        std::vector<int> runnable_task_ids_by_mode[16];
         std::vector<int> launched_task_ids_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int launched_task_pending_by_stream[
@@ -1276,6 +1277,16 @@ struct xLUstruct_t
                         runnable_task_ids.capacity())
                         ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable queue capacity is undersized.");
                     runnable_task_ids.push_back(tid);
+                    unsigned char mode_mask = tasks[pos].mode_mask;
+                    for (int mask = 1; mask < 16; mask <<= 1)
+                    {
+                        if ((mode_mask & mask) == 0)
+                            continue;
+                        if (runnable_task_ids_by_mode[mask].size() >=
+                            runnable_task_ids_by_mode[mask].capacity())
+                            ABORT("GPU3DV2_PCFRAG_TASKFLOW mode runnable queue capacity is undersized.");
+                        runnable_task_ids_by_mode[mask].push_back(tid);
+                    }
                     task_enqueued[pos] = 1;
                 }
             }
@@ -1299,6 +1310,8 @@ struct xLUstruct_t
             task_ready_inputs.clear();
             task_enqueued.clear();
             runnable_task_ids.clear();
+            for (int mask = 0; mask < 16; ++mask)
+                runnable_task_ids_by_mode[mask].clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
             {
                 launched_task_ids_by_stream[i].clear();

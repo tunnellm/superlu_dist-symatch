@@ -1813,6 +1813,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     state.task_ready_inputs.reserve(planned_task_count);
     state.task_enqueued.reserve(planned_task_count);
     state.runnable_task_ids.reserve(planned_task_count);
+    for (int mask = 1; mask < 16; mask <<= 1)
+        state.runnable_task_ids_by_mode[mask].reserve(planned_task_count);
     if (async_core)
     {
         for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
@@ -3277,47 +3279,57 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             superlu_sym_v2_pcfrag_taskflow_eager() &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
         {
-            size_t runnable_write = 0;
-            for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
+            for (unsigned single_mode = 1; single_mode < 16;
+                 single_mode <<= 1)
             {
-                int tid = state.runnable_task_ids[i];
-                if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
-                SymV2PcFragTaskDesc &task =
-                    state.tasks[static_cast<size_t>(tid)];
-                if (task.launched || task.complete)
+                if ((mode_mask & single_mode) == 0)
                     continue;
-                unsigned launch_mode =
-                    task_launch_mode_for_request(task, mode_mask, mode_gid);
-                if (launch_mode == 0 ||
-                    !dSymV2PcFragTaskflowTaskRequiredForMode(
-                        task, 1, mode_mask, mode_gid))
+                std::vector<int> &queue =
+                    state.runnable_task_ids_by_mode[single_mode];
+                size_t runnable_write = 0;
+                for (size_t i = 0; i < queue.size(); ++i)
                 {
-                    state.runnable_task_ids[runnable_write++] = tid;
-                    continue;
+                    int tid = queue[i];
+                    if (tid < 0 ||
+                        static_cast<size_t>(tid) >= state.tasks.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
+                    SymV2PcFragTaskDesc &task =
+                        state.tasks[static_cast<size_t>(tid)];
+                    if (task.launched || task.complete)
+                        continue;
+                    unsigned launch_mode =
+                        task_launch_mode_for_request(
+                            task, single_mode, mode_gid);
+                    if (launch_mode == 0 ||
+                        !dSymV2PcFragTaskflowTaskRequiredForMode(
+                            task, 1, single_mode, mode_gid))
+                    {
+                        queue[runnable_write++] = tid;
+                        continue;
+                    }
+                    cublasHandle_t task_handle = handle;
+                    cudaStream_t task_stream = stream;
+                    double *task_gemm = gemmBuff;
+                    if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+                    {
+                        task_handle = A_gpu.lookAheadLHandle[streamId];
+                        task_stream = A_gpu.lookAheadLStream[streamId];
+                        task_gemm = A_gpu.lookAheadLGemmBuffer[streamId];
+                    }
+                    else if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                    {
+                        task_handle = A_gpu.lookAheadUHandle[streamId];
+                        task_stream = A_gpu.lookAheadUStream[streamId];
+                        task_gemm = A_gpu.gpuGemmBuffs[streamId];
+                    }
+                    if (!launch_single_task(
+                            task, task_handle, task_stream, task_gemm,
+                            launch_mode))
+                        queue[runnable_write++] = tid;
                 }
-                cublasHandle_t task_handle = handle;
-                cudaStream_t task_stream = stream;
-                double *task_gemm = gemmBuff;
-                if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
-                {
-                    task_handle = A_gpu.lookAheadLHandle[streamId];
-                    task_stream = A_gpu.lookAheadLStream[streamId];
-                    task_gemm = A_gpu.lookAheadLGemmBuffer[streamId];
-                }
-                else if (launch_mode & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
-                {
-                    task_handle = A_gpu.lookAheadUHandle[streamId];
-                    task_stream = A_gpu.lookAheadUStream[streamId];
-                    task_gemm = A_gpu.gpuGemmBuffs[streamId];
-                }
-                if (!launch_single_task(
-                        task, task_handle, task_stream, task_gemm,
-                        launch_mode))
-                    state.runnable_task_ids[runnable_write++] = tid;
+                if (runnable_write != queue.size())
+                    queue.resize(runnable_write);
             }
-            if (runnable_write != state.runnable_task_ids.size())
-                state.runnable_task_ids.resize(runnable_write);
             progress_launched_tasks(0, mode_mask);
             if (state.incomplete_task_count == 0 &&
                 !state.producer_exchange_active &&
