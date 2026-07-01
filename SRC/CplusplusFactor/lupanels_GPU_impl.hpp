@@ -1409,6 +1409,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
             ++stats.task_completion_event_queries;
             if (event_rc == cudaSuccess)
             {
+                ++stats.task_completion_event_successes;
                 dSymV2PcFragTaskflowNoteEventComplete(state, task);
                 dSymV2PcFragTaskflowUnrecordLaunchedTask(state, task);
                 dSymV2PcFragTaskflowCompleteLaunchedTask(
