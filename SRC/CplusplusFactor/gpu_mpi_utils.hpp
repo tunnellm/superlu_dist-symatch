@@ -539,6 +539,30 @@ static inline int superlu_sym_v2_pcfrag_taskflow_piece_max_rows()
     return cached;
 }
 
+static inline size_t superlu_sym_v2_pcfrag_taskflow_max_planned_tasks()
+{
+    static size_t cached = std::numeric_limits<size_t>::max();
+    static int initialized = 0;
+    if (initialized)
+        return cached;
+    initialized = 1;
+    const char *env =
+        std::getenv("GPU3DV2_PCFRAG_TASKFLOW_MAX_PLANNED_TASKS");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = std::numeric_limits<size_t>::max();
+        return cached;
+    }
+    char *end = NULL;
+    unsigned long long value = std::strtoull(env, &end, 10);
+    if (end == env || *end != '\0')
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_MAX_PLANNED_TASKS must be a non-negative integer.");
+    cached = static_cast<size_t>(value);
+    if (static_cast<unsigned long long>(cached) != value)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_MAX_PLANNED_TASKS exceeds size_t.");
+    return cached;
+}
+
 static inline bool superlu_sym_v2_pcfrag_taskflow_global_output_locks()
 {
     int default_value = superlu_sym_v2_pcfrag_taskflow_strict() ? 1 : 0;

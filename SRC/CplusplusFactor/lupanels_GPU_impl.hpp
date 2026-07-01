@@ -2145,10 +2145,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     symV2PcFragTaskflowStats.partner_pieces_created +=
         static_cast<long long>(state.partner_pieces.size());
 
-    state.row_piece_tasks.assign(state.row_pieces.size(),
-                                 std::vector<int>());
-    state.partner_piece_tasks.assign(state.partner_pieces.size(),
-                                     std::vector<int>());
     struct TaskflowGidPiece
     {
         int_t gid;
@@ -2233,6 +2229,36 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 ++lookahead_row_degrees[gi];
         }
     }
+    size_t max_planned_tasks =
+        superlu_sym_v2_pcfrag_taskflow_max_planned_tasks();
+    if (planned_task_count > max_planned_tasks)
+    {
+        std::fprintf(stderr,
+                     "[rank %d] GPU3DV2 taskflow refusing k=%lld "
+                     "planned_tasks=%zu max_planned_tasks=%zu "
+                     "row_pieces=%zu partner_pieces=%zu\n",
+                     iam, static_cast<long long>(k), planned_task_count,
+                     max_planned_tasks, state.row_pieces.size(),
+                     state.partner_pieces.size());
+        std::fflush(stderr);
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW planned task count exceeds guard.");
+    }
+    auto byte_product_or_max = [](size_t count, size_t bytes) -> size_t {
+        if (bytes != 0 &&
+            count > std::numeric_limits<size_t>::max() / bytes)
+            return std::numeric_limits<size_t>::max();
+        return count * bytes;
+    };
+    size_t estimated_task_bytes =
+        byte_product_or_max(planned_task_count,
+                            sizeof(SymV2PcFragTaskDesc));
+    size_t estimated_pair_bytes =
+        byte_product_or_max(planned_task_count,
+                            sizeof(SymV2PcFragPairTaskEntry));
+    size_t estimated_ready_bytes =
+        byte_product_or_max(planned_task_count, 2 * sizeof(unsigned char));
+    size_t estimated_queue_bytes =
+        byte_product_or_max(planned_task_count, 6 * sizeof(int));
     const char *taskflow_plan_diag =
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG");
     if (taskflow_plan_diag != NULL && taskflow_plan_diag[0] != '\0')
@@ -2240,11 +2266,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         fprintf(stderr,
                 "[rank %d] taskflow plan k=%lld row_pieces=%zu "
                 "partner_pieces=%zu planned_tasks=%zu "
-                "lookahead_col_gids=%zu lookahead_row_gids=%zu\n",
+                "lookahead_col_gids=%zu lookahead_row_gids=%zu "
+                "task_desc_bytes=%zu pair_bytes=%zu ready_bytes=%zu "
+                "queue_est_bytes=%zu\n",
                 iam, static_cast<long long>(k),
                 state.row_pieces.size(), state.partner_pieces.size(),
                 planned_task_count, lookahead_col_degrees.size(),
-                lookahead_row_degrees.size());
+                lookahead_row_degrees.size(), estimated_task_bytes,
+                estimated_pair_bytes, estimated_ready_bytes,
+                estimated_queue_bytes);
         fflush(stderr);
         const char *taskflow_plan_diag_abort =
             std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG_ABORT");
@@ -2267,10 +2297,41 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             state.launched_task_ids_by_stream[kind].reserve(
                 planned_task_count);
     }
-    for (size_t rp = 0; rp < row_task_degrees.size(); ++rp)
-        state.row_piece_tasks[rp].reserve(row_task_degrees[rp]);
-    for (size_t cp = 0; cp < partner_task_degrees.size(); ++cp)
-        state.partner_piece_tasks[cp].reserve(partner_task_degrees[cp]);
+    auto build_piece_task_offsets =
+        [](const std::vector<size_t> &degrees,
+           std::vector<int> &offsets,
+           const char *abort_msg) -> size_t {
+        offsets.assign(degrees.size() + 1, 0);
+        size_t prefix = 0;
+        for (size_t i = 0; i < degrees.size(); ++i)
+        {
+            if (degrees[i] >
+                static_cast<size_t>(std::numeric_limits<int>::max()))
+                ABORT(abort_msg);
+            if (prefix >
+                static_cast<size_t>(std::numeric_limits<int>::max()) -
+                    degrees[i])
+                ABORT(abort_msg);
+            offsets[i] = static_cast<int>(prefix);
+            prefix += degrees[i];
+        }
+        offsets[degrees.size()] = static_cast<int>(prefix);
+        return prefix;
+    };
+    size_t row_piece_task_count =
+        build_piece_task_offsets(
+            row_task_degrees, state.row_piece_task_offsets,
+            "GPU3DV2_PCFRAG_TASKFLOW row-piece task adjacency is too large.");
+    size_t partner_piece_task_count =
+        build_piece_task_offsets(
+            partner_task_degrees, state.partner_piece_task_offsets,
+            "GPU3DV2_PCFRAG_TASKFLOW partner-piece task adjacency is too large.");
+    state.row_piece_task_ids.assign(row_piece_task_count, -1);
+    state.partner_piece_task_ids.assign(partner_piece_task_count, -1);
+    std::vector<int> row_piece_task_write =
+        state.row_piece_task_offsets;
+    std::vector<int> partner_piece_task_write =
+        state.partner_piece_task_offsets;
     auto create_task_for_output =
         [&](int row_piece, int partner_piece,
             const SymV2PcFragOutputKey &output,
@@ -2320,8 +2381,22 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.task_enqueued.push_back(0);
         state.pair_task_entries.push_back(
             SymV2PcFragPairTaskEntry(row_piece, partner_piece, task_id));
-        state.row_piece_tasks[rp].push_back(task_id);
-        state.partner_piece_tasks[cp].push_back(task_id);
+        int row_pos = row_piece_task_write[rp]++;
+        int row_end = state.row_piece_task_offsets[rp + 1];
+        if (row_pos < state.row_piece_task_offsets[rp] ||
+            row_pos >= row_end ||
+            static_cast<size_t>(row_pos) >= state.row_piece_task_ids.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW row-piece task adjacency overflowed.");
+        state.row_piece_task_ids[static_cast<size_t>(row_pos)] = task_id;
+        int partner_pos = partner_piece_task_write[cp]++;
+        int partner_end = state.partner_piece_task_offsets[cp + 1];
+        if (partner_pos < state.partner_piece_task_offsets[cp] ||
+            partner_pos >= partner_end ||
+            static_cast<size_t>(partner_pos) >=
+                state.partner_piece_task_ids.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner-piece task adjacency overflowed.");
+        state.partner_piece_task_ids[static_cast<size_t>(partner_pos)] =
+            task_id;
         ++state.row_pieces[rp].pending_consumers;
         ++state.partner_pieces[cp].pending_consumers;
     };
@@ -2367,6 +2442,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                                    mode_mask);
         }
     }
+    for (size_t rp = 0; rp < row_task_degrees.size(); ++rp)
+        if (row_piece_task_write[rp] !=
+            state.row_piece_task_offsets[rp + 1])
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW row-piece task adjacency is incomplete.");
+    for (size_t cp = 0; cp < partner_task_degrees.size(); ++cp)
+        if (partner_piece_task_write[cp] !=
+            state.partner_piece_task_offsets[cp + 1])
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner-piece task adjacency is incomplete.");
     std::sort(state.pair_task_entries.begin(),
               state.pair_task_entries.end());
     for (std::map<int_t, size_t>::const_iterator it =

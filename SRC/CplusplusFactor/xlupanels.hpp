@@ -1238,8 +1238,10 @@ struct xLUstruct_t
         std::vector<int> row_block_piece;
         std::vector<int> partner_block_piece;
         std::vector<SymV2PcFragPairTaskEntry> pair_task_entries;
-        std::vector<std::vector<int> > row_piece_tasks;
-        std::vector<std::vector<int> > partner_piece_tasks;
+        std::vector<int> row_piece_task_offsets;
+        std::vector<int> row_piece_task_ids;
+        std::vector<int> partner_piece_task_offsets;
+        std::vector<int> partner_piece_task_ids;
         std::vector<unsigned char> task_ready_inputs;
         std::vector<unsigned char> task_enqueued;
         std::vector<int> runnable_task_ids;
@@ -1349,18 +1351,25 @@ struct xLUstruct_t
 
         void note_piece_ready(unsigned char kind, int piece_id)
         {
-            const std::vector<std::vector<int> > &adj =
+            const std::vector<int> &offsets =
                 (kind == SYM_V2_PCFRAG_PIECE_ROW)
-                    ? row_piece_tasks
-                    : partner_piece_tasks;
-            if (piece_id < 0 ||
-                static_cast<size_t>(piece_id) >= adj.size())
-                return;
+                    ? row_piece_task_offsets
+                    : partner_piece_task_offsets;
             const std::vector<int> &task_ids =
-                adj[static_cast<size_t>(piece_id)];
-            for (size_t i = 0; i < task_ids.size(); ++i)
+                (kind == SYM_V2_PCFRAG_PIECE_ROW)
+                    ? row_piece_task_ids
+                    : partner_piece_task_ids;
+            if (piece_id < 0 ||
+                static_cast<size_t>(piece_id + 1) >= offsets.size())
+                return;
+            int begin = offsets[static_cast<size_t>(piece_id)];
+            int end = offsets[static_cast<size_t>(piece_id + 1)];
+            if (begin < 0 || end < begin ||
+                static_cast<size_t>(end) > task_ids.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW piece task CSR is invalid.");
+            for (int i = begin; i < end; ++i)
             {
-                int tid = task_ids[i];
+                int tid = task_ids[static_cast<size_t>(i)];
                 if (tid < 0 || static_cast<size_t>(tid) >= tasks.size())
                     continue;
                 size_t pos = static_cast<size_t>(tid);
@@ -1432,8 +1441,10 @@ struct xLUstruct_t
             row_block_piece.clear();
             partner_block_piece.clear();
             pair_task_entries.clear();
-            row_piece_tasks.clear();
-            partner_piece_tasks.clear();
+            row_piece_task_offsets.clear();
+            row_piece_task_ids.clear();
+            partner_piece_task_offsets.clear();
+            partner_piece_task_ids.clear();
             task_ready_inputs.clear();
             task_enqueued.clear();
             runnable_task_ids.clear();
