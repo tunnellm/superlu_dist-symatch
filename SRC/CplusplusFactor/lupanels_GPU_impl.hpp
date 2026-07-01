@@ -752,6 +752,16 @@ static inline void dSymV2PcFragTaskflowReleasePinnedHost(
     state.producer_row_send_host_capacity = 0;
 }
 
+static inline void dSymV2PcFragTaskflowNoteProducerRecvPost(
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats,
+    bool pinned_host)
+{
+    if (pinned_host)
+        ++stats.producer_recv_pinned_posts;
+    else
+        ++stats.producer_recv_pageable_posts;
+}
+
 static inline void dSymV2PcFragTaskflowCompactProducerSends(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state)
 {
@@ -4554,6 +4564,16 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             {
                 recv_ptr = recv_host_base + recv_offsets[pr];
             }
+            if (pcfrag_taskflow_async_pieces)
+            {
+                const bool pinned_taskflow_recv =
+                    !cuda_aware && taskflow_state != NULL &&
+                    recv_host_base != NULL &&
+                    recv_host_base ==
+                        taskflow_state->producer_partner_recv_host_values;
+                dSymV2PcFragTaskflowNoteProducerRecvPost(
+                    symV2PcFragTaskflowStats, pinned_taskflow_recv);
+            }
             MPI_Irecv(recv_ptr, size, MPI_DOUBLE, src,
                       SLU_MPI_TAG(5, k), grid->comm, &req);
             recv_reqs.push_back(req);
@@ -7000,6 +7020,16 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 double row_recv_post_t = SuperLU_timer_();
 #endif
+                if (pcfrag_taskflow_async_pieces)
+                {
+                    const bool pinned_taskflow_recv =
+                        taskflow_state != NULL &&
+                        row_recv_host_base != NULL &&
+                        row_recv_host_base ==
+                            taskflow_state->producer_row_recv_host_values;
+                    dSymV2PcFragTaskflowNoteProducerRecvPost(
+                        symV2PcFragTaskflowStats, pinned_taskflow_recv);
+                }
                 MPI_Irecv(row_recv_host_base, row_recv_total, MPI_DOUBLE,
                           row_src_pc, SLU_MPI_TAG(5, k),
                           grid3d->rscp.comm, &req);
