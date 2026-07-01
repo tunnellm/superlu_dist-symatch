@@ -1579,6 +1579,96 @@ struct xLUstruct_t
         }
     };
 
+    enum SymV2PcFragTaskflowProfileIndex
+    {
+        SYM_V2_PCFRAG_TASKFLOW_ROW_PIECES_CREATED = 0,
+        SYM_V2_PCFRAG_TASKFLOW_PARTNER_PIECES_CREATED,
+        SYM_V2_PCFRAG_TASKFLOW_ROW_PIECES_READY,
+        SYM_V2_PCFRAG_TASKFLOW_PARTNER_PIECES_READY,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_PLANNED,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_COMPLETED,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_COMPLETED_ASYNC_CORE,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_TILED_BLOCK_PAIRS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_TILED_GEMM_TILES,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_QUERIES,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_QUERY_SKIPS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_WAITS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_POLL_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_POLL_TASK_SCANS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_POLL_REQUIRED_SEEN,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_DRAIN_POLL_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_DRAIN_TASK_SCANS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_DRAIN_REQUIRED_SEEN,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_BLOCKED_ROW,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_BLOCKED_PARTNER,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_BLOCKED_OUTPUT,
+        SYM_V2_PCFRAG_TASKFLOW_SCATTER_CONFLICT_WAITS,
+        SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_ACQUIRED,
+        SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCK_HIGH_WATER,
+        SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_EVENT,
+        SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_LAUNCH_SYNC,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED_PROGRESS,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED_EAGER_FULL,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED_LOOKAHEAD,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED_EXCLUDE,
+        SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED_FULL,
+        SYM_V2_PCFRAG_TASKFLOW_DISPATCH_CALLS_LOOKAHEAD,
+        SYM_V2_PCFRAG_TASKFLOW_DISPATCH_CALLS_EXCLUDE,
+        SYM_V2_PCFRAG_TASKFLOW_DISPATCH_CALLS_FULL,
+        SYM_V2_PCFRAG_TASKFLOW_DRAIN_CALLS_LOOKAHEAD,
+        SYM_V2_PCFRAG_TASKFLOW_DRAIN_CALLS_EXCLUDE,
+        SYM_V2_PCFRAG_TASKFLOW_DRAIN_CALLS_FULL,
+        SYM_V2_PCFRAG_TASKFLOW_DRAIN_INCOMPLETE_TASKS,
+        SYM_V2_PCFRAG_TASKFLOW_TASKFLOW_ENTRIES,
+        SYM_V2_PCFRAG_TASKFLOW_LEGACY_WRAPPER_ABORTS,
+        SYM_V2_PCFRAG_TASKFLOW_EARLY_TASK_LAUNCHES_BEFORE_FULL_PANEL_READY,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_VALUE_HIGH_WATER,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_INDEX_HIGH_WATER,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_PINNED_HIGH_WATER,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_INDEX_PREWARM_BLOCKS,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_VALUE_PREWARM_BLOCKS,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_PINNED_PREWARM_BLOCKS,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_EVENT_PREWARM_BLOCKS,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_INDEX_LATE_ALLOCS,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_VALUE_LATE_ALLOCS,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_PINNED_LATE_ALLOCS,
+        SYM_V2_PCFRAG_TASKFLOW_ARENA_EVENT_LATE_ALLOCS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_WAIT_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_WAIT_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_BOUNDARY_WAIT_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_NONBOUNDARY_WAIT_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_MPI_WAIT_REQUESTS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURNS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURNS_ALL_PIECES_READY,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURNS_INCOMPLETE_PIECES,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURN_UNREADY_PIECES,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURNS_ALL_TASKS_COMPLETE,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURNS_INCOMPLETE_TASKS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURN_INCOMPLETE_TASK_SUM,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_TASK_LAUNCH_CAP_HITS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_TASK_LAUNCH_CAP_DEFERRED,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_EXCHANGE_PROGRESS_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_EXCHANGE_DRAIN_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_TEST_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_TEST_COMPLETIONS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_TEST_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_TEST_COMPLETIONS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RETURNS_WITH_PENDING_RECVS,
+        SYM_V2_PCFRAG_TASKFLOW_FINAL_PROGRESS_ROUNDS,
+        SYM_V2_PCFRAG_TASKFLOW_FINAL_PROGRESS_TASKS_LAUNCHED,
+        SYM_V2_PCFRAG_TASKFLOW_FINAL_PROGRESS_TASKS_COMPLETED,
+        SYM_V2_PCFRAG_TASKFLOW_FINAL_PREDRAIN_ROUNDS,
+        SYM_V2_PCFRAG_TASKFLOW_FINAL_PREDRAIN_DISPATCH_CALLS,
+        SYM_V2_PCFRAG_TASKFLOW_FINAL_PREDRAIN_TASKS_LAUNCHED,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_LAUNCH_STREAM_SYNCS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PINNED_POSTS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS,
+        SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS,
+        SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_SUCCESSES,
+        SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT
+    };
+
 #ifdef HAVE_CUDA
     struct SymV2PcFragGpuIndexBlock
     {
@@ -1627,7 +1717,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[85] = {
+        long long local[SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1714,17 +1804,19 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_progress_vector_growths,
             symV2PcFragTaskflowStats.task_completion_event_successes
         };
-        long long global[85] = {};
+        long long global[SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 85, MPI_LONG_LONG, MPI_SUM, 0,
-                       grid3d->comm);
+            MPI_Reduce(local, global,
+                       SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT,
+                       MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 85; ++i)
+            for (int i = 0;
+                 i < SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1819,21 +1911,30 @@ struct xLUstruct_t
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =
-                global[49] + global[50] + global[51] + global[52];
+                global[SYM_V2_PCFRAG_TASKFLOW_ARENA_INDEX_LATE_ALLOCS] +
+                global[SYM_V2_PCFRAG_TASKFLOW_ARENA_VALUE_LATE_ALLOCS] +
+                global[SYM_V2_PCFRAG_TASKFLOW_ARENA_PINNED_LATE_ALLOCS] +
+                global[SYM_V2_PCFRAG_TASKFLOW_ARENA_EVENT_LATE_ALLOCS];
             long long non_async_task_completions =
-                global[6] - global[7];
+                global[SYM_V2_PCFRAG_TASKFLOW_TASKS_COMPLETED] -
+                global[SYM_V2_PCFRAG_TASKFLOW_TASKS_COMPLETED_ASYNC_CORE];
             if (non_async_task_completions < 0)
                 non_async_task_completions = 0;
             long long producer_send_wait_mismatch =
-                global[54] - global[55] - global[56];
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_WAIT_CALLS] -
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_BOUNDARY_WAIT_CALLS] -
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_NONBOUNDARY_WAIT_CALLS];
             if (producer_send_wait_mismatch < 0)
                 producer_send_wait_mismatch = -producer_send_wait_mismatch;
             long long output_lock_release_mismatch =
-                global[23] - global[25] - global[26];
+                global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_ACQUIRED] -
+                global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_EVENT] -
+                global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_LAUNCH_SYNC];
             if (output_lock_release_mismatch < 0)
                 output_lock_release_mismatch = -output_lock_release_mismatch;
             long long task_completion_event_success_mismatch =
-                global[7] - global[84];
+                global[SYM_V2_PCFRAG_TASKFLOW_TASKS_COMPLETED_ASYNC_CORE] -
+                global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_SUCCESSES];
             if (task_completion_event_success_mismatch < 0)
                 task_completion_event_success_mismatch =
                     -task_completion_event_success_mismatch;
@@ -1856,20 +1957,38 @@ struct xLUstruct_t
                 "producer_progress_vector_growths=%lld "
                 "task_completion_event_successes=%lld "
                 "task_completion_event_success_mismatch=%lld\n",
-                late_allocs, global[12], global[53], global[40],
-                non_async_task_completions, global[54], global[55],
-                global[56], producer_send_wait_mismatch, global[80],
-                global[23], global[25], global[26],
-                output_lock_release_mismatch, global[81], global[82],
-                global[83], global[84],
+                late_allocs,
+                global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_WAITS],
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_WAIT_CALLS],
+                global[SYM_V2_PCFRAG_TASKFLOW_LEGACY_WRAPPER_ABORTS],
+                non_async_task_completions,
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_WAIT_CALLS],
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_BOUNDARY_WAIT_CALLS],
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_NONBOUNDARY_WAIT_CALLS],
+                producer_send_wait_mismatch,
+                global[SYM_V2_PCFRAG_TASKFLOW_TASK_LAUNCH_STREAM_SYNCS],
+                global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_ACQUIRED],
+                global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_EVENT],
+                global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_LAUNCH_SYNC],
+                output_lock_release_mismatch,
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PINNED_POSTS],
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS],
+                global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS],
+                global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_SUCCESSES],
                 task_completion_event_success_mismatch);
             if (superlu_sym_v2_pcfrag_taskflow_async_core_check() &&
-                (late_allocs != 0 || global[12] != 0 ||
-                 global[53] != 0 || global[40] != 0 ||
-                 non_async_task_completions != 0 || global[56] != 0 ||
-                 producer_send_wait_mismatch != 0 || global[80] != 0 ||
-                 global[26] != 0 || output_lock_release_mismatch != 0 ||
-                 global[82] != 0 || global[83] != 0 ||
+                (late_allocs != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_WAITS] != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_WAIT_CALLS] != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_LEGACY_WRAPPER_ABORTS] != 0 ||
+                 non_async_task_completions != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_SEND_NONBOUNDARY_WAIT_CALLS] != 0 ||
+                 producer_send_wait_mismatch != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_TASK_LAUNCH_STREAM_SYNCS] != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_LAUNCH_SYNC] != 0 ||
+                 output_lock_release_mismatch != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS] != 0 ||
+                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS] != 0 ||
                  task_completion_event_success_mismatch != 0))
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK detected a contract violation.");
         }
