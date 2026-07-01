@@ -1322,8 +1322,9 @@ struct xLUstruct_t
             producer_row_recv_offsets.clear();
             producer_row_recv_done.clear();
             producer_send_reqs.clear();
-            producer_progress_indices.clear();
-            producer_progress_statuses.clear();
+            // Async-core progress scratch is setup-sized and intentionally
+            // kept across panel resets so MPI_Testsome/Waitsome never grows
+            // temporary vectors during factorization.
 #ifdef HAVE_CUDA
             producer_partner_recv_host_values = NULL;
             producer_row_recv_host_values = NULL;

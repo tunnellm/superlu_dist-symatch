@@ -6962,6 +6962,36 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 size_t active_slots =
                     static_cast<size_t>(SUPERLU_MAX(static_cast<int_t>(1),
                                                     num_lookahead));
+                if (superlu_sym_v2_pcfrag_taskflow_async_core())
+                {
+                    if (symV2PcFragTaskStates.size() <
+                        static_cast<size_t>(nsupers))
+                        symV2PcFragTaskStates.resize(
+                            static_cast<size_t>(nsupers));
+                    size_t progress_scratch_count = xlu_checked_sum_size(
+                        xlu_checked_product(static_cast<size_t>(Pr),
+                                            static_cast<size_t>(Pc),
+                                            "taskflow progress scratch"),
+                        static_cast<size_t>(Pc),
+                        "taskflow progress scratch");
+                    progress_scratch_count = SUPERLU_MAX(
+                        progress_scratch_count, static_cast<size_t>(Pr));
+                    for (int_t k0 = 0; k0 < nsupers; ++k0)
+                    {
+                        if (!symV2UsePcFragmentSchurPanel(k0))
+                            continue;
+                        SymV2PcFragPanelTaskState &state =
+                            symV2PcFragTaskStates[static_cast<size_t>(k0)];
+                        if (state.producer_progress_indices.capacity() <
+                            progress_scratch_count)
+                            state.producer_progress_indices.reserve(
+                                progress_scratch_count);
+                        if (state.producer_progress_statuses.capacity() <
+                            progress_scratch_count)
+                            state.producer_progress_statuses.reserve(
+                                progress_scratch_count);
+                    }
+                }
                 std::vector<size_t> taskflow_pinned_counts_by_panel =
                     taskflow_pinned_counts;
                 std::sort(taskflow_index_counts.begin(),

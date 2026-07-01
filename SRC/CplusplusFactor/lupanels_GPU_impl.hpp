@@ -767,6 +767,10 @@ static inline void dSymV2PcFragTaskflowEnsureProgressScratch(
 {
     if (request_count == 0)
         return;
+    if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+        (state.producer_progress_indices.capacity() < request_count ||
+         state.producer_progress_statuses.capacity() < request_count))
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE progress scratch is undersized.");
     if (state.producer_progress_indices.size() < request_count)
         state.producer_progress_indices.resize(request_count);
     if (state.producer_progress_statuses.size() < request_count)
