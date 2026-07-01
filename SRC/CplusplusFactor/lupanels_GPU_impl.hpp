@@ -885,19 +885,20 @@ static inline int dSymV2PcFragTaskflowProducerSendsComplete(
     return state.producer_send_reqs.empty() ? 1 : 0;
 }
 
-static inline void dSymV2PcFragTaskflowUnlockTaskOutputs(
+static inline long long dSymV2PcFragTaskflowUnlockTaskOutputs(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
     bool strict_output_conflicts)
 {
     if (!strict_output_conflicts)
-        return;
+        return 0;
     for (size_t o = 0; o < task.outputs.size(); ++o)
     {
         const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
             task.outputs[o];
         state.active_output_key_set.erase(key);
     }
+    return static_cast<long long>(task.outputs.size());
 }
 
 static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
@@ -951,8 +952,9 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
         state.row_pieces[static_cast<size_t>(task.row_piece)];
     xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
         state.partner_pieces[static_cast<size_t>(task.partner_piece)];
-    dSymV2PcFragTaskflowUnlockTaskOutputs(
-        state, task, strict_output_conflicts);
+    stats.output_locks_released_by_event +=
+        dSymV2PcFragTaskflowUnlockTaskOutputs(
+            state, task, strict_output_conflicts);
     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
     task.complete = 1;
     --state.incomplete_task_count;
@@ -2556,12 +2558,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     };
     auto unlock_outputs = [&](const SymV2PcFragTaskDesc &task) {
         if (!strict_output_conflicts)
-            return;
+            return 0LL;
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
             const SymV2PcFragOutputKey &key = task.outputs[o];
             state.active_output_key_set.erase(key);
         }
+        return static_cast<long long>(task.outputs.size());
     };
     auto progress_launched_tasks = [&](int drain) -> int {
         if (!async_core)
@@ -2705,7 +2708,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         {
             ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
             gpuErrchk(cudaStreamSynchronize(stream));
-            unlock_outputs(task);
+            symV2PcFragTaskflowStats.output_locks_released_by_launch_sync +=
+                unlock_outputs(task);
             dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
                 state, task);
             task.complete = 1;
@@ -2809,12 +2813,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         };
         auto unlock_outputs = [&](const SymV2PcFragTaskDesc &task) {
             if (!strict_output_conflicts)
-                return;
+                return 0LL;
             for (size_t o = 0; o < task.outputs.size(); ++o)
             {
                 const SymV2PcFragOutputKey &key = task.outputs[o];
                 state.active_output_key_set.erase(key);
             }
+            return static_cast<long long>(task.outputs.size());
         };
         auto progress_launched_tasks =
             [&](int drain, unsigned required_mode_mask) -> int {
@@ -3003,7 +3008,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 {
                     ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
                     gpuErrchk(cudaStreamSynchronize(stream));
-                    unlock_outputs(task);
+                    symV2PcFragTaskflowStats.output_locks_released_by_launch_sync +=
+                        unlock_outputs(task);
                     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
                         state, task);
                     task.complete = 1;
@@ -3277,7 +3283,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
                 gpuErrchk(cudaStreamSynchronize(task_stream));
-                unlock_outputs(task);
+                symV2PcFragTaskflowStats.output_locks_released_by_launch_sync +=
+                    unlock_outputs(task);
                 dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
                     state, task);
                 task.complete = 1;
@@ -3532,7 +3539,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
             gpuErrchk(cudaStreamSynchronize(group_stream));
             for (size_t i = 0; i < locked_tasks.size(); ++i)
-                unlock_outputs(*locked_tasks[i]);
+                symV2PcFragTaskflowStats.output_locks_released_by_launch_sync +=
+                    unlock_outputs(*locked_tasks[i]);
             for (int_t rb = row_start; rb < row_end; ++rb)
             {
                 for (int_t cb = col_start; cb < col_end; ++cb)

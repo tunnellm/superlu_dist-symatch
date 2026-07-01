@@ -1450,6 +1450,8 @@ struct xLUstruct_t
         long long scatter_conflict_waits;
         long long output_locks_acquired;
         long long output_lock_high_water;
+        long long output_locks_released_by_event;
+        long long output_locks_released_by_launch_sync;
         long long tasks_launched_progress;
         long long tasks_launched_eager_full;
         long long tasks_launched_lookahead;
@@ -1525,6 +1527,8 @@ struct xLUstruct_t
               tasks_blocked_row(0), tasks_blocked_partner(0),
               tasks_blocked_output(0), scatter_conflict_waits(0),
               output_locks_acquired(0), output_lock_high_water(0),
+              output_locks_released_by_event(0),
+              output_locks_released_by_launch_sync(0),
               tasks_launched_progress(0), tasks_launched_eager_full(0),
               tasks_launched_lookahead(0), tasks_launched_exclude(0),
               tasks_launched_full(0), dispatch_calls_lookahead(0),
@@ -1621,7 +1625,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[82] = {
+        long long local[84] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1647,6 +1651,8 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.scatter_conflict_waits,
             symV2PcFragTaskflowStats.output_locks_acquired,
             symV2PcFragTaskflowStats.output_lock_high_water,
+            symV2PcFragTaskflowStats.output_locks_released_by_event,
+            symV2PcFragTaskflowStats.output_locks_released_by_launch_sync,
             symV2PcFragTaskflowStats.tasks_launched_progress,
             symV2PcFragTaskflowStats.tasks_launched_eager_full,
             symV2PcFragTaskflowStats.tasks_launched_lookahead,
@@ -1705,17 +1711,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_recv_pageable_posts,
             symV2PcFragTaskflowStats.producer_progress_vector_growths
         };
-        long long global[82] = {};
+        long long global[84] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 82, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 84, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 82; ++i)
+            for (int i = 0; i < 84; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1738,6 +1744,8 @@ struct xLUstruct_t
             "tasks_blocked_row=%lld tasks_blocked_partner=%lld "
             "tasks_blocked_output=%lld scatter_conflict_waits=%lld "
             "output_locks_acquired=%lld output_lock_high_water=%lld "
+            "output_locks_released_by_event=%lld "
+            "output_locks_released_by_launch_sync=%lld "
             "tasks_launched_progress=%lld tasks_launched_eager_full=%lld "
             "tasks_launched_lookahead=%lld tasks_launched_exclude=%lld "
             "tasks_launched_full=%lld "
@@ -1803,19 +1811,23 @@ struct xLUstruct_t
             global[65], global[66], global[67], global[68], global[69],
             global[70], global[71], global[72], global[73], global[74],
             global[75], global[76], global[77], global[78], global[79],
-            global[80], global[81]);
+            global[80], global[81], global[82], global[83]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =
-                global[47] + global[48] + global[49] + global[50];
+                global[49] + global[50] + global[51] + global[52];
             long long non_async_task_completions =
                 global[6] - global[7];
             if (non_async_task_completions < 0)
                 non_async_task_completions = 0;
             long long producer_send_wait_mismatch =
-                global[52] - global[53] - global[54];
+                global[54] - global[55] - global[56];
             if (producer_send_wait_mismatch < 0)
                 producer_send_wait_mismatch = -producer_send_wait_mismatch;
+            long long output_lock_release_mismatch =
+                global[23] - global[25] - global[26];
+            if (output_lock_release_mismatch < 0)
+                output_lock_release_mismatch = -output_lock_release_mismatch;
             std::printf(
                 "SymFact V2 Pc-fragment taskflow async-core contract: "
                 "late_allocs=%lld event_waits=%lld "
@@ -1826,19 +1838,26 @@ struct xLUstruct_t
                 "producer_send_nonboundary_wait_calls=%lld "
                 "producer_send_wait_mismatch=%lld "
                 "task_launch_stream_syncs=%lld "
+                "output_locks_acquired=%lld "
+                "output_locks_released_by_event=%lld "
+                "output_locks_released_by_launch_sync=%lld "
+                "output_lock_release_mismatch=%lld "
                 "producer_recv_pinned_posts=%lld "
                 "producer_recv_pageable_posts=%lld "
                 "producer_progress_vector_growths=%lld\n",
-                late_allocs, global[12], global[51], global[38],
-                non_async_task_completions, global[52], global[53],
-                global[54], producer_send_wait_mismatch, global[78],
-                global[79], global[80], global[81]);
+                late_allocs, global[12], global[53], global[40],
+                non_async_task_completions, global[54], global[55],
+                global[56], producer_send_wait_mismatch, global[80],
+                global[23], global[25], global[26],
+                output_lock_release_mismatch, global[81], global[82],
+                global[83]);
             if (superlu_sym_v2_pcfrag_taskflow_async_core_check() &&
                 (late_allocs != 0 || global[12] != 0 ||
-                 global[51] != 0 || global[38] != 0 ||
-                 non_async_task_completions != 0 || global[54] != 0 ||
-                 producer_send_wait_mismatch != 0 || global[78] != 0 ||
-                 global[80] != 0 || global[81] != 0))
+                 global[53] != 0 || global[40] != 0 ||
+                 non_async_task_completions != 0 || global[56] != 0 ||
+                 producer_send_wait_mismatch != 0 || global[80] != 0 ||
+                 global[26] != 0 || output_lock_release_mismatch != 0 ||
+                 global[82] != 0 || global[83] != 0))
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK detected a contract violation.");
         }
         std::fflush(stdout);
