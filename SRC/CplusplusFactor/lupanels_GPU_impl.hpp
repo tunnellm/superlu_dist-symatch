@@ -640,6 +640,16 @@ int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     return 0;
 }
 
+template <typename T>
+static inline void dSymV2PcFragTaskflowRecyclePoolPush(
+    std::vector<T> &pool, const T &block, const char *message)
+{
+    if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+        pool.size() >= pool.capacity())
+        ABORT(message);
+    pool.push_back(block);
+}
+
 static inline double *dSymV2PcFragTaskflowEnsurePinnedHost(
     std::vector<xLUstruct_t<double>::SymV2PcFragHostValueBlock> &pool,
     double **buffer, size_t *capacity, size_t count,
@@ -653,9 +663,11 @@ static inline double *dSymV2PcFragTaskflowEnsurePinnedHost(
     if (*capacity < count)
     {
         if (*buffer != NULL)
-            pool.push_back(
+            dSymV2PcFragTaskflowRecyclePoolPush(
+                pool,
                 xLUstruct_t<double>::SymV2PcFragHostValueBlock(
-                    *buffer, *capacity));
+                    *buffer, *capacity),
+                "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE pinned host pool capacity is undersized.");
         size_t best = pool.size();
         size_t best_capacity = 0;
         for (size_t i = 0; i < pool.size(); ++i)
@@ -696,34 +708,42 @@ static inline void dSymV2PcFragTaskflowReleasePinnedHost(
 {
     if (state.producer_partner_recv_host_values != NULL)
     {
-        pool.push_back(
+        dSymV2PcFragTaskflowRecyclePoolPush(
+            pool,
             xLUstruct_t<double>::SymV2PcFragHostValueBlock(
                 state.producer_partner_recv_host_values,
-                state.producer_partner_recv_host_capacity));
+                state.producer_partner_recv_host_capacity),
+            "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE pinned host pool capacity is undersized.");
         state.producer_partner_recv_host_values = NULL;
     }
     if (state.producer_row_recv_host_values != NULL)
     {
-        pool.push_back(
+        dSymV2PcFragTaskflowRecyclePoolPush(
+            pool,
             xLUstruct_t<double>::SymV2PcFragHostValueBlock(
                 state.producer_row_recv_host_values,
-                state.producer_row_recv_host_capacity));
+                state.producer_row_recv_host_capacity),
+            "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE pinned host pool capacity is undersized.");
         state.producer_row_recv_host_values = NULL;
     }
     if (state.producer_partner_send_host_values != NULL)
     {
-        pool.push_back(
+        dSymV2PcFragTaskflowRecyclePoolPush(
+            pool,
             xLUstruct_t<double>::SymV2PcFragHostValueBlock(
                 state.producer_partner_send_host_values,
-                state.producer_partner_send_host_capacity));
+                state.producer_partner_send_host_capacity),
+            "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE pinned host pool capacity is undersized.");
         state.producer_partner_send_host_values = NULL;
     }
     if (state.producer_row_send_host_values != NULL)
     {
-        pool.push_back(
+        dSymV2PcFragTaskflowRecyclePoolPush(
+            pool,
             xLUstruct_t<double>::SymV2PcFragHostValueBlock(
                 state.producer_row_send_host_values,
-                state.producer_row_send_host_capacity));
+                state.producer_row_send_host_capacity),
+            "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE pinned host pool capacity is undersized.");
         state.producer_row_send_host_values = NULL;
     }
     state.producer_partner_recv_host_capacity = 0;
@@ -1172,7 +1192,9 @@ static inline void dSymV2PcFragTaskflowRecycleEvent(
 {
     if (event == NULL)
         return;
-    pool.push_back(event);
+    dSymV2PcFragTaskflowRecyclePoolPush(
+        pool, event,
+        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE event pool capacity is undersized.");
     event = NULL;
 }
 
@@ -1314,8 +1336,10 @@ static inline void dSymV2PcFragTaskflowRecycleIndexBlock(
     int_t *&ptr, size_t &capacity)
 {
     if (ptr != NULL)
-        pool.push_back(
-            xLUstruct_t<double>::SymV2PcFragGpuIndexBlock(ptr, capacity));
+        dSymV2PcFragTaskflowRecyclePoolPush(
+            pool,
+            xLUstruct_t<double>::SymV2PcFragGpuIndexBlock(ptr, capacity),
+            "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE index pool capacity is undersized.");
     ptr = NULL;
     capacity = 0;
 }
@@ -1325,8 +1349,10 @@ static inline void dSymV2PcFragTaskflowRecycleValueBlock(
     double *&ptr, size_t &capacity)
 {
     if (ptr != NULL)
-        pool.push_back(
-            xLUstruct_t<double>::SymV2PcFragGpuValueBlock(ptr, capacity));
+        dSymV2PcFragTaskflowRecyclePoolPush(
+            pool,
+            xLUstruct_t<double>::SymV2PcFragGpuValueBlock(ptr, capacity),
+            "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE value pool capacity is undersized.");
     ptr = NULL;
     capacity = 0;
 }
