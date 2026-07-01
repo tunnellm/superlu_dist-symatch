@@ -511,7 +511,7 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_async_core()
 
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_core_check()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK", 0);
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK", 1);
 }
 
 static inline bool superlu_sym_v2_pcfrag_taskflow_scheduler()
@@ -528,7 +528,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_piece_max_rows()
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS");
     if (env == NULL || env[0] == '\0')
     {
-        cached = superlu_sym_v2_pcfrag_taskflow_async_core() ? 512 : 0;
+        cached = 0;
         return cached;
     }
     char *end = NULL;
@@ -537,6 +537,14 @@ static inline int superlu_sym_v2_pcfrag_taskflow_piece_max_rows()
         ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS must be an integer in [0,1048576]; 0 keeps one block per piece.");
     cached = static_cast<int>(value);
     return cached;
+}
+
+static inline bool superlu_sym_v2_pcfrag_taskflow_global_output_locks()
+{
+    int default_value =
+        superlu_sym_v2_pcfrag_taskflow_piece_max_rows() == 0 ? 1 : 0;
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS", default_value);
 }
 
 static inline long long superlu_sym_v2_pcfrag_taskflow_gemm_cap()

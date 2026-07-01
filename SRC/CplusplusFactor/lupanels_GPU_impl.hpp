@@ -885,6 +885,9 @@ static inline int dSymV2PcFragTaskflowProducerSendsComplete(
     return state.producer_send_reqs.empty() ? 1 : 0;
 }
 
+static inline std::set<xLUstruct_t<double>::SymV2PcFragOutputKey> &
+dSymV2PcFragTaskflowGlobalOutputLocks();
+
 static inline long long dSymV2PcFragTaskflowUnlockTaskOutputs(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
@@ -892,11 +895,15 @@ static inline long long dSymV2PcFragTaskflowUnlockTaskOutputs(
 {
     if (!strict_output_conflicts)
         return 0;
+    std::set<xLUstruct_t<double>::SymV2PcFragOutputKey> &global_locks =
+        dSymV2PcFragTaskflowGlobalOutputLocks();
     for (size_t o = 0; o < task.outputs.size(); ++o)
     {
         const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
             task.outputs[o];
         state.active_output_key_set.erase(key);
+        if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+            global_locks.erase(key);
     }
     return static_cast<long long>(task.outputs.size());
 }
@@ -952,9 +959,13 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
         state.row_pieces[static_cast<size_t>(task.row_piece)];
     xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
         state.partner_pieces[static_cast<size_t>(task.partner_piece)];
-    stats.output_locks_released_by_event +=
-        dSymV2PcFragTaskflowUnlockTaskOutputs(
+    {
+        long long released = dSymV2PcFragTaskflowUnlockTaskOutputs(
             state, task, strict_output_conflicts);
+        stats.output_locks_released_by_event += released;
+        if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+            stats.global_output_locks_released += released;
+    }
     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
     task.complete = 1;
     --state.incomplete_task_count;
@@ -974,6 +985,113 @@ static inline int dSymV2PcFragTaskflowTaskStreamKind(
         kind >= xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_COUNT)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no stream order tag.");
     return kind;
+}
+
+static inline std::set<xLUstruct_t<double>::SymV2PcFragOutputKey> &
+dSymV2PcFragTaskflowGlobalOutputLocks()
+{
+    static std::set<xLUstruct_t<double>::SymV2PcFragOutputKey> locks;
+    return locks;
+}
+
+static inline int dSymV2PcFragTaskflowGemmResourceForLaunchMode(
+    unsigned launch_mode)
+{
+    if (launch_mode &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+        return xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_LOOKAHEAD_L;
+    return xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_MAIN;
+}
+
+static inline int dSymV2PcFragTaskflowGemmResourceSlot(
+    int stream_id, int resource)
+{
+    if (stream_id < 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW GEMM resource stream id is invalid.");
+    if (resource <= xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE ||
+        resource >= xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW GEMM resource id is invalid.");
+    return stream_id *
+               xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT +
+           resource;
+}
+
+static inline std::vector<cudaEvent_t> &
+dSymV2PcFragTaskflowGemmResourceTailEvents()
+{
+    static std::vector<cudaEvent_t> events;
+    return events;
+}
+
+static inline std::vector<unsigned char> &
+dSymV2PcFragTaskflowGemmResourceTailRecorded()
+{
+    static std::vector<unsigned char> recorded;
+    return recorded;
+}
+
+static inline cudaEvent_t dSymV2PcFragTaskflowGemmResourceTailEvent(
+    int slot)
+{
+    std::vector<cudaEvent_t> &events =
+        dSymV2PcFragTaskflowGemmResourceTailEvents();
+    std::vector<unsigned char> &recorded =
+        dSymV2PcFragTaskflowGemmResourceTailRecorded();
+    if (slot < 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW GEMM resource slot is invalid.");
+    size_t need = static_cast<size_t>(slot) + 1;
+    if (events.size() < need)
+        events.resize(need, NULL);
+    if (recorded.size() < need)
+        recorded.resize(need, 0);
+    if (events[static_cast<size_t>(slot)] == NULL)
+        gpuErrchk(cudaEventCreateWithFlags(
+            &events[static_cast<size_t>(slot)], cudaEventDisableTiming));
+    return events[static_cast<size_t>(slot)];
+}
+
+static inline void dSymV2PcFragTaskflowWaitOnGemmResource(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
+    int stream_id,
+    cudaStream_t stream,
+    unsigned launch_mode,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core())
+        return;
+    (void)state;
+    int resource = dSymV2PcFragTaskflowGemmResourceForLaunchMode(
+        launch_mode);
+    int slot = dSymV2PcFragTaskflowGemmResourceSlot(stream_id, resource);
+    task.gemm_resource_kind = static_cast<unsigned char>(resource);
+    cudaEvent_t tail = dSymV2PcFragTaskflowGemmResourceTailEvent(slot);
+    std::vector<unsigned char> &recorded =
+        dSymV2PcFragTaskflowGemmResourceTailRecorded();
+    if (recorded[static_cast<size_t>(slot)])
+    {
+        gpuErrchk(cudaStreamWaitEvent(stream, tail, 0));
+        ++stats.gemm_resource_tail_waits;
+    }
+}
+
+static inline void dSymV2PcFragTaskflowPublishGemmResourceTail(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
+    int stream_id,
+    cudaStream_t stream,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core())
+        return;
+    (void)state;
+    int resource = static_cast<int>(task.gemm_resource_kind);
+    int slot = dSymV2PcFragTaskflowGemmResourceSlot(stream_id, resource);
+    cudaEvent_t tail = dSymV2PcFragTaskflowGemmResourceTailEvent(slot);
+    gpuErrchk(cudaEventRecord(tail, stream));
+    dSymV2PcFragTaskflowGemmResourceTailRecorded()
+        [static_cast<size_t>(slot)] = 1;
+    ++stats.gemm_resource_tail_updates;
 }
 
 static inline bool dSymV2PcFragTaskflowSkipEventQuery(
@@ -2534,7 +2652,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     }
     const bool strict_output_conflicts =
         superlu_sym_v2_pcfrag_taskflow_strict() &&
-        state.output_conflicts_possible;
+        (state.output_conflicts_possible ||
+         superlu_sym_v2_pcfrag_taskflow_global_output_locks());
     const bool async_core =
         superlu_sym_v2_pcfrag_taskflow_async_core();
 
@@ -2553,6 +2672,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             if (state.active_output_key_set.find(key) !=
                 state.active_output_key_set.end())
                 return true;
+            if (superlu_sym_v2_pcfrag_taskflow_global_output_locks() &&
+                dSymV2PcFragTaskflowGlobalOutputLocks().find(key) !=
+                    dSymV2PcFragTaskflowGlobalOutputLocks().end())
+            {
+                ++symV2PcFragTaskflowStats.global_output_lock_conflicts;
+                return true;
+            }
         }
         return false;
     };
@@ -2560,9 +2686,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!strict_output_conflicts)
             return;
         for (size_t o = 0; o < task.outputs.size(); ++o)
+        {
             state.active_output_key_set.insert(task.outputs[o]);
+            if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                dSymV2PcFragTaskflowGlobalOutputLocks().insert(
+                    task.outputs[o]);
+        }
         symV2PcFragTaskflowStats.output_locks_acquired +=
             static_cast<long long>(task.outputs.size());
+        if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+            symV2PcFragTaskflowStats.global_output_locks_acquired +=
+                static_cast<long long>(task.outputs.size());
         if (static_cast<long long>(state.active_output_key_set.size()) >
             symV2PcFragTaskflowStats.output_lock_high_water)
             symV2PcFragTaskflowStats.output_lock_high_water =
@@ -2575,7 +2709,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         {
             const SymV2PcFragOutputKey &key = task.outputs[o];
             state.active_output_key_set.erase(key);
+            if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                dSymV2PcFragTaskflowGlobalOutputLocks().erase(key);
         }
+        if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+            symV2PcFragTaskflowStats.global_output_locks_released +=
+                static_cast<long long>(task.outputs.size());
         return static_cast<long long>(task.outputs.size());
     };
     auto progress_launched_tasks = [&](int drain) -> int {
@@ -2697,6 +2836,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             gpuErrchk(cudaStreamWaitEvent(stream, row.ready_event, 0));
         if (col.ready_event != NULL)
             gpuErrchk(cudaStreamWaitEvent(stream, col.ready_event, 0));
+        dSymV2PcFragTaskflowWaitOnGemmResource(
+            state, task, streamId, stream, SYM_V2_PCFRAG_TASK_FULL,
+            symV2PcFragTaskflowStats);
         dSymSchurCompUpdateTaskDualPiecesGPU(
             k,
             row.h_index, col.h_index,
@@ -2709,11 +2851,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         {
             if (task.done_event == NULL)
                 task.done_event =
-                    dSymV2PcFragTaskflowAcquireEvent(
-                        symV2PcFragTaskflowEventPool,
-                        !async_core,
-                        &symV2PcFragTaskflowStats.arena_event_late_allocs);
+                        dSymV2PcFragTaskflowAcquireEvent(
+                            symV2PcFragTaskflowEventPool,
+                            !async_core,
+                            &symV2PcFragTaskflowStats.arena_event_late_allocs);
             gpuErrchk(cudaEventRecord(task.done_event, stream));
+            dSymV2PcFragTaskflowPublishGemmResourceTail(
+                state, task, streamId, stream,
+                symV2PcFragTaskflowStats);
             dSymV2PcFragTaskflowRecordLaunchedTask(state, task);
         }
         else
@@ -2781,7 +2926,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         double *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
         const bool strict_output_conflicts =
             superlu_sym_v2_pcfrag_taskflow_strict() &&
-            state.output_conflicts_possible;
+            (state.output_conflicts_possible ||
+             superlu_sym_v2_pcfrag_taskflow_global_output_locks());
         const bool async_core =
             superlu_sym_v2_pcfrag_taskflow_async_core();
 
@@ -2800,6 +2946,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (state.active_output_key_set.find(key) !=
                     state.active_output_key_set.end())
                     return true;
+                if (superlu_sym_v2_pcfrag_taskflow_global_output_locks() &&
+                    dSymV2PcFragTaskflowGlobalOutputLocks().find(key) !=
+                        dSymV2PcFragTaskflowGlobalOutputLocks().end())
+                {
+                    ++symV2PcFragTaskflowStats.global_output_lock_conflicts;
+                    return true;
+                }
             }
             return false;
         };
@@ -2815,9 +2968,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (!strict_output_conflicts)
                 return;
             for (size_t o = 0; o < task.outputs.size(); ++o)
+            {
                 state.active_output_key_set.insert(task.outputs[o]);
+                if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                    dSymV2PcFragTaskflowGlobalOutputLocks().insert(
+                        task.outputs[o]);
+            }
             symV2PcFragTaskflowStats.output_locks_acquired +=
                 static_cast<long long>(task.outputs.size());
+            if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                symV2PcFragTaskflowStats.global_output_locks_acquired +=
+                    static_cast<long long>(task.outputs.size());
             if (static_cast<long long>(state.active_output_key_set.size()) >
                 symV2PcFragTaskflowStats.output_lock_high_water)
                 symV2PcFragTaskflowStats.output_lock_high_water =
@@ -2830,7 +2991,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 const SymV2PcFragOutputKey &key = task.outputs[o];
                 state.active_output_key_set.erase(key);
+                if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                    dSymV2PcFragTaskflowGlobalOutputLocks().erase(key);
             }
+            if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                symV2PcFragTaskflowStats.global_output_locks_released +=
+                    static_cast<long long>(task.outputs.size());
             return static_cast<long long>(task.outputs.size());
         };
         auto progress_launched_tasks =
@@ -2997,6 +3163,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     gpuErrchk(cudaStreamWaitEvent(stream, row.ready_event, 0));
                 if (col.ready_event != NULL)
                     gpuErrchk(cudaStreamWaitEvent(stream, col.ready_event, 0));
+                dSymV2PcFragTaskflowWaitOnGemmResource(
+                    state, task, streamId, stream,
+                    SYM_V2_PCFRAG_TASK_FULL,
+                    symV2PcFragTaskflowStats);
                 dSymSchurCompUpdateTaskDualPiecesGPU(
                     k,
                     row.h_index, col.h_index,
@@ -3014,6 +3184,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 !async_core,
                                 &symV2PcFragTaskflowStats.arena_event_late_allocs);
                     gpuErrchk(cudaEventRecord(task.done_event, stream));
+                    dSymV2PcFragTaskflowPublishGemmResourceTail(
+                        state, task, streamId, stream,
+                        symV2PcFragTaskflowStats);
                     dSymV2PcFragTaskflowRecordLaunchedTask(state, task);
                 }
                 else
@@ -3271,6 +3444,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (col.ready_event != NULL)
                 gpuErrchk(cudaStreamWaitEvent(
                     task_stream, col.ready_event, 0));
+            dSymV2PcFragTaskflowWaitOnGemmResource(
+                state, task, streamId, task_stream, launch_mode,
+                symV2PcFragTaskflowStats);
             dSymSchurCompUpdateTaskDualPiecesGPU(
                 k,
                 row.h_index, col.h_index,
@@ -3289,6 +3465,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             !async_core,
                             &symV2PcFragTaskflowStats.arena_event_late_allocs);
                 gpuErrchk(cudaEventRecord(task.done_event, task_stream));
+                dSymV2PcFragTaskflowPublishGemmResourceTail(
+                    state, task, streamId, task_stream,
+                    symV2PcFragTaskflowStats);
                 dSymV2PcFragTaskflowRecordLaunchedTask(state, task);
             }
             else
@@ -3464,6 +3643,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 std::set<SymV2PcFragOutputKey> pending_keys =
                     state.active_output_key_set;
+                if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                {
+                    const std::set<SymV2PcFragOutputKey> &global_locks =
+                        dSymV2PcFragTaskflowGlobalOutputLocks();
+                    pending_keys.insert(global_locks.begin(),
+                                        global_locks.end());
+                }
                 for (int_t rb = row_start; rb < row_end; ++rb)
                 {
                     for (int_t cb = col_start; cb < col_end; ++cb)
@@ -3901,7 +4087,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
         {
             const bool strict_output_conflicts =
                 superlu_sym_v2_pcfrag_taskflow_strict() &&
-                state.output_conflicts_possible;
+                (state.output_conflicts_possible ||
+                 superlu_sym_v2_pcfrag_taskflow_global_output_locks());
             auto required_incomplete = [&]() -> int {
                 int known = 0;
                 int fast_count =

@@ -1017,6 +1017,14 @@ struct xLUstruct_t
         SYM_V2_PCFRAG_TASK_STREAM_COUNT = 4
     };
 
+    enum SymV2PcFragTaskGemmResourceKind
+    {
+        SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE = 0,
+        SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_MAIN = 1,
+        SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_LOOKAHEAD_L = 2,
+        SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT = 3
+    };
+
     struct SymV2PcFragOutputKey
     {
         int_t gj;
@@ -1119,6 +1127,7 @@ struct xLUstruct_t
         unsigned char launched;
         unsigned char complete;
         unsigned char launch_stream_kind;
+        unsigned char gemm_resource_kind;
 #ifdef HAVE_CUDA
         cudaEvent_t done_event;
 #endif
@@ -1129,7 +1138,8 @@ struct xLUstruct_t
               partner_piece_blk_begin(0), partner_piece_blk_end(0),
               gemm_m(0), gemm_n(0), gemm_k(0), mode_mask(0),
               scatter_group(-1), launched(0), complete(0),
-              launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE)
+              launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
+              gemm_resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE)
 #ifdef HAVE_CUDA
               , done_event(NULL)
 #endif
@@ -1173,6 +1183,12 @@ struct xLUstruct_t
         int launched_task_pending_mode_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT][16];
         std::set<SymV2PcFragOutputKey> active_output_key_set;
+#ifdef HAVE_CUDA
+        cudaEvent_t gemm_resource_tail_events[
+            SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT];
+        int gemm_resource_tail_task_ids[
+            SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT];
+#endif
         int task_event_poll_skip[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int task_event_poll_backoff[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int incomplete_task_count;
@@ -1257,6 +1273,13 @@ struct xLUstruct_t
                 for (int mask = 0; mask < 16; ++mask)
                     launched_task_pending_mode_by_stream[i][mask] = 0;
             }
+#ifdef HAVE_CUDA
+            for (int i = 0; i < SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT; ++i)
+            {
+                gemm_resource_tail_events[i] = NULL;
+                gemm_resource_tail_task_ids[i] = -1;
+            }
+#endif
         }
 
         void note_piece_ready(unsigned char kind, int piece_id)
@@ -1372,6 +1395,13 @@ struct xLUstruct_t
                 task_event_poll_skip[i] = 0;
                 task_event_poll_backoff[i] = 0;
             }
+#ifdef HAVE_CUDA
+            for (int i = 0; i < SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT; ++i)
+            {
+                gemm_resource_tail_events[i] = NULL;
+                gemm_resource_tail_task_ids[i] = -1;
+            }
+#endif
             incomplete_task_count = 0;
             producer_tasks_launched = 0;
             producer_launch_cap_reported = 0;
@@ -1506,6 +1536,11 @@ struct xLUstruct_t
         long long final_predrain_dispatch_calls;
         long long final_predrain_tasks_launched;
         long long task_launch_stream_syncs;
+        long long gemm_resource_tail_waits;
+        long long gemm_resource_tail_updates;
+        long long global_output_lock_conflicts;
+        long long global_output_locks_acquired;
+        long long global_output_locks_released;
         long long producer_recv_pinned_posts;
         long long producer_recv_pageable_posts;
         long long producer_progress_vector_growths;
@@ -1571,6 +1606,11 @@ struct xLUstruct_t
               final_predrain_rounds(0), final_predrain_dispatch_calls(0),
               final_predrain_tasks_launched(0),
               task_launch_stream_syncs(0),
+              gemm_resource_tail_waits(0),
+              gemm_resource_tail_updates(0),
+              global_output_lock_conflicts(0),
+              global_output_locks_acquired(0),
+              global_output_locks_released(0),
               producer_recv_pinned_posts(0),
               producer_recv_pageable_posts(0),
               producer_progress_vector_growths(0),
@@ -1662,6 +1702,11 @@ struct xLUstruct_t
         SYM_V2_PCFRAG_TASKFLOW_FINAL_PREDRAIN_DISPATCH_CALLS,
         SYM_V2_PCFRAG_TASKFLOW_FINAL_PREDRAIN_TASKS_LAUNCHED,
         SYM_V2_PCFRAG_TASKFLOW_TASK_LAUNCH_STREAM_SYNCS,
+        SYM_V2_PCFRAG_TASKFLOW_GEMM_RESOURCE_TAIL_WAITS,
+        SYM_V2_PCFRAG_TASKFLOW_GEMM_RESOURCE_TAIL_UPDATES,
+        SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCK_CONFLICTS,
+        SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS_ACQUIRED,
+        SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS_RELEASED,
         SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PINNED_POSTS,
         SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS,
         SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS,
@@ -1799,6 +1844,11 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.final_predrain_dispatch_calls,
             symV2PcFragTaskflowStats.final_predrain_tasks_launched,
             symV2PcFragTaskflowStats.task_launch_stream_syncs,
+            symV2PcFragTaskflowStats.gemm_resource_tail_waits,
+            symV2PcFragTaskflowStats.gemm_resource_tail_updates,
+            symV2PcFragTaskflowStats.global_output_lock_conflicts,
+            symV2PcFragTaskflowStats.global_output_locks_acquired,
+            symV2PcFragTaskflowStats.global_output_locks_released,
             symV2PcFragTaskflowStats.producer_recv_pinned_posts,
             symV2PcFragTaskflowStats.producer_recv_pageable_posts,
             symV2PcFragTaskflowStats.producer_progress_vector_growths,
@@ -1887,6 +1937,11 @@ struct xLUstruct_t
             "final_predrain_dispatch_calls=%lld "
             "final_predrain_tasks_launched=%lld "
             "task_launch_stream_syncs=%lld "
+            "gemm_resource_tail_waits=%lld "
+            "gemm_resource_tail_updates=%lld "
+            "global_output_lock_conflicts=%lld "
+            "global_output_locks_acquired=%lld "
+            "global_output_locks_released=%lld "
             "producer_recv_pinned_posts=%lld "
             "producer_recv_pageable_posts=%lld "
             "producer_progress_vector_growths=%lld "
@@ -1907,7 +1962,8 @@ struct xLUstruct_t
             global[65], global[66], global[67], global[68], global[69],
             global[70], global[71], global[72], global[73], global[74],
             global[75], global[76], global[77], global[78], global[79],
-            global[80], global[81], global[82], global[83], global[84]);
+            global[80], global[81], global[82], global[83], global[84],
+            global[85], global[86], global[87], global[88], global[89]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =
@@ -1932,6 +1988,17 @@ struct xLUstruct_t
                 global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_LAUNCH_SYNC];
             if (output_lock_release_mismatch < 0)
                 output_lock_release_mismatch = -output_lock_release_mismatch;
+            long long global_output_lock_release_mismatch =
+                global[SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS_ACQUIRED] -
+                global[SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS_RELEASED];
+            if (global_output_lock_release_mismatch < 0)
+                global_output_lock_release_mismatch =
+                    -global_output_lock_release_mismatch;
+            long long gemm_tail_update_mismatch =
+                global[SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED] -
+                global[SYM_V2_PCFRAG_TASKFLOW_GEMM_RESOURCE_TAIL_UPDATES];
+            if (gemm_tail_update_mismatch < 0)
+                gemm_tail_update_mismatch = -gemm_tail_update_mismatch;
             long long task_completion_event_success_mismatch =
                 global[SYM_V2_PCFRAG_TASKFLOW_TASKS_COMPLETED_ASYNC_CORE] -
                 global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_SUCCESSES];
@@ -1952,6 +2019,13 @@ struct xLUstruct_t
                 "output_locks_released_by_event=%lld "
                 "output_locks_released_by_launch_sync=%lld "
                 "output_lock_release_mismatch=%lld "
+                "gemm_resource_tail_waits=%lld "
+                "gemm_resource_tail_updates=%lld "
+                "gemm_tail_update_mismatch=%lld "
+                "global_output_lock_conflicts=%lld "
+                "global_output_locks_acquired=%lld "
+                "global_output_locks_released=%lld "
+                "global_output_lock_release_mismatch=%lld "
                 "producer_recv_pinned_posts=%lld "
                 "producer_recv_pageable_posts=%lld "
                 "producer_progress_vector_growths=%lld "
@@ -1971,6 +2045,13 @@ struct xLUstruct_t
                 global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_EVENT],
                 global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_LAUNCH_SYNC],
                 output_lock_release_mismatch,
+                global[SYM_V2_PCFRAG_TASKFLOW_GEMM_RESOURCE_TAIL_WAITS],
+                global[SYM_V2_PCFRAG_TASKFLOW_GEMM_RESOURCE_TAIL_UPDATES],
+                gemm_tail_update_mismatch,
+                global[SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCK_CONFLICTS],
+                global[SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS_ACQUIRED],
+                global[SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS_RELEASED],
+                global_output_lock_release_mismatch,
                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PINNED_POSTS],
                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS],
                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS],
@@ -1987,6 +2068,8 @@ struct xLUstruct_t
                  global[SYM_V2_PCFRAG_TASKFLOW_TASK_LAUNCH_STREAM_SYNCS] != 0 ||
                  global[SYM_V2_PCFRAG_TASKFLOW_OUTPUT_LOCKS_RELEASED_BY_LAUNCH_SYNC] != 0 ||
                  output_lock_release_mismatch != 0 ||
+                 gemm_tail_update_mismatch != 0 ||
+                 global_output_lock_release_mismatch != 0 ||
                  global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS] != 0 ||
                  global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS] != 0 ||
                  task_completion_event_success_mismatch != 0))
