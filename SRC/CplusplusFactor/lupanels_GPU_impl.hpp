@@ -1080,6 +1080,43 @@ static inline int dSymV2PcFragTaskflowRequiredIncompleteFast(
     return count;
 }
 
+static inline int dSymV2PcFragTaskflowPendingLaunchedFast(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    unsigned required_mode_mask,
+    int_t required_mode_gid,
+    int *known)
+{
+    *known = 0;
+    if (required_mode_gid == GLOBAL_BLOCK_NOT_FOUND)
+        return 0;
+    const unsigned supported =
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+    if ((required_mode_mask & ~supported) != 0)
+        return 0;
+    *known = 1;
+    int count = 0;
+    if (required_mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+    {
+        std::map<int_t, int>::const_iterator it =
+            state.launched_lookahead_col_members_by_gid.find(
+                required_mode_gid);
+        if (it != state.launched_lookahead_col_members_by_gid.end())
+            count += it->second;
+    }
+    if (required_mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+    {
+        std::map<int_t, int>::const_iterator it =
+            state.launched_lookahead_row_members_by_gid.find(
+                required_mode_gid);
+        if (it != state.launched_lookahead_row_members_by_gid.end())
+            count += it->second;
+    }
+    return count;
+}
+
 static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
@@ -1097,6 +1134,36 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
         state.launched_task_pending_mode_by_stream[kind][mask] += delta;
         if (state.launched_task_pending_mode_by_stream[kind][mask] < 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW launched mode pending count underflowed.");
+    }
+    if (task.mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+    {
+        for (size_t o = 0; o < task.outputs.size(); ++o)
+        {
+            std::map<int_t, int>::iterator it =
+                state.launched_lookahead_col_members_by_gid.find(
+                    task.outputs[o].gj);
+            if (it == state.launched_lookahead_col_members_by_gid.end())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter is missing a gid.");
+            it->second += delta;
+            if (it->second < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter underflowed.");
+        }
+    }
+    if (task.mode_mask &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+    {
+        for (size_t o = 0; o < task.outputs.size(); ++o)
+        {
+            std::map<int_t, int>::iterator it =
+                state.launched_lookahead_row_members_by_gid.find(
+                    task.outputs[o].gi);
+            if (it == state.launched_lookahead_row_members_by_gid.end())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter is missing a gid.");
+            it->second += delta;
+            if (it->second < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter underflowed.");
+        }
     }
 }
 
@@ -1145,6 +1212,15 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedAllForMode(
     unsigned required_mode_mask,
     int_t required_mode_gid)
 {
+    if (drain && required_mode_mask != 0)
+    {
+        int known = 0;
+        int fast_count =
+            dSymV2PcFragTaskflowPendingLaunchedFast(
+                state, required_mode_mask, required_mode_gid, &known);
+        if (known)
+            return fast_count;
+    }
     int pending = 0;
     for (int kind = xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_MAIN;
          kind < xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
@@ -1937,9 +2013,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                     state.output_conflicts_possible = 1;
                 ++state.incomplete_lookahead_col_members_by_gid[
                     task.outputs[out].gj];
+                state.launched_lookahead_col_members_by_gid[
+                    task.outputs[out].gj] = 0;
                 if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                {
                     ++state.incomplete_lookahead_row_members_by_gid[
                         task.outputs[out].gi];
+                    state.launched_lookahead_row_members_by_gid[
+                        task.outputs[out].gi] = 0;
+                }
             }
             int task_id = task.task_id;
             state.tasks.push_back(task);
