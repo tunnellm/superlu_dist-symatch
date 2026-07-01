@@ -2730,6 +2730,10 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPieceGroupGPU(
         }
         int tile_row_start = xluSymFragHostStRow(row_frag, row_beg);
         int tile_col_start = xluSymFragHostStRow(col_frag, col_beg);
+        symV2PcFragTaskflowStats.task_tiled_block_pairs +=
+            static_cast<long long>(row_end - row_beg) *
+            static_cast<long long>(col_end - col_beg);
+        ++symV2PcFragTaskflowStats.task_tiled_gemm_tiles;
         Ftype alpha = one<Ftype>();
         Ftype beta = zeroT<Ftype>();
         myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,

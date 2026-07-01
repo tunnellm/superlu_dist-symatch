@@ -4852,6 +4852,35 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             in_flight_task_cap - pending_launched;
                         if (available_group_slots > 1)
                         {
+                            auto task_ready_for_group =
+                                [&](SymV2PcFragTaskDesc &candidate) {
+                                    if (candidate.launched ||
+                                        candidate.complete)
+                                        return false;
+                                    if (task_launch_mode_for_request(
+                                            candidate, single_mode,
+                                            mode_gid) != launch_mode ||
+                                        !dSymV2PcFragTaskflowTaskRequiredForMode(
+                                            candidate, 1, single_mode,
+                                            mode_gid))
+                                        return false;
+                                    if (candidate.task_id < 0 ||
+                                        static_cast<size_t>(
+                                            candidate.task_id) >=
+                                            state.task_ready_inputs.size() ||
+                                        static_cast<size_t>(
+                                            candidate.task_id) >=
+                                            state.task_enqueued.size())
+                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped task id is invalid.");
+                                    if (state.task_ready_inputs
+                                            [static_cast<size_t>(
+                                                candidate.task_id)] < 2 ||
+                                        !state.task_enqueued
+                                            [static_cast<size_t>(
+                                                candidate.task_id)])
+                                        return false;
+                                    return true;
+                                };
                             auto collect_candidate_tids =
                                 [&](bool group_by_partner) {
                                     std::vector<int> candidates;
@@ -4872,15 +4901,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         SymV2PcFragTaskDesc &candidate =
                                             state.tasks[static_cast<size_t>(
                                                 cand_tid)];
-                                        if (candidate.launched ||
-                                            candidate.complete)
-                                            continue;
-                                        if (task_launch_mode_for_request(
-                                                candidate, single_mode,
-                                                mode_gid) != launch_mode ||
-                                            !dSymV2PcFragTaskflowTaskRequiredForMode(
-                                                candidate, 1, single_mode,
-                                                mode_gid))
+                                        if (!task_ready_for_group(candidate))
                                             continue;
                                         if (group_by_partner)
                                         {
