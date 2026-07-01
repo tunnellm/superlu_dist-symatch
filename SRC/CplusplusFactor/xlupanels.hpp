@@ -1031,17 +1031,20 @@ struct xLUstruct_t
         int_t gi;
         int_t local_panel_j;
         int_t local_block_i;
+        int_t output_id;
 
         SymV2PcFragOutputKey()
             : gj(GLOBAL_BLOCK_NOT_FOUND), gi(GLOBAL_BLOCK_NOT_FOUND),
               local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
-              local_block_i(GLOBAL_BLOCK_NOT_FOUND)
+              local_block_i(GLOBAL_BLOCK_NOT_FOUND),
+              output_id(GLOBAL_BLOCK_NOT_FOUND)
         {
         }
 
         SymV2PcFragOutputKey(int_t gj_, int_t gi_)
             : gj(gj_), gi(gi_), local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
-              local_block_i(GLOBAL_BLOCK_NOT_FOUND)
+              local_block_i(GLOBAL_BLOCK_NOT_FOUND),
+              output_id(GLOBAL_BLOCK_NOT_FOUND)
         {
         }
 
@@ -1385,6 +1388,7 @@ struct xLUstruct_t
         int launched_task_pending_mode_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT][16];
         std::set<SymV2PcFragOutputKey> active_output_key_set;
+        int active_output_lock_count;
         int task_event_poll_skip[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int task_event_poll_backoff[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int incomplete_task_count;
@@ -1441,6 +1445,7 @@ struct xLUstruct_t
               producer_tasks_launched(0), producer_launch_cap_reported(0),
               producer_exchange_active(0), producer_exchange_pending(0),
               producer_stream_pending(0), output_conflicts_possible(0),
+              active_output_lock_count(0),
               row_pieces_ready_count(0), partner_pieces_ready_count(0),
               producer_partner_recv_remaining(0),
               producer_row_recv_remaining(0), producer_ksupc(0)
@@ -1588,6 +1593,7 @@ struct xLUstruct_t
                     launched_task_pending_mode_by_stream[i][mask] = 0;
             }
             active_output_key_set.clear();
+            active_output_lock_count = 0;
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
             {
                 task_event_poll_skip[i] = 0;
@@ -1973,6 +1979,9 @@ struct xLUstruct_t
 
     std::vector<SymV2PcFragPanelTaskState> symV2PcFragTaskStates;
     std::set<SymV2PcFragOutputKey> symV2PcFragTaskflowGlobalOutputLocks;
+    std::vector<int_t> symV2PcFragTaskflowOutputPanelOffsets;
+    std::vector<unsigned char> symV2PcFragTaskflowGlobalOutputLockState;
+    long long symV2PcFragTaskflowGlobalOutputLocksLive = 0;
 #ifdef HAVE_CUDA
     std::vector<SymV2PcFragGemmResourceState>
         symV2PcFragTaskflowGemmResources;
@@ -1991,6 +2000,7 @@ struct xLUstruct_t
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
         symV2PcFragTaskflowStats.global_output_locks_live =
+            symV2PcFragTaskflowGlobalOutputLocksLive +
             static_cast<long long>(
                 symV2PcFragTaskflowGlobalOutputLocks.size());
         long long live_recorded = 0;
@@ -2335,7 +2345,8 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow_async_core())
             return;
-        if (!symV2PcFragTaskflowGlobalOutputLocks.empty())
+        if (!symV2PcFragTaskflowGlobalOutputLocks.empty() ||
+            symV2PcFragTaskflowGlobalOutputLocksLive != 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE finalization found live global output locks.");
         for (size_t i = 0; i < symV2PcFragTaskflowGemmResources.size(); ++i)
         {

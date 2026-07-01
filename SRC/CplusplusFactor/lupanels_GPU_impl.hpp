@@ -885,6 +885,14 @@ static inline int dSymV2PcFragTaskflowProducerSendsComplete(
     return state.producer_send_reqs.empty() ? 1 : 0;
 }
 
+static inline bool dSymV2PcFragTaskflowUseCompactOutputLocks(
+    const xLUstruct_t<double> &xlu)
+{
+    return superlu_sym_v2_pcfrag_taskflow_async_core() &&
+           superlu_sym_v2_pcfrag_taskflow_global_output_locks() &&
+           !xlu.symV2PcFragTaskflowGlobalOutputLockState.empty();
+}
+
 static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -899,6 +907,25 @@ static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
     {
         const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
             task.outputs[o];
+        if (dSymV2PcFragTaskflowUseCompactOutputLocks(xlu))
+        {
+            if (key.output_id < 0 ||
+                static_cast<size_t>(key.output_id) >=
+                    xlu.symV2PcFragTaskflowGlobalOutputLockState.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock id is invalid.");
+            if (!xlu.symV2PcFragTaskflowGlobalOutputLockState[
+                    static_cast<size_t>(key.output_id)])
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock release found an unlocked output.");
+            xlu.symV2PcFragTaskflowGlobalOutputLockState[
+                static_cast<size_t>(key.output_id)] = 0;
+            if (state.active_output_lock_count <= 0 ||
+                xlu.symV2PcFragTaskflowGlobalOutputLocksLive <= 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock count underflowed.");
+            --state.active_output_lock_count;
+            --xlu.symV2PcFragTaskflowGlobalOutputLocksLive;
+            ++released;
+            continue;
+        }
         size_t local_erased = state.active_output_key_set.erase(key);
         size_t global_erased = 0;
         if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
@@ -1895,6 +1922,41 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     state.producer_exchange_active = 1;
     ++symV2PcFragTaskflowStats.taskflow_entries;
 
+    const bool compact_output_locks =
+        async_core && superlu_sym_v2_pcfrag_taskflow_global_output_locks();
+    if (compact_output_locks)
+    {
+        const int_t local_panel_count = symV2PanelCount();
+        if (local_panel_count < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW local panel count is invalid.");
+        if (symV2PcFragTaskflowOutputPanelOffsets.size() !=
+            static_cast<size_t>(local_panel_count + 1))
+        {
+            if (symV2PcFragTaskflowGlobalOutputLocksLive != 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW cannot rebuild output lock ids while locks are live.");
+            symV2PcFragTaskflowOutputPanelOffsets.assign(
+                static_cast<size_t>(local_panel_count + 1), 0);
+            int_t prefix = 0;
+            for (int_t lj = 0; lj < local_panel_count; ++lj)
+            {
+                symV2PcFragTaskflowOutputPanelOffsets[
+                    static_cast<size_t>(lj)] = prefix;
+                int_t nblk = lPanelVec[static_cast<size_t>(lj)].isEmpty()
+                                  ? 0
+                                  : lPanelVec[static_cast<size_t>(lj)].nblocks();
+                if (nblk < 0 ||
+                    prefix > std::numeric_limits<int_t>::max() - nblk)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock id space is too large.");
+                prefix += nblk;
+            }
+            symV2PcFragTaskflowOutputPanelOffsets[
+                static_cast<size_t>(local_panel_count)] = prefix;
+            symV2PcFragTaskflowGlobalOutputLockState.assign(
+                static_cast<size_t>(prefix), 0);
+            symV2PcFragTaskflowGlobalOutputLocksLive = 0;
+        }
+    }
+
     const std::vector<int_t> &row_frag = symV2RowFragRecvIndex[k];
     const std::vector<int_t> &partner_frag = symV2PartnerLRecvIndex[k];
     auto nblocks = [](const std::vector<int_t> &frag) -> int_t {
@@ -2178,8 +2240,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     std::vector<size_t> partner_task_degrees(
         state.partner_pieces.size(), 0);
     size_t mode_counts[16] = {};
-    std::map<int_t, size_t> lookahead_col_degrees;
-    std::map<int_t, size_t> lookahead_row_degrees;
+    SymV2PcFragGidCounterMap lookahead_col_degrees;
+    SymV2PcFragGidCounterMap lookahead_row_degrees;
     size_t planned_task_count = 0;
     for (int_t cb = 0; cb < nc; ++cb)
     {
@@ -2213,6 +2275,19 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             SymV2PcFragOutputKey output(gj, gi);
             output.local_panel_j = local_panel_j;
             output.local_block_i = li;
+            if (compact_output_locks)
+            {
+                if (static_cast<size_t>(local_panel_j + 1) >=
+                    symV2PcFragTaskflowOutputPanelOffsets.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock panel id is invalid.");
+                output.output_id =
+                    symV2PcFragTaskflowOutputPanelOffsets[
+                        static_cast<size_t>(local_panel_j)] + li;
+                if (output.output_id < 0 ||
+                    static_cast<size_t>(output.output_id) >=
+                        symV2PcFragTaskflowGlobalOutputLockState.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock id is invalid.");
+            }
             unsigned char mode_mask =
                 SYM_V2_PCFRAG_TASK_FULL |
                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
@@ -2262,6 +2337,30 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         byte_product_or_max(planned_task_count, 2 * sizeof(unsigned char));
     size_t estimated_queue_bytes =
         byte_product_or_max(planned_task_count, 6 * sizeof(int));
+    size_t estimated_csr_bytes =
+        byte_product_or_max(state.row_pieces.size() +
+                                state.partner_pieces.size() + 2,
+                            sizeof(int)) +
+        byte_product_or_max(2 * planned_task_count, sizeof(int));
+    size_t estimated_mode_queue_bytes = 0;
+    for (int mask = 1; mask < 16; mask <<= 1)
+        estimated_mode_queue_bytes +=
+            byte_product_or_max(mode_counts[mask], sizeof(int));
+    size_t estimated_gid_queue_bytes =
+        byte_product_or_max(
+            mode_counts[SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL] +
+                mode_counts[SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW],
+            sizeof(int));
+    size_t estimated_counter_map_bytes =
+        byte_product_or_max(
+            6 * (lookahead_col_degrees.size() +
+                 lookahead_row_degrees.size()),
+            sizeof(int_t) + sizeof(int));
+    size_t estimated_output_lock_bytes =
+        compact_output_locks
+            ? symV2PcFragTaskflowGlobalOutputLockState.size() *
+                  sizeof(unsigned char)
+            : 0;
     const char *taskflow_plan_diag =
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG");
     if (taskflow_plan_diag != NULL && taskflow_plan_diag[0] != '\0')
@@ -2271,13 +2370,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 "partner_pieces=%zu planned_tasks=%zu "
                 "lookahead_col_gids=%zu lookahead_row_gids=%zu "
                 "task_desc_bytes=%zu pair_bytes=%zu ready_bytes=%zu "
-                "queue_est_bytes=%zu\n",
+                "queue_est_bytes=%zu csr_bytes=%zu "
+                "mode_queue_bytes=%zu gid_queue_bytes=%zu "
+                "counter_map_bytes=%zu output_lock_bytes=%zu "
+                "event_count_est=%zu\n",
                 iam, static_cast<long long>(k),
                 state.row_pieces.size(), state.partner_pieces.size(),
                 planned_task_count, lookahead_col_degrees.size(),
                 lookahead_row_degrees.size(), estimated_task_bytes,
                 estimated_pair_bytes, estimated_ready_bytes,
-                estimated_queue_bytes);
+                estimated_queue_bytes, estimated_csr_bytes,
+                estimated_mode_queue_bytes, estimated_gid_queue_bytes,
+                estimated_counter_map_bytes, estimated_output_lock_bytes,
+                state.row_pieces.size() + state.partner_pieces.size() +
+                    planned_task_count);
         fflush(stderr);
         const char *taskflow_plan_diag_abort =
             std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG_ABORT");
@@ -2442,6 +2548,19 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             SymV2PcFragOutputKey output(gj, gi);
             output.local_panel_j = local_panel_j;
             output.local_block_i = li;
+            if (compact_output_locks)
+            {
+                if (static_cast<size_t>(local_panel_j + 1) >=
+                    symV2PcFragTaskflowOutputPanelOffsets.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock panel id is invalid.");
+                output.output_id =
+                    symV2PcFragTaskflowOutputPanelOffsets[
+                        static_cast<size_t>(local_panel_j)] + li;
+                if (output.output_id < 0 ||
+                    static_cast<size_t>(output.output_id) >=
+                        symV2PcFragTaskflowGlobalOutputLockState.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock id is invalid.");
+            }
             unsigned char mode_mask =
                 SYM_V2_PCFRAG_TASK_FULL |
                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
@@ -2463,14 +2582,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     if (need_piece_pair_lookup)
         std::sort(state.pair_task_entries.begin(),
                   state.pair_task_entries.end());
-    for (std::map<int_t, size_t>::const_iterator it =
-             lookahead_col_degrees.begin();
-         it != lookahead_col_degrees.end(); ++it)
-        state.runnable_lookahead_col_by_gid[it->first].reserve(it->second);
-    for (std::map<int_t, size_t>::const_iterator it =
-             lookahead_row_degrees.begin();
-         it != lookahead_row_degrees.end(); ++it)
-        state.runnable_lookahead_row_by_gid[it->first].reserve(it->second);
+    for (SymV2PcFragGidCounterMap::const_iterator it =
+             lookahead_col_degrees.entries.begin();
+         it != lookahead_col_degrees.entries.end(); ++it)
+        state.runnable_lookahead_col_by_gid[it->first].reserve(
+            static_cast<size_t>(it->second));
+    for (SymV2PcFragGidCounterMap::const_iterator it =
+             lookahead_row_degrees.entries.begin();
+         it != lookahead_row_degrees.entries.end(); ++it)
+        state.runnable_lookahead_row_by_gid[it->first].reserve(
+            static_cast<size_t>(it->second));
     if (!state.tasks.empty() &&
         superlu_sym_v2_pcfrag_taskflow_force_output_locks())
         state.output_conflicts_possible = 1;
@@ -2517,6 +2638,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
             : state.partner_pieces;
     int ready_count = 0;
     size_t map_pos = 0;
+    size_t piece_cursor = 0;
     while (map_pos < recv_map.size())
     {
         int_t dst_offset = recv_map[map_pos++];
@@ -2525,14 +2647,33 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
         if (nrows <= 0)
             continue;
         SymV2PcFragPieceDesc *piece = NULL;
-        for (size_t p = 0; p < pieces.size(); ++p)
+        while (piece_cursor < pieces.size())
         {
-            int_t begin = pieces[p].frag_row_offset;
-            int_t end = begin + pieces[p].nrows;
-            if (dst_offset >= begin && dst_offset + nrows <= end)
-            {
-                piece = &pieces[p];
+            int_t begin = pieces[piece_cursor].frag_row_offset;
+            int_t end = begin + pieces[piece_cursor].nrows;
+            if (dst_offset < end)
                 break;
+            ++piece_cursor;
+        }
+        if (piece_cursor < pieces.size())
+        {
+            int_t begin = pieces[piece_cursor].frag_row_offset;
+            int_t end = begin + pieces[piece_cursor].nrows;
+            if (dst_offset >= begin && dst_offset + nrows <= end)
+                piece = &pieces[piece_cursor];
+        }
+        if (piece == NULL)
+        {
+            for (size_t p = 0; p < pieces.size(); ++p)
+            {
+                int_t begin = pieces[p].frag_row_offset;
+                int_t end = begin + pieces[p].nrows;
+                if (dst_offset >= begin && dst_offset + nrows <= end)
+                {
+                    piece = &pieces[p];
+                    piece_cursor = p;
+                    break;
+                }
             }
         }
         if (piece == NULL)
@@ -2855,6 +2996,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
          superlu_sym_v2_pcfrag_taskflow_global_output_locks());
     const bool async_core =
         superlu_sym_v2_pcfrag_taskflow_async_core();
+    const bool compact_output_locks =
+        dSymV2PcFragTaskflowUseCompactOutputLocks(*this);
 
     auto all_pieces_ready = [&]() -> bool {
         return state.row_pieces_ready_count ==
@@ -2868,6 +3011,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
             const SymV2PcFragOutputKey &key = task.outputs[o];
+            if (compact_output_locks)
+            {
+                if (key.output_id < 0 ||
+                    static_cast<size_t>(key.output_id) >=
+                        symV2PcFragTaskflowGlobalOutputLockState.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock id is invalid.");
+                if (symV2PcFragTaskflowGlobalOutputLockState[
+                        static_cast<size_t>(key.output_id)])
+                {
+                    ++symV2PcFragTaskflowStats.global_output_lock_conflicts;
+                    return true;
+                }
+                continue;
+            }
             if (state.active_output_key_set.find(key) !=
                 state.active_output_key_set.end())
                 return true;
@@ -2886,6 +3043,22 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             return;
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
+            if (compact_output_locks)
+            {
+                const SymV2PcFragOutputKey &key = task.outputs[o];
+                if (key.output_id < 0 ||
+                    static_cast<size_t>(key.output_id) >=
+                        symV2PcFragTaskflowGlobalOutputLockState.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock id is invalid.");
+                if (symV2PcFragTaskflowGlobalOutputLockState[
+                        static_cast<size_t>(key.output_id)])
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock was already held.");
+                symV2PcFragTaskflowGlobalOutputLockState[
+                    static_cast<size_t>(key.output_id)] = 1;
+                ++symV2PcFragTaskflowGlobalOutputLocksLive;
+                ++state.active_output_lock_count;
+                continue;
+            }
             state.active_output_key_set.insert(task.outputs[o]);
             if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
                 symV2PcFragTaskflowGlobalOutputLocks.insert(task.outputs[o]);
@@ -2895,10 +3068,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
             symV2PcFragTaskflowStats.global_output_locks_acquired +=
                 static_cast<long long>(task.outputs.size());
-        if (static_cast<long long>(state.active_output_key_set.size()) >
+        long long active_output_locks =
+            compact_output_locks
+                ? static_cast<long long>(state.active_output_lock_count)
+                : static_cast<long long>(state.active_output_key_set.size());
+        if (active_output_locks >
             symV2PcFragTaskflowStats.output_lock_high_water)
             symV2PcFragTaskflowStats.output_lock_high_water =
-                static_cast<long long>(state.active_output_key_set.size());
+                active_output_locks;
     };
     auto unlock_outputs = [&](const SymV2PcFragTaskDesc &task) {
         return dSymV2PcFragTaskflowReleaseOutputLocks(
@@ -2935,12 +3112,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         if (!dSymV2PcFragTaskflowProducerSendsComplete(
                 state, symV2PcFragTaskflowStats, 0))
             return 0;
-        if (!state.active_output_key_set.empty())
+        if (!state.active_output_key_set.empty() ||
+            state.active_output_lock_count != 0)
         {
             std::fprintf(stderr,
-                         "GPU3DV2 taskflow release with live local output locks: k=%lld locks=%zu incomplete=%d\n",
+                         "GPU3DV2 taskflow release with live local output locks: k=%lld locks=%zu compact_locks=%d incomplete=%d\n",
                          static_cast<long long>(k),
                          state.active_output_key_set.size(),
+                         state.active_output_lock_count,
                          state.incomplete_task_count);
             ABORT("GPU3DV2_PCFRAG_TASKFLOW release found live local output locks.");
         }
@@ -3148,6 +3327,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
              superlu_sym_v2_pcfrag_taskflow_global_output_locks());
         const bool async_core =
             superlu_sym_v2_pcfrag_taskflow_async_core();
+        const bool compact_output_locks =
+            dSymV2PcFragTaskflowUseCompactOutputLocks(*this);
 
         auto all_pieces_ready = [&]() -> bool {
             return state.row_pieces_ready_count ==
@@ -3161,6 +3342,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             for (size_t o = 0; o < task.outputs.size(); ++o)
             {
                 const SymV2PcFragOutputKey &key = task.outputs[o];
+                if (compact_output_locks)
+                {
+                    if (key.output_id < 0 ||
+                        static_cast<size_t>(key.output_id) >=
+                            symV2PcFragTaskflowGlobalOutputLockState.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock id is invalid.");
+                    if (symV2PcFragTaskflowGlobalOutputLockState[
+                            static_cast<size_t>(key.output_id)])
+                    {
+                        ++symV2PcFragTaskflowStats.global_output_lock_conflicts;
+                        return true;
+                    }
+                    continue;
+                }
                 if (state.active_output_key_set.find(key) !=
                     state.active_output_key_set.end())
                     return true;
@@ -3187,6 +3382,22 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 return;
             for (size_t o = 0; o < task.outputs.size(); ++o)
             {
+                if (compact_output_locks)
+                {
+                    const SymV2PcFragOutputKey &key = task.outputs[o];
+                    if (key.output_id < 0 ||
+                        static_cast<size_t>(key.output_id) >=
+                            symV2PcFragTaskflowGlobalOutputLockState.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock id is invalid.");
+                    if (symV2PcFragTaskflowGlobalOutputLockState[
+                            static_cast<size_t>(key.output_id)])
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output lock was already held.");
+                    symV2PcFragTaskflowGlobalOutputLockState[
+                        static_cast<size_t>(key.output_id)] = 1;
+                    ++symV2PcFragTaskflowGlobalOutputLocksLive;
+                    ++state.active_output_lock_count;
+                    continue;
+                }
                 state.active_output_key_set.insert(task.outputs[o]);
                 if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
                     symV2PcFragTaskflowGlobalOutputLocks.insert(
@@ -3197,10 +3408,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
                 symV2PcFragTaskflowStats.global_output_locks_acquired +=
                     static_cast<long long>(task.outputs.size());
-            if (static_cast<long long>(state.active_output_key_set.size()) >
+            long long active_output_locks =
+                compact_output_locks
+                    ? static_cast<long long>(state.active_output_lock_count)
+                    : static_cast<long long>(state.active_output_key_set.size());
+            if (active_output_locks >
                 symV2PcFragTaskflowStats.output_lock_high_water)
                 symV2PcFragTaskflowStats.output_lock_high_water =
-                    static_cast<long long>(state.active_output_key_set.size());
+                    active_output_locks;
         };
         auto unlock_outputs = [&](const SymV2PcFragTaskDesc &task) {
             return dSymV2PcFragTaskflowReleaseOutputLocks(
@@ -3284,12 +3499,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (!dSymV2PcFragTaskflowProducerSendsComplete(
                     state, symV2PcFragTaskflowStats, 0))
                 return 0;
-            if (!state.active_output_key_set.empty())
+            if (!state.active_output_key_set.empty() ||
+                state.active_output_lock_count != 0)
             {
                 std::fprintf(stderr,
-                             "GPU3DV2 taskflow release with live local output locks: k=%lld locks=%zu incomplete=%d\n",
+                             "GPU3DV2 taskflow release with live local output locks: k=%lld locks=%zu compact_locks=%d incomplete=%d\n",
                              static_cast<long long>(k),
                              state.active_output_key_set.size(),
+                             state.active_output_lock_count,
                              state.incomplete_task_count);
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW release found live local output locks.");
             }
@@ -4424,7 +4641,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
                     continue;
                 }
                 int completed_cross_panel = 0;
-                if (!symV2PcFragTaskflowGlobalOutputLocks.empty())
+                if (!symV2PcFragTaskflowGlobalOutputLocks.empty() ||
+                    symV2PcFragTaskflowGlobalOutputLocksLive != 0)
                     completed_cross_panel = progress_cross_panel_locks();
                 if (completed_cross_panel > 0)
                 {
@@ -4447,7 +4665,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
                                  "incomplete=%d launched_pending=%d "
                                  "pending_required=%d pending_any=%d "
                                  "row_ready=%zu/%zu partner_ready=%zu/%zu "
-                                 "active_locks=%zu global_locks=%zu "
+                                 "active_locks=%zu compact_locks=%d "
+                                 "global_locks=%zu compact_global_locks=%lld "
                                  "producer_active=%d producer_pending=%d "
                                  "producer_stream_pending=%d "
                                  "partner_recv_remaining=%d "
@@ -4466,7 +4685,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
                                  static_cast<size_t>(state.partner_pieces_ready_count),
                                  state.partner_pieces.size(),
                                  state.active_output_key_set.size(),
+                                 state.active_output_lock_count,
                                  symV2PcFragTaskflowGlobalOutputLocks.size(),
+                                 symV2PcFragTaskflowGlobalOutputLocksLive,
                                  static_cast<int>(state.producer_exchange_active),
                                  static_cast<int>(state.producer_exchange_pending),
                                  static_cast<int>(state.producer_stream_pending),
@@ -4524,7 +4745,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
     }
     if (state.incomplete_task_count != 0)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found incomplete tasks.");
-    if (!state.active_output_key_set.empty())
+    if (!state.active_output_key_set.empty() ||
+        state.active_output_lock_count != 0)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW release found active output locks.");
     auto release_piece_storage = [&](SymV2PcFragPieceDesc &piece) {
         if (piece.pending_consumers != 0)

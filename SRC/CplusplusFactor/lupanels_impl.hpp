@@ -6730,7 +6730,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 !superlu_cuda_aware_mpi())
             {
                 if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
-                    !symV2PcFragTaskflowGlobalOutputLocks.empty())
+                    (!symV2PcFragTaskflowGlobalOutputLocks.empty() ||
+                     symV2PcFragTaskflowGlobalOutputLocksLive != 0))
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE setup found stale global output locks.");
 	                if (superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0)
 	                    ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split sparse task planning; currently disabled.");
@@ -7377,6 +7378,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 		                {
 	                    taskflow_setup_mark("before_gemm_event_prewarm");
 		                    size_t taskflow_gemm_slots = active_slots;
+		                    taskflow_gemm_slots = SUPERLU_MAX(
+		                        taskflow_gemm_slots,
+		                        static_cast<size_t>(MAX_CUDA_STREAMS));
 		                    int taskflow_gemm_raw_streams = A_gpu.numCudaStreams;
 		                    if (taskflow_gemm_raw_streams > 0 &&
 		                        taskflow_gemm_raw_streams <= 1024)
@@ -7739,6 +7743,9 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
                 symV2PcFragTaskflowGemmResources[r].tail_event));
     symV2PcFragTaskflowGemmResources.clear();
     symV2PcFragTaskflowGlobalOutputLocks.clear();
+    symV2PcFragTaskflowOutputPanelOffsets.clear();
+    symV2PcFragTaskflowGlobalOutputLockState.clear();
+    symV2PcFragTaskflowGlobalOutputLocksLive = 0;
     for (size_t ev = 0; ev < symV2PcFragTaskflowEventPool.size(); ++ev)
         if (symV2PcFragTaskflowEventPool[ev] != NULL)
             gpuErrchk(cudaEventDestroy(symV2PcFragTaskflowEventPool[ev]));
