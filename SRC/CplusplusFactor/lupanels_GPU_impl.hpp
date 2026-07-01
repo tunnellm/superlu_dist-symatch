@@ -3616,6 +3616,47 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
             streamId, k, mode_mask, mode_gid, 0);
         if (!state.initialized)
             return 0;
+        if (!(mode_mask & SYM_V2_PCFRAG_TASK_FULL))
+        {
+            const bool strict_output_conflicts =
+                superlu_sym_v2_pcfrag_taskflow_strict() &&
+                state.output_conflicts_possible;
+            auto required_incomplete = [&]() -> int {
+                int count = 0;
+                for (size_t i = 0; i < state.tasks.size(); ++i)
+                {
+                    SymV2PcFragTaskDesc &task = state.tasks[i];
+                    if (task.complete)
+                        continue;
+                    if (dSymV2PcFragTaskflowTaskRequiredForMode(
+                            task, 1, mode_mask, mode_gid))
+                        ++count;
+                }
+                return count;
+            };
+            int idle_polls = 0;
+            for (;;)
+            {
+                int pending_required = 0;
+                int completed_this_pass =
+                    dSymV2PcFragTaskflowProgressLaunchedTasks(
+                        state, symV2PcFragTaskflowStats,
+                        strict_output_conflicts, 1, mode_mask, mode_gid,
+                        &pending_required);
+                if (pending_required == 0)
+                    break;
+                if (completed_this_pass > 0)
+                {
+                    idle_polls = 0;
+                    continue;
+                }
+                dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
+                if (++idle_polls > 10000000)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW mode drain made no CUDA progress.");
+            }
+            if (required_incomplete() == 0)
+                return 0;
+        }
     }
     dSymV2PcFragTaskflowProgressExchangeGPU(k, 1);
     return dSymV2PcFragTaskflowDispatchGPU(
