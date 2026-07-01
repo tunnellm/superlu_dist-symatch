@@ -7378,6 +7378,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                    taskflow_setup_mark("before_gemm_event_prewarm");
 		                    size_t taskflow_gemm_slots = active_slots;
 		                    int taskflow_gemm_raw_streams = A_gpu.numCudaStreams;
+		                    if (taskflow_gemm_raw_streams > 0 &&
+		                        taskflow_gemm_raw_streams <= 1024)
+		                        taskflow_gemm_slots = SUPERLU_MAX(
+		                            taskflow_gemm_slots,
+		                            static_cast<size_t>(
+		                                taskflow_gemm_raw_streams));
 		                    int taskflow_gemm_resource_count =
 		                        SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT;
 		                    if (std::getenv("GPU3DV2_PCFRAG_TASKFLOW_SETUP_DIAG") != NULL)
