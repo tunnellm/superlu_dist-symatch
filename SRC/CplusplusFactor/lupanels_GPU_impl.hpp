@@ -761,16 +761,27 @@ static inline void dSymV2PcFragTaskflowWaitProducerSends(
     state.producer_send_reqs.clear();
 }
 
+template <typename T>
+static inline void dSymV2PcFragTaskflowEnsureVectorCapacity(
+    std::vector<T> &buffer, size_t count)
+{
+    if (count == 0 || buffer.capacity() >= count)
+        return;
+    if (superlu_sym_v2_pcfrag_taskflow_async_core())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE vector scratch is undersized.");
+    buffer.reserve(count);
+}
+
 static inline void dSymV2PcFragTaskflowEnsureProgressScratch(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     size_t request_count)
 {
     if (request_count == 0)
         return;
-    if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
-        (state.producer_progress_indices.capacity() < request_count ||
-         state.producer_progress_statuses.capacity() < request_count))
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE progress scratch is undersized.");
+    dSymV2PcFragTaskflowEnsureVectorCapacity(
+        state.producer_progress_indices, request_count);
+    dSymV2PcFragTaskflowEnsureVectorCapacity(
+        state.producer_progress_statuses, request_count);
     if (state.producer_progress_indices.size() < request_count)
         state.producer_progress_indices.resize(request_count);
     if (state.producer_progress_statuses.size() < request_count)
@@ -4254,6 +4265,21 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             ABORT("GPU3DV2_PCFRAG_TASKFLOW async partner receive has no state.");
         taskflow_state->producer_exchange_pending = 1;
         taskflow_state->producer_ksupc = static_cast<int>(ksupc);
+        dSymV2PcFragTaskflowEnsureVectorCapacity(
+            taskflow_state->producer_partner_recv_reqs,
+            recv_reqs.size());
+        dSymV2PcFragTaskflowEnsureVectorCapacity(
+            taskflow_state->producer_partner_recv_prs,
+            recv_request_peers.size());
+        dSymV2PcFragTaskflowEnsureVectorCapacity(
+            taskflow_state->producer_partner_recv_sizes,
+            recv_request_peers.size());
+        dSymV2PcFragTaskflowEnsureVectorCapacity(
+            taskflow_state->producer_partner_recv_offsets,
+            recv_request_peers.size());
+        dSymV2PcFragTaskflowEnsureVectorCapacity(
+            taskflow_state->producer_partner_recv_done,
+            recv_reqs.size());
         taskflow_state->producer_partner_recv_reqs = recv_reqs;
         taskflow_state->producer_partner_recv_prs = recv_request_peers;
         taskflow_state->producer_partner_recv_sizes.clear();
@@ -6176,6 +6202,21 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW async row receive has no state.");
                 taskflow_state->producer_exchange_pending = 1;
                 taskflow_state->producer_ksupc = static_cast<int>(ksupc);
+                dSymV2PcFragTaskflowEnsureVectorCapacity(
+                    taskflow_state->producer_row_recv_reqs,
+                    row_recv_reqs.size());
+                dSymV2PcFragTaskflowEnsureVectorCapacity(
+                    taskflow_state->producer_row_recv_pcs,
+                    row_recv_reqs.size());
+                dSymV2PcFragTaskflowEnsureVectorCapacity(
+                    taskflow_state->producer_row_recv_sizes,
+                    static_cast<size_t>(Pc));
+                dSymV2PcFragTaskflowEnsureVectorCapacity(
+                    taskflow_state->producer_row_recv_offsets,
+                    row_recv_offsets.size());
+                dSymV2PcFragTaskflowEnsureVectorCapacity(
+                    taskflow_state->producer_row_recv_done,
+                    row_recv_reqs.size());
                 taskflow_state->producer_row_recv_reqs = row_recv_reqs;
                 taskflow_state->producer_row_recv_pcs.assign(
                     row_recv_reqs.size(), -1);
@@ -6369,6 +6410,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send has no state.");
             if (!taskflow_state->producer_send_reqs.empty())
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW found pending producer sends before exchange return.");
+            dSymV2PcFragTaskflowEnsureVectorCapacity(
+                taskflow_state->producer_send_reqs, send_reqs.size());
             taskflow_state->producer_send_reqs = send_reqs;
             dSymV2PcFragTaskflowEnsureProgressScratch(
                 *taskflow_state,

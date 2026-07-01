@@ -6990,6 +6990,54 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             progress_scratch_count)
                             state.producer_progress_statuses.reserve(
                                 progress_scratch_count);
+                        size_t partner_request_count =
+                            static_cast<size_t>(Pr);
+                        size_t row_request_count = SUPERLU_MAX(
+                            static_cast<size_t>(1), static_cast<size_t>(Pc));
+                        if (state.producer_partner_recv_reqs.capacity() <
+                            partner_request_count)
+                            state.producer_partner_recv_reqs.reserve(
+                                partner_request_count);
+                        if (state.producer_partner_recv_prs.capacity() <
+                            partner_request_count)
+                            state.producer_partner_recv_prs.reserve(
+                                partner_request_count);
+                        if (state.producer_partner_recv_sizes.capacity() <
+                            partner_request_count)
+                            state.producer_partner_recv_sizes.reserve(
+                                partner_request_count);
+                        if (state.producer_partner_recv_offsets.capacity() <
+                            partner_request_count)
+                            state.producer_partner_recv_offsets.reserve(
+                                partner_request_count);
+                        if (state.producer_partner_recv_done.capacity() <
+                            partner_request_count)
+                            state.producer_partner_recv_done.reserve(
+                                partner_request_count);
+                        if (state.producer_row_recv_reqs.capacity() <
+                            row_request_count)
+                            state.producer_row_recv_reqs.reserve(
+                                row_request_count);
+                        if (state.producer_row_recv_pcs.capacity() <
+                            row_request_count)
+                            state.producer_row_recv_pcs.reserve(
+                                row_request_count);
+                        if (state.producer_row_recv_sizes.capacity() <
+                            row_request_count)
+                            state.producer_row_recv_sizes.reserve(
+                                row_request_count);
+                        if (state.producer_row_recv_offsets.capacity() <
+                            row_request_count)
+                            state.producer_row_recv_offsets.reserve(
+                                row_request_count);
+                        if (state.producer_row_recv_done.capacity() <
+                            row_request_count)
+                            state.producer_row_recv_done.reserve(
+                                row_request_count);
+                        if (state.producer_send_reqs.capacity() <
+                            progress_scratch_count)
+                            state.producer_send_reqs.reserve(
+                                progress_scratch_count);
                         if (state.producer_partner_progressive_assembled.capacity() <
                             static_cast<size_t>(Pr))
                             state.producer_partner_progressive_assembled.reserve(
