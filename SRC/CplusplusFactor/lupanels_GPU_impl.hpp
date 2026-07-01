@@ -3907,8 +3907,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 }
             }
         };
-        if (async_core && !drain &&
-            superlu_sym_v2_pcfrag_taskflow_eager() &&
+        if (async_core &&
             !superlu_sym_v2_pcfrag_taskflow_validate())
         {
             int launched_this_call = 0;
@@ -3997,7 +3996,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (runnable_write != queue.size())
                     queue.resize(runnable_write);
             }
-            progress_launched_tasks(0, mode_mask);
+            progress_launched_tasks(drain ? 1 : 0, mode_mask);
             if (state.incomplete_task_count == 0 &&
                 !state.producer_exchange_active &&
                 !state.producer_exchange_pending)
