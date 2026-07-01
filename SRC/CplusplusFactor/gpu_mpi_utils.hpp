@@ -489,6 +489,11 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_strict()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_STRICT", 1);
 }
 
+static inline bool superlu_sym_v2_pcfrag_taskflow_force_output_locks()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_FORCE_OUTPUT_LOCKS", 0);
+}
+
 static inline bool superlu_sym_v2_pcfrag_taskflow_validate()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_VALIDATE", 0);

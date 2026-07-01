@@ -2146,6 +2146,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
              lookahead_row_degrees.begin();
          it != lookahead_row_degrees.end(); ++it)
         state.runnable_lookahead_row_by_gid[it->first].reserve(it->second);
+    if (!state.tasks.empty() &&
+        superlu_sym_v2_pcfrag_taskflow_force_output_locks())
+        state.output_conflicts_possible = 1;
     state.incomplete_task_count = static_cast<int>(state.tasks.size());
     symV2PcFragTaskflowStats.tasks_planned +=
         static_cast<long long>(state.tasks.size());
