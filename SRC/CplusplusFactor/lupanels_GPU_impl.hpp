@@ -1392,6 +1392,13 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 if (drain)
                     ++stats.task_completion_drain_required_seen;
             }
+            else if (drain && required_mode_mask != 0 &&
+                     !(required_mode_mask &
+                       xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL))
+            {
+                task_ids[launched_write++] = tid;
+                continue;
+            }
             if (!drain &&
                 dSymV2PcFragTaskflowSkipEventQuery(state, stats, task))
             {
