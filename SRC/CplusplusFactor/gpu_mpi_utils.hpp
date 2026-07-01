@@ -509,6 +509,12 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_async_core()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE", 0);
 }
 
+static inline bool superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_GROUPED_DISPATCH", 0);
+}
+
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_core_check()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK", 1);

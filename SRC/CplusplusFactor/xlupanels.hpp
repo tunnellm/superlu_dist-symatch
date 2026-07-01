@@ -1231,6 +1231,28 @@ struct xLUstruct_t
         }
     };
 
+    struct SymV2PcFragLaunchedTaskGroup
+    {
+        int group_id;
+        int task_begin;
+        int task_count;
+        unsigned char launch_stream_kind;
+        unsigned char gemm_resource_kind;
+#ifdef HAVE_CUDA
+        cudaEvent_t done_event;
+#endif
+
+        SymV2PcFragLaunchedTaskGroup()
+            : group_id(-1), task_begin(0), task_count(0),
+              launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
+              gemm_resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE)
+#ifdef HAVE_CUDA
+              , done_event(NULL)
+#endif
+        {
+        }
+    };
+
     struct SymV2PcFragGidCounterMap
     {
         struct Entry
@@ -1413,6 +1435,9 @@ struct xLUstruct_t
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         std::vector<int> launched_task_ids_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
+        std::vector<SymV2PcFragLaunchedTaskGroup>
+            launched_task_groups_by_stream[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
+        std::vector<int> launched_group_task_ids;
         int launched_task_pending_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int launched_task_pending_mode_by_stream[
@@ -1428,6 +1453,7 @@ struct xLUstruct_t
         unsigned char producer_exchange_pending;
         unsigned char producer_stream_pending;
         unsigned char output_conflicts_possible;
+        unsigned char group_scratch_in_use;
         size_t row_pieces_ready_count;
         size_t partner_pieces_ready_count;
         int producer_partner_recv_remaining;
@@ -1475,7 +1501,7 @@ struct xLUstruct_t
               producer_tasks_launched(0), producer_launch_cap_reported(0),
               producer_exchange_active(0), producer_exchange_pending(0),
               producer_stream_pending(0), output_conflicts_possible(0),
-              active_output_lock_count(0),
+              group_scratch_in_use(0), active_output_lock_count(0),
               row_pieces_ready_count(0), partner_pieces_ready_count(0),
               producer_partner_recv_remaining(0),
               producer_row_recv_remaining(0), producer_ksupc(0)
@@ -1618,10 +1644,12 @@ struct xLUstruct_t
                 launched_lookahead_col_members_by_gid_by_stream[i].clear();
                 launched_lookahead_row_members_by_gid_by_stream[i].clear();
                 launched_task_ids_by_stream[i].clear();
+                launched_task_groups_by_stream[i].clear();
                 launched_task_pending_by_stream[i] = 0;
                 for (int mask = 0; mask < 16; ++mask)
                     launched_task_pending_mode_by_stream[i][mask] = 0;
             }
+            launched_group_task_ids.clear();
             active_output_key_set.clear();
             active_output_lock_count = 0;
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
@@ -1636,6 +1664,7 @@ struct xLUstruct_t
             producer_exchange_pending = 0;
             producer_stream_pending = 0;
             output_conflicts_possible = 0;
+            group_scratch_in_use = 0;
             row_pieces_ready_count = 0;
             partner_pieces_ready_count = 0;
             producer_partner_recv_remaining = 0;
@@ -2291,6 +2320,11 @@ struct xLUstruct_t
             if (task_completion_event_success_mismatch < 0)
                 task_completion_event_success_mismatch =
                     -task_completion_event_success_mismatch;
+            if (superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch())
+            {
+                gemm_tail_update_mismatch = 0;
+                task_completion_event_success_mismatch = 0;
+            }
             std::printf(
                 "SymFact V2 Pc-fragment taskflow async-core contract: "
                 "late_allocs=%lld event_waits=%lld "

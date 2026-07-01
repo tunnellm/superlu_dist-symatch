@@ -1577,6 +1577,76 @@ static inline void dSymV2PcFragTaskflowUnrecordLaunchedTask(
     dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(state, task, -1);
 }
 
+static inline int dSymV2PcFragTaskflowTaskIdRequiredForMode(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    int tid,
+    int drain,
+    unsigned required_mode_mask,
+    int_t required_mode_gid)
+{
+    if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW launched grouped task id is invalid.");
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task =
+        state.tasks[static_cast<size_t>(tid)];
+    if (!task.launched || task.complete)
+        return 0;
+    return dSymV2PcFragTaskflowTaskRequiredForMode(
+        task, drain, required_mode_mask, required_mode_gid) ? 1 : 0;
+}
+
+static inline int dSymV2PcFragTaskflowGroupRequiredForMode(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup &group,
+    int drain,
+    unsigned required_mode_mask,
+    int_t required_mode_gid)
+{
+    int required = 0;
+    if (group.task_begin < 0 || group.task_count < 0 ||
+        static_cast<size_t>(group.task_begin + group.task_count) >
+            state.launched_group_task_ids.size())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW launched group task range is invalid.");
+    for (int i = 0; i < group.task_count; ++i)
+    {
+        int tid = state.launched_group_task_ids[
+            static_cast<size_t>(group.task_begin + i)];
+        required += dSymV2PcFragTaskflowTaskIdRequiredForMode(
+            state, tid, drain, required_mode_mask, required_mode_gid);
+    }
+    return required;
+}
+
+static inline void dSymV2PcFragTaskflowNoteEventNotReadyForKind(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    int kind)
+{
+    int base = superlu_sym_v2_pcfrag_taskflow_event_poll_backoff();
+    int cap = superlu_sym_v2_pcfrag_taskflow_event_poll_backoff_max();
+    if (cap < base)
+        cap = base;
+    if (base <= 0 || cap <= 0)
+    {
+        state.task_event_poll_backoff[kind] = 0;
+        state.task_event_poll_skip[kind] = 0;
+        return;
+    }
+    int current = state.task_event_poll_backoff[kind];
+    if (current <= 0)
+        current = base;
+    else
+        current = SUPERLU_MIN(cap, SUPERLU_MAX(base, current * 2));
+    state.task_event_poll_backoff[kind] = current;
+    state.task_event_poll_skip[kind] = current;
+}
+
+static inline void dSymV2PcFragTaskflowNoteEventCompleteForKind(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    int kind)
+{
+    state.task_event_poll_skip[kind] = 0;
+    state.task_event_poll_backoff[kind] = 0;
+}
+
 static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -1606,8 +1676,11 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
     {
         std::vector<int> &task_ids =
             state.launched_task_ids_by_stream[kind];
+        std::vector<xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup>
+            &task_groups = state.launched_task_groups_by_stream[kind];
         size_t launched_write = 0;
-        if (task_ids.empty())
+        size_t group_write = 0;
+        if (task_ids.empty() && task_groups.empty())
             continue;
         int stream_pending_required =
             dSymV2PcFragTaskflowPendingLaunchedForMode(
@@ -1622,6 +1695,74 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
             pending_required += stream_pending_required;
             continue;
         }
+        for (size_t g = 0; g < task_groups.size(); ++g)
+        {
+            xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup group =
+                task_groups[g];
+            if (group.done_event == NULL)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core grouped task has no completion event.");
+            int group_required =
+                dSymV2PcFragTaskflowGroupRequiredForMode(
+                    state, group, drain, required_mode_mask,
+                    required_mode_gid);
+            if (group_required > 0)
+            {
+                pending_required += group_required;
+                stats.task_completion_poll_required_seen += group_required;
+                if (drain)
+                    stats.task_completion_drain_required_seen +=
+                        group_required;
+            }
+            else if (drain && required_mode_mask != 0 &&
+                     !(required_mode_mask &
+                       xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL))
+            {
+                task_groups[group_write++] = group;
+                continue;
+            }
+            ++stats.task_completion_poll_task_scans;
+            if (drain)
+                ++stats.task_completion_drain_task_scans;
+            cudaError_t event_rc = cudaEventQuery(group.done_event);
+            ++stats.task_completion_event_queries;
+            if (event_rc == cudaSuccess)
+            {
+                ++stats.task_completion_event_successes;
+                dSymV2PcFragTaskflowNoteEventCompleteForKind(state, kind);
+                if (group.task_begin < 0 || group.task_count < 0 ||
+                    static_cast<size_t>(group.task_begin + group.task_count) >
+                        state.launched_group_task_ids.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW launched group task range is invalid.");
+                for (int ti = 0; ti < group.task_count; ++ti)
+                {
+                    int tid = state.launched_group_task_ids[
+                        static_cast<size_t>(group.task_begin + ti)];
+                    if (tid < 0 ||
+                        static_cast<size_t>(tid) >= state.tasks.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW launched group task id is invalid.");
+                    xLUstruct_t<double>::SymV2PcFragTaskDesc &task =
+                        state.tasks[static_cast<size_t>(tid)];
+                    if (!task.launched || task.complete)
+                        continue;
+                    dSymV2PcFragTaskflowUnrecordLaunchedTask(state, task);
+                    dSymV2PcFragTaskflowCompleteLaunchedTask(
+                        xlu, state, task, strict_output_conflicts);
+                    ++completed;
+                }
+                dSymV2PcFragTaskflowRecycleEvent(
+                    xlu.symV2PcFragTaskflowEventPool, group.done_event);
+                state.group_scratch_in_use = 0;
+                if (group_required > 0)
+                    pending_required -= group_required;
+                continue;
+            }
+            if (event_rc != cudaErrorNotReady)
+                gpuErrchk(event_rc);
+            dSymV2PcFragTaskflowNoteEventNotReadyForKind(state, kind);
+            task_groups[group_write++] = group;
+        }
+        if (group_write != task_groups.size())
+            task_groups.resize(group_write);
         for (size_t i = 0; i < task_ids.size(); ++i)
         {
             int tid = task_ids[i];
@@ -3447,6 +3588,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
              superlu_sym_v2_pcfrag_taskflow_global_output_locks());
         const bool async_core =
             superlu_sym_v2_pcfrag_taskflow_async_core();
+        const bool async_grouped_dispatch =
+            async_core &&
+            superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch();
         const bool compact_output_locks =
             dSymV2PcFragTaskflowUseCompactOutputLocks(*this);
 
@@ -3978,6 +4122,76 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 dst += piece.nrows;
             }
         };
+        auto build_group_index_from_ids =
+            [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
+                const std::vector<int> &piece_ids) -> std::vector<int_t> {
+            int_t nblocks = static_cast<int_t>(piece_ids.size());
+            int_t nrows = 0;
+            for (size_t p = 0; p < piece_ids.size(); ++p)
+            {
+                int piece_id = piece_ids[p];
+                if (piece_id < 0 ||
+                    static_cast<size_t>(piece_id) >= pieces.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit piece id is invalid.");
+                nrows += pieces[static_cast<size_t>(piece_id)].nrows;
+            }
+            std::vector<int_t> idx(
+                static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * nblocks + 1 +
+                                    nrows), 0);
+            idx[0] = nblocks;
+            idx[1] = nrows;
+            idx[2] = 0;
+            idx[3] = SuperSize(k);
+            int_t gid_ptr = LPANEL_HEADER_SIZE;
+            int_t px_ptr = LPANEL_HEADER_SIZE + nblocks;
+            int_t row_ptr = LPANEL_HEADER_SIZE + 2 * nblocks + 1;
+            idx[px_ptr] = 0;
+            for (int_t local = 0; local < nblocks; ++local)
+            {
+                const SymV2PcFragPieceDesc &piece =
+                    pieces[static_cast<size_t>(
+                        piece_ids[static_cast<size_t>(local)])];
+                idx[gid_ptr + local] = piece.gid_first;
+                idx[px_ptr + local + 1] =
+                    idx[px_ptr + local] + piece.nrows;
+                size_t piece_row_ptr =
+                    static_cast<size_t>(LPANEL_HEADER_SIZE + 3);
+                for (int_t r = 0; r < piece.nrows; ++r)
+                    idx[row_ptr++] =
+                        piece.h_index[piece_row_ptr + static_cast<size_t>(r)];
+            }
+            return idx;
+        };
+        auto build_group_values_from_ids =
+            [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
+                const std::vector<int> &piece_ids, int_t group_lda,
+                double *group_val, cudaStream_t group_stream) {
+            int_t ksupc = SuperSize(k);
+            if (group_lda <= 0)
+                return;
+            if (group_val == NULL)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit value pool is missing.");
+            int_t dst = 0;
+            for (size_t p = 0; p < piece_ids.size(); ++p)
+            {
+                const SymV2PcFragPieceDesc &piece =
+                    pieces[static_cast<size_t>(piece_ids[p])];
+                if (!piece.ready || piece.d_val == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit dispatch found an unready piece.");
+                if (piece.ready_event != NULL)
+                    gpuErrchk(cudaStreamWaitEvent(
+                        group_stream, piece.ready_event, 0));
+                gpuErrchk(cudaMemcpy2DAsync(
+                    group_val + dst,
+                    sizeof(double) * static_cast<size_t>(group_lda),
+                    piece.d_val,
+                    sizeof(double) * static_cast<size_t>(piece.lda),
+                    sizeof(double) * static_cast<size_t>(piece.nrows),
+                    static_cast<size_t>(ksupc),
+                    cudaMemcpyDeviceToDevice, group_stream));
+                dst += piece.nrows;
+            }
+        };
         auto launch_single_task =
             [&](SymV2PcFragTaskDesc &task,
                 cublasHandle_t task_handle,
@@ -4126,6 +4340,53 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 return;
             if (async_core)
             {
+                auto launch_range_as_singles = [&]() {
+                    int row_piece_start = 0;
+                    int row_piece_end = 0;
+                    int partner_piece_start = 0;
+                    int partner_piece_end = 0;
+                    if (!piece_id_range_for_blocks(
+                            state.row_block_piece, row_start, row_end,
+                            &row_piece_start, &row_piece_end) ||
+                        !piece_id_range_for_blocks(
+                            state.partner_block_piece, col_start, col_end,
+                            &partner_piece_start, &partner_piece_end))
+                        return;
+                    if (static_cast<size_t>(row_piece_end) >
+                            state.row_pieces.size() ||
+                        static_cast<size_t>(partner_piece_end) >
+                            state.partner_pieces.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW piece range is outside the taskflow piece arrays.");
+                    for (int rp = row_piece_start; rp < row_piece_end; ++rp)
+                    {
+                        SymV2PcFragPieceDesc &row_piece =
+                            state.row_pieces[static_cast<size_t>(rp)];
+                        if (!row_piece.ready)
+                        {
+                            ++symV2PcFragTaskflowStats.tasks_blocked_row;
+                            return;
+                        }
+                        for (int cp = partner_piece_start;
+                             cp < partner_piece_end; ++cp)
+                        {
+                            SymV2PcFragPieceDesc &partner_piece =
+                                state.partner_pieces[static_cast<size_t>(cp)];
+                            if (!partner_piece.ready)
+                            {
+                                ++symV2PcFragTaskflowStats.tasks_blocked_partner;
+                                return;
+                            }
+                            SymV2PcFragTaskDesc *task =
+                                task_for_piece_pair(rp, cp);
+                            if (task == NULL || task->complete ||
+                                !task_matches_launch_mode(*task, launch_mode))
+                                continue;
+                            launch_single_task(
+                                *task, group_handle, group_stream,
+                                group_gemm, launch_mode);
+                        }
+                    }
+                };
                 int row_piece_start = 0;
                 int row_piece_end = 0;
                 int partner_piece_start = 0;
@@ -4142,6 +4403,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     static_cast<size_t>(partner_piece_end) >
                         state.partner_pieces.size())
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW piece range is outside the taskflow piece arrays.");
+                const bool lookahead_group =
+                    (launch_mode & (SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+                                    SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)) != 0;
+                if (!async_grouped_dispatch || !lookahead_group ||
+                    state.group_scratch_in_use)
+                {
+                    launch_range_as_singles();
+                    return;
+                }
+                std::vector<SymV2PcFragTaskDesc *> group_tasks;
+                int completed_pair_count = 0;
                 for (int rp = row_piece_start; rp < row_piece_end; ++rp)
                 {
                     SymV2PcFragPieceDesc &row_piece =
@@ -4163,14 +4435,159 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         }
                         SymV2PcFragTaskDesc *task =
                             task_for_piece_pair(rp, cp);
-                        if (task == NULL || task->complete ||
+                        if (task == NULL ||
                             !task_matches_launch_mode(*task, launch_mode))
                             continue;
-                        launch_single_task(
-                            *task, group_handle, group_stream, group_gemm,
-                            launch_mode);
+                        if (task->complete)
+                        {
+                            ++completed_pair_count;
+                            continue;
+                        }
+                        if (task->launched)
+                            continue;
+                        if (output_locked(*task))
+                        {
+                            ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                            ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                            launch_range_as_singles();
+                            return;
+                        }
+                        group_tasks.push_back(task);
                     }
                 }
+                if (group_tasks.size() <= 1 || completed_pair_count > 0)
+                {
+                    launch_range_as_singles();
+                    return;
+                }
+                const int in_flight_task_cap =
+                    superlu_sym_v2_pcfrag_taskflow_progress_budget();
+                if (static_cast<int>(group_tasks.size()) >
+                    in_flight_task_cap)
+                {
+                    launch_range_as_singles();
+                    return;
+                }
+                int pending_launched =
+                    dSymV2PcFragTaskflowPendingLaunchedAllForMode(
+                        state, 0, 0, GLOBAL_BLOCK_NOT_FOUND);
+                if (pending_launched +
+                        static_cast<int>(group_tasks.size()) >
+                    in_flight_task_cap)
+                    return;
+                if (group_handle == NULL || group_stream == NULL ||
+                    group_gemm == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async task has no stream resources.");
+                for (size_t i = 0; i < group_tasks.size(); ++i)
+                    lock_outputs(*group_tasks[i]);
+                int_t row_lda = 0;
+                for (int rp = row_piece_start; rp < row_piece_end; ++rp)
+                    row_lda += state.row_pieces[static_cast<size_t>(rp)].nrows;
+                int_t col_lda = 0;
+                for (int cp = partner_piece_start; cp < partner_piece_end; ++cp)
+                    col_lda += state.partner_pieces[static_cast<size_t>(cp)].nrows;
+                std::vector<int_t> row_group =
+                    build_group_index(
+                        state.row_pieces, row_piece_start, row_piece_end);
+                std::vector<int_t> col_group =
+                    build_group_index(
+                        state.partner_pieces, partner_piece_start,
+                        partner_piece_end);
+                size_t row_index_count = row_group.size();
+                size_t col_index_count = col_group.size();
+                size_t row_value_count =
+                    static_cast<size_t>(row_lda) *
+                    static_cast<size_t>(SuperSize(k));
+                size_t col_value_count =
+                    static_cast<size_t>(col_lda) *
+                    static_cast<size_t>(SuperSize(k));
+                if (state.d_group_index_pool == NULL ||
+                    row_index_count + col_index_count >
+                        state.group_index_pool_capacity)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async index arena exhausted.");
+                if (state.d_group_value_pool == NULL ||
+                    row_value_count + col_value_count >
+                        state.group_value_pool_capacity)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async value arena exhausted.");
+                int_t *row_group_gpu = state.d_group_index_pool;
+                int_t *col_group_gpu =
+                    state.d_group_index_pool + row_index_count;
+                double *row_group_val = state.d_group_value_pool;
+                double *col_group_val =
+                    state.d_group_value_pool + row_value_count;
+                gpuErrchk(cudaMemcpyAsync(
+                    row_group_gpu, row_group.data(),
+                    sizeof(int_t) * row_index_count,
+                    cudaMemcpyHostToDevice, group_stream));
+                gpuErrchk(cudaMemcpyAsync(
+                    col_group_gpu, col_group.data(),
+                    sizeof(int_t) * col_index_count,
+                    cudaMemcpyHostToDevice, group_stream));
+                build_group_values(
+                    state.row_pieces, row_piece_start, row_piece_end,
+                    row_lda, row_group_val, group_stream);
+                build_group_values(
+                    state.partner_pieces, partner_piece_start,
+                    partner_piece_end, col_lda, col_group_val,
+                    group_stream);
+                if (!all_pieces_ready())
+                    symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready +=
+                        static_cast<long long>(group_tasks.size());
+                int resource =
+                    dSymV2PcFragTaskflowGemmResourceForLaunchMode(
+                        launch_mode);
+                xLUstruct_t<double>::SymV2PcFragGemmResourceState &res =
+                    dSymV2PcFragTaskflowGemmResource(
+                        *this, streamId, resource);
+                if (res.recorded)
+                {
+                    gpuErrchk(cudaStreamWaitEvent(
+                        group_stream, res.tail_event, 0));
+                    ++symV2PcFragTaskflowStats.gemm_resource_tail_waits;
+                    ++res.waits;
+                }
+                dSymSchurCompUpdateTaskDualPieceGroupGPU(
+                    0, row_piece_end - row_piece_start,
+                    0, partner_piece_end - partner_piece_start, k,
+                    row_group, col_group,
+                    row_group_gpu, row_group_val,
+                    col_group_gpu, col_group_val,
+                    group_handle, group_stream, group_gemm);
+                xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup group;
+                group.group_id = static_cast<int>(
+                    state.launched_group_task_ids.size());
+                group.task_begin = static_cast<int>(
+                    state.launched_group_task_ids.size());
+                group.task_count = static_cast<int>(group_tasks.size());
+                group.launch_stream_kind =
+                    task_stream_kind_for_launch_mode(launch_mode);
+                group.gemm_resource_kind =
+                    static_cast<unsigned char>(resource);
+                group.done_event =
+                    dSymV2PcFragTaskflowAcquireEvent(
+                        symV2PcFragTaskflowEventPool, !async_core,
+                        &symV2PcFragTaskflowStats.arena_event_late_allocs);
+                gpuErrchk(cudaEventRecord(group.done_event, group_stream));
+                gpuErrchk(cudaEventRecord(res.tail_event, group_stream));
+                res.recorded = 1;
+                res.active_task_id = group_tasks[0]->task_id;
+                ++res.updates;
+                ++symV2PcFragTaskflowStats.gemm_resource_tail_updates;
+                for (size_t i = 0; i < group_tasks.size(); ++i)
+                {
+                    SymV2PcFragTaskDesc &task = *group_tasks[i];
+                    task.launched = 1;
+                    task.launch_stream_kind = group.launch_stream_kind;
+                    task.gemm_resource_kind = group.gemm_resource_kind;
+                    state.launched_group_task_ids.push_back(task.task_id);
+                    dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
+                        state, task, 1);
+                    ++symV2PcFragTaskflowStats.tasks_launched;
+                    count_task_launch_mode(launch_mode);
+                }
+                state.launched_task_groups_by_stream[
+                    group.launch_stream_kind].push_back(group);
+                state.group_scratch_in_use = 1;
                 return;
             }
             int pair_count = 0;
@@ -4427,6 +4844,261 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         task_handle = A_gpu.lookAheadUHandle[streamId];
                         task_stream = A_gpu.lookAheadUStream[streamId];
                         task_gemm = A_gpu.gpuGemmBuffs[streamId];
+                    }
+                    if (async_grouped_dispatch &&
+                        mode_gid != GLOBAL_BLOCK_NOT_FOUND &&
+                        !state.group_scratch_in_use &&
+                        (single_mode == SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL ||
+                         single_mode == SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW))
+                    {
+                        int available_group_slots =
+                            in_flight_task_cap - pending_launched;
+                        if (available_group_slots > 1)
+                        {
+                            std::vector<int> candidate_tids;
+                            candidate_tids.reserve(
+                                static_cast<size_t>(available_group_slots));
+                            candidate_tids.push_back(tid);
+                            for (size_t j = i + 1;
+                                 j < queue.size() &&
+                                 static_cast<int>(candidate_tids.size()) <
+                                     available_group_slots;
+                                 ++j)
+                            {
+                                int cand_tid = queue[j];
+                                if (cand_tid < 0 ||
+                                    static_cast<size_t>(cand_tid) >=
+                                        state.tasks.size())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
+                                SymV2PcFragTaskDesc &candidate =
+                                    state.tasks[
+                                        static_cast<size_t>(cand_tid)];
+                                if (candidate.launched ||
+                                    candidate.complete)
+                                    continue;
+                                if (task_launch_mode_for_request(
+                                        candidate, single_mode,
+                                        mode_gid) != launch_mode ||
+                                    !dSymV2PcFragTaskflowTaskRequiredForMode(
+                                        candidate, 1, single_mode,
+                                        mode_gid))
+                                    continue;
+                                if (single_mode ==
+                                    SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+                                {
+                                    if (candidate.partner_piece !=
+                                        task.partner_piece)
+                                        continue;
+                                }
+                                else if (candidate.row_piece !=
+                                         task.row_piece)
+                                {
+                                    continue;
+                                }
+                                candidate_tids.push_back(cand_tid);
+                            }
+                            if (candidate_tids.size() > 1)
+                            {
+                                bool can_group = true;
+                                std::vector<int> row_piece_ids;
+                                std::vector<int> partner_piece_ids;
+                                if (single_mode ==
+                                    SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+                                {
+                                    partner_piece_ids.push_back(
+                                        task.partner_piece);
+                                    for (size_t ci = 0;
+                                         ci < candidate_tids.size(); ++ci)
+                                    {
+                                        SymV2PcFragTaskDesc &candidate =
+                                            state.tasks[static_cast<size_t>(
+                                                candidate_tids[ci])];
+                                        row_piece_ids.push_back(
+                                            candidate.row_piece);
+                                    }
+                                }
+                                else
+                                {
+                                    row_piece_ids.push_back(task.row_piece);
+                                    for (size_t ci = 0;
+                                         ci < candidate_tids.size(); ++ci)
+                                    {
+                                        SymV2PcFragTaskDesc &candidate =
+                                            state.tasks[static_cast<size_t>(
+                                                candidate_tids[ci])];
+                                        partner_piece_ids.push_back(
+                                            candidate.partner_piece);
+                                    }
+                                }
+                                for (size_t ci = 0;
+                                     ci < candidate_tids.size(); ++ci)
+                                {
+                                    SymV2PcFragTaskDesc &candidate =
+                                        state.tasks[static_cast<size_t>(
+                                            candidate_tids[ci])];
+                                    if (output_locked(candidate))
+                                    {
+                                        ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                                        ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                        can_group = false;
+                                        break;
+                                    }
+                                }
+                                if (can_group)
+                                {
+                                    int_t row_lda = 0;
+                                    for (size_t ri = 0;
+                                         ri < row_piece_ids.size(); ++ri)
+                                        row_lda += state.row_pieces[
+                                            static_cast<size_t>(
+                                                row_piece_ids[ri])].nrows;
+                                    int_t col_lda = 0;
+                                    for (size_t ci = 0;
+                                         ci < partner_piece_ids.size(); ++ci)
+                                        col_lda += state.partner_pieces[
+                                            static_cast<size_t>(
+                                                partner_piece_ids[ci])].nrows;
+                                    std::vector<int_t> row_group =
+                                        build_group_index_from_ids(
+                                            state.row_pieces, row_piece_ids);
+                                    std::vector<int_t> col_group =
+                                        build_group_index_from_ids(
+                                            state.partner_pieces,
+                                            partner_piece_ids);
+                                    size_t row_index_count =
+                                        row_group.size();
+                                    size_t col_index_count =
+                                        col_group.size();
+                                    size_t row_value_count =
+                                        static_cast<size_t>(row_lda) *
+                                        static_cast<size_t>(SuperSize(k));
+                                    size_t col_value_count =
+                                        static_cast<size_t>(col_lda) *
+                                        static_cast<size_t>(SuperSize(k));
+                                    if (state.d_group_index_pool == NULL ||
+                                        row_index_count + col_index_count >
+                                            state.group_index_pool_capacity)
+                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW explicit grouped async index arena exhausted.");
+                                    if (state.d_group_value_pool == NULL ||
+                                        row_value_count + col_value_count >
+                                            state.group_value_pool_capacity)
+                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW explicit grouped async value arena exhausted.");
+                                    int_t *row_group_gpu =
+                                        state.d_group_index_pool;
+                                    int_t *col_group_gpu =
+                                        state.d_group_index_pool +
+                                        row_index_count;
+                                    double *row_group_val =
+                                        state.d_group_value_pool;
+                                    double *col_group_val =
+                                        state.d_group_value_pool +
+                                        row_value_count;
+                                    for (size_t ci = 0;
+                                         ci < candidate_tids.size(); ++ci)
+                                        lock_outputs(
+                                            state.tasks[static_cast<size_t>(
+                                                candidate_tids[ci])]);
+                                    gpuErrchk(cudaMemcpyAsync(
+                                        row_group_gpu, row_group.data(),
+                                        sizeof(int_t) * row_index_count,
+                                        cudaMemcpyHostToDevice, task_stream));
+                                    gpuErrchk(cudaMemcpyAsync(
+                                        col_group_gpu, col_group.data(),
+                                        sizeof(int_t) * col_index_count,
+                                        cudaMemcpyHostToDevice, task_stream));
+                                    build_group_values_from_ids(
+                                        state.row_pieces, row_piece_ids,
+                                        row_lda, row_group_val, task_stream);
+                                    build_group_values_from_ids(
+                                        state.partner_pieces,
+                                        partner_piece_ids, col_lda,
+                                        col_group_val, task_stream);
+                                    if (!all_pieces_ready())
+                                        symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready +=
+                                            static_cast<long long>(
+                                                candidate_tids.size());
+                                    int resource =
+                                        dSymV2PcFragTaskflowGemmResourceForLaunchMode(
+                                            launch_mode);
+                                    xLUstruct_t<double>::SymV2PcFragGemmResourceState &res =
+                                        dSymV2PcFragTaskflowGemmResource(
+                                            *this, streamId, resource);
+                                    if (res.recorded)
+                                    {
+                                        gpuErrchk(cudaStreamWaitEvent(
+                                            task_stream, res.tail_event, 0));
+                                        ++symV2PcFragTaskflowStats.gemm_resource_tail_waits;
+                                        ++res.waits;
+                                    }
+                                    dSymSchurCompUpdateTaskDualPieceGroupGPU(
+                                        0,
+                                        static_cast<int_t>(
+                                            row_piece_ids.size()),
+                                        0,
+                                        static_cast<int_t>(
+                                            partner_piece_ids.size()),
+                                        k, row_group, col_group,
+                                        row_group_gpu, row_group_val,
+                                        col_group_gpu, col_group_val,
+                                        task_handle, task_stream, task_gemm);
+                                    xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup group;
+                                    group.group_id = static_cast<int>(
+                                        state.launched_group_task_ids.size());
+                                    group.task_begin = static_cast<int>(
+                                        state.launched_group_task_ids.size());
+                                    group.task_count = static_cast<int>(
+                                        candidate_tids.size());
+                                    group.launch_stream_kind =
+                                        task_stream_kind_for_launch_mode(
+                                            launch_mode);
+                                    group.gemm_resource_kind =
+                                        static_cast<unsigned char>(resource);
+                                    group.done_event =
+                                        dSymV2PcFragTaskflowAcquireEvent(
+                                            symV2PcFragTaskflowEventPool,
+                                            !async_core,
+                                            &symV2PcFragTaskflowStats
+                                                 .arena_event_late_allocs);
+                                    gpuErrchk(cudaEventRecord(
+                                        group.done_event, task_stream));
+                                    gpuErrchk(cudaEventRecord(
+                                        res.tail_event, task_stream));
+                                    res.recorded = 1;
+                                    res.active_task_id = task.task_id;
+                                    ++res.updates;
+                                    ++symV2PcFragTaskflowStats.gemm_resource_tail_updates;
+                                    for (size_t ci = 0;
+                                         ci < candidate_tids.size(); ++ci)
+                                    {
+                                        SymV2PcFragTaskDesc &candidate =
+                                            state.tasks[static_cast<size_t>(
+                                                candidate_tids[ci])];
+                                        candidate.launched = 1;
+                                        candidate.launch_stream_kind =
+                                            group.launch_stream_kind;
+                                        candidate.gemm_resource_kind =
+                                            group.gemm_resource_kind;
+                                        state.launched_group_task_ids
+                                            .push_back(candidate.task_id);
+                                        dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
+                                            state, candidate, 1);
+                                        ++symV2PcFragTaskflowStats.tasks_launched;
+                                        count_task_launch_mode(launch_mode);
+                                    }
+                                    state.launched_task_groups_by_stream[
+                                        group.launch_stream_kind]
+                                        .push_back(group);
+                                    state.group_scratch_in_use = 1;
+                                    launched_this_call +=
+                                        static_cast<int>(
+                                            candidate_tids.size());
+                                    pending_launched +=
+                                        static_cast<int>(
+                                            candidate_tids.size());
+                                    continue;
+                                }
+                            }
+                        }
                     }
                     if (!launch_single_task(
                             task, task_handle, task_stream, task_gemm,
