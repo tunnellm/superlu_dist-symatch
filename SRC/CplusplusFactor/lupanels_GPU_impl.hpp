@@ -2979,6 +2979,42 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             count_task_launch_mode(launch_mode);
             return 1;
         };
+        auto piece_id_range_for_blocks =
+            [](const std::vector<int> &block_piece,
+               int_t block_start, int_t block_end,
+               int *piece_start, int *piece_end) -> bool {
+            if (block_start >= block_end)
+                return false;
+            if (block_start < 0 || block_end < 0 ||
+                static_cast<size_t>(block_start) >= block_piece.size() ||
+                static_cast<size_t>(block_end - 1) >= block_piece.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW block range is outside the block-to-piece map.");
+            int first = block_piece[static_cast<size_t>(block_start)];
+            int last = block_piece[static_cast<size_t>(block_end - 1)];
+            if (first < 0 || last < first)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW block-to-piece range is invalid.");
+            *piece_start = first;
+            *piece_end = last + 1;
+            return true;
+        };
+        auto task_for_piece_pair =
+            [&](int row_piece, int partner_piece) -> SymV2PcFragTaskDesc * {
+            if (row_piece < 0 || partner_piece < 0 ||
+                static_cast<size_t>(row_piece) >= state.row_pieces.size() ||
+                static_cast<size_t>(partner_piece) >=
+                    state.partner_pieces.size() ||
+                state.partner_pieces.empty())
+                return NULL;
+            size_t pos = static_cast<size_t>(row_piece) *
+                             state.partner_pieces.size() +
+                         static_cast<size_t>(partner_piece);
+            if (pos >= state.pair_task_index.size())
+                return NULL;
+            int tid = state.pair_task_index[pos];
+            if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+                return NULL;
+            return &state.tasks[static_cast<size_t>(tid)];
+        };
         auto launch_group =
             [&](int_t row_start, int_t row_end,
                 int_t col_start, int_t col_end,
@@ -2988,6 +3024,55 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 unsigned launch_mode) {
             if (row_start >= row_end || col_start >= col_end)
                 return;
+            if (async_core)
+            {
+                int row_piece_start = 0;
+                int row_piece_end = 0;
+                int partner_piece_start = 0;
+                int partner_piece_end = 0;
+                if (!piece_id_range_for_blocks(
+                        state.row_block_piece, row_start, row_end,
+                        &row_piece_start, &row_piece_end) ||
+                    !piece_id_range_for_blocks(
+                        state.partner_block_piece, col_start, col_end,
+                        &partner_piece_start, &partner_piece_end))
+                    return;
+                if (static_cast<size_t>(row_piece_end) >
+                        state.row_pieces.size() ||
+                    static_cast<size_t>(partner_piece_end) >
+                        state.partner_pieces.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW piece range is outside the taskflow piece arrays.");
+                for (int rp = row_piece_start; rp < row_piece_end; ++rp)
+                {
+                    SymV2PcFragPieceDesc &row_piece =
+                        state.row_pieces[static_cast<size_t>(rp)];
+                    if (!row_piece.ready)
+                    {
+                        ++symV2PcFragTaskflowStats.tasks_blocked_row;
+                        return;
+                    }
+                    for (int cp = partner_piece_start;
+                         cp < partner_piece_end; ++cp)
+                    {
+                        SymV2PcFragPieceDesc &partner_piece =
+                            state.partner_pieces[static_cast<size_t>(cp)];
+                        if (!partner_piece.ready)
+                        {
+                            ++symV2PcFragTaskflowStats.tasks_blocked_partner;
+                            return;
+                        }
+                        SymV2PcFragTaskDesc *task =
+                            task_for_piece_pair(rp, cp);
+                        if (task == NULL || task->complete ||
+                            !task_matches_launch_mode(*task, launch_mode))
+                            continue;
+                        launch_single_task(
+                            *task, group_handle, group_stream, group_gemm,
+                            launch_mode);
+                    }
+                }
+                return;
+            }
             int pair_count = 0;
             int completed_pair_count = 0;
             for (int_t rb = row_start; rb < row_end; ++rb)
@@ -3025,7 +3110,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             }
             if (pair_count == 0)
                 return;
-            if (async_core || completed_pair_count > 0)
+            if (completed_pair_count > 0)
             {
                 for (int_t rb = row_start; rb < row_end; ++rb)
                 {
