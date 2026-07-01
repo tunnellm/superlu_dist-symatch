@@ -1162,6 +1162,10 @@ struct xLUstruct_t
         std::map<int_t, int> incomplete_lookahead_row_members_by_gid;
         std::map<int_t, int> launched_lookahead_col_members_by_gid;
         std::map<int_t, int> launched_lookahead_row_members_by_gid;
+        std::map<int_t, int> launched_lookahead_col_members_by_gid_by_stream[
+            SYM_V2_PCFRAG_TASK_STREAM_COUNT];
+        std::map<int_t, int> launched_lookahead_row_members_by_gid_by_stream[
+            SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         std::vector<int> launched_task_ids_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int launched_task_pending_by_stream[
@@ -1355,6 +1359,8 @@ struct xLUstruct_t
             launched_lookahead_row_members_by_gid.clear();
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
             {
+                launched_lookahead_col_members_by_gid_by_stream[i].clear();
+                launched_lookahead_row_members_by_gid_by_stream[i].clear();
                 launched_task_ids_by_stream[i].clear();
                 launched_task_pending_by_stream[i] = 0;
                 for (int mask = 0; mask < 16; ++mask)
