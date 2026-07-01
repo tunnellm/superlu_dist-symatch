@@ -3467,6 +3467,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
         ++symV2PcFragTaskflowStats.drain_calls_exclude;
     if (mode_mask & SYM_V2_PCFRAG_TASK_FULL)
         ++symV2PcFragTaskflowStats.drain_calls_full;
+    if (superlu_sym_v2_pcfrag_taskflow_async_core())
+    {
+        dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
+        dSymV2PcFragTaskflowProgressGPU(k, 0);
+        if (!state.initialized)
+            return 0;
+    }
     dSymV2PcFragTaskflowProgressExchangeGPU(k, 1);
     return dSymV2PcFragTaskflowDispatchGPU(
         streamId, k, mode_mask, mode_gid, 1);
