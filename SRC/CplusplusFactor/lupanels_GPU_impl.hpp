@@ -2481,6 +2481,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
         SymV2PcFragPanelTaskState &state =
             symV2PcFragTaskStates[static_cast<size_t>(k)];
+        if (!state.initialized)
+            return 0;
         if (streamId < 0 || streamId >= A_gpu.numCudaStreams)
             streamId = state.stream_offset >= 0 ? state.stream_offset : 0;
         if (streamId < 0 || streamId >= A_gpu.numCudaStreams)
@@ -3471,6 +3473,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
     {
         dSymV2PcFragTaskflowProgressExchangeGPU(k, 0);
         dSymV2PcFragTaskflowProgressGPU(k, 0);
+        if (!state.initialized)
+            return 0;
+        dSymV2PcFragTaskflowDispatchGPU(
+            streamId, k, mode_mask, mode_gid, 0);
         if (!state.initialized)
             return 0;
     }
