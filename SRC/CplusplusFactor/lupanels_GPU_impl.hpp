@@ -967,10 +967,35 @@ static inline void dSymV2PcFragTaskflowNoteEventComplete(
 static inline bool dSymV2PcFragTaskflowTaskRequiredForMode(
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
     int drain,
-    unsigned required_mode_mask)
+    unsigned required_mode_mask,
+    int_t required_mode_gid)
 {
-    return !drain || required_mode_mask == 0 ||
-           ((task.mode_mask & required_mode_mask) != 0);
+    if (!drain || required_mode_mask == 0)
+        return true;
+    if ((task.mode_mask & required_mode_mask) == 0)
+        return false;
+    if (required_mode_mask & xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL)
+        return true;
+    if (required_mode_gid == GLOBAL_BLOCK_NOT_FOUND)
+        return true;
+    for (size_t o = 0; o < task.outputs.size(); ++o)
+    {
+        const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+            task.outputs[o];
+        if ((required_mode_mask &
+             xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL) &&
+            key.gj == required_mode_gid)
+            return true;
+        if ((required_mode_mask &
+             xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW) &&
+            key.gi == required_mode_gid)
+            return true;
+        if ((required_mode_mask &
+             xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_EXCLUDE) &&
+            key.gj != required_mode_gid && key.gi != required_mode_gid)
+            return true;
+    }
+    return false;
 }
 
 static inline int dSymV2PcFragTaskflowModeMaskIndex(unsigned mode_mask)
@@ -1007,13 +1032,35 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedForMode(
     const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     int kind,
     int drain,
-    unsigned required_mode_mask)
+    unsigned required_mode_mask,
+    int_t required_mode_gid)
 {
     if (kind <= xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_NONE ||
         kind >= xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_COUNT)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW pending-count stream is invalid.");
     if (!drain || required_mode_mask == 0)
         return state.launched_task_pending_by_stream[kind];
+    if (required_mode_gid != GLOBAL_BLOCK_NOT_FOUND &&
+        !(required_mode_mask & xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL))
+    {
+        int pending = 0;
+        const std::vector<int> &task_ids =
+            state.launched_task_ids_by_stream[kind];
+        for (size_t i = 0; i < task_ids.size(); ++i)
+        {
+            int tid = task_ids[i];
+            if (tid < 0 || static_cast<size_t>(tid) >= state.tasks.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW launched task id is invalid.");
+            const xLUstruct_t<double>::SymV2PcFragTaskDesc &task =
+                state.tasks[static_cast<size_t>(tid)];
+            if (!task.launched || task.complete)
+                continue;
+            if (dSymV2PcFragTaskflowTaskRequiredForMode(
+                    task, drain, required_mode_mask, required_mode_gid))
+                ++pending;
+        }
+        return pending;
+    }
     int mask = dSymV2PcFragTaskflowModeMaskIndex(required_mode_mask);
     if (mask <= 0 || mask >= 16)
         return 0;
@@ -1023,14 +1070,15 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedForMode(
 static inline int dSymV2PcFragTaskflowPendingLaunchedAllForMode(
     const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     int drain,
-    unsigned required_mode_mask)
+    unsigned required_mode_mask,
+    int_t required_mode_gid)
 {
     int pending = 0;
     for (int kind = xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_MAIN;
          kind < xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
     {
         pending += dSymV2PcFragTaskflowPendingLaunchedForMode(
-            state, kind, drain, required_mode_mask);
+            state, kind, drain, required_mode_mask, required_mode_gid);
     }
     return pending;
 }
@@ -1061,12 +1109,13 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
     bool strict_output_conflicts,
     int drain,
     unsigned required_mode_mask,
+    int_t required_mode_gid,
     int *pending_required_out = NULL)
 {
     int completed = 0;
     int pending_required =
         dSymV2PcFragTaskflowPendingLaunchedAllForMode(
-            state, drain, required_mode_mask);
+            state, drain, required_mode_mask, required_mode_gid);
     if (pending_required <= 0)
     {
         if (pending_required_out != NULL)
@@ -1091,7 +1140,8 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
             ++stats.task_completion_event_query_skips;
             pending_required +=
                 dSymV2PcFragTaskflowPendingLaunchedForMode(
-                    state, kind, drain, required_mode_mask);
+                    state, kind, drain, required_mode_mask,
+                    required_mode_gid);
             continue;
         }
         for (size_t i = 0; i < task_ids.size(); ++i)
@@ -1110,7 +1160,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no completion event.");
             const bool required_task =
                 dSymV2PcFragTaskflowTaskRequiredForMode(
-                    task, drain, required_mode_mask);
+                    task, drain, required_mode_mask, required_mode_gid);
             if (required_task)
             {
                 ++pending_required;
@@ -1125,7 +1175,8 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                     --pending_required;
                 pending_required +=
                     dSymV2PcFragTaskflowPendingLaunchedForMode(
-                        state, kind, drain, required_mode_mask);
+                        state, kind, drain, required_mode_mask,
+                        required_mode_gid);
                 for (size_t j = i + 1; j < task_ids.size(); ++j)
                     task_ids[launched_write++] = task_ids[j];
                 break;
@@ -1151,7 +1202,8 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 --pending_required;
             pending_required +=
                 dSymV2PcFragTaskflowPendingLaunchedForMode(
-                    state, kind, drain, required_mode_mask);
+                    state, kind, drain, required_mode_mask,
+                    required_mode_gid);
             for (size_t j = i + 1; j < task_ids.size(); ++j)
                 task_ids[launched_write++] = task_ids[j];
             break;
@@ -2252,7 +2304,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             int completed_this_pass =
                 dSymV2PcFragTaskflowProgressLaunchedTasks(
                     state, symV2PcFragTaskflowStats,
-                    strict_output_conflicts, drain, 0, &pending);
+                    strict_output_conflicts, drain, 0,
+                    GLOBAL_BLOCK_NOT_FOUND, &pending);
             completed += completed_this_pass;
             if (!drain || pending == 0)
                 break;
@@ -2501,7 +2554,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     dSymV2PcFragTaskflowProgressLaunchedTasks(
                         state, symV2PcFragTaskflowStats,
                         strict_output_conflicts, drain,
-                        required_mode_mask, &pending_required);
+                        required_mode_mask, mode_gid,
+                        &pending_required);
                 completed += completed_this_pass;
                 if (!drain || pending_required == 0)
                     break;
@@ -3349,7 +3403,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
                 dSymV2PcFragTaskflowProgressLaunchedTasks(
                     state, symV2PcFragTaskflowStats,
                     superlu_sym_v2_pcfrag_taskflow_strict(),
-                    1, 0, &pending);
+                    1, 0, GLOBAL_BLOCK_NOT_FOUND, &pending);
             if (pending == 0)
                 break;
             if (completed_this_pass > 0)
