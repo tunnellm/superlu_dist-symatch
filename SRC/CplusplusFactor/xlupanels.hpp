@@ -1165,6 +1165,7 @@ struct xLUstruct_t
         unsigned char producer_launch_cap_reported;
         unsigned char producer_exchange_active;
         unsigned char producer_exchange_pending;
+        unsigned char output_conflicts_possible;
         size_t row_pieces_ready_count;
         size_t partner_pieces_ready_count;
         int producer_partner_recv_remaining;
@@ -1209,6 +1210,7 @@ struct xLUstruct_t
               exchange_posted(0), closed(0), incomplete_task_count(0),
               producer_tasks_launched(0), producer_launch_cap_reported(0),
               producer_exchange_active(0), producer_exchange_pending(0),
+              output_conflicts_possible(0),
               row_pieces_ready_count(0), partner_pieces_ready_count(0),
               producer_partner_recv_remaining(0),
               producer_row_recv_remaining(0), producer_ksupc(0)
@@ -1299,6 +1301,7 @@ struct xLUstruct_t
             producer_launch_cap_reported = 0;
             producer_exchange_active = 0;
             producer_exchange_pending = 0;
+            output_conflicts_possible = 0;
             row_pieces_ready_count = 0;
             partner_pieces_ready_count = 0;
             producer_partner_recv_remaining = 0;

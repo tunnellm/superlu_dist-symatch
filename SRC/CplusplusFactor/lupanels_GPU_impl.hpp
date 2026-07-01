@@ -896,6 +896,21 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedForMode(
     return state.launched_task_pending_mode_by_stream[kind][mask];
 }
 
+static inline int dSymV2PcFragTaskflowPendingLaunchedAllForMode(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    int drain,
+    unsigned required_mode_mask)
+{
+    int pending = 0;
+    for (int kind = xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_MAIN;
+         kind < xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
+    {
+        pending += dSymV2PcFragTaskflowPendingLaunchedForMode(
+            state, kind, drain, required_mode_mask);
+    }
+    return pending;
+}
+
 static inline void dSymV2PcFragTaskflowRecordLaunchedTask(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
@@ -921,7 +936,16 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
     int *pending_required_out = NULL)
 {
     int completed = 0;
-    int pending_required = 0;
+    int pending_required =
+        dSymV2PcFragTaskflowPendingLaunchedAllForMode(
+            state, drain, required_mode_mask);
+    if (pending_required <= 0)
+    {
+        if (pending_required_out != NULL)
+            *pending_required_out = 0;
+        return 0;
+    }
+    pending_required = 0;
     ++stats.task_completion_poll_calls;
     if (drain)
         ++stats.task_completion_drain_poll_calls;
@@ -1425,6 +1449,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                                  std::vector<int>());
     state.partner_piece_tasks.assign(state.partner_pieces.size(),
                                      std::vector<int>());
+    std::set<SymV2PcFragOutputKey> planned_output_keys;
     for (size_t rp = 0; rp < state.row_pieces.size(); ++rp)
     {
         int_t gi = state.row_pieces[rp].gid_first;
@@ -1455,6 +1480,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             if (gi != gj)
                 task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
             task.outputs.push_back(SymV2PcFragOutputKey(gj, gi));
+            for (size_t out = 0; out < task.outputs.size(); ++out)
+            {
+                if (!planned_output_keys.insert(task.outputs[out]).second)
+                    state.output_conflicts_possible = 1;
+            }
             int task_id = task.task_id;
             state.tasks.push_back(task);
             state.task_ready_inputs.push_back(0);
@@ -1835,7 +1865,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         budget = SUPERLU_MIN(budget, producer_tasks_remaining);
     }
     const bool strict_output_conflicts =
-        superlu_sym_v2_pcfrag_taskflow_strict();
+        superlu_sym_v2_pcfrag_taskflow_strict() &&
+        state.output_conflicts_possible;
     const bool async_core =
         superlu_sym_v2_pcfrag_taskflow_async_core();
 
@@ -2073,7 +2104,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         cublasHandle_t handle = A_gpu.cuHandles[streamId];
         double *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
         const bool strict_output_conflicts =
-            superlu_sym_v2_pcfrag_taskflow_strict();
+            superlu_sym_v2_pcfrag_taskflow_strict() &&
+            state.output_conflicts_possible;
         const bool async_core =
             superlu_sym_v2_pcfrag_taskflow_async_core();
 
