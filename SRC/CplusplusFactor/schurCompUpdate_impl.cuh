@@ -1426,6 +1426,114 @@ void scatterSymLowerTwoLFragmentRangeGPU_driver(
     gpuErrchk(cudaGetLastError());
 }
 
+template <typename Ftype>
+__device__ void scatterSymLowerTwoLFragmentTileGPU_dev(
+    int_t ii, int_t jj,
+    int rowOffset, int rowCount,
+    int colOffset, int colCount,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int_t *rowFragIndex,
+    int_t *colFragIndex,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    int threadId = threadIdx.x;
+
+    int_t gi = symFragGid(rowFragIndex, ii);
+    int_t gj = symFragGid(colFragIndex, jj);
+    if (gi < gj)
+        return;
+
+    int_t lj = dA->lPanelIndex(gj);
+    if (lj < 0)
+        return;
+    int_t li = dA->lPanelVec[lj].find(gi);
+    if (li == GLOBAL_BLOCK_NOT_FOUND)
+        return;
+
+    Ftype *Dst = dA->lPanelVec[lj].blkPtr(li);
+    int_t lddst = dA->lPanelVec[lj].LDA();
+    int_t dstRowLen = dA->lPanelVec[lj].nbrow(li);
+    int_t *dstRowList = dA->lPanelVec[lj].rowList(li);
+    int_t dstColLen = dA->supersize(gj);
+
+    int fullRows = symFragNbrow(rowFragIndex, ii);
+    int fullCols = symFragNbrow(colFragIndex, jj);
+    if (rowOffset < 0 || colOffset < 0 ||
+        rowCount <= 0 || colCount <= 0 ||
+        rowOffset + rowCount > fullRows ||
+        colOffset + colCount > fullCols)
+        return;
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *colS2D = &rowS2D[dA->maxSuperSize];
+    int *dstIdx = &colS2D[dA->maxSuperSize];
+
+    computeIndirectMapGPU(rowS2D, rowCount,
+                          symFragRowList(rowFragIndex, ii) + rowOffset,
+                          dstRowLen, dstRowList, dstIdx);
+    computeIndirectMapGPU(colS2D, colCount,
+                          symFragRowList(colFragIndex, jj) + colOffset,
+                          dstColLen, NULL, dstIdx);
+
+    int nThreads = blockDim.x;
+    int colsPerThreadBlock = nThreads / rowCount;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    if (threadId < rowCount * colsPerThreadBlock)
+    {
+        int i = threadId % rowCount;
+        int j = threadId / rowCount;
+        while (j < colCount)
+        {
+            int di = rowS2D[i];
+            int dj = colS2D[j];
+            if (di >= 0 && di < dstRowLen && dj >= 0 && dj < dstColLen)
+                atomicAddT<Ftype>(&Dst[di + lddst * dj],
+                                  -gemmBuff[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
+template <typename Ftype>
+__global__ void scatterSymLowerTwoLFragmentTileGPU(
+    int_t ii, int_t jj,
+    int rowOffset, int rowCount,
+    int colOffset, int colCount,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int_t *rowFragIndex,
+    int_t *colFragIndex,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    scatterSymLowerTwoLFragmentTileGPU_dev(
+        ii, jj, rowOffset, rowCount, colOffset, colCount,
+        gemmBuff, LDgemmBuff, rowFragIndex, colFragIndex, dA);
+}
+
+template <typename Ftype>
+void scatterSymLowerTwoLFragmentTileGPU_driver(
+    int_t ii, int_t jj,
+    int rowOffset, int rowCount,
+    int colOffset, int colCount,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int maxSuperSize, int ldt,
+    int_t *rowFragIndex,
+    int_t *colFragIndex,
+    xLUstructGPU_t<Ftype> *dA,
+    cudaStream_t cuStream)
+{
+    dim3 dimBlock(ldt);
+    dim3 dimGrid(1);
+    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+    scatterSymLowerTwoLFragmentTileGPU<Ftype>
+        <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+            ii, jj, rowOffset, rowCount, colOffset, colCount,
+            gemmBuff, LDgemmBuff, rowFragIndex, colFragIndex, dA);
+    gpuErrchk(cudaGetLastError());
+}
+
 template <>
 __device__ inline double symDeviceZero<double>()
 {
@@ -2567,7 +2675,51 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPieceGroupGPU(
         if (static_cast<int64_t>(tile_m) *
                 static_cast<int64_t>(tile_n) >
             gemm_capacity)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW single block pair exceeds GEMM buffer.");
+        {
+            if (row_end != row_beg + 1 || col_end != col_beg + 1)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW multi-block tile exceeds GEMM buffer.");
+            ++symV2PcFragTaskflowStats.task_tiled_block_pairs;
+            int tile_row_start = xluSymFragHostStRow(row_frag, row_beg);
+            int tile_col_start = xluSymFragHostStRow(col_frag, col_beg);
+            const int max_op = SUPERLU_MAX(
+                1, static_cast<int>(std::sqrt(
+                       static_cast<double>(gemm_capacity))));
+            int col_off = 0;
+            while (col_off < tile_n)
+            {
+                int col_count = SUPERLU_MIN(tile_n - col_off, max_op);
+                col_count = SUPERLU_MAX(col_count, 1);
+                int row_limit = static_cast<int>(
+                    gemm_capacity /
+                    static_cast<int64_t>(SUPERLU_MAX(col_count, 1)));
+                row_limit = SUPERLU_MAX(row_limit, 1);
+                int row_off = 0;
+                while (row_off < tile_m)
+                {
+                    int row_count =
+                        SUPERLU_MIN(tile_m - row_off, row_limit);
+                    row_count = SUPERLU_MAX(row_count, 1);
+                    Ftype alpha = one<Ftype>();
+                    Ftype beta = zeroT<Ftype>();
+                    myCublasGemm<Ftype>(
+                        handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        row_count, col_count, gemm_k, &alpha,
+                        row_frag_val + tile_row_start + row_off, row_lda,
+                        col_frag_val + tile_col_start + col_off, col_lda,
+                        &beta, gemmBuff, row_count);
+
+                    scatterSymLowerTwoLFragmentTileGPU_driver<Ftype>(
+                        row_beg, col_beg, row_off, row_count,
+                        col_off, col_count, gemmBuff, row_count,
+                        A_gpu.maxSuperSize, ldt, row_frag_index,
+                        col_frag_index, dA_gpu, cuStream);
+                    ++symV2PcFragTaskflowStats.task_tiled_gemm_tiles;
+                    row_off += row_count;
+                }
+                col_off += col_count;
+            }
+            return;
+        }
         int tile_row_start = xluSymFragHostStRow(row_frag, row_beg);
         int tile_col_start = xluSymFragHostStRow(col_frag, col_beg);
         Ftype alpha = one<Ftype>();
