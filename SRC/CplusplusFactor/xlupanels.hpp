@@ -1190,6 +1190,7 @@ struct xLUstruct_t
         Ftype *producer_row_recv_host_values;
         Ftype *producer_partner_send_host_values;
         Ftype *producer_row_send_host_values;
+        cudaEvent_t producer_last_ready_event;
         int_t *d_index_pool;
         Ftype *d_value_pool;
         int_t *d_group_index_pool;
@@ -1220,6 +1221,7 @@ struct xLUstruct_t
               producer_row_recv_host_values(NULL),
               producer_partner_send_host_values(NULL),
               producer_row_send_host_values(NULL),
+              producer_last_ready_event(NULL),
               d_index_pool(NULL), d_value_pool(NULL),
               d_group_index_pool(NULL), d_group_value_pool(NULL)
 #endif
@@ -1327,6 +1329,7 @@ struct xLUstruct_t
             producer_row_recv_host_values = NULL;
             producer_partner_send_host_values = NULL;
             producer_row_send_host_values = NULL;
+            producer_last_ready_event = NULL;
             d_index_pool = NULL;
             d_value_pool = NULL;
             d_group_index_pool = NULL;

@@ -1127,35 +1127,34 @@ static inline int dSymV2PcFragTaskflowProducerStreamComplete(
 {
     if (!state.producer_stream_pending)
         return 1;
-    auto piece_ready_on_stream = [&](
-        const xLUstruct_t<double>::SymV2PcFragPieceDesc &piece) -> int {
-        if (!piece.ready)
-        {
-            if (drain)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream drain saw an unready piece.");
-            return 0;
-        }
-        if (piece.ready_event == NULL)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream piece has no ready event.");
-        cudaError_t status = drain
-            ? cudaEventSynchronize(piece.ready_event)
-            : cudaEventQuery(piece.ready_event);
-        if (status == cudaSuccess)
-            return 1;
-        if (!drain && status == cudaErrorNotReady)
-            return 0;
-        gpuErrchk(status);
+    if (state.row_pieces_ready_count != state.row_pieces.size() ||
+        state.partner_pieces_ready_count != state.partner_pieces.size())
+    {
+        if (drain)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream drain saw unready pieces.");
         return 0;
-    };
-    for (size_t i = 0; i < state.row_pieces.size(); ++i)
-        if (!piece_ready_on_stream(state.row_pieces[i]))
-            return 0;
-    for (size_t i = 0; i < state.partner_pieces.size(); ++i)
-        if (!piece_ready_on_stream(state.partner_pieces[i]))
-            return 0;
-    state.producer_stream_pending = 0;
-    state.producer_exchange_active = 0;
-    return 1;
+    }
+    if (state.row_pieces.empty() && state.partner_pieces.empty())
+    {
+        state.producer_stream_pending = 0;
+        state.producer_exchange_active = 0;
+        return 1;
+    }
+    if (state.producer_last_ready_event == NULL)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW producer stream has no final ready event.");
+    cudaError_t status = drain
+        ? cudaEventSynchronize(state.producer_last_ready_event)
+        : cudaEventQuery(state.producer_last_ready_event);
+    if (status == cudaSuccess)
+    {
+        state.producer_stream_pending = 0;
+        state.producer_exchange_active = 0;
+        return 1;
+    }
+    if (!drain && status == cudaErrorNotReady)
+        return 0;
+    gpuErrchk(status);
+    return 0;
 }
 
 static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
@@ -1669,7 +1668,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
         if (!piece->ready && piece->filled_rows == piece->nrows)
         {
             if (piece->ready_event != NULL)
+            {
                 gpuErrchk(cudaEventRecord(piece->ready_event, stream));
+                state.producer_last_ready_event = piece->ready_event;
+            }
             piece->ready = 1;
             if (kind == SYM_V2_PCFRAG_PIECE_ROW)
             {
@@ -1802,7 +1804,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
                     cudaMemcpyHostToDevice, stream));
                 piece.filled_rows = piece.nrows;
                 if (piece.ready_event != NULL)
+                {
                     gpuErrchk(cudaEventRecord(piece.ready_event, stream));
+                    state.producer_last_ready_event = piece.ready_event;
+                }
                 piece.ready = 1;
                 ++state.row_pieces_ready_count;
                 ++symV2PcFragTaskflowStats.row_pieces_ready;
@@ -3304,7 +3309,10 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                 copy_kind, stream));
             piece.filled_rows = piece.nrows;
             if (piece.ready_event != NULL)
+            {
                 gpuErrchk(cudaEventRecord(piece.ready_event, stream));
+                taskflow_state->producer_last_ready_event = piece.ready_event;
+            }
             piece.ready = 1;
             if (kind == SYM_V2_PCFRAG_PIECE_ROW)
             {
