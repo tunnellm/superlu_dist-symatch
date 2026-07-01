@@ -1478,6 +1478,8 @@ struct xLUstruct_t
         long long arena_event_late_allocs;
         long long producer_recv_wait_calls;
         long long producer_send_wait_calls;
+        long long producer_send_boundary_wait_calls;
+        long long producer_send_nonboundary_wait_calls;
         long long producer_mpi_wait_requests;
         long long producer_returns;
         long long producer_returns_all_pieces_ready;
@@ -1536,7 +1538,10 @@ struct xLUstruct_t
               arena_index_late_allocs(0), arena_value_late_allocs(0),
               arena_pinned_late_allocs(0), arena_event_late_allocs(0),
               producer_recv_wait_calls(0),
-              producer_send_wait_calls(0), producer_mpi_wait_requests(0),
+              producer_send_wait_calls(0),
+              producer_send_boundary_wait_calls(0),
+              producer_send_nonboundary_wait_calls(0),
+              producer_mpi_wait_requests(0),
               producer_returns(0), producer_returns_all_pieces_ready(0),
               producer_returns_incomplete_pieces(0),
               producer_return_unready_pieces(0),
@@ -1608,7 +1613,7 @@ struct xLUstruct_t
     {
         if (!superlu_sym_v2_pcfrag_taskflow())
             return;
-        long long local[76] = {
+        long long local[78] = {
             symV2PcFragTaskflowStats.row_pieces_created,
             symV2PcFragTaskflowStats.partner_pieces_created,
             symV2PcFragTaskflowStats.row_pieces_ready,
@@ -1662,6 +1667,8 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.arena_event_late_allocs,
             symV2PcFragTaskflowStats.producer_recv_wait_calls,
             symV2PcFragTaskflowStats.producer_send_wait_calls,
+            symV2PcFragTaskflowStats.producer_send_boundary_wait_calls,
+            symV2PcFragTaskflowStats.producer_send_nonboundary_wait_calls,
             symV2PcFragTaskflowStats.producer_mpi_wait_requests,
             symV2PcFragTaskflowStats.producer_returns,
             symV2PcFragTaskflowStats.producer_returns_all_pieces_ready,
@@ -1686,17 +1693,17 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.final_predrain_dispatch_calls,
             symV2PcFragTaskflowStats.final_predrain_tasks_launched
         };
-        long long global[76] = {};
+        long long global[78] = {};
         if (grid3d != NULL)
         {
-            MPI_Reduce(local, global, 76, MPI_LONG_LONG, MPI_SUM, 0,
+            MPI_Reduce(local, global, 78, MPI_LONG_LONG, MPI_SUM, 0,
                        grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
         else
         {
-            for (int i = 0; i < 76; ++i)
+            for (int i = 0; i < 78; ++i)
                 global[i] = local[i];
         }
         std::printf(
@@ -1739,6 +1746,8 @@ struct xLUstruct_t
             "arena_pinned_late_allocs=%lld "
             "arena_event_late_allocs=%lld "
             "producer_recv_wait_calls=%lld producer_send_wait_calls=%lld "
+            "producer_send_boundary_wait_calls=%lld "
+            "producer_send_nonboundary_wait_calls=%lld "
             "producer_mpi_wait_requests=%lld "
             "producer_returns=%lld "
             "producer_returns_all_pieces_ready=%lld "
@@ -1777,7 +1786,7 @@ struct xLUstruct_t
             global[60], global[61], global[62], global[63], global[64],
             global[65], global[66], global[67], global[68], global[69],
             global[70], global[71], global[72], global[73], global[74],
-            global[75]);
+            global[75], global[76], global[77]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =
@@ -1786,18 +1795,27 @@ struct xLUstruct_t
                 global[6] - global[7];
             if (non_async_task_completions < 0)
                 non_async_task_completions = 0;
+            long long producer_send_wait_mismatch =
+                global[52] - global[53] - global[54];
+            if (producer_send_wait_mismatch < 0)
+                producer_send_wait_mismatch = -producer_send_wait_mismatch;
             std::printf(
                 "SymFact V2 Pc-fragment taskflow async-core contract: "
                 "late_allocs=%lld event_waits=%lld "
                 "producer_recv_wait_calls=%lld legacy_wrapper_aborts=%lld "
                 "non_async_task_completions=%lld "
-                "producer_send_wait_calls=%lld\n",
+                "producer_send_wait_calls=%lld "
+                "producer_send_boundary_wait_calls=%lld "
+                "producer_send_nonboundary_wait_calls=%lld "
+                "producer_send_wait_mismatch=%lld\n",
                 late_allocs, global[12], global[51], global[38],
-                non_async_task_completions, global[52]);
+                non_async_task_completions, global[52], global[53],
+                global[54], producer_send_wait_mismatch);
             if (superlu_sym_v2_pcfrag_taskflow_async_core_check() &&
                 (late_allocs != 0 || global[12] != 0 ||
                  global[51] != 0 || global[38] != 0 ||
-                 non_async_task_completions != 0))
+                 non_async_task_completions != 0 || global[54] != 0 ||
+                 producer_send_wait_mismatch != 0))
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK detected a contract violation.");
         }
         std::fflush(stdout);

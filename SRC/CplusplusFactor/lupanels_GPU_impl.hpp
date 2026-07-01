@@ -768,12 +768,17 @@ static inline void dSymV2PcFragTaskflowCompactProducerSends(
 
 static inline void dSymV2PcFragTaskflowWaitProducerSends(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
-    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats)
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats,
+    int boundary_wait)
 {
     dSymV2PcFragTaskflowCompactProducerSends(state);
     if (state.producer_send_reqs.empty())
         return;
     ++stats.producer_send_wait_calls;
+    if (boundary_wait)
+        ++stats.producer_send_boundary_wait_calls;
+    else
+        ++stats.producer_send_nonboundary_wait_calls;
     stats.producer_mpi_wait_requests +=
         static_cast<long long>(state.producer_send_reqs.size());
     MPI_Waitall(static_cast<int>(state.producer_send_reqs.size()),
@@ -857,7 +862,7 @@ static inline int dSymV2PcFragTaskflowProducerSendsComplete(
         return 1;
     if (drain || !superlu_sym_v2_pcfrag_taskflow_async_core())
     {
-        dSymV2PcFragTaskflowWaitProducerSends(state, stats);
+        dSymV2PcFragTaskflowWaitProducerSends(state, stats, 0);
         return 1;
     }
     dSymV2PcFragTaskflowProgressProducerSends(state, stats);
@@ -1695,7 +1700,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             symV2PcFragTaskflowValueBlockPool,
             s.d_group_value_pool, s.group_value_pool_capacity);
         dSymV2PcFragTaskflowWaitProducerSends(
-            s, symV2PcFragTaskflowStats);
+            s, symV2PcFragTaskflowStats, 1);
         dSymV2PcFragTaskflowReleasePinnedHost(
             symV2PcFragTaskflowPinnedBlockPool, s);
         s.reset();
@@ -3979,7 +3984,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowReleaseGPU(int_t k)
         symV2PcFragTaskflowValueBlockPool,
         state.d_group_value_pool, state.group_value_pool_capacity);
     dSymV2PcFragTaskflowWaitProducerSends(
-        state, symV2PcFragTaskflowStats);
+        state, symV2PcFragTaskflowStats, 1);
     dSymV2PcFragTaskflowReleasePinnedHost(
         symV2PcFragTaskflowPinnedBlockPool, state);
     state.reset();
