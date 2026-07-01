@@ -2686,6 +2686,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         }
         else
         {
+            ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
             gpuErrchk(cudaStreamSynchronize(stream));
             unlock_outputs(task);
             dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
@@ -2983,6 +2984,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 }
                 else
                 {
+                    ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
                     gpuErrchk(cudaStreamSynchronize(stream));
                     unlock_outputs(task);
                     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
@@ -3256,6 +3258,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             }
             else
             {
+                ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
                 gpuErrchk(cudaStreamSynchronize(task_stream));
                 unlock_outputs(task);
                 dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
@@ -3509,6 +3512,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 row_group_gpu, row_group_val,
                 col_group_gpu, col_group_val,
                 group_handle, group_stream, group_gemm);
+            ++symV2PcFragTaskflowStats.task_launch_stream_syncs;
             gpuErrchk(cudaStreamSynchronize(group_stream));
             for (size_t i = 0; i < locked_tasks.size(); ++i)
                 unlock_outputs(*locked_tasks[i]);
