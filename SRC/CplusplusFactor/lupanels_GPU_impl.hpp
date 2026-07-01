@@ -928,7 +928,7 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
     {
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
-            std::map<int_t, int>::iterator it =
+            auto it =
                 state.incomplete_lookahead_col_members_by_gid.find(
                     task.outputs[o].gj);
             if (it == state.incomplete_lookahead_col_members_by_gid.end() ||
@@ -942,7 +942,7 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
     {
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
-            std::map<int_t, int>::iterator it =
+            auto it =
                 state.incomplete_lookahead_row_members_by_gid.find(
                     task.outputs[o].gi);
             if (it == state.incomplete_lookahead_row_members_by_gid.end() ||
@@ -1226,7 +1226,7 @@ static inline int dSymV2PcFragTaskflowRequiredIncompleteFast(
     if (required_mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
     {
-        std::map<int_t, int>::const_iterator it =
+        auto it =
             state.incomplete_lookahead_col_members_by_gid.find(
                 required_mode_gid);
         if (it != state.incomplete_lookahead_col_members_by_gid.end())
@@ -1235,7 +1235,7 @@ static inline int dSymV2PcFragTaskflowRequiredIncompleteFast(
     if (required_mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
     {
-        std::map<int_t, int>::const_iterator it =
+        auto it =
             state.incomplete_lookahead_row_members_by_gid.find(
                 required_mode_gid);
         if (it != state.incomplete_lookahead_row_members_by_gid.end())
@@ -1263,7 +1263,7 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedFast(
     if (required_mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
     {
-        std::map<int_t, int>::const_iterator it =
+        auto it =
             state.launched_lookahead_col_members_by_gid.find(
                 required_mode_gid);
         if (it != state.launched_lookahead_col_members_by_gid.end())
@@ -1272,7 +1272,7 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedFast(
     if (required_mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
     {
-        std::map<int_t, int>::const_iterator it =
+        auto it =
             state.launched_lookahead_row_members_by_gid.find(
                 required_mode_gid);
         if (it != state.launched_lookahead_row_members_by_gid.end())
@@ -1304,7 +1304,7 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     {
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
-            std::map<int_t, int>::iterator it =
+            auto it =
                 state.launched_lookahead_col_members_by_gid.find(
                     task.outputs[o].gj);
             if (it == state.launched_lookahead_col_members_by_gid.end())
@@ -1312,7 +1312,7 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
             it->second += delta;
             if (it->second < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter underflowed.");
-            std::map<int_t, int>::iterator stream_it =
+            auto stream_it =
                 state.launched_lookahead_col_members_by_gid_by_stream[
                     kind].find(task.outputs[o].gj);
             if (stream_it ==
@@ -1329,7 +1329,7 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     {
         for (size_t o = 0; o < task.outputs.size(); ++o)
         {
-            std::map<int_t, int>::iterator it =
+            auto it =
                 state.launched_lookahead_row_members_by_gid.find(
                     task.outputs[o].gi);
             if (it == state.launched_lookahead_row_members_by_gid.end())
@@ -1337,7 +1337,7 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
             it->second += delta;
             if (it->second < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter underflowed.");
-            std::map<int_t, int>::iterator stream_it =
+            auto stream_it =
                 state.launched_lookahead_row_members_by_gid_by_stream[
                     kind].find(task.outputs[o].gi);
             if (stream_it ==
@@ -1375,7 +1375,7 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedForMode(
             if (required_mode_mask &
                 xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
             {
-                std::map<int_t, int>::const_iterator it =
+                auto it =
                     state.launched_lookahead_col_members_by_gid_by_stream[
                         kind].find(required_mode_gid);
                 if (it !=
@@ -1386,7 +1386,7 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedForMode(
             if (required_mode_mask &
                 xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
             {
-                std::map<int_t, int>::const_iterator it =
+                auto it =
                     state.launched_lookahead_row_members_by_gid_by_stream[
                         kind].find(required_mode_gid);
                 if (it !=
@@ -4009,7 +4009,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (mode_gid != GLOBAL_BLOCK_NOT_FOUND &&
                     single_mode == SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                 {
-                    std::map<int_t, std::vector<int> >::iterator it =
+                    auto it =
                         state.runnable_lookahead_col_by_gid.find(mode_gid);
                     if (it == state.runnable_lookahead_col_by_gid.end())
                         continue;
@@ -4018,7 +4018,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 else if (mode_gid != GLOBAL_BLOCK_NOT_FOUND &&
                          single_mode == SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
                 {
-                    std::map<int_t, std::vector<int> >::iterator it =
+                    auto it =
                         state.runnable_lookahead_row_by_gid.find(mode_gid);
                     if (it == state.runnable_lookahead_row_by_gid.end())
                         continue;

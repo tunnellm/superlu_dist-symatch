@@ -1225,6 +1225,128 @@ struct xLUstruct_t
         }
     };
 
+    struct SymV2PcFragGidCounterMap
+    {
+        struct Entry
+        {
+            int_t first;
+            int second;
+
+            Entry() : first(-1), second(0) {}
+            Entry(int_t gid, int value) : first(gid), second(value) {}
+
+            bool operator<(const Entry &other) const
+            {
+                return first < other.first;
+            }
+        };
+
+        std::vector<Entry> entries;
+        typedef typename std::vector<Entry>::iterator iterator;
+        typedef typename std::vector<Entry>::const_iterator const_iterator;
+
+        void clear() { entries.clear(); }
+        size_t size() const { return entries.size(); }
+        iterator end() { return entries.end(); }
+        const_iterator end() const { return entries.end(); }
+
+        iterator find(int_t gid)
+        {
+            iterator it = lower_bound(gid);
+            return (it != entries.end() && it->first == gid) ? it
+                                                             : entries.end();
+        }
+
+        const_iterator find(int_t gid) const
+        {
+            const_iterator it = lower_bound(gid);
+            return (it != entries.end() && it->first == gid) ? it
+                                                             : entries.end();
+        }
+
+        int &operator[](int_t gid)
+        {
+            iterator it = lower_bound(gid);
+            if (it == entries.end() || it->first != gid)
+                it = entries.insert(it, Entry(gid, 0));
+            return it->second;
+        }
+
+      private:
+        iterator lower_bound(int_t gid)
+        {
+            return std::lower_bound(entries.begin(), entries.end(),
+                                    Entry(gid, 0));
+        }
+
+        const_iterator lower_bound(int_t gid) const
+        {
+            return std::lower_bound(entries.begin(), entries.end(),
+                                    Entry(gid, 0));
+        }
+    };
+
+    struct SymV2PcFragGidTaskQueueMap
+    {
+        struct Entry
+        {
+            int_t first;
+            std::vector<int> second;
+
+            Entry() : first(-1), second() {}
+            Entry(int_t gid) : first(gid), second() {}
+
+            bool operator<(const Entry &other) const
+            {
+                return first < other.first;
+            }
+        };
+
+        std::vector<Entry> entries;
+        typedef typename std::vector<Entry>::iterator iterator;
+        typedef typename std::vector<Entry>::const_iterator const_iterator;
+
+        void clear() { entries.clear(); }
+        size_t size() const { return entries.size(); }
+        iterator end() { return entries.end(); }
+        const_iterator end() const { return entries.end(); }
+
+        iterator find(int_t gid)
+        {
+            iterator it = lower_bound(gid);
+            return (it != entries.end() && it->first == gid) ? it
+                                                             : entries.end();
+        }
+
+        const_iterator find(int_t gid) const
+        {
+            const_iterator it = lower_bound(gid);
+            return (it != entries.end() && it->first == gid) ? it
+                                                             : entries.end();
+        }
+
+        std::vector<int> &operator[](int_t gid)
+        {
+            iterator it = lower_bound(gid);
+            if (it == entries.end() || it->first != gid)
+                it = entries.insert(it, Entry(gid));
+            return it->second;
+        }
+
+      private:
+        iterator lower_bound(int_t gid)
+        {
+            return std::lower_bound(entries.begin(), entries.end(),
+                                    Entry(gid));
+        }
+
+        const_iterator lower_bound(int_t gid) const
+        {
+            return std::lower_bound(entries.begin(), entries.end(),
+                                    Entry(gid));
+        }
+    };
+
     struct SymV2PcFragPanelTaskState
     {
         int_t k;
@@ -1246,15 +1368,15 @@ struct xLUstruct_t
         std::vector<unsigned char> task_enqueued;
         std::vector<int> runnable_task_ids;
         std::vector<int> runnable_task_ids_by_mode[16];
-        std::map<int_t, std::vector<int> > runnable_lookahead_col_by_gid;
-        std::map<int_t, std::vector<int> > runnable_lookahead_row_by_gid;
-        std::map<int_t, int> incomplete_lookahead_col_members_by_gid;
-        std::map<int_t, int> incomplete_lookahead_row_members_by_gid;
-        std::map<int_t, int> launched_lookahead_col_members_by_gid;
-        std::map<int_t, int> launched_lookahead_row_members_by_gid;
-        std::map<int_t, int> launched_lookahead_col_members_by_gid_by_stream[
+        SymV2PcFragGidTaskQueueMap runnable_lookahead_col_by_gid;
+        SymV2PcFragGidTaskQueueMap runnable_lookahead_row_by_gid;
+        SymV2PcFragGidCounterMap incomplete_lookahead_col_members_by_gid;
+        SymV2PcFragGidCounterMap incomplete_lookahead_row_members_by_gid;
+        SymV2PcFragGidCounterMap launched_lookahead_col_members_by_gid;
+        SymV2PcFragGidCounterMap launched_lookahead_row_members_by_gid;
+        SymV2PcFragGidCounterMap launched_lookahead_col_members_by_gid_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
-        std::map<int_t, int> launched_lookahead_row_members_by_gid_by_stream[
+        SymV2PcFragGidCounterMap launched_lookahead_row_members_by_gid_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         std::vector<int> launched_task_ids_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
@@ -1400,7 +1522,7 @@ struct xLUstruct_t
                         for (size_t o = 0; o < tasks[pos].outputs.size(); ++o)
                         {
                             int_t gid = tasks[pos].outputs[o].gj;
-                            std::map<int_t, std::vector<int> >::iterator it =
+                            auto it =
                                 runnable_lookahead_col_by_gid.find(gid);
                             if (it == runnable_lookahead_col_by_gid.end())
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable map is missing a gid.");
@@ -1414,7 +1536,7 @@ struct xLUstruct_t
                         for (size_t o = 0; o < tasks[pos].outputs.size(); ++o)
                         {
                             int_t gid = tasks[pos].outputs[o].gi;
-                            std::map<int_t, std::vector<int> >::iterator it =
+                            auto it =
                                 runnable_lookahead_row_by_gid.find(gid);
                             if (it == runnable_lookahead_row_by_gid.end())
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable map is missing a gid.");
