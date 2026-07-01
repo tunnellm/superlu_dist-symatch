@@ -1748,6 +1748,28 @@ struct xLUstruct_t
             global[55], global[56], global[57], global[58], global[59],
             global[60], global[61], global[62], global[63], global[64],
             global[65], global[66], global[67], global[68], global[69]);
+        if (superlu_sym_v2_pcfrag_taskflow_async_core())
+        {
+            long long late_allocs =
+                global[47] + global[48] + global[49] + global[50];
+            long long non_async_task_completions =
+                global[6] - global[7];
+            if (non_async_task_completions < 0)
+                non_async_task_completions = 0;
+            std::printf(
+                "SymFact V2 Pc-fragment taskflow async-core contract: "
+                "late_allocs=%lld event_waits=%lld "
+                "producer_recv_wait_calls=%lld legacy_wrapper_aborts=%lld "
+                "non_async_task_completions=%lld "
+                "producer_send_wait_calls=%lld\n",
+                late_allocs, global[12], global[51], global[38],
+                non_async_task_completions, global[52]);
+            if (superlu_sym_v2_pcfrag_taskflow_async_core_check() &&
+                (late_allocs != 0 || global[12] != 0 ||
+                 global[51] != 0 || global[38] != 0 ||
+                 non_async_task_completions != 0))
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK detected a contract violation.");
+        }
         std::fflush(stdout);
     }
 // SYM_V2_PCFRAG_TASKFLOW_STATE_END
