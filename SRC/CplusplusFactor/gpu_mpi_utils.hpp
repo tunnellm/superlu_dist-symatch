@@ -523,7 +523,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_piece_max_rows()
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS");
     if (env == NULL || env[0] == '\0')
     {
-        cached = 0;
+        cached = superlu_sym_v2_pcfrag_taskflow_async_core() ? 512 : 0;
         return cached;
     }
     char *end = NULL;
