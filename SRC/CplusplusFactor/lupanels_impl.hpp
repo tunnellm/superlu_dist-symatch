@@ -6893,7 +6893,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     {
                         int_t lk0 = symV2PanelIndex(k0);
                         if (lk0 < 0)
-                            ABORT("SymFact V2 taskflow prewarm has invalid local panel index.");
+                            continue;
 
                         size_t partner_send_total = 0;
                         for (int pc = 0; pc < Pc; ++pc)
