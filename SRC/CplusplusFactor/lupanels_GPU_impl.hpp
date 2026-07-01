@@ -3274,9 +3274,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             const bool lower_envelope =
                 superlu_sym_v2_lower_envelope_enabled() &&
                 row_sorted && col_sorted;
+            int64_t taskflow_gemm_capacity =
+                static_cast<int64_t>(A_gpu.gemmBufferSize);
+            const long long taskflow_gemm_cap =
+                superlu_sym_v2_pcfrag_taskflow_gemm_cap();
+            if (taskflow_gemm_cap > 0)
+                taskflow_gemm_capacity =
+                    SUPERLU_MIN(taskflow_gemm_capacity,
+                                static_cast<int64_t>(taskflow_gemm_cap));
             const int64_t gemm_capacity = SUPERLU_MAX(
-                static_cast<int64_t>(1),
-                static_cast<int64_t>(A_gpu.gemmBufferSize));
+                static_cast<int64_t>(1), taskflow_gemm_capacity);
             int_t envelope_row_start = row_start;
             int_t jSt = col_start;
             while (jSt < col_end)

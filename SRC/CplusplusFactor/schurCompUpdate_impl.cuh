@@ -2656,8 +2656,16 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPieceGroupGPU(
 
     cublasSetStream(handle, cuStream);
 
+    int64_t taskflow_gemm_capacity =
+        static_cast<int64_t>(A_gpu.gemmBufferSize);
+    const long long taskflow_gemm_cap =
+        superlu_sym_v2_pcfrag_taskflow_gemm_cap();
+    if (taskflow_gemm_cap > 0)
+        taskflow_gemm_capacity =
+            SUPERLU_MIN(taskflow_gemm_capacity,
+                        static_cast<int64_t>(taskflow_gemm_cap));
     const int64_t gemm_capacity = SUPERLU_MAX(
-        static_cast<int64_t>(1), static_cast<int64_t>(A_gpu.gemmBufferSize));
+        static_cast<int64_t>(1), taskflow_gemm_capacity);
     int max_block_rows = 1;
     for (int_t ii = iSt; ii < iEnd; ++ii)
         max_block_rows = SUPERLU_MAX(

@@ -529,6 +529,27 @@ static inline int superlu_sym_v2_pcfrag_taskflow_piece_max_rows()
     return cached;
 }
 
+static inline long long superlu_sym_v2_pcfrag_taskflow_gemm_cap()
+{
+    static long long cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env =
+        std::getenv("GPU3DV2_PCFRAG_TASKFLOW_GEMM_CAP");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return cached;
+    }
+    char *end = NULL;
+    long long value = std::strtoll(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 ||
+        value > 1099511627776LL)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_GEMM_CAP must be an integer in [0,1099511627776]; 0 keeps the normal GPU GEMM buffer size.");
+    cached = value;
+    return cached;
+}
+
 static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
 {
     static int cached = -1;
