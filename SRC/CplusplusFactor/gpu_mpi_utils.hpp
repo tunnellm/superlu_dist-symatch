@@ -541,8 +541,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_piece_max_rows()
 
 static inline bool superlu_sym_v2_pcfrag_taskflow_global_output_locks()
 {
-    int default_value =
-        superlu_sym_v2_pcfrag_taskflow_piece_max_rows() == 0 ? 1 : 0;
+    int default_value = superlu_sym_v2_pcfrag_taskflow_strict() ? 1 : 0;
     return superlu_sym_v2_env_bool_flag(
         "GPU3DV2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS", default_value);
 }

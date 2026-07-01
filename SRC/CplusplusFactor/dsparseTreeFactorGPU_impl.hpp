@@ -1442,6 +1442,10 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
                 sym_sched_book_t += SuperLU_timer_() - sym_book_start;
 #endif
         }
+        if (symGPU3DVersion == 2 &&
+            superlu_sym_v2_pcfrag_taskflow_async_core() &&
+            k1_next >= nnodes)
+            symV2PcFragTaskflowFinalizeResources();
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (sym_timing_enabled)
         {

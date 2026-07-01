@@ -6729,6 +6729,24 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 superlu_sym_v2_row_l_lazy_sendmap() &&
                 !superlu_cuda_aware_mpi())
             {
+                if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+                    !symV2PcFragTaskflowGlobalOutputLocks.empty())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE setup found stale global output locks.");
+	                if (superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0)
+	                    ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split sparse task planning; currently disabled.");
+                const char *taskflow_setup_diag =
+                    std::getenv("GPU3DV2_PCFRAG_TASKFLOW_SETUP_DIAG");
+                auto taskflow_setup_mark = [&](const char *where) {
+                    if (taskflow_setup_diag != NULL &&
+                        taskflow_setup_diag[0] != '\0')
+                    {
+                        fprintf(stderr,
+                                "[rank %d] taskflow setup %s\n",
+                                iam, where);
+                        fflush(stderr);
+                    }
+                };
+                taskflow_setup_mark("enter");
                 std::vector<size_t> taskflow_index_counts;
                 std::vector<size_t> taskflow_value_counts;
                 std::vector<size_t> taskflow_pinned_counts;
@@ -6803,6 +6821,72 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     [](const std::vector<int_t> &frag, int_t b) -> int_t {
                     return frag[LPANEL_HEADER_SIZE + b];
                 };
+                struct TaskflowPrewarmGidPiece
+                {
+                    int_t gid;
+                    int piece;
+                    bool operator<(const TaskflowPrewarmGidPiece &other) const
+                    {
+                        return gid < other.gid;
+                    }
+                };
+                auto taskflow_actual_task_count =
+                    [&](int_t k0, const std::vector<int_t> &row_frag,
+                        const std::vector<int_t> &partner_frag) -> size_t {
+                    int_t nr = taskflow_frag_nblocks(row_frag);
+                    int_t nc = taskflow_frag_nblocks(partner_frag);
+                    if (nr <= 0 || nc <= 0)
+                        return 0;
+                    std::vector<TaskflowPrewarmGidPiece> row_gid_to_piece;
+                    row_gid_to_piece.reserve(static_cast<size_t>(nr));
+                    for (int_t rb = 0; rb < nr; ++rb)
+                    {
+                        int_t gid = taskflow_frag_gid(row_frag, rb);
+                        row_gid_to_piece.push_back(
+                            TaskflowPrewarmGidPiece{
+                                gid, static_cast<int>(rb)});
+                    }
+                    std::sort(row_gid_to_piece.begin(),
+                              row_gid_to_piece.end());
+                    auto row_piece_for_gid = [&](int_t gid) -> int {
+                        TaskflowPrewarmGidPiece key{gid, -1};
+                        std::vector<TaskflowPrewarmGidPiece>::const_iterator it =
+                            std::lower_bound(row_gid_to_piece.begin(),
+                                             row_gid_to_piece.end(), key);
+                        if (it == row_gid_to_piece.end() || it->gid != gid)
+                            return -1;
+                        return it->piece;
+                    };
+
+                    size_t actual_tasks = 0;
+                    for (int_t cb = 0; cb < nc; ++cb)
+                    {
+                        int_t gj = taskflow_frag_gid(partner_frag, cb);
+                        if (gj == k0)
+                            continue;
+                        int_t local_panel_j = symV2PanelIndex(gj);
+                        if (local_panel_j == GLOBAL_BLOCK_NOT_FOUND ||
+                            local_panel_j < 0 ||
+                            local_panel_j >= symV2PanelCount())
+                            continue;
+                        xlpanel_t<double> &dst_panel =
+                            lPanelVec[static_cast<size_t>(local_panel_j)];
+                        if (dst_panel.index == NULL)
+                            continue;
+                        for (int_t li = 0; li < dst_panel.nblocks(); ++li)
+                        {
+                            int_t gi = dst_panel.gid(li);
+                            if (gi == k0 || gi < gj)
+                                continue;
+                            if (row_piece_for_gid(gi) < 0)
+                                continue;
+                            actual_tasks = xlu_checked_sum_size(
+                                actual_tasks, static_cast<size_t>(1),
+                                "taskflow prewarm sparse task count");
+                        }
+                    }
+                    return actual_tasks;
+                };
 
                 for (int_t k0 = 0; k0 < nsupers; ++k0)
                 {
@@ -6827,25 +6911,30 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                        symV2PartnerLRecvIndex[k0];
 	                    int_t nr = taskflow_frag_nblocks(row_frag);
 	                    int_t nc = taskflow_frag_nblocks(partner_frag);
-	                    size_t event_total = xlu_checked_sum_size(
-	                        static_cast<size_t>(nr),
-	                        static_cast<size_t>(nc),
-	                        "taskflow prewarm piece events");
-	                    for (int_t rp = 0; rp < nr; ++rp)
-	                    {
-	                        int_t gi = taskflow_frag_gid(row_frag, rp);
-	                        for (int_t cp = 0; cp < nc; ++cp)
-	                        {
-	                            int_t gj = taskflow_frag_gid(partner_frag, cp);
-	                            if (gi < gj || gi == k0 || gj == k0)
-	                                continue;
-	                            event_total = xlu_checked_sum_size(
-	                                event_total, static_cast<size_t>(1),
-	                                "taskflow prewarm task events");
-	                        }
-	                    }
-	                    if (event_total > 0)
-	                        taskflow_event_counts.push_back(event_total);
+		                    size_t event_total = xlu_checked_sum_size(
+		                        static_cast<size_t>(nr),
+		                        static_cast<size_t>(nc),
+		                        "taskflow prewarm piece events");
+                    size_t sparse_task_count =
+                        taskflow_actual_task_count(k0, row_frag,
+                                                   partner_frag);
+                    size_t task_event_count = sparse_task_count;
+                    if (superlu_sym_v2_pcfrag_taskflow_async_core())
+                    {
+                        task_event_count = SUPERLU_MIN(
+                            sparse_task_count,
+                            static_cast<size_t>(
+                                superlu_sym_v2_pcfrag_taskflow_progress_budget()));
+                    }
+                    else
+                    {
+                        task_event_count = 0;
+                    }
+		                    event_total = xlu_checked_sum_size(
+		                        event_total, task_event_count,
+		                        "taskflow prewarm sparse task events");
+		                    if (event_total > 0)
+		                        taskflow_event_counts.push_back(event_total);
 	                    size_t partner_recv_base =
 	                        static_cast<size_t>(k0) * static_cast<size_t>(Pr);
                     if (partner_recv_base + static_cast<size_t>(Pr) >
@@ -6955,19 +7044,30 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             taskflow_pinned_counts.push_back(row_send_total);
                     }
                 }
+                taskflow_setup_mark("after_count_scan");
 
                 int_t num_lookahead = getNumLookAhead(options);
                 if (num_lookahead <= 0)
                     num_lookahead = 1;
-                size_t active_slots =
-                    static_cast<size_t>(SUPERLU_MAX(static_cast<int_t>(1),
-                                                    num_lookahead));
+	                size_t active_slots =
+	                    static_cast<size_t>(SUPERLU_MAX(static_cast<int_t>(1),
+	                                                    num_lookahead));
+                if (A_gpu.numCudaStreams > 0)
+                {
+                    size_t stream_slots =
+                        static_cast<size_t>(A_gpu.numCudaStreams);
+                    active_slots = SUPERLU_MIN(active_slots, stream_slots);
+                    active_slots = SUPERLU_MAX(active_slots,
+                                               static_cast<size_t>(1));
+                }
                 if (superlu_sym_v2_pcfrag_taskflow_async_core())
                 {
+                    taskflow_setup_mark("before_state_resize");
                     if (symV2PcFragTaskStates.size() <
                         static_cast<size_t>(nsupers))
                         symV2PcFragTaskStates.resize(
                             static_cast<size_t>(nsupers));
+                    taskflow_setup_mark("after_state_resize");
                     size_t progress_scratch_count = xlu_checked_sum_size(
                         xlu_checked_product(static_cast<size_t>(Pr),
                                             static_cast<size_t>(Pc),
@@ -7043,6 +7143,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             state.producer_partner_progressive_assembled.reserve(
                                 static_cast<size_t>(Pr));
                     }
+                    taskflow_setup_mark("after_state_reserves");
                 }
                 std::vector<size_t> taskflow_pinned_counts_by_panel =
                     taskflow_pinned_counts;
@@ -7058,23 +7159,92 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                std::sort(taskflow_event_counts.begin(),
 	                          taskflow_event_counts.end(),
 	                          [](size_t a, size_t b) { return a > b; });
-	                if (taskflow_index_counts.size() > active_slots)
-	                    taskflow_index_counts.resize(active_slots);
-	                if (taskflow_value_counts.size() > active_slots)
-	                    taskflow_value_counts.resize(active_slots);
-	                if (taskflow_event_counts.size() > active_slots)
-	                    taskflow_event_counts.resize(active_slots);
+		                if (taskflow_index_counts.size() > active_slots)
+		                    taskflow_index_counts.resize(active_slots);
+		                if (taskflow_value_counts.size() > active_slots)
+		                    taskflow_value_counts.resize(active_slots);
+	                if (superlu_sym_v2_pcfrag_taskflow_async_core())
+	                {
+	                    size_t index_panel_blocks = taskflow_index_counts.size();
+	                    taskflow_index_counts.reserve(
+	                        xlu_checked_product(index_panel_blocks, static_cast<size_t>(2),
+	                                            "taskflow prewarm duplicated index blocks"));
+	                    for (size_t i = 0; i < index_panel_blocks; ++i)
+	                        taskflow_index_counts.push_back(taskflow_index_counts[i]);
+	                    size_t value_panel_blocks = taskflow_value_counts.size();
+	                    taskflow_value_counts.reserve(
+	                        xlu_checked_product(value_panel_blocks, static_cast<size_t>(2),
+	                                            "taskflow prewarm duplicated value blocks"));
+	                    for (size_t i = 0; i < value_panel_blocks; ++i)
+	                        taskflow_value_counts.push_back(taskflow_value_counts[i]);
+	                }
+		                if (taskflow_event_counts.size() > active_slots)
+		                    taskflow_event_counts.resize(active_slots);
 	                size_t pinned_slots =
 	                    xlu_checked_product(active_slots, 4,
 	                                        "taskflow prewarm pinned slots");
                 if (taskflow_pinned_counts.size() > pinned_slots)
                     taskflow_pinned_counts.resize(pinned_slots);
-                size_t temporal_pinned_slots =
-                    SUPERLU_MIN(pinned_slots,
-                                taskflow_pinned_counts_by_panel.size());
+	                size_t temporal_pinned_slots =
+	                    superlu_sym_v2_pcfrag_taskflow_async_core()
+	                        ? static_cast<size_t>(0)
+	                        : SUPERLU_MIN(
+	                              pinned_slots,
+	                              taskflow_pinned_counts_by_panel.size());
                 for (size_t i = 0; i < temporal_pinned_slots; ++i)
                     taskflow_pinned_counts.push_back(
                         taskflow_pinned_counts_by_panel[i]);
+                taskflow_setup_mark("after_pool_sizing");
+
+                const char *taskflow_prewarm_diag =
+                    std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PREWARM_DIAG");
+                if (taskflow_prewarm_diag != NULL &&
+                    taskflow_prewarm_diag[0] != '\0')
+                {
+                    auto print_prewarm_counts =
+                        [&](const char *name,
+                            const std::vector<size_t> &counts,
+                            size_t element_size) {
+                        size_t sum = 0;
+                        size_t max_count = 0;
+                        for (size_t i = 0; i < counts.size(); ++i)
+                        {
+                            sum = xlu_checked_sum_size(
+                                sum, counts[i],
+                                "taskflow prewarm diagnostic sum");
+                            max_count = SUPERLU_MAX(max_count, counts[i]);
+                        }
+                        size_t bytes = xlu_checked_product(
+                            sum, element_size,
+                            "taskflow prewarm diagnostic bytes");
+                        fprintf(stderr,
+                                "[rank %d] taskflow prewarm %s: "
+                                "blocks=%zu sum=%zu max=%zu bytes=%zu\n",
+                                iam, name, counts.size(), sum,
+                                max_count, bytes);
+                        size_t top = SUPERLU_MIN(counts.size(),
+                                                 static_cast<size_t>(8));
+                        for (size_t i = 0; i < top; ++i)
+                            fprintf(stderr,
+                                    "[rank %d] taskflow prewarm %s[%zu]=%zu\n",
+                                    iam, name, i, counts[i]);
+                    };
+                    print_prewarm_counts("index", taskflow_index_counts,
+                                         sizeof(int_t));
+                    print_prewarm_counts("value", taskflow_value_counts,
+                                         sizeof(double));
+                    print_prewarm_counts("pinned", taskflow_pinned_counts,
+                                         sizeof(double));
+                    print_prewarm_counts("events", taskflow_event_counts,
+                                         sizeof(cudaEvent_t));
+                    fflush(stderr);
+                    const char *taskflow_prewarm_diag_abort =
+                        std::getenv(
+                            "GPU3DV2_PCFRAG_TASKFLOW_PREWARM_DIAG_ABORT");
+                    if (taskflow_prewarm_diag_abort != NULL &&
+                        taskflow_prewarm_diag_abort[0] != '\0')
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW prewarm diagnostic abort.");
+                }
 
                 std::vector<unsigned char> matched_index_blocks(
                     symV2PcFragTaskflowIndexBlockPool.size(), 0);
@@ -7092,10 +7262,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     }
                     return false;
                 };
-                for (size_t i = 0; i < taskflow_index_counts.size(); ++i)
-                {
-                    for (int copy = 0; copy < 2; ++copy)
-                    {
+	                for (size_t i = 0; i < taskflow_index_counts.size(); ++i)
+	                {
+                    if (i == 0)
+                        taskflow_setup_mark("before_index_prewarm");
+	                    for (int copy = 0; copy < 2; ++copy)
+	                    {
                         size_t capacity = taskflow_index_counts[i];
                         if (capacity == 0 || index_pool_has_block(capacity))
                             continue;
@@ -7106,10 +7278,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         symV2PcFragTaskflowIndexBlockPool.push_back(
                             SymV2PcFragGpuIndexBlock(ptr, capacity));
                         matched_index_blocks.push_back(1);
-                        ++symV2PcFragTaskflowStats
-                              .arena_index_prewarm_blocks;
-                    }
-                }
+	                        ++symV2PcFragTaskflowStats
+	                              .arena_index_prewarm_blocks;
+	                    }
+	                }
+                taskflow_setup_mark("after_index_prewarm");
 
                 std::vector<unsigned char> matched_value_blocks(
                     symV2PcFragTaskflowValueBlockPool.size(), 0);
@@ -7127,10 +7300,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     }
                     return false;
                 };
-                for (size_t i = 0; i < taskflow_value_counts.size(); ++i)
-                {
-                    for (int copy = 0; copy < 2; ++copy)
-                    {
+	                for (size_t i = 0; i < taskflow_value_counts.size(); ++i)
+	                {
+                    if (i == 0)
+                        taskflow_setup_mark("before_value_prewarm");
+	                    for (int copy = 0; copy < 2; ++copy)
+	                    {
                         size_t capacity = taskflow_value_counts[i];
                         if (capacity == 0 || value_pool_has_block(capacity))
                             continue;
@@ -7141,10 +7316,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                         symV2PcFragTaskflowValueBlockPool.push_back(
                             SymV2PcFragGpuValueBlock(ptr, capacity));
                         matched_value_blocks.push_back(1);
-                        ++symV2PcFragTaskflowStats
-                              .arena_value_prewarm_blocks;
-                    }
-                }
+	                        ++symV2PcFragTaskflowStats
+	                              .arena_value_prewarm_blocks;
+	                    }
+	                }
+                taskflow_setup_mark("after_value_prewarm");
 
                 std::vector<unsigned char> matched_pinned_blocks(
                     symV2PcFragTaskflowPinnedBlockPool.size(), 0);
@@ -7162,9 +7338,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     }
                     return false;
                 };
-                for (size_t i = 0; i < taskflow_pinned_counts.size(); ++i)
-                {
-                    size_t capacity = taskflow_pinned_counts[i];
+	                for (size_t i = 0; i < taskflow_pinned_counts.size(); ++i)
+	                {
+                    if (i == 0)
+                        taskflow_setup_mark("before_pinned_prewarm");
+	                    size_t capacity = taskflow_pinned_counts[i];
                     if (capacity == 0 || pinned_pool_has_block(capacity))
                         continue;
                     double *ptr = NULL;
@@ -7174,24 +7352,80 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                    symV2PcFragTaskflowPinnedBlockPool.push_back(
 	                        SymV2PcFragHostValueBlock(ptr, capacity));
 	                    matched_pinned_blocks.push_back(1);
-	                    ++symV2PcFragTaskflowStats
-	                          .arena_pinned_prewarm_blocks;
-	                }
+		                    ++symV2PcFragTaskflowStats
+		                          .arena_pinned_prewarm_blocks;
+		                }
+                taskflow_setup_mark("after_pinned_prewarm");
 
-	                size_t event_target = 0;
+		                size_t event_target = 0;
 	                for (size_t i = 0; i < taskflow_event_counts.size(); ++i)
 	                    event_target = xlu_checked_sum_size(
 	                        event_target, taskflow_event_counts[i],
 	                        "taskflow prewarm event total");
-	                while (symV2PcFragTaskflowEventPool.size() < event_target)
-	                {
+                taskflow_setup_mark("before_event_prewarm");
+		                while (symV2PcFragTaskflowEventPool.size() < event_target)
+		                {
 	                    cudaEvent_t event = NULL;
 	                    gpuErrchk(cudaEventCreateWithFlags(
 	                        &event, cudaEventDisableTiming));
 	                    symV2PcFragTaskflowEventPool.push_back(event);
-	                    ++symV2PcFragTaskflowStats
-	                          .arena_event_prewarm_blocks;
+		                    ++symV2PcFragTaskflowStats
+		                          .arena_event_prewarm_blocks;
+		                }
+                taskflow_setup_mark("after_event_prewarm");
+		                if (superlu_sym_v2_pcfrag_taskflow_async_core())
+		                {
+	                    taskflow_setup_mark("before_gemm_event_prewarm");
+		                    size_t taskflow_gemm_slots = active_slots;
+		                    int taskflow_gemm_raw_streams = A_gpu.numCudaStreams;
+		                    int taskflow_gemm_resource_count =
+		                        SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT;
+		                    if (std::getenv("GPU3DV2_PCFRAG_TASKFLOW_SETUP_DIAG") != NULL)
+		                    {
+		                        std::printf("[rank %d] taskflow GEMM resource prewarm slots=%zu raw_streams=%d resource_count=%d current=%zu\n",
+		                                    (grid3d != NULL) ? grid3d->iam : -1,
+		                                    taskflow_gemm_slots,
+		                                    taskflow_gemm_raw_streams,
+		                                    taskflow_gemm_resource_count,
+		                                    symV2PcFragTaskflowGemmResources.size());
+		                        std::fflush(stdout);
+		                    }
+		                    if (taskflow_gemm_slots == 0 ||
+		                        taskflow_gemm_slots > 1024 ||
+		                        taskflow_gemm_resource_count <= 0 ||
+		                        taskflow_gemm_resource_count > 64)
+		                        ABORT("GPU3DV2_PCFRAG_TASKFLOW invalid GEMM resource prewarm dimensions.");
+		                    size_t nres = xlu_checked_product(
+		                        taskflow_gemm_slots,
+		                        static_cast<size_t>(taskflow_gemm_resource_count),
+		                        "taskflow GEMM resource count");
+	                    symV2PcFragTaskflowGemmResources.resize(nres);
+	                    for (size_t i = 0; i < nres; ++i)
+	                    {
+	                        SymV2PcFragGemmResourceState &res =
+	                            symV2PcFragTaskflowGemmResources[i];
+	                        if (res.tail_event == NULL)
+	                        {
+	                            gpuErrchk(cudaEventCreateWithFlags(
+	                                &res.tail_event,
+	                                cudaEventDisableTiming));
+	                            ++symV2PcFragTaskflowStats
+	                                  .arena_event_prewarm_blocks;
+	                        }
+	                        res.recorded = 0;
+	                        res.owner_stream_id = static_cast<int>(
+	                            i / static_cast<size_t>(
+	                                    SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT));
+	                        res.resource_kind = static_cast<int>(
+	                            i % static_cast<size_t>(
+	                                    SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT));
+	                        res.active_task_id = -1;
+	                        res.waits = 0;
+	                        res.updates = 0;
+	                    }
+                    taskflow_setup_mark("after_gemm_event_prewarm");
 	                }
+                taskflow_setup_mark("after_pool_prewarm");
 	            }
 	        }
         xlu_sym_gpu3d_trace(grid3d, "initSymFactWorkspace after send GPU L2U map setup");
@@ -7493,6 +7727,12 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
         state.reset();
     }
     symV2PcFragTaskStates.clear();
+    for (size_t r = 0; r < symV2PcFragTaskflowGemmResources.size(); ++r)
+        if (symV2PcFragTaskflowGemmResources[r].tail_event != NULL)
+            gpuErrchk(cudaEventDestroy(
+                symV2PcFragTaskflowGemmResources[r].tail_event));
+    symV2PcFragTaskflowGemmResources.clear();
+    symV2PcFragTaskflowGlobalOutputLocks.clear();
     for (size_t ev = 0; ev < symV2PcFragTaskflowEventPool.size(); ++ev)
         if (symV2PcFragTaskflowEventPool[ev] != NULL)
             gpuErrchk(cudaEventDestroy(symV2PcFragTaskflowEventPool[ev]));
