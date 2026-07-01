@@ -1064,6 +1064,58 @@ struct xLUstruct_t
         }
     };
 
+    struct SymV2PcFragTaskOutputList
+    {
+        SymV2PcFragOutputKey output;
+        unsigned char count;
+
+        SymV2PcFragTaskOutputList() : output(), count(0)
+        {
+        }
+
+        void reserve(size_t)
+        {
+        }
+
+        size_t size() const
+        {
+            return static_cast<size_t>(count);
+        }
+
+        bool empty() const
+        {
+            return count == 0;
+        }
+
+        void clear()
+        {
+            output = SymV2PcFragOutputKey();
+            count = 0;
+        }
+
+        void push_back(const SymV2PcFragOutputKey &key)
+        {
+            if (count != 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW single-output task received multiple outputs.");
+            output = key;
+            count = 1;
+        }
+
+        SymV2PcFragOutputKey &operator[](size_t index)
+        {
+            if (index != 0 || count == 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW task output index is invalid.");
+            return output;
+        }
+
+        const SymV2PcFragOutputKey &operator[](size_t index) const
+        {
+            if (index != 0 || count == 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW task output index is invalid.");
+            return output;
+        }
+    };
+
     struct SymV2PcFragPieceDesc
     {
         int_t k;
@@ -1123,7 +1175,7 @@ struct xLUstruct_t
         int_t gemm_k;
         unsigned char mode_mask;
         int scatter_group;
-        std::vector<SymV2PcFragOutputKey> outputs;
+        SymV2PcFragTaskOutputList outputs;
         unsigned char launched;
         unsigned char complete;
         unsigned char launch_stream_kind;
