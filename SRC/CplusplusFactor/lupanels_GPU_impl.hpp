@@ -2958,6 +2958,54 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
         (kind == SYM_V2_PCFRAG_PIECE_ROW)
             ? state.row_pieces
             : state.partner_pieces;
+    for (size_t p = 1; p < pieces.size(); ++p)
+    {
+        int_t prev_begin = pieces[p - 1].frag_row_offset;
+        int_t prev_end = prev_begin + pieces[p - 1].nrows;
+        if (pieces[p].frag_row_offset < prev_end)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW piece offsets are not sorted.");
+    }
+    auto piece_for_range =
+        [&](int_t dst_offset, int_t nrows,
+            size_t *piece_cursor) -> SymV2PcFragPieceDesc * {
+        while (*piece_cursor < pieces.size())
+        {
+            int_t begin = pieces[*piece_cursor].frag_row_offset;
+            int_t end = begin + pieces[*piece_cursor].nrows;
+            if (dst_offset < end)
+                break;
+            ++(*piece_cursor);
+        }
+        if (*piece_cursor < pieces.size())
+        {
+            int_t begin = pieces[*piece_cursor].frag_row_offset;
+            int_t end = begin + pieces[*piece_cursor].nrows;
+            if (dst_offset >= begin && dst_offset + nrows <= end)
+                return &pieces[*piece_cursor];
+        }
+
+        size_t lo = 0;
+        size_t hi = pieces.size();
+        while (lo < hi)
+        {
+            size_t mid = lo + (hi - lo) / 2;
+            if (pieces[mid].frag_row_offset <= dst_offset)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        if (lo == 0)
+            return NULL;
+        size_t pos = lo - 1;
+        int_t begin = pieces[pos].frag_row_offset;
+        int_t end = begin + pieces[pos].nrows;
+        if (dst_offset >= begin && dst_offset + nrows <= end)
+        {
+            *piece_cursor = pos;
+            return &pieces[pos];
+        }
+        return NULL;
+    };
     int ready_count = 0;
     size_t map_pos = 0;
     size_t piece_cursor = 0;
@@ -2968,36 +3016,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowAssembleOwnedPiecesGPU(
         int_t src_offset = recv_map[map_pos++];
         if (nrows <= 0)
             continue;
-        SymV2PcFragPieceDesc *piece = NULL;
-        while (piece_cursor < pieces.size())
-        {
-            int_t begin = pieces[piece_cursor].frag_row_offset;
-            int_t end = begin + pieces[piece_cursor].nrows;
-            if (dst_offset < end)
-                break;
-            ++piece_cursor;
-        }
-        if (piece_cursor < pieces.size())
-        {
-            int_t begin = pieces[piece_cursor].frag_row_offset;
-            int_t end = begin + pieces[piece_cursor].nrows;
-            if (dst_offset >= begin && dst_offset + nrows <= end)
-                piece = &pieces[piece_cursor];
-        }
-        if (piece == NULL)
-        {
-            for (size_t p = 0; p < pieces.size(); ++p)
-            {
-                int_t begin = pieces[p].frag_row_offset;
-                int_t end = begin + pieces[p].nrows;
-                if (dst_offset >= begin && dst_offset + nrows <= end)
-                {
-                    piece = &pieces[p];
-                    piece_cursor = p;
-                    break;
-                }
-            }
-        }
+        SymV2PcFragPieceDesc *piece =
+            piece_for_range(dst_offset, nrows, &piece_cursor);
         if (piece == NULL)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW receive map does not match a piece.");
         if (piece->d_val == NULL || piece->lda <= 0)
