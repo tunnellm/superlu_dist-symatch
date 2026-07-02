@@ -1924,6 +1924,10 @@ struct xLUstruct_t
         long long global_output_locks_live;
         long long gemm_resource_live_recorded;
         long long producer_exchange_stream_syncs;
+        long long producer_exchange_partner_stream_syncs;
+        long long producer_exchange_row_stream_syncs;
+        long long producer_exchange_row_aggregate_stream_syncs;
+        long long producer_exchange_row_direct_stream_syncs;
         long long producer_recv_pinned_posts;
         long long producer_recv_pageable_posts;
         long long producer_progress_vector_growths;
@@ -2042,6 +2046,10 @@ struct xLUstruct_t
               global_output_locks_live(0),
               gemm_resource_live_recorded(0),
               producer_exchange_stream_syncs(0),
+              producer_exchange_partner_stream_syncs(0),
+              producer_exchange_row_stream_syncs(0),
+              producer_exchange_row_aggregate_stream_syncs(0),
+              producer_exchange_row_direct_stream_syncs(0),
               producer_recv_pinned_posts(0),
               producer_recv_pageable_posts(0),
               producer_progress_vector_growths(0),
@@ -2425,6 +2433,13 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.coalesce_static_group_lower_bound
         };
         long long global_coalesce[11] = {};
+        long long local_exchange_sync_sites[4] = {
+            symV2PcFragTaskflowStats.producer_exchange_partner_stream_syncs,
+            symV2PcFragTaskflowStats.producer_exchange_row_stream_syncs,
+            symV2PcFragTaskflowStats.producer_exchange_row_aggregate_stream_syncs,
+            symV2PcFragTaskflowStats.producer_exchange_row_direct_stream_syncs
+        };
+        long long global_exchange_sync_sites[4] = {};
         if (grid3d != NULL)
         {
             MPI_Reduce(local, global,
@@ -2436,6 +2451,9 @@ struct xLUstruct_t
                        MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_coalesce, global_coalesce, 11,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_exchange_sync_sites,
+                       global_exchange_sync_sites, 4, MPI_LONG_LONG,
+                       MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
@@ -2450,6 +2468,9 @@ struct xLUstruct_t
                 global_graph[i] = local_graph[i];
             for (int i = 0; i < 11; ++i)
                 global_coalesce[i] = local_coalesce[i];
+            for (int i = 0; i < 4; ++i)
+                global_exchange_sync_sites[i] =
+                    local_exchange_sync_sites[i];
         }
         std::printf(
             "SymFact V2 Pc-fragment taskflow profile: "
@@ -2615,6 +2636,12 @@ struct xLUstruct_t
             global_coalesce[6], global_coalesce[7],
             global_coalesce[8], global_coalesce[9],
             global_coalesce[10]);
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow exchange sync sites: "
+            "partner=%lld row=%lld row_aggregate=%lld "
+            "row_direct=%lld\n",
+            global_exchange_sync_sites[0], global_exchange_sync_sites[1],
+            global_exchange_sync_sites[2], global_exchange_sync_sites[3]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =
