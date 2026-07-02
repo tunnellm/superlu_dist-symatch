@@ -6212,9 +6212,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                                     pending_launched);
                                 if (max_candidates <= 1)
                                     return false;
-                                if (!task_ready_for_group(task) ||
-                                    output_locked(task))
+                                if (!task_ready_for_group(task))
+                                {
+                                    ++symV2PcFragTaskflowStats
+                                          .grouped_unready_fallbacks;
                                     return false;
+                                }
+                                if (output_locked(task))
+                                {
+                                    ++symV2PcFragTaskflowStats
+                                          .grouped_output_conflict_fallbacks;
+                                    return false;
+                                }
 
                                 std::vector<int> &exact_candidate_tids =
                                     state.group_task_scratch;
@@ -6421,7 +6430,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     row_piece_ids.size() *
                                     partner_piece_ids.size();
                                 if (dense_pairs > pair_rows.size() * 8)
+                                {
+                                    ++symV2PcFragTaskflowStats
+                                          .grouped_density_fallbacks;
                                     return false;
+                                }
 
                                 int_t row_lda = 0;
                                 for (size_t ri = 0;
@@ -6432,7 +6445,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                             static_cast<size_t>(
                                                 row_piece_ids[ri])];
                                     if (!piece.ready)
+                                    {
+                                        ++symV2PcFragTaskflowStats
+                                              .grouped_unready_fallbacks;
                                         return false;
+                                    }
                                     row_lda += piece.nrows;
                                 }
                                 int_t col_lda = 0;
@@ -6444,7 +6461,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                             static_cast<size_t>(
                                                 partner_piece_ids[ci])];
                                     if (!piece.ready)
+                                    {
+                                        ++symV2PcFragTaskflowStats
+                                              .grouped_unready_fallbacks;
                                         return false;
+                                    }
                                     col_lda += piece.nrows;
                                 }
                                 if (row_lda <= 0 || col_lda <= 0)
@@ -6464,7 +6485,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         static_cast<int64_t>(col_lda) >
                                     SUPERLU_MAX(static_cast<int64_t>(1),
                                                 taskflow_gemm_capacity))
+                                {
+                                    ++symV2PcFragTaskflowStats
+                                          .grouped_gemm_capacity_fallbacks;
                                     return false;
+                                }
 
                                 std::vector<int_t> &row_group =
                                     state.group_row_index_scratch;
