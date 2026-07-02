@@ -893,6 +893,30 @@ static inline bool dSymV2PcFragTaskflowUseCompactOutputLocks(
            !xlu.symV2PcFragTaskflowGlobalOutputLockState.empty();
 }
 
+static inline size_t dSymV2PcFragTaskflowOutputCount(
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (task.output_begin < 0 || task.output_count < 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW task output range is invalid.");
+    return static_cast<size_t>(task.output_count);
+}
+
+static inline const xLUstruct_t<double>::SymV2PcFragOutputKey &
+dSymV2PcFragTaskflowOutputAt(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
+    size_t output_offset)
+{
+    size_t count = dSymV2PcFragTaskflowOutputCount(task);
+    if (output_offset >= count)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW task output offset is invalid.");
+    size_t begin = static_cast<size_t>(task.output_begin);
+    if (begin > state.task_output_pool.size() ||
+        count > state.task_output_pool.size() - begin)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool range is invalid.");
+    return state.task_output_pool[begin + output_offset];
+}
+
 static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -903,10 +927,12 @@ static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
     if (!strict_output_conflicts)
         return 0;
     long long released = 0;
-    for (size_t o = 0; o < task.outputs.size(); ++o)
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    for (size_t o = 0; o < output_count; ++o)
     {
         const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
-            task.outputs[o];
+            dSymV2PcFragTaskflowOutputAt(state, task, o);
         if (dSymV2PcFragTaskflowUseCompactOutputLocks(xlu))
         {
             if (key.output_id < 0 ||
@@ -953,13 +979,17 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
     {
-        if (task.outputs.size() == 1 && task.lookahead_col_gid_index >= 0)
+        const size_t output_count =
+            dSymV2PcFragTaskflowOutputCount(task);
+        if (output_count == 1 && task.lookahead_col_gid_index >= 0)
         {
+            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, 0);
             int idx = task.lookahead_col_gid_index;
             if (static_cast<size_t>(idx) >=
                     state.incomplete_lookahead_col_members_by_gid.size() ||
                 state.incomplete_lookahead_col_members_by_gid.gid_at(idx) !=
-                    task.outputs[0].gj ||
+                    key.gj ||
                 state.incomplete_lookahead_col_members_by_gid.value_at(idx) <=
                     0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column incomplete compact counter underflowed.");
@@ -967,11 +997,13 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
         }
         else
         {
-            for (size_t o = 0; o < task.outputs.size(); ++o)
+            for (size_t o = 0; o < output_count; ++o)
             {
+                const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                    dSymV2PcFragTaskflowOutputAt(state, task, o);
                 auto it =
                     state.incomplete_lookahead_col_members_by_gid.find(
-                        task.outputs[o].gj);
+                        key.gj);
                 if (it == state.incomplete_lookahead_col_members_by_gid.end() ||
                     it->second <= 0)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column incomplete counter underflowed.");
@@ -982,13 +1014,17 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
     {
-        if (task.outputs.size() == 1 && task.lookahead_row_gid_index >= 0)
+        const size_t output_count =
+            dSymV2PcFragTaskflowOutputCount(task);
+        if (output_count == 1 && task.lookahead_row_gid_index >= 0)
         {
+            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, 0);
             int idx = task.lookahead_row_gid_index;
             if (static_cast<size_t>(idx) >=
                     state.incomplete_lookahead_row_members_by_gid.size() ||
                 state.incomplete_lookahead_row_members_by_gid.gid_at(idx) !=
-                    task.outputs[0].gi ||
+                    key.gi ||
                 state.incomplete_lookahead_row_members_by_gid.value_at(idx) <=
                     0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row incomplete compact counter underflowed.");
@@ -996,11 +1032,13 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
         }
         else
         {
-            for (size_t o = 0; o < task.outputs.size(); ++o)
+            for (size_t o = 0; o < output_count; ++o)
             {
+                const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                    dSymV2PcFragTaskflowOutputAt(state, task, o);
                 auto it =
                     state.incomplete_lookahead_row_members_by_gid.find(
-                        task.outputs[o].gi);
+                        key.gi);
                 if (it == state.incomplete_lookahead_row_members_by_gid.end() ||
                     it->second <= 0)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row incomplete counter underflowed.");
@@ -1221,6 +1259,7 @@ static inline void dSymV2PcFragTaskflowNoteEventComplete(
 }
 
 static inline bool dSymV2PcFragTaskflowTaskRequiredForMode(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
     int drain,
     unsigned required_mode_mask,
@@ -1234,10 +1273,12 @@ static inline bool dSymV2PcFragTaskflowTaskRequiredForMode(
         return true;
     if (required_mode_gid == GLOBAL_BLOCK_NOT_FOUND)
         return true;
-    for (size_t o = 0; o < task.outputs.size(); ++o)
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    for (size_t o = 0; o < output_count; ++o)
     {
         const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
-            task.outputs[o];
+            dSymV2PcFragTaskflowOutputAt(state, task, o);
         if ((required_mode_mask &
              xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL) &&
             key.gj == required_mode_gid)
@@ -1359,18 +1400,22 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
     {
-        if (task.outputs.size() == 1 && task.lookahead_col_gid_index >= 0)
+        const size_t output_count =
+            dSymV2PcFragTaskflowOutputCount(task);
+        if (output_count == 1 && task.lookahead_col_gid_index >= 0)
         {
+            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, 0);
             int idx = task.lookahead_col_gid_index;
             if (static_cast<size_t>(idx) >=
                     state.launched_lookahead_col_members_by_gid.size() ||
                 state.launched_lookahead_col_members_by_gid.gid_at(idx) !=
-                    task.outputs[0].gj ||
+                    key.gj ||
                 static_cast<size_t>(idx) >=
                     state.launched_lookahead_col_members_by_gid_by_stream[
                         kind].size() ||
                 state.launched_lookahead_col_members_by_gid_by_stream[
-                    kind].gid_at(idx) != task.outputs[0].gj)
+                    kind].gid_at(idx) != key.gj)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched compact counter is missing a gid.");
             state.launched_lookahead_col_members_by_gid.value_at(idx) +=
                 delta;
@@ -1384,11 +1429,13 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
         }
         else
         {
-            for (size_t o = 0; o < task.outputs.size(); ++o)
+            for (size_t o = 0; o < output_count; ++o)
             {
+                const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                    dSymV2PcFragTaskflowOutputAt(state, task, o);
                 auto it =
                     state.launched_lookahead_col_members_by_gid.find(
-                        task.outputs[o].gj);
+                        key.gj);
                 if (it == state.launched_lookahead_col_members_by_gid.end())
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter is missing a gid.");
                 it->second += delta;
@@ -1396,7 +1443,7 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter underflowed.");
                 auto stream_it =
                     state.launched_lookahead_col_members_by_gid_by_stream[
-                        kind].find(task.outputs[o].gj);
+                        kind].find(key.gj);
                 if (stream_it ==
                     state.launched_lookahead_col_members_by_gid_by_stream[
                         kind].end())
@@ -1410,18 +1457,22 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     if (task.mode_mask &
         xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
     {
-        if (task.outputs.size() == 1 && task.lookahead_row_gid_index >= 0)
+        const size_t output_count =
+            dSymV2PcFragTaskflowOutputCount(task);
+        if (output_count == 1 && task.lookahead_row_gid_index >= 0)
         {
+            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, 0);
             int idx = task.lookahead_row_gid_index;
             if (static_cast<size_t>(idx) >=
                     state.launched_lookahead_row_members_by_gid.size() ||
                 state.launched_lookahead_row_members_by_gid.gid_at(idx) !=
-                    task.outputs[0].gi ||
+                    key.gi ||
                 static_cast<size_t>(idx) >=
                     state.launched_lookahead_row_members_by_gid_by_stream[
                         kind].size() ||
                 state.launched_lookahead_row_members_by_gid_by_stream[
-                    kind].gid_at(idx) != task.outputs[0].gi)
+                    kind].gid_at(idx) != key.gi)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched compact counter is missing a gid.");
             state.launched_lookahead_row_members_by_gid.value_at(idx) +=
                 delta;
@@ -1435,11 +1486,13 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
         }
         else
         {
-            for (size_t o = 0; o < task.outputs.size(); ++o)
+            for (size_t o = 0; o < output_count; ++o)
             {
+                const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                    dSymV2PcFragTaskflowOutputAt(state, task, o);
                 auto it =
                     state.launched_lookahead_row_members_by_gid.find(
-                        task.outputs[o].gi);
+                        key.gi);
                 if (it == state.launched_lookahead_row_members_by_gid.end())
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter is missing a gid.");
                 it->second += delta;
@@ -1447,7 +1500,7 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter underflowed.");
                 auto stream_it =
                     state.launched_lookahead_row_members_by_gid_by_stream[
-                        kind].find(task.outputs[o].gi);
+                        kind].find(key.gi);
                 if (stream_it ==
                     state.launched_lookahead_row_members_by_gid_by_stream[
                         kind].end())
@@ -1518,7 +1571,8 @@ static inline int dSymV2PcFragTaskflowPendingLaunchedForMode(
             if (!task.launched || task.complete)
                 continue;
             if (dSymV2PcFragTaskflowTaskRequiredForMode(
-                    task, drain, required_mode_mask, required_mode_gid))
+                    state, task, drain, required_mode_mask,
+                    required_mode_gid))
                 ++pending;
         }
         return pending;
@@ -1591,7 +1645,7 @@ static inline int dSymV2PcFragTaskflowTaskIdRequiredForMode(
     if (!task.launched || task.complete)
         return 0;
     return dSymV2PcFragTaskflowTaskRequiredForMode(
-        task, drain, required_mode_mask, required_mode_gid) ? 1 : 0;
+        state, task, drain, required_mode_mask, required_mode_gid) ? 1 : 0;
 }
 
 static inline int dSymV2PcFragTaskflowGroupRequiredForMode(
@@ -1779,7 +1833,8 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core task has no completion event.");
             const bool required_task =
                 dSymV2PcFragTaskflowTaskRequiredForMode(
-                    task, drain, required_mode_mask, required_mode_gid);
+                    state, task, drain, required_mode_mask,
+                    required_mode_gid);
             if (required_task)
             {
                 ++pending_required;
@@ -2616,6 +2671,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     }
 
     state.tasks.reserve(planned_task_count);
+    state.task_output_pool.reserve(planned_task_count);
     if (need_piece_pair_lookup)
         state.pair_task_entries.reserve(planned_task_count);
     state.task_ready_inputs.reserve(planned_task_count);
@@ -2732,8 +2788,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         task.gemm_n = state.partner_pieces[cp].nrows;
         task.gemm_k = SuperSize(k);
         task.mode_mask = mode_mask;
-        task.outputs.reserve(1);
-        task.outputs.push_back(output);
+        if (state.task_output_pool.size() >
+            static_cast<size_t>(std::numeric_limits<int>::max()))
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool is too large.");
+        task.output_begin =
+            static_cast<int>(state.task_output_pool.size());
+        task.output_count = 1;
+        state.task_output_pool.push_back(output);
         task.lookahead_col_gid_index =
             state.incomplete_lookahead_col_members_by_gid.index_of(
                 output.gj);
@@ -3269,9 +3330,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     auto output_locked = [&](const SymV2PcFragTaskDesc &task) -> bool {
         if (!strict_output_conflicts)
             return false;
-        for (size_t o = 0; o < task.outputs.size(); ++o)
+        const size_t output_count =
+            dSymV2PcFragTaskflowOutputCount(task);
+        for (size_t o = 0; o < output_count; ++o)
         {
-            const SymV2PcFragOutputKey &key = task.outputs[o];
+            const SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, o);
             if (compact_output_locks)
             {
                 if (key.output_id < 0 ||
@@ -3302,11 +3366,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     auto lock_outputs = [&](const SymV2PcFragTaskDesc &task) {
         if (!strict_output_conflicts)
             return;
-        for (size_t o = 0; o < task.outputs.size(); ++o)
+        const size_t output_count =
+            dSymV2PcFragTaskflowOutputCount(task);
+        for (size_t o = 0; o < output_count; ++o)
         {
+            const SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, o);
             if (compact_output_locks)
             {
-                const SymV2PcFragOutputKey &key = task.outputs[o];
                 if (key.output_id < 0 ||
                     static_cast<size_t>(key.output_id) >=
                         symV2PcFragTaskflowGlobalOutputLockState.size())
@@ -3320,15 +3387,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                 ++state.active_output_lock_count;
                 continue;
             }
-            state.active_output_key_set.insert(task.outputs[o]);
+            state.active_output_key_set.insert(key);
             if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
-                symV2PcFragTaskflowGlobalOutputLocks.insert(task.outputs[o]);
+                symV2PcFragTaskflowGlobalOutputLocks.insert(key);
         }
         symV2PcFragTaskflowStats.output_locks_acquired +=
-            static_cast<long long>(task.outputs.size());
+            static_cast<long long>(output_count);
         if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
             symV2PcFragTaskflowStats.global_output_locks_acquired +=
-                static_cast<long long>(task.outputs.size());
+                static_cast<long long>(output_count);
         long long active_output_locks =
             compact_output_locks
                 ? static_cast<long long>(state.active_output_lock_count)
@@ -3603,9 +3670,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         auto output_locked = [&](const SymV2PcFragTaskDesc &task) -> bool {
             if (!strict_output_conflicts)
                 return false;
-            for (size_t o = 0; o < task.outputs.size(); ++o)
+            const size_t output_count =
+                dSymV2PcFragTaskflowOutputCount(task);
+            for (size_t o = 0; o < output_count; ++o)
             {
-                const SymV2PcFragOutputKey &key = task.outputs[o];
+                const SymV2PcFragOutputKey &key =
+                    dSymV2PcFragTaskflowOutputAt(state, task, o);
                 if (compact_output_locks)
                 {
                     if (key.output_id < 0 ||
@@ -3644,11 +3714,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
         auto lock_outputs = [&](const SymV2PcFragTaskDesc &task) {
             if (!strict_output_conflicts)
                 return;
-            for (size_t o = 0; o < task.outputs.size(); ++o)
+            const size_t output_count =
+                dSymV2PcFragTaskflowOutputCount(task);
+            for (size_t o = 0; o < output_count; ++o)
             {
+                const SymV2PcFragOutputKey &key =
+                    dSymV2PcFragTaskflowOutputAt(state, task, o);
                 if (compact_output_locks)
                 {
-                    const SymV2PcFragOutputKey &key = task.outputs[o];
                     if (key.output_id < 0 ||
                         static_cast<size_t>(key.output_id) >=
                             symV2PcFragTaskflowGlobalOutputLockState.size())
@@ -3662,16 +3735,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     ++state.active_output_lock_count;
                     continue;
                 }
-                state.active_output_key_set.insert(task.outputs[o]);
+                state.active_output_key_set.insert(key);
                 if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
                     symV2PcFragTaskflowGlobalOutputLocks.insert(
-                        task.outputs[o]);
+                        key);
             }
             symV2PcFragTaskflowStats.output_locks_acquired +=
-                static_cast<long long>(task.outputs.size());
+                static_cast<long long>(output_count);
             if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
                 symV2PcFragTaskflowStats.global_output_locks_acquired +=
-                    static_cast<long long>(task.outputs.size());
+                    static_cast<long long>(output_count);
             long long active_output_locks =
                 compact_output_locks
                     ? static_cast<long long>(state.active_output_lock_count)
@@ -3741,8 +3814,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 if (requested_gid == GLOBAL_BLOCK_NOT_FOUND)
                     return SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL;
-                for (size_t o = 0; o < task.outputs.size(); ++o)
-                    if (task.outputs[o].gj == requested_gid)
+                const size_t output_count =
+                    dSymV2PcFragTaskflowOutputCount(task);
+                for (size_t o = 0; o < output_count; ++o)
+                    if (dSymV2PcFragTaskflowOutputAt(state, task, o).gj ==
+                        requested_gid)
                         return SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL;
             }
             if ((requested_mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW) &&
@@ -3750,8 +3826,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 if (requested_gid == GLOBAL_BLOCK_NOT_FOUND)
                     return SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
-                for (size_t o = 0; o < task.outputs.size(); ++o)
-                    if (task.outputs[o].gi == requested_gid)
+                const size_t output_count =
+                    dSymV2PcFragTaskflowOutputCount(task);
+                for (size_t o = 0; o < output_count; ++o)
+                    if (dSymV2PcFragTaskflowOutputAt(state, task, o).gi ==
+                        requested_gid)
                         return SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
             }
             if ((requested_mode_mask & SYM_V2_PCFRAG_TASK_EXCLUDE) &&
@@ -4664,10 +4743,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         if (task == NULL || task->complete ||
                             !task_matches_launch_mode(*task, launch_mode))
                             continue;
-                        for (size_t o = 0; o < task->outputs.size(); ++o)
+                        const size_t output_count =
+                            dSymV2PcFragTaskflowOutputCount(*task);
+                        for (size_t o = 0; o < output_count; ++o)
                         {
                             const SymV2PcFragOutputKey &key =
-                                task->outputs[o];
+                                dSymV2PcFragTaskflowOutputAt(
+                                    state, *task, o);
                             if (pending_keys.find(key) != pending_keys.end())
                             {
                                 ++symV2PcFragTaskflowStats.tasks_blocked_output;
@@ -4825,7 +4907,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             task, single_mode, mode_gid);
                     if (launch_mode == 0 ||
                         !dSymV2PcFragTaskflowTaskRequiredForMode(
-                            task, 1, single_mode, mode_gid))
+                            state, task, 1, single_mode, mode_gid))
                     {
                         queue[runnable_write++] = tid;
                         continue;
@@ -4877,7 +4959,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                             candidate, single_mode,
                                             mode_gid) != launch_mode ||
                                         !dSymV2PcFragTaskflowTaskRequiredForMode(
-                                            candidate, 1, single_mode,
+                                            state, candidate, 1, single_mode,
                                             mode_gid))
                                         return false;
                                     if (candidate.task_id < 0 ||
@@ -5501,7 +5583,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDrainGPU(
                     if (task.complete)
                         continue;
                     if (dSymV2PcFragTaskflowTaskRequiredForMode(
-                            task, 1, mode_mask, mode_gid))
+                            state, task, 1, mode_mask, mode_gid))
                         ++count;
                 }
                 return count;

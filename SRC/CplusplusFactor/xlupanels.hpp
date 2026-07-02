@@ -1067,58 +1067,6 @@ struct xLUstruct_t
         }
     };
 
-    struct SymV2PcFragTaskOutputList
-    {
-        SymV2PcFragOutputKey output;
-        unsigned char count;
-
-        SymV2PcFragTaskOutputList() : output(), count(0)
-        {
-        }
-
-        void reserve(size_t)
-        {
-        }
-
-        size_t size() const
-        {
-            return static_cast<size_t>(count);
-        }
-
-        bool empty() const
-        {
-            return count == 0;
-        }
-
-        void clear()
-        {
-            output = SymV2PcFragOutputKey();
-            count = 0;
-        }
-
-        void push_back(const SymV2PcFragOutputKey &key)
-        {
-            if (count != 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW single-output task received multiple outputs.");
-            output = key;
-            count = 1;
-        }
-
-        SymV2PcFragOutputKey &operator[](size_t index)
-        {
-            if (index != 0 || count == 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW task output index is invalid.");
-            return output;
-        }
-
-        const SymV2PcFragOutputKey &operator[](size_t index) const
-        {
-            if (index != 0 || count == 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW task output index is invalid.");
-            return output;
-        }
-    };
-
     struct SymV2PcFragPieceDesc
     {
         int_t k;
@@ -1180,7 +1128,8 @@ struct xLUstruct_t
         int scatter_group;
         int lookahead_col_gid_index;
         int lookahead_row_gid_index;
-        SymV2PcFragTaskOutputList outputs;
+        int output_begin;
+        int output_count;
         unsigned char launched;
         unsigned char complete;
         unsigned char launch_stream_kind;
@@ -1195,7 +1144,8 @@ struct xLUstruct_t
               partner_piece_blk_begin(0), partner_piece_blk_end(0),
               gemm_m(0), gemm_n(0), gemm_k(0), mode_mask(0),
               scatter_group(-1), lookahead_col_gid_index(-1),
-              lookahead_row_gid_index(-1), launched(0), complete(0),
+              lookahead_row_gid_index(-1), output_begin(0),
+              output_count(0), launched(0), complete(0),
               launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
               gemm_resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE)
 #ifdef HAVE_CUDA
@@ -1412,6 +1362,7 @@ struct xLUstruct_t
         std::vector<SymV2PcFragPieceDesc> row_pieces;
         std::vector<SymV2PcFragPieceDesc> partner_pieces;
         std::vector<SymV2PcFragTaskDesc> tasks;
+        std::vector<SymV2PcFragOutputKey> task_output_pool;
         std::vector<int> row_block_piece;
         std::vector<int> partner_block_piece;
         std::vector<SymV2PcFragPairTaskEntry> pair_task_entries;
@@ -1580,9 +1531,14 @@ struct xLUstruct_t
                     }
                     if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                     {
-                        for (size_t o = 0; o < tasks[pos].outputs.size(); ++o)
+                        for (int o = 0; o < tasks[pos].output_count; ++o)
                         {
-                            int_t gid = tasks[pos].outputs[o].gj;
+                            size_t out_pos =
+                                static_cast<size_t>(
+                                    tasks[pos].output_begin + o);
+                            if (out_pos >= task_output_pool.size())
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
+                            int_t gid = task_output_pool[out_pos].gj;
                             auto it =
                                 runnable_lookahead_col_by_gid.find(gid);
                             if (it == runnable_lookahead_col_by_gid.end())
@@ -1594,9 +1550,14 @@ struct xLUstruct_t
                     }
                     if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
                     {
-                        for (size_t o = 0; o < tasks[pos].outputs.size(); ++o)
+                        for (int o = 0; o < tasks[pos].output_count; ++o)
                         {
-                            int_t gid = tasks[pos].outputs[o].gi;
+                            size_t out_pos =
+                                static_cast<size_t>(
+                                    tasks[pos].output_begin + o);
+                            if (out_pos >= task_output_pool.size())
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
+                            int_t gid = task_output_pool[out_pos].gi;
                             auto it =
                                 runnable_lookahead_row_by_gid.find(gid);
                             if (it == runnable_lookahead_row_by_gid.end())
@@ -1621,6 +1582,7 @@ struct xLUstruct_t
             row_pieces.clear();
             partner_pieces.clear();
             tasks.clear();
+            task_output_pool.clear();
             row_block_piece.clear();
             partner_block_piece.clear();
             pair_task_entries.clear();
