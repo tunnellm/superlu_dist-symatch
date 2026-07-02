@@ -2019,6 +2019,8 @@ struct xLUstruct_t
         long long graph_mode_queue_bytes;
         long long graph_gid_queue_bytes;
         long long graph_counter_map_bytes;
+        long long graph_output_pool_bytes;
+        long long graph_launch_bookkeeping_bytes;
         long long graph_event_count_est;
         long long graph_output_count;
         long long graph_host_bytes_max_panel;
@@ -2154,7 +2156,9 @@ struct xLUstruct_t
               graph_pair_bytes(0), graph_ready_bytes(0),
               graph_queue_bytes(0), graph_csr_bytes(0),
               graph_mode_queue_bytes(0), graph_gid_queue_bytes(0),
-              graph_counter_map_bytes(0), graph_event_count_est(0),
+              graph_counter_map_bytes(0), graph_output_pool_bytes(0),
+              graph_launch_bookkeeping_bytes(0),
+              graph_event_count_est(0),
               graph_output_count(0),
               graph_host_bytes_max_panel(0),
               graph_event_count_max_panel(0),
@@ -2492,7 +2496,7 @@ struct xLUstruct_t
                 static_cast<long long>(
                     symV2PcFragTaskflowGlobalOutputLockState.size() *
                     sizeof(unsigned char));
-        long long local_graph[20] = {
+        long long local_graph[22] = {
             symV2PcFragTaskflowStats.graph_host_bytes,
             symV2PcFragTaskflowStats.graph_task_desc_bytes,
             symV2PcFragTaskflowStats.graph_pair_bytes,
@@ -2502,6 +2506,8 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.graph_mode_queue_bytes,
             symV2PcFragTaskflowStats.graph_gid_queue_bytes,
             symV2PcFragTaskflowStats.graph_counter_map_bytes,
+            symV2PcFragTaskflowStats.graph_output_pool_bytes,
+            symV2PcFragTaskflowStats.graph_launch_bookkeeping_bytes,
             local_output_lock_bytes,
             symV2PcFragTaskflowStats.graph_event_count_est,
             symV2PcFragTaskflowStats.graph_output_count,
@@ -2514,7 +2520,7 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.graph_row_line_max_members,
             symV2PcFragTaskflowStats.graph_partner_line_max_members
         };
-        long long global_graph[20] = {};
+        long long global_graph[22] = {};
         long long local_coalesce[20] = {
             symV2PcFragTaskflowStats.coalesce_lacol_groups,
             symV2PcFragTaskflowStats.coalesce_lacol_members,
@@ -2580,7 +2586,7 @@ struct xLUstruct_t
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_group, global_group, 21, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
-            MPI_Reduce(local_graph, global_graph, 20, MPI_LONG_LONG,
+            MPI_Reduce(local_graph, global_graph, 22, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_coalesce, global_coalesce, 16,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
@@ -2616,7 +2622,7 @@ struct xLUstruct_t
                 global[i] = local[i];
             for (int i = 0; i < 21; ++i)
                 global_group[i] = local_group[i];
-            for (int i = 0; i < 20; ++i)
+            for (int i = 0; i < 22; ++i)
                 global_graph[i] = local_graph[i];
             for (int i = 0; i < 20; ++i)
                 global_coalesce[i] = local_coalesce[i];
@@ -2782,6 +2788,8 @@ struct xLUstruct_t
             "pair_bytes=%lld ready_bytes=%lld queue_bytes=%lld "
             "csr_bytes=%lld mode_queue_bytes=%lld "
             "gid_queue_bytes=%lld counter_map_bytes=%lld "
+            "output_pool_bytes=%lld "
+            "launch_bookkeeping_bytes=%lld "
             "global_output_lock_bytes=%lld event_count_est=%lld "
             "output_count=%lld host_graph_bytes_max_panel_sum=%lld "
             "event_count_max_panel_sum=%lld "
@@ -2796,7 +2804,8 @@ struct xLUstruct_t
             global_graph[9], global_graph[10], global_graph[11],
             global_graph[12], global_graph[13], global_graph[14],
             global_graph[15], global_graph[16], global_graph[17],
-            global_graph[18], global_graph[19]);
+            global_graph[18], global_graph[19], global_graph[20],
+            global_graph[21]);
         std::printf(
             "SymFact V2 Pc-fragment taskflow coalescing: "
             "lookahead_col_groups=%lld lookahead_col_members=%lld "
@@ -2827,7 +2836,7 @@ struct xLUstruct_t
             global_coalesce[15], global_coalesce[16],
             global_coalesce[17], global_coalesce[18],
             global_coalesce[19]);
-        long long planned_outputs = global_graph[11];
+        long long planned_outputs = global_graph[13];
         long long planned_tasks = global[SYM_V2_PCFRAG_TASKFLOW_TASKS_PLANNED];
         long long launched_tasks = global[SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED];
         long long tiled_gemm_tiles =

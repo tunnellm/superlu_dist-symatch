@@ -3428,6 +3428,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             return std::numeric_limits<size_t>::max();
         return count * bytes;
     };
+    auto size_sum_or_max = [](size_t a, size_t b) -> size_t {
+        if (a == std::numeric_limits<size_t>::max() ||
+            b > std::numeric_limits<size_t>::max() - a)
+            return std::numeric_limits<size_t>::max();
+        return a + b;
+    };
     size_t estimated_task_bytes =
         byte_product_or_max(planned_task_count,
                             sizeof(SymV2PcFragTaskDesc));
@@ -3463,17 +3469,35 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             6 * (lookahead_col_degrees.size() +
                  lookahead_row_degrees.size()),
             sizeof(int_t) + sizeof(int));
+    size_t estimated_output_pool_bytes =
+        byte_product_or_max(planned_output_count,
+                            sizeof(SymV2PcFragOutputKey));
+    size_t estimated_launch_bookkeeping_bytes = 0;
+    if (async_core)
+    {
+        size_t launched_reserve_est =
+            static_cast<size_t>(
+                superlu_sym_v2_pcfrag_taskflow_effective_progress_budget());
+        if (launched_reserve_est > planned_task_count)
+            launched_reserve_est = planned_task_count;
+        size_t launched_stream_slots =
+            launched_reserve_est >
+                    std::numeric_limits<size_t>::max() /
+                        SYM_V2_PCFRAG_TASK_STREAM_COUNT
+                ? std::numeric_limits<size_t>::max()
+                : launched_reserve_est *
+                      SYM_V2_PCFRAG_TASK_STREAM_COUNT;
+        estimated_launch_bookkeeping_bytes =
+            size_sum_or_max(
+                byte_product_or_max(launched_stream_slots, sizeof(int)),
+                byte_product_or_max(launched_stream_slots,
+                                    sizeof(SymV2PcFragLaunchedTaskGroup)));
+    }
     size_t estimated_output_lock_bytes =
         compact_output_locks
             ? symV2PcFragTaskflowGlobalOutputLockState.size() *
                   sizeof(unsigned char)
             : 0;
-    auto size_sum_or_max = [](size_t a, size_t b) -> size_t {
-        if (a == std::numeric_limits<size_t>::max() ||
-            b > std::numeric_limits<size_t>::max() - a)
-            return std::numeric_limits<size_t>::max();
-        return a + b;
-    };
     size_t estimated_host_graph_bytes = 0;
     estimated_host_graph_bytes =
         size_sum_or_max(estimated_host_graph_bytes,
@@ -3499,6 +3523,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     estimated_host_graph_bytes =
         size_sum_or_max(estimated_host_graph_bytes,
                         estimated_counter_map_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_output_pool_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_launch_bookkeeping_bytes);
     size_t estimated_event_count =
         size_sum_or_max(
             state.row_pieces.size() + state.partner_pieces.size(),
@@ -3540,6 +3570,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                      estimated_gid_queue_bytes);
     add_size_to_stat(symV2PcFragTaskflowStats.graph_counter_map_bytes,
                      estimated_counter_map_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_output_pool_bytes,
+                     estimated_output_pool_bytes);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.graph_launch_bookkeeping_bytes,
+        estimated_launch_bookkeeping_bytes);
     add_size_to_stat(symV2PcFragTaskflowStats.graph_event_count_est,
                      estimated_event_count);
     add_size_to_stat(symV2PcFragTaskflowStats.graph_output_count,
@@ -3624,7 +3659,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 "task_desc_bytes=%zu pair_bytes=%zu ready_bytes=%zu "
                 "generic_queue_bytes=%zu csr_bytes=%zu "
                 "mode_queue_bytes=%zu gid_queue_bytes=%zu "
-                "counter_map_bytes=%zu output_lock_bytes=%zu "
+                "counter_map_bytes=%zu output_pool_bytes=%zu "
+                "launch_bookkeeping_bytes=%zu output_lock_bytes=%zu "
                 "event_count_est=%zu use_generic_queue=%d "
                 "mode_queue_mask=%u row_line_groups=%zu "
                 "partner_line_groups=%zu line_group_lower_bound=%zu "
@@ -3649,7 +3685,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 estimated_pair_bytes, estimated_ready_bytes,
                 estimated_generic_queue_bytes, estimated_csr_bytes,
                 estimated_mode_queue_bytes, estimated_gid_queue_bytes,
-                estimated_counter_map_bytes, estimated_output_lock_bytes,
+                estimated_counter_map_bytes, estimated_output_pool_bytes,
+                estimated_launch_bookkeeping_bytes,
+                estimated_output_lock_bytes,
                 state.row_pieces.size() + state.partner_pieces.size() +
                     planned_task_count,
                 state.use_generic_runnable_queue ? 1 : 0,
