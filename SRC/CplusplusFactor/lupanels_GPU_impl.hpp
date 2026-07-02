@@ -4849,6 +4849,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         state.group_scratch_in_use &&
                         superlu_sym_v2_pcfrag_taskflow_group_defer_busy())
                     {
+                        progress_launched_tasks(0, 0);
+                    }
+                    if (async_grouped_dispatch &&
+                        state.group_scratch_in_use &&
+                        superlu_sym_v2_pcfrag_taskflow_group_defer_busy())
+                    {
                         queue[runnable_write++] = tid;
                         continue;
                     }
