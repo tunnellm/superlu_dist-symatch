@@ -5028,39 +5028,92 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             std::vector<SymV2PcFragTaskDesc *> locked_tasks;
             if (strict_output_conflicts)
             {
-                std::set<SymV2PcFragOutputKey> pending_keys =
-                    state.active_output_key_set;
-                if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                if (compact_output_locks)
                 {
-                    const std::set<SymV2PcFragOutputKey> &global_locks =
-                        symV2PcFragTaskflowGlobalOutputLocks;
-                    pending_keys.insert(global_locks.begin(),
-                                        global_locks.end());
-                }
-                for (int_t rb = row_start; rb < row_end; ++rb)
-                {
-                    for (int_t cb = col_start; cb < col_end; ++cb)
+                    std::vector<int_t> pending_output_ids;
+                    pending_output_ids.reserve(
+                        static_cast<size_t>(pair_count));
+                    for (int_t rb = row_start; rb < row_end; ++rb)
                     {
-                        SymV2PcFragTaskDesc *task = pair_task(rb, cb);
-                        if (task == NULL || task->complete ||
-                            !task_matches_launch_mode(*task, launch_mode))
-                            continue;
-                        const size_t output_count =
-                            dSymV2PcFragTaskflowOutputCount(*task);
-                        for (size_t o = 0; o < output_count; ++o)
+                        for (int_t cb = col_start; cb < col_end; ++cb)
                         {
-                            const SymV2PcFragOutputKey &key =
-                                dSymV2PcFragTaskflowOutputAt(
-                                    state, *task, o);
-                            if (pending_keys.find(key) != pending_keys.end())
+                            SymV2PcFragTaskDesc *task = pair_task(rb, cb);
+                            if (task == NULL || task->complete ||
+                                !task_matches_launch_mode(*task,
+                                                          launch_mode))
+                                continue;
+                            const size_t output_count =
+                                dSymV2PcFragTaskflowOutputCount(*task);
+                            for (size_t o = 0; o < output_count; ++o)
                             {
-                                ++symV2PcFragTaskflowStats.tasks_blocked_output;
-                                ++symV2PcFragTaskflowStats.scatter_conflict_waits;
-                                ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped dispatch found an output conflict.");
+                                int_t output_id =
+                                    dSymV2PcFragTaskflowCompactOutputIdAt(
+                                        state, *task, o);
+                                if (output_id < 0 ||
+                                    static_cast<size_t>(output_id) >=
+                                        symV2PcFragTaskflowGlobalOutputLockState.size())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW compact grouped output lock id is invalid.");
+                                if (symV2PcFragTaskflowGlobalOutputLockState[
+                                        static_cast<size_t>(output_id)])
+                                {
+                                    ++symV2PcFragTaskflowStats.global_output_lock_conflicts;
+                                    ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                                    ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped dispatch found an output conflict.");
+                                }
+                                for (size_t pi = 0;
+                                     pi < pending_output_ids.size(); ++pi)
+                                {
+                                    if (pending_output_ids[pi] != output_id)
+                                        continue;
+                                    ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                                    ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped dispatch found an output conflict.");
+                                }
+                                pending_output_ids.push_back(output_id);
                             }
-                            pending_keys.insert(key);
+                            locked_tasks.push_back(task);
                         }
-                        locked_tasks.push_back(task);
+                    }
+                }
+                else
+                {
+                    std::set<SymV2PcFragOutputKey> pending_keys =
+                        state.active_output_key_set;
+                    if (superlu_sym_v2_pcfrag_taskflow_global_output_locks())
+                    {
+                        const std::set<SymV2PcFragOutputKey> &global_locks =
+                            symV2PcFragTaskflowGlobalOutputLocks;
+                        pending_keys.insert(global_locks.begin(),
+                                            global_locks.end());
+                    }
+                    for (int_t rb = row_start; rb < row_end; ++rb)
+                    {
+                        for (int_t cb = col_start; cb < col_end; ++cb)
+                        {
+                            SymV2PcFragTaskDesc *task = pair_task(rb, cb);
+                            if (task == NULL || task->complete ||
+                                !task_matches_launch_mode(*task,
+                                                          launch_mode))
+                                continue;
+                            const size_t output_count =
+                                dSymV2PcFragTaskflowOutputCount(*task);
+                            for (size_t o = 0; o < output_count; ++o)
+                            {
+                                const SymV2PcFragOutputKey &key =
+                                    dSymV2PcFragTaskflowOutputAt(
+                                        state, *task, o);
+                                if (pending_keys.find(key) !=
+                                    pending_keys.end())
+                                {
+                                    ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                                    ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped dispatch found an output conflict.");
+                                }
+                                pending_keys.insert(key);
+                            }
+                            locked_tasks.push_back(task);
+                        }
                     }
                 }
                 for (size_t i = 0; i < locked_tasks.size(); ++i)
