@@ -552,7 +552,8 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_exact_group_dispatch()
 static inline bool superlu_sym_v2_pcfrag_taskflow_coalesce_col()
 {
     return superlu_sym_v2_env_bool_flag(
-        "GPU3DV2_PCFRAG_TASKFLOW_COALESCE_COL", 0);
+        "GPU3DV2_PCFRAG_TASKFLOW_COALESCE_COL",
+        superlu_sym_v2_pcfrag_taskflow_async_core() ? 1 : 0);
 }
 
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_core_check()
