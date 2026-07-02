@@ -1219,6 +1219,33 @@ static inline void dSymV2PcFragTaskflowMarkTaskOutputsComplete(
     }
 }
 
+static inline bool dSymV2PcFragTaskflowTaskOutputsAlreadyComplete(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core() ||
+        state.output_completion_ids.empty())
+        return false;
+    if (state.output_completed.size() != state.output_completion_ids.size())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW output completion map is not initialized.");
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    for (size_t o = 0; o < output_count; ++o)
+    {
+        int_t output_id =
+            dSymV2PcFragTaskflowCompactOutputIdAt(state, task, o);
+        if (output_id < 0)
+            return false;
+        size_t pos =
+            dSymV2PcFragTaskflowOutputCompletionIndexAt(
+                state, task, o, output_id);
+        if (pos >= state.output_completed.size() ||
+            !state.output_completed[pos])
+            return false;
+    }
+    return output_count > 0;
+}
+
 static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -1359,6 +1386,97 @@ static inline void dSymV2PcFragTaskflowNoteGemmResourceComplete(
     const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     const xLUstruct_t<double>::SymV2PcFragTaskDesc &task);
 
+static inline void dSymV2PcFragTaskflowReleaseTaskConsumers(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (task.output_count == 1)
+    {
+        if (task.row_piece < 0 || task.partner_piece < 0 ||
+            static_cast<size_t>(task.row_piece) >=
+                state.row_pieces.size() ||
+            static_cast<size_t>(task.partner_piece) >=
+                state.partner_pieces.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task has invalid pieces.");
+        xLUstruct_t<double>::SymV2PcFragPieceDesc &row =
+            state.row_pieces[static_cast<size_t>(task.row_piece)];
+        xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
+            state.partner_pieces[static_cast<size_t>(task.partner_piece)];
+        --row.pending_consumers;
+        --col.pending_consumers;
+        if (row.pending_consumers < 0 || col.pending_consumers < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+        return;
+    }
+
+    std::vector<int> &row_piece_ids = state.group_row_piece_scratch;
+    std::vector<int> &partner_piece_ids = state.group_partner_piece_scratch;
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    row_piece_ids.clear();
+    partner_piece_ids.clear();
+    row_piece_ids.reserve(output_count);
+    partner_piece_ids.reserve(output_count);
+    auto compact_piece_ids = [](std::vector<int> &pieces) {
+        if (pieces.empty())
+            return;
+        bool nondecreasing = true;
+        for (size_t i = 1; i < pieces.size(); ++i)
+        {
+            if (pieces[i] < pieces[i - 1])
+            {
+                nondecreasing = false;
+                break;
+            }
+        }
+        if (!nondecreasing)
+            std::sort(pieces.begin(), pieces.end());
+        size_t write = 1;
+        for (size_t i = 1; i < pieces.size(); ++i)
+        {
+            if (pieces[i] != pieces[write - 1])
+                pieces[write++] = pieces[i];
+        }
+        pieces.resize(write);
+    };
+    for (size_t o = 0; o < output_count; ++o)
+    {
+        const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+            dSymV2PcFragTaskflowOutputAt(state, task, o);
+        if (key.row_piece < 0 || key.partner_piece < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task output is missing piece ids.");
+        row_piece_ids.push_back(key.row_piece);
+        partner_piece_ids.push_back(key.partner_piece);
+    }
+    compact_piece_ids(row_piece_ids);
+    compact_piece_ids(partner_piece_ids);
+    for (size_t i = 0; i < row_piece_ids.size(); ++i)
+    {
+        int piece_id = row_piece_ids[i];
+        if (piece_id < 0 ||
+            static_cast<size_t>(piece_id) >= state.row_pieces.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid row piece.");
+        xLUstruct_t<double>::SymV2PcFragPieceDesc &row =
+            state.row_pieces[static_cast<size_t>(piece_id)];
+        --row.pending_consumers;
+        if (row.pending_consumers < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW row pending consumer count underflowed.");
+    }
+    for (size_t i = 0; i < partner_piece_ids.size(); ++i)
+    {
+        int piece_id = partner_piece_ids[i];
+        if (piece_id < 0 ||
+            static_cast<size_t>(piece_id) >=
+                state.partner_pieces.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid partner piece.");
+        xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
+            state.partner_pieces[static_cast<size_t>(piece_id)];
+        --col.pending_consumers;
+        if (col.pending_consumers < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW partner pending consumer count underflowed.");
+    }
+}
+
 static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -1376,96 +1494,29 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
     task.complete = 1;
     --state.incomplete_task_count;
-    if (task.output_count == 1)
-    {
-        if (task.row_piece < 0 || task.partner_piece < 0 ||
-            static_cast<size_t>(task.row_piece) >=
-                state.row_pieces.size() ||
-            static_cast<size_t>(task.partner_piece) >=
-                state.partner_pieces.size())
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task has invalid pieces.");
-        xLUstruct_t<double>::SymV2PcFragPieceDesc &row =
-            state.row_pieces[static_cast<size_t>(task.row_piece)];
-        xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
-            state.partner_pieces[static_cast<size_t>(task.partner_piece)];
-        --row.pending_consumers;
-        --col.pending_consumers;
-        if (row.pending_consumers < 0 || col.pending_consumers < 0)
-            ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
-    }
-    else
-    {
-        std::vector<int> &row_piece_ids =
-            state.group_row_piece_scratch;
-        std::vector<int> &partner_piece_ids =
-            state.group_partner_piece_scratch;
-        const size_t output_count =
-            dSymV2PcFragTaskflowOutputCount(task);
-        row_piece_ids.clear();
-        partner_piece_ids.clear();
-        row_piece_ids.reserve(output_count);
-        partner_piece_ids.reserve(output_count);
-        auto compact_piece_ids = [](std::vector<int> &pieces) {
-            if (pieces.empty())
-                return;
-            bool nondecreasing = true;
-            for (size_t i = 1; i < pieces.size(); ++i)
-            {
-                if (pieces[i] < pieces[i - 1])
-                {
-                    nondecreasing = false;
-                    break;
-                }
-            }
-            if (!nondecreasing)
-                std::sort(pieces.begin(), pieces.end());
-            size_t write = 1;
-            for (size_t i = 1; i < pieces.size(); ++i)
-            {
-                if (pieces[i] != pieces[write - 1])
-                    pieces[write++] = pieces[i];
-            }
-            pieces.resize(write);
-        };
-        for (size_t o = 0; o < output_count; ++o)
-        {
-            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
-                dSymV2PcFragTaskflowOutputAt(state, task, o);
-            if (key.row_piece < 0 || key.partner_piece < 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task output is missing piece ids.");
-            row_piece_ids.push_back(key.row_piece);
-            partner_piece_ids.push_back(key.partner_piece);
-        }
-        compact_piece_ids(row_piece_ids);
-        compact_piece_ids(partner_piece_ids);
-        for (size_t i = 0; i < row_piece_ids.size(); ++i)
-        {
-            int piece_id = row_piece_ids[i];
-            if (piece_id < 0 ||
-                static_cast<size_t>(piece_id) >= state.row_pieces.size())
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid row piece.");
-            xLUstruct_t<double>::SymV2PcFragPieceDesc &row =
-                state.row_pieces[static_cast<size_t>(piece_id)];
-            --row.pending_consumers;
-            if (row.pending_consumers < 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW row pending consumer count underflowed.");
-        }
-        for (size_t i = 0; i < partner_piece_ids.size(); ++i)
-        {
-            int piece_id = partner_piece_ids[i];
-            if (piece_id < 0 ||
-                static_cast<size_t>(piece_id) >=
-                    state.partner_pieces.size())
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid partner piece.");
-            xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
-                state.partner_pieces[static_cast<size_t>(piece_id)];
-            --col.pending_consumers;
-            if (col.pending_consumers < 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW partner pending consumer count underflowed.");
-        }
-    }
+    dSymV2PcFragTaskflowReleaseTaskConsumers(state, task);
     ++stats.tasks_completed;
     ++stats.tasks_completed_async_core;
+}
+
+static inline bool dSymV2PcFragTaskflowRetireAlreadyCompletedTask(
+    xLUstruct_t<double> &xlu,
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (task.complete)
+        return true;
+    if (task.launched)
+        return false;
+    if (!dSymV2PcFragTaskflowTaskOutputsAlreadyComplete(state, task))
+        return false;
+    dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
+    task.complete = 1;
+    --state.incomplete_task_count;
+    dSymV2PcFragTaskflowReleaseTaskConsumers(state, task);
+    ++xlu.symV2PcFragTaskflowStats.tasks_completed;
+    ++xlu.symV2PcFragTaskflowStats.tasks_completed_async_core;
+    return true;
 }
 
 static inline int dSymV2PcFragTaskflowTaskStreamKind(
@@ -5116,6 +5167,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             state.tasks[static_cast<size_t>(tid)];
         if (task.launched || task.complete)
             continue;
+        if (dSymV2PcFragTaskflowRetireAlreadyCompletedTask(
+                *this, state, task))
+            continue;
         if (dSymV2PcFragTaskflowOutputCount(task) > 1)
         {
             state.runnable_task_ids[runnable_write++] = tid;
@@ -5573,6 +5627,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 SymV2PcFragTaskDesc &task =
                     state.tasks[static_cast<size_t>(tid)];
                 if (task.launched || task.complete)
+                    continue;
+                if (dSymV2PcFragTaskflowRetireAlreadyCompletedTask(
+                        *this, state, task))
                     continue;
                 if (dSymV2PcFragTaskflowOutputCount(task) > 1)
                 {
@@ -7062,6 +7119,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         state.tasks[static_cast<size_t>(tid)];
                     if (task.launched || task.complete)
                         continue;
+                    if (dSymV2PcFragTaskflowRetireAlreadyCompletedTask(
+                            *this, state, task))
+                        continue;
                     if (pending_launched >= in_flight_task_cap)
                     {
                         queue[runnable_write++] = tid;
@@ -7123,6 +7183,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 [&](SymV2PcFragTaskDesc &candidate) -> int {
                                     if (candidate.launched ||
                                         candidate.complete)
+                                        return 1;
+                                    if (dSymV2PcFragTaskflowRetireAlreadyCompletedTask(
+                                            *this, state, candidate))
                                         return 1;
                                     if (task_launch_mode_for_request(
                                             candidate, single_mode,
