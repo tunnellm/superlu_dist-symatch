@@ -1130,6 +1130,7 @@ struct xLUstruct_t
         int lookahead_row_gid_index;
         int output_begin;
         int output_count;
+        int_t output_id;
         unsigned char launched;
         unsigned char complete;
         unsigned char launch_stream_kind;
@@ -1145,7 +1146,8 @@ struct xLUstruct_t
               gemm_m(0), gemm_n(0), gemm_k(0), mode_mask(0),
               scatter_group(-1), lookahead_col_gid_index(-1),
               lookahead_row_gid_index(-1), output_begin(0),
-              output_count(0), launched(0), complete(0),
+              output_count(0), output_id(GLOBAL_BLOCK_NOT_FOUND),
+              launched(0), complete(0),
               launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
               gemm_resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE)
 #ifdef HAVE_CUDA
