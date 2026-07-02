@@ -5273,6 +5273,36 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     continue;
                 }
                 std::vector<int> &queue = *queue_ptr;
+                if (async_core &&
+                    queue_ptr ==
+                        &state.runnable_task_ids_by_mode[
+                            SYM_V2_PCFRAG_TASK_FULL] &&
+                    superlu_sym_v2_pcfrag_taskflow_sort_full_queue() &&
+                    !state.runnable_mode_queue_sorted[
+                        SYM_V2_PCFRAG_TASK_FULL])
+                {
+                    std::stable_sort(
+                        queue.begin(), queue.end(),
+                        [&](int lhs, int rhs) {
+                            if (lhs < 0 || rhs < 0 ||
+                                static_cast<size_t>(lhs) >=
+                                    state.tasks.size() ||
+                                static_cast<size_t>(rhs) >=
+                                    state.tasks.size())
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable task id is invalid.");
+                            const SymV2PcFragTaskDesc &a =
+                                state.tasks[static_cast<size_t>(lhs)];
+                            const SymV2PcFragTaskDesc &b =
+                                state.tasks[static_cast<size_t>(rhs)];
+                            if (a.partner_piece != b.partner_piece)
+                                return a.partner_piece < b.partner_piece;
+                            if (a.row_piece != b.row_piece)
+                                return a.row_piece < b.row_piece;
+                            return a.task_id < b.task_id;
+                        });
+                    state.runnable_mode_queue_sorted[
+                        SYM_V2_PCFRAG_TASK_FULL] = 1;
+                }
                 size_t runnable_write = 0;
                 for (size_t i = 0; i < queue.size(); ++i)
                 {

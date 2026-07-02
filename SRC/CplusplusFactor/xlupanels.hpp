@@ -1423,6 +1423,7 @@ struct xLUstruct_t
         unsigned char runnable_mode_queue_mask;
         std::vector<int> runnable_task_ids;
         std::vector<int> runnable_task_ids_by_mode[16];
+        unsigned char runnable_mode_queue_sorted[16];
         SymV2PcFragGidTaskQueueMap runnable_lookahead_col_by_gid;
         SymV2PcFragGidTaskQueueMap runnable_lookahead_row_by_gid;
         SymV2PcFragGidCounterMap incomplete_lookahead_col_members_by_gid;
@@ -1531,6 +1532,8 @@ struct xLUstruct_t
                 for (int mask = 0; mask < 16; ++mask)
                     launched_task_pending_mode_by_stream[i][mask] = 0;
             }
+            for (int mask = 0; mask < 16; ++mask)
+                runnable_mode_queue_sorted[mask] = 0;
         }
 
         void note_piece_ready(unsigned char kind, int piece_id)
@@ -1583,6 +1586,7 @@ struct xLUstruct_t
                             runnable_task_ids_by_mode[mask].capacity())
                             ABORT("GPU3DV2_PCFRAG_TASKFLOW mode runnable queue capacity is undersized.");
                         runnable_task_ids_by_mode[mask].push_back(tid);
+                        runnable_mode_queue_sorted[mask] = 0;
                     }
                     if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                     {
@@ -1695,7 +1699,10 @@ struct xLUstruct_t
             runnable_mode_queue_mask = 0x0f;
             runnable_task_ids.clear();
             for (int mask = 0; mask < 16; ++mask)
+            {
                 runnable_task_ids_by_mode[mask].clear();
+                runnable_mode_queue_sorted[mask] = 0;
+            }
             runnable_lookahead_col_by_gid.clear();
             runnable_lookahead_row_by_gid.clear();
             incomplete_lookahead_col_members_by_gid.clear();
