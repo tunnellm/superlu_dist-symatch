@@ -1476,6 +1476,7 @@ struct xLUstruct_t
         std::vector<int_t> output_completion_ids;
         std::vector<unsigned char> output_claimed;
         std::vector<unsigned char> output_completed;
+        std::vector<int> output_owner_task_ids;
         std::vector<int> row_block_piece;
         std::vector<int> partner_block_piece;
         std::vector<SymV2PcFragPairTaskEntry> pair_task_entries;
@@ -1769,6 +1770,7 @@ struct xLUstruct_t
             output_completion_ids.clear();
             output_claimed.clear();
             output_completed.clear();
+            output_owner_task_ids.clear();
             row_block_piece.clear();
             partner_block_piece.clear();
             pair_task_entries.clear();

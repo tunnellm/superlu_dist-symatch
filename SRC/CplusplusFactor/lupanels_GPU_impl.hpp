@@ -1138,6 +1138,25 @@ static inline size_t dSymV2PcFragTaskflowOutputCompletionIndexAt(
     return dSymV2PcFragTaskflowOutputCompletionIndex(state, output_id);
 }
 
+static inline void dSymV2PcFragTaskflowAssignRequiredOutputOwner(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragOutputKey &output,
+    int task_id)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core() ||
+        state.output_owner_task_ids.empty())
+        return;
+    if (output.output_id < 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW output owner is missing a compact id.");
+    size_t pos =
+        dSymV2PcFragTaskflowOutputCompletionIndex(state, output.output_id);
+    if (pos >= state.output_owner_task_ids.size())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW output owner id is not in the sparse completion map.");
+    if (state.output_owner_task_ids[pos] != -1)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW output has more than one required owner.");
+    state.output_owner_task_ids[pos] = task_id;
+}
+
 static inline void dSymV2PcFragTaskflowClaimTaskOutputs(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -3651,6 +3670,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.output_completion_ids.swap(output_completion_ids);
         state.output_claimed.assign(state.output_completion_ids.size(), 0);
         state.output_completed.assign(state.output_completion_ids.size(), 0);
+        state.output_owner_task_ids.assign(
+            state.output_completion_ids.size(), -1);
     }
     size_t row_line_groups = 0;
     size_t partner_line_groups = 0;
@@ -4176,6 +4197,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         output.row_piece = row_piece;
         output.partner_piece = partner_piece;
         assign_output_completion_index(output);
+        dSymV2PcFragTaskflowAssignRequiredOutputOwner(
+            state, output, task.task_id);
         state.task_output_pool.push_back(output);
         task.lookahead_col_gid_index =
             state.incomplete_lookahead_col_members_by_gid.index_of(
@@ -4328,6 +4351,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             output.row_piece = output_candidates[p].row_piece;
             output.partner_piece = output_candidates[p].partner_piece;
             assign_output_completion_index(output);
+            dSymV2PcFragTaskflowAssignRequiredOutputOwner(
+                state, output, task.task_id);
             state.task_output_pool.push_back(output);
         }
         task.lookahead_col_gid_index =
@@ -4464,6 +4489,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     if (need_piece_pair_lookup)
         std::sort(state.pair_task_entries.begin(),
                   state.pair_task_entries.end());
+    if (async_core)
+    {
+        if (state.output_owner_task_ids.size() !=
+            state.output_completion_ids.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW output owner map is not initialized.");
+        for (size_t pos = 0; pos < state.output_owner_task_ids.size(); ++pos)
+            if (state.output_owner_task_ids[pos] < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW output has no required owner.");
+    }
     long long local_single_output_tasks = 0;
     long long local_multi_output_tasks = 0;
     long long local_multi_output_members = 0;
