@@ -1871,6 +1871,20 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 gpuErrchk(event_rc);
             dSymV2PcFragTaskflowNoteEventNotReadyForKind(state, kind);
             task_groups[group_write++] = group;
+            for (size_t j = g + 1; j < task_groups.size(); ++j)
+            {
+                xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup tail_group =
+                    task_groups[j];
+                int tail_required =
+                    dSymV2PcFragTaskflowGroupRequiredForMode(
+                        state, tail_group, drain, required_mode_mask,
+                        required_mode_gid);
+                if (tail_required > 0)
+                    pending_required += tail_required;
+                task_groups[group_write++] = tail_group;
+                ++stats.task_completion_event_query_skips;
+            }
+            break;
         }
         if (group_write != task_groups.size())
             task_groups.resize(group_write);
