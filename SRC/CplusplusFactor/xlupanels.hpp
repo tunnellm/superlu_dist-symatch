@@ -1338,6 +1338,21 @@ struct xLUstruct_t
             return it->second;
         }
 
+        int_t gid_at(int index) const
+        {
+            return entries[static_cast<size_t>(index)].first;
+        }
+
+        std::vector<int> &value_at(int index)
+        {
+            return entries[static_cast<size_t>(index)].second;
+        }
+
+        const std::vector<int> &value_at(int index) const
+        {
+            return entries[static_cast<size_t>(index)].second;
+        }
+
       private:
         iterator lower_bound(int_t gid)
         {
@@ -1531,40 +1546,84 @@ struct xLUstruct_t
                     }
                     if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                     {
-                        for (int o = 0; o < tasks[pos].output_count; ++o)
+                        if (tasks[pos].output_count == 1 &&
+                            tasks[pos].lookahead_col_gid_index >= 0)
                         {
+                            int idx = tasks[pos].lookahead_col_gid_index;
                             size_t out_pos =
-                                static_cast<size_t>(
-                                    tasks[pos].output_begin + o);
+                                static_cast<size_t>(tasks[pos].output_begin);
                             if (out_pos >= task_output_pool.size())
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
-                            int_t gid = task_output_pool[out_pos].gj;
-                            auto it =
-                                runnable_lookahead_col_by_gid.find(gid);
-                            if (it == runnable_lookahead_col_by_gid.end())
-                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable map is missing a gid.");
-                            if (it->second.size() >= it->second.capacity())
+                            if (static_cast<size_t>(idx) >=
+                                    runnable_lookahead_col_by_gid.size() ||
+                                runnable_lookahead_col_by_gid.gid_at(idx) !=
+                                    task_output_pool[out_pos].gj)
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable compact gid is invalid.");
+                            std::vector<int> &queue =
+                                runnable_lookahead_col_by_gid.value_at(idx);
+                            if (queue.size() >= queue.capacity())
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable queue capacity is undersized.");
-                            it->second.push_back(tid);
+                            queue.push_back(tid);
+                        }
+                        else
+                        {
+                            for (int o = 0; o < tasks[pos].output_count; ++o)
+                            {
+                                size_t out_pos =
+                                    static_cast<size_t>(
+                                        tasks[pos].output_begin + o);
+                                if (out_pos >= task_output_pool.size())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
+                                int_t gid = task_output_pool[out_pos].gj;
+                                auto it =
+                                    runnable_lookahead_col_by_gid.find(gid);
+                                if (it == runnable_lookahead_col_by_gid.end())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable map is missing a gid.");
+                                if (it->second.size() >= it->second.capacity())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead column runnable queue capacity is undersized.");
+                                it->second.push_back(tid);
+                            }
                         }
                     }
                     if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
                     {
-                        for (int o = 0; o < tasks[pos].output_count; ++o)
+                        if (tasks[pos].output_count == 1 &&
+                            tasks[pos].lookahead_row_gid_index >= 0)
                         {
+                            int idx = tasks[pos].lookahead_row_gid_index;
                             size_t out_pos =
-                                static_cast<size_t>(
-                                    tasks[pos].output_begin + o);
+                                static_cast<size_t>(tasks[pos].output_begin);
                             if (out_pos >= task_output_pool.size())
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
-                            int_t gid = task_output_pool[out_pos].gi;
-                            auto it =
-                                runnable_lookahead_row_by_gid.find(gid);
-                            if (it == runnable_lookahead_row_by_gid.end())
-                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable map is missing a gid.");
-                            if (it->second.size() >= it->second.capacity())
+                            if (static_cast<size_t>(idx) >=
+                                    runnable_lookahead_row_by_gid.size() ||
+                                runnable_lookahead_row_by_gid.gid_at(idx) !=
+                                    task_output_pool[out_pos].gi)
+                                ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable compact gid is invalid.");
+                            std::vector<int> &queue =
+                                runnable_lookahead_row_by_gid.value_at(idx);
+                            if (queue.size() >= queue.capacity())
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable queue capacity is undersized.");
-                            it->second.push_back(tid);
+                            queue.push_back(tid);
+                        }
+                        else
+                        {
+                            for (int o = 0; o < tasks[pos].output_count; ++o)
+                            {
+                                size_t out_pos =
+                                    static_cast<size_t>(
+                                        tasks[pos].output_begin + o);
+                                if (out_pos >= task_output_pool.size())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
+                                int_t gid = task_output_pool[out_pos].gi;
+                                auto it =
+                                    runnable_lookahead_row_by_gid.find(gid);
+                                if (it == runnable_lookahead_row_by_gid.end())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable map is missing a gid.");
+                                if (it->second.size() >= it->second.capacity())
+                                    ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable queue capacity is undersized.");
+                                it->second.push_back(tid);
+                            }
                         }
                     }
                     task_enqueued[pos] = 1;
