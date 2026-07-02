@@ -4891,16 +4891,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 return NULL;
             return &state.partner_pieces[static_cast<size_t>(piece_id)];
         };
-        auto build_group_index =
+        auto build_group_index_into =
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
-                int_t begin, int_t end) -> std::vector<int_t> {
+                int_t begin, int_t end, std::vector<int_t> &idx) {
             int_t nblocks = end - begin;
             int_t nrows = 0;
             for (int_t b = begin; b < end; ++b)
                 nrows += pieces[static_cast<size_t>(b)].nrows;
-            std::vector<int_t> idx(
+            idx.assign(
                 static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * nblocks + 1 +
-                                    nrows), 0);
+                                    nrows),
+                0);
             idx[0] = nblocks;
             idx[1] = nrows;
             idx[2] = 0;
@@ -4922,7 +4923,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     idx[row_ptr++] =
                         piece.h_index[piece_row_ptr + static_cast<size_t>(r)];
             }
-            return idx;
         };
         auto build_group_values =
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
@@ -4996,13 +4996,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     idx[row_ptr++] =
                         piece.h_index[piece_row_ptr + static_cast<size_t>(r)];
             }
-        };
-        auto build_group_index_from_ids =
-            [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
-                const std::vector<int> &piece_ids) -> std::vector<int_t> {
-            std::vector<int_t> idx;
-            build_group_index_from_ids_into(pieces, piece_ids, idx);
-            return idx;
         };
         auto build_group_values_from_ids =
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
@@ -5555,13 +5548,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 int_t col_lda = 0;
                 for (int cp = partner_piece_start; cp < partner_piece_end; ++cp)
                     col_lda += state.partner_pieces[static_cast<size_t>(cp)].nrows;
-                std::vector<int_t> row_group =
-                    build_group_index(
-                        state.row_pieces, row_piece_start, row_piece_end);
-                std::vector<int_t> col_group =
-                    build_group_index(
-                        state.partner_pieces, partner_piece_start,
-                        partner_piece_end);
+                std::vector<int_t> &row_group =
+                    state.group_row_index_scratch;
+                std::vector<int_t> &col_group =
+                    state.group_partner_index_scratch;
+                build_group_index_into(
+                    state.row_pieces, row_piece_start, row_piece_end,
+                    row_group);
+                build_group_index_into(
+                    state.partner_pieces, partner_piece_start,
+                    partner_piece_end, col_group);
                 size_t row_index_count = row_group.size();
                 size_t col_index_count = col_group.size();
                 size_t row_value_count =
@@ -5873,10 +5869,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             if (group_handle == NULL || group_stream == NULL ||
                 group_gemm == NULL)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped task has no stream resources.");
-            std::vector<int_t> row_group =
-                build_group_index(state.row_pieces, row_start, row_end);
-            std::vector<int_t> col_group =
-                build_group_index(state.partner_pieces, col_start, col_end);
+            std::vector<int_t> &row_group =
+                state.group_row_index_scratch;
+            std::vector<int_t> &col_group =
+                state.group_partner_index_scratch;
+            build_group_index_into(state.row_pieces, row_start, row_end,
+                                   row_group);
+            build_group_index_into(state.partner_pieces, col_start, col_end,
+                                   col_group);
             size_t row_index_count = row_group.size();
             size_t col_index_count = col_group.size();
             size_t row_value_count =
@@ -6790,13 +6790,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         col_lda += state.partner_pieces[
                                             static_cast<size_t>(
                                                 partner_piece_ids[ci])].nrows;
-                                    std::vector<int_t> row_group =
-                                        build_group_index_from_ids(
-                                            state.row_pieces, row_piece_ids);
-                                    std::vector<int_t> col_group =
-                                        build_group_index_from_ids(
-                                            state.partner_pieces,
-                                            partner_piece_ids);
+                                    std::vector<int_t> &row_group =
+                                        state.group_row_index_scratch;
+                                    std::vector<int_t> &col_group =
+                                        state.group_partner_index_scratch;
+                                    build_group_index_from_ids_into(
+                                        state.row_pieces, row_piece_ids,
+                                        row_group);
+                                    build_group_index_from_ids_into(
+                                        state.partner_pieces,
+                                        partner_piece_ids, col_group);
                                     size_t row_index_count =
                                         row_group.size();
                                     size_t col_index_count =
