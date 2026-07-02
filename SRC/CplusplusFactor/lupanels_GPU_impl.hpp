@@ -4709,7 +4709,21 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             }
             if ((requested_mode_mask & SYM_V2_PCFRAG_TASK_EXCLUDE) &&
                 (task.mode_mask & SYM_V2_PCFRAG_TASK_EXCLUDE))
+            {
+                if (requested_gid == GLOBAL_BLOCK_NOT_FOUND)
+                    return SYM_V2_PCFRAG_TASK_EXCLUDE;
+                const size_t output_count =
+                    dSymV2PcFragTaskflowOutputCount(task);
+                for (size_t o = 0; o < output_count; ++o)
+                {
+                    const SymV2PcFragOutputKey &key =
+                        dSymV2PcFragTaskflowOutputAt(state, task, o);
+                    if (key.gj == requested_gid ||
+                        key.gi == requested_gid)
+                        return 0;
+                }
                 return SYM_V2_PCFRAG_TASK_EXCLUDE;
+            }
             return 0;
         };
         auto release_completed_state = [&]() -> int {
