@@ -3813,6 +3813,7 @@ struct xLUstruct_t
         const std::vector<int_t> &recv_map, int_t ksupc,
         cudaStream_t stream);
     int_t dSymV2PcFragTaskflowProgressExchangeGPU(int_t k, int drain);
+    int_t dSymV2PcFragTaskflowFlushProducerSendsGPU(int_t k);
     int_t dSymV2PcFragTaskflowProgressGPU(int_t k, int budget);
     int_t dSymV2PcFragTaskflowDispatchGPU(
         int streamId, int_t k, unsigned mode_mask, int_t mode_gid, int drain);

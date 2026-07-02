@@ -603,6 +603,13 @@ int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowProgressExchangeGPU(
 }
 
 template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowFlushProducerSendsGPU(int_t k)
+{
+    (void)k;
+    return 0;
+}
+
+template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2PcFragTaskflowProgressGPU(
     int_t k, int budget)
 {
@@ -4810,6 +4817,34 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
         state.producer_row_recv_offsets.clear();
         state.producer_row_recv_done.clear();
     }
+    return progressed;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowFlushProducerSendsGPU(
+    int_t k)
+{
+    if (!symV2UsePcFragmentTaskflowPanel(k))
+        return 0;
+    if (k < 0 || static_cast<size_t>(k) >= symV2PcFragTaskStates.size())
+        return 0;
+    SymV2PcFragPanelTaskState &state =
+        symV2PcFragTaskStates[static_cast<size_t>(k)];
+    if (!state.initialized)
+        return 0;
+    int progressed = 0;
+    if (state.producer_deferred_send_batches.empty())
+    {
+        progressed += dSymV2PcFragTaskflowProgressProducerSends(
+            state, symV2PcFragTaskflowStats);
+        return progressed;
+    }
+    progressed += dSymV2PcFragTaskflowProgressDeferredSends(
+        *this, state, symV2PcFragTaskflowStats, grid, grid3d, 1);
+    progressed += dSymV2PcFragTaskflowProgressProducerSends(
+        state, symV2PcFragTaskflowStats);
+    if (!state.producer_deferred_send_batches.empty())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW failed to flush deferred producer sends.");
     return progressed;
 }
 
