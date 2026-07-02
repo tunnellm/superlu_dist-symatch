@@ -3180,6 +3180,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     size_t plan_density_breaks = 0;
     size_t plan_gemm_capacity_breaks = 0;
     size_t plan_gj_boundary_breaks = 0;
+    size_t mode_split_full_row_groups = 0;
+    size_t mode_split_full_row_members = 0;
+    size_t mode_split_full_row_max_members = 0;
+    size_t mode_split_full_row_nontrivial_groups = 0;
+    size_t mode_split_full_row_gemm_breaks = 0;
+    size_t mode_split_full_row_est_launch_savings = 0;
     auto coalesced_candidate_group_end =
         [&](size_t begin, bool record_stats) -> size_t {
         size_t fallback = same_partner_candidate_group_end(begin);
@@ -3329,6 +3335,93 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             }
             i = j;
         }
+    }
+    if (async_core && !output_candidates.empty())
+    {
+        std::vector<size_t> mode_split_order(output_candidates.size());
+        for (size_t i = 0; i < mode_split_order.size(); ++i)
+            mode_split_order[i] = i;
+        std::sort(
+            mode_split_order.begin(), mode_split_order.end(),
+            [&](size_t lhs, size_t rhs) {
+                const TaskflowOutputCandidate &a =
+                    output_candidates[lhs];
+                const TaskflowOutputCandidate &b =
+                    output_candidates[rhs];
+                if (a.row_piece != b.row_piece)
+                    return a.row_piece < b.row_piece;
+                if (a.partner_piece != b.partner_piece)
+                    return a.partner_piece < b.partner_piece;
+                if (a.output.gj != b.output.gj)
+                    return a.output.gj < b.output.gj;
+                return a.output.gi < b.output.gi;
+            });
+
+        size_t group_members = 0;
+        int current_row_piece = -1;
+        int last_partner_piece = -1;
+        int_t current_row_lda = 0;
+        int_t current_partner_lda = 0;
+        auto close_full_row_group = [&]() {
+            if (group_members == 0)
+                return;
+            ++mode_split_full_row_groups;
+            mode_split_full_row_members += group_members;
+            if (group_members > mode_split_full_row_max_members)
+                mode_split_full_row_max_members = group_members;
+            if (group_members > 1)
+            {
+                ++mode_split_full_row_nontrivial_groups;
+                mode_split_full_row_est_launch_savings +=
+                    group_members - 1;
+            }
+            group_members = 0;
+            current_partner_lda = 0;
+            last_partner_piece = -1;
+        };
+
+        for (size_t oi = 0; oi < mode_split_order.size(); ++oi)
+        {
+            const TaskflowOutputCandidate &candidate =
+                output_candidates[mode_split_order[oi]];
+            int row_piece = candidate.row_piece;
+            int partner_piece = candidate.partner_piece;
+            if (row_piece < 0 ||
+                static_cast<size_t>(row_piece) >=
+                    state.row_pieces.size() ||
+                partner_piece < 0 ||
+                static_cast<size_t>(partner_piece) >=
+                    state.partner_pieces.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW mode-split diagnostic has invalid piece id.");
+            if (row_piece != current_row_piece)
+            {
+                close_full_row_group();
+                current_row_piece = row_piece;
+                current_row_lda =
+                    state.row_pieces[static_cast<size_t>(row_piece)]
+                        .nrows;
+            }
+
+            int_t next_partner_lda = current_partner_lda;
+            if (partner_piece != last_partner_piece)
+                next_partner_lda +=
+                    state.partner_pieces[
+                        static_cast<size_t>(partner_piece)].nrows;
+            if (group_members > 0 &&
+                !candidate_group_fits_gemm_capacity(current_row_lda,
+                                                    next_partner_lda))
+            {
+                ++mode_split_full_row_gemm_breaks;
+                close_full_row_group();
+                next_partner_lda =
+                    state.partner_pieces[
+                        static_cast<size_t>(partner_piece)].nrows;
+            }
+            current_partner_lda = next_partner_lda;
+            last_partner_piece = partner_piece;
+            ++group_members;
+        }
+        close_full_row_group();
     }
     size_t max_planned_tasks =
         superlu_sym_v2_pcfrag_taskflow_max_planned_tasks();
@@ -3648,6 +3741,24 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     add_size_to_stat(
         symV2PcFragTaskflowStats.coalesce_plan_gj_boundary_breaks,
         plan_gj_boundary_breaks);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.mode_split_full_row_groups,
+        mode_split_full_row_groups);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.mode_split_full_row_members,
+        mode_split_full_row_members);
+    max_size_to_stat(
+        symV2PcFragTaskflowStats.mode_split_full_row_max_members,
+        mode_split_full_row_max_members);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.mode_split_full_row_nontrivial_groups,
+        mode_split_full_row_nontrivial_groups);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.mode_split_full_row_gemm_breaks,
+        mode_split_full_row_gemm_breaks);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.mode_split_full_row_est_launch_savings,
+        mode_split_full_row_est_launch_savings);
     const char *taskflow_plan_diag =
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG");
     if (taskflow_plan_diag != NULL && taskflow_plan_diag[0] != '\0')

@@ -2051,6 +2051,12 @@ struct xLUstruct_t
         long long coalesce_plan_density_breaks;
         long long coalesce_plan_gemm_capacity_breaks;
         long long coalesce_plan_gj_boundary_breaks;
+        long long mode_split_full_row_groups;
+        long long mode_split_full_row_members;
+        long long mode_split_full_row_max_members;
+        long long mode_split_full_row_nontrivial_groups;
+        long long mode_split_full_row_gemm_breaks;
+        long long mode_split_full_row_est_launch_savings;
         long long task_shape_single_output_tasks;
         long long task_shape_multi_output_tasks;
         long long task_shape_multi_output_members;
@@ -2186,6 +2192,12 @@ struct xLUstruct_t
               coalesce_plan_density_breaks(0),
               coalesce_plan_gemm_capacity_breaks(0),
               coalesce_plan_gj_boundary_breaks(0),
+              mode_split_full_row_groups(0),
+              mode_split_full_row_members(0),
+              mode_split_full_row_max_members(0),
+              mode_split_full_row_nontrivial_groups(0),
+              mode_split_full_row_gemm_breaks(0),
+              mode_split_full_row_est_launch_savings(0),
               task_shape_single_output_tasks(0),
               task_shape_multi_output_tasks(0),
               task_shape_multi_output_members(0),
@@ -2553,6 +2565,16 @@ struct xLUstruct_t
         };
         long long global_task_shape[4] = {};
         long long global_task_shape_max_outputs = 0;
+        long long local_mode_split[6] = {
+            symV2PcFragTaskflowStats.mode_split_full_row_groups,
+            symV2PcFragTaskflowStats.mode_split_full_row_members,
+            symV2PcFragTaskflowStats.mode_split_full_row_max_members,
+            symV2PcFragTaskflowStats.mode_split_full_row_nontrivial_groups,
+            symV2PcFragTaskflowStats.mode_split_full_row_gemm_breaks,
+            symV2PcFragTaskflowStats.mode_split_full_row_est_launch_savings
+        };
+        long long global_mode_split[6] = {};
+        long long global_mode_split_max_members = 0;
         long long local_exchange_sync_sites[4] = {
             symV2PcFragTaskflowStats.producer_exchange_partner_stream_syncs,
             symV2PcFragTaskflowStats.producer_exchange_row_stream_syncs,
@@ -2603,6 +2625,14 @@ struct xLUstruct_t
                        &global_task_shape_max_outputs, 1,
                        MPI_LONG_LONG, MPI_MAX, 0, grid3d->comm);
             global_task_shape[3] = global_task_shape_max_outputs;
+            MPI_Reduce(local_mode_split, global_mode_split, 2,
+                       MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(&local_mode_split[2],
+                       &global_mode_split_max_members, 1,
+                       MPI_LONG_LONG, MPI_MAX, 0, grid3d->comm);
+            global_mode_split[2] = global_mode_split_max_members;
+            MPI_Reduce(&local_mode_split[3], &global_mode_split[3], 3,
+                       MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_exchange_sync_sites,
                        global_exchange_sync_sites, 4, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
@@ -2628,6 +2658,8 @@ struct xLUstruct_t
                 global_coalesce[i] = local_coalesce[i];
             for (int i = 0; i < 4; ++i)
                 global_task_shape[i] = local_task_shape[i];
+            for (int i = 0; i < 6; ++i)
+                global_mode_split[i] = local_mode_split[i];
             for (int i = 0; i < 4; ++i)
                 global_exchange_sync_sites[i] =
                     local_exchange_sync_sites[i];
@@ -2894,6 +2926,22 @@ struct xLUstruct_t
             global_task_shape[0], global_task_shape[1],
             global_task_shape[2], multi_output_avg,
             global_task_shape[3]);
+        double mode_split_full_row_avg =
+            global_mode_split[0] > 0
+                ? static_cast<double>(global_mode_split[1]) /
+                      static_cast<double>(global_mode_split[0])
+                : 0.0;
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow mode-split opportunity: "
+            "full_row_groups=%lld full_row_members=%lld "
+            "full_row_avg=%.3f full_row_max_members=%lld "
+            "full_row_nontrivial_groups=%lld "
+            "full_row_gemm_breaks=%lld "
+            "full_row_est_launch_savings=%lld\n",
+            global_mode_split[0], global_mode_split[1],
+            mode_split_full_row_avg, global_mode_split[2],
+            global_mode_split[3], global_mode_split[4],
+            global_mode_split[5]);
         std::printf(
             "SymFact V2 Pc-fragment taskflow exchange sync sites: "
             "partner=%lld row=%lld row_aggregate=%lld "
