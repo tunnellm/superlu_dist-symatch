@@ -1430,6 +1430,22 @@ static inline int dSymV2PcFragTaskflowModeMaskIndex(unsigned mode_mask)
          xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL));
 }
 
+static inline void dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+    long long by_mode[16], unsigned launch_mode)
+{
+    int mask = dSymV2PcFragTaskflowModeMaskIndex(launch_mode);
+    if (mask <= 0)
+        return;
+    if (mask & xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+        ++by_mode[xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL];
+    if (mask & xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+        ++by_mode[xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW];
+    if (mask & xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_EXCLUDE)
+        ++by_mode[xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_EXCLUDE];
+    if (mask & xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL)
+        ++by_mode[xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL];
+}
+
 static inline int dSymV2PcFragTaskflowRequiredIncompleteFast(
     const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     unsigned required_mode_mask,
@@ -5568,6 +5584,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             ++symV2PcFragTaskflowStats.tasks_blocked_output;
                             ++symV2PcFragTaskflowStats.scatter_conflict_waits;
                             ++symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks;
+                            dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                symV2PcFragTaskflowStats
+                                    .grouped_output_conflict_fallbacks_by_mode,
+                                launch_mode);
                             launch_range_as_singles();
                             return;
                         }
@@ -5582,7 +5602,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (group_task_ids.size() <= 1 || completed_pair_count > 0)
                 {
                     if (group_task_ids.size() <= 1)
+                    {
                         ++symV2PcFragTaskflowStats.grouped_single_fallbacks;
+                        dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                            symV2PcFragTaskflowStats
+                                .grouped_single_fallbacks_by_mode,
+                            launch_mode);
+                    }
                     if (completed_pair_count > 0)
                         ++symV2PcFragTaskflowStats.grouped_completed_pair_fallbacks;
                     launch_range_as_singles();
@@ -6222,6 +6248,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 {
                                     ++symV2PcFragTaskflowStats
                                           .grouped_output_conflict_fallbacks;
+                                    dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                        symV2PcFragTaskflowStats
+                                            .grouped_output_conflict_fallbacks_by_mode,
+                                        launch_mode);
                                     return false;
                                 }
 
@@ -6335,6 +6365,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         ++symV2PcFragTaskflowStats.tasks_blocked_output;
                                         ++symV2PcFragTaskflowStats.scatter_conflict_waits;
                                         ++symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks;
+                                        dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                            symV2PcFragTaskflowStats
+                                                .grouped_output_conflict_fallbacks_by_mode,
+                                            launch_mode);
                                         continue;
                                     }
                                     exact_candidate_tids.push_back(cand_tid);
@@ -6690,6 +6724,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             {
                                 ++symV2PcFragTaskflowStats
                                       .grouped_single_fallbacks;
+                                dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                    symV2PcFragTaskflowStats
+                                        .grouped_single_fallbacks_by_mode,
+                                    launch_mode);
                             }
                             else
                             {
@@ -6812,6 +6850,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     ++symV2PcFragTaskflowStats.tasks_blocked_output;
                                     ++symV2PcFragTaskflowStats.scatter_conflict_waits;
                                     ++symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks;
+                                    dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                        symV2PcFragTaskflowStats
+                                            .grouped_output_conflict_fallbacks_by_mode,
+                                        launch_mode);
                                     can_group = false;
                                 }
                                 else
@@ -6831,6 +6873,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                             ++symV2PcFragTaskflowStats.tasks_blocked_output;
                                             ++symV2PcFragTaskflowStats.scatter_conflict_waits;
                                             ++symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks;
+                                            dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                                symV2PcFragTaskflowStats
+                                                    .grouped_output_conflict_fallbacks_by_mode,
+                                                launch_mode);
                                             continue;
                                         }
                                         unlocked_candidate_tids.push_back(
@@ -6840,6 +6886,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     if (candidate_tids.size() <= 1)
                                     {
                                         ++symV2PcFragTaskflowStats.grouped_single_fallbacks;
+                                        dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                            symV2PcFragTaskflowStats
+                                                .grouped_single_fallbacks_by_mode,
+                                            launch_mode);
                                         can_group = false;
                                     }
                                 }

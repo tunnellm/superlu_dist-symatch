@@ -1929,6 +1929,8 @@ struct xLUstruct_t
         long long grouped_single_fallbacks;
         long long grouped_completed_pair_fallbacks;
         long long grouped_output_conflict_fallbacks;
+        long long grouped_single_fallbacks_by_mode[16];
+        long long grouped_output_conflict_fallbacks_by_mode[16];
         long long grouped_capacity_fallbacks;
         long long grouped_scratch_busy_deferrals;
         long long grouped_pending_cap_deferrals;
@@ -2043,6 +2045,8 @@ struct xLUstruct_t
               grouped_candidate_scans(0), grouped_single_fallbacks(0),
               grouped_completed_pair_fallbacks(0),
               grouped_output_conflict_fallbacks(0),
+              grouped_single_fallbacks_by_mode(),
+              grouped_output_conflict_fallbacks_by_mode(),
               grouped_capacity_fallbacks(0),
               grouped_scratch_busy_deferrals(0),
               grouped_pending_cap_deferrals(0),
@@ -2340,7 +2344,7 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.task_completion_event_successes
         };
         long long global[SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT] = {};
-        long long local_group[13] = {
+        long long local_group[21] = {
             symV2PcFragTaskflowStats.grouped_dispatch_attempts,
             symV2PcFragTaskflowStats.grouped_launches,
             symV2PcFragTaskflowStats.grouped_task_members,
@@ -2353,9 +2357,25 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.grouped_pending_cap_deferrals,
             symV2PcFragTaskflowStats.grouped_density_fallbacks,
             symV2PcFragTaskflowStats.grouped_gemm_capacity_fallbacks,
-            symV2PcFragTaskflowStats.grouped_unready_fallbacks
+            symV2PcFragTaskflowStats.grouped_unready_fallbacks,
+            symV2PcFragTaskflowStats.grouped_single_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL],
+            symV2PcFragTaskflowStats.grouped_single_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW],
+            symV2PcFragTaskflowStats.grouped_single_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_EXCLUDE],
+            symV2PcFragTaskflowStats.grouped_single_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_FULL],
+            symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL],
+            symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW],
+            symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_EXCLUDE],
+            symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_FULL]
         };
-        long long global_group[13] = {};
+        long long global_group[21] = {};
         long long local_output_lock_bytes = 0;
         if (!symV2PcFragTaskflowGlobalOutputLockState.empty())
             local_output_lock_bytes =
@@ -2404,7 +2424,7 @@ struct xLUstruct_t
             MPI_Reduce(local, global,
                        SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
-            MPI_Reduce(local_group, global_group, 13, MPI_LONG_LONG,
+            MPI_Reduce(local_group, global_group, 21, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_graph, global_graph, 20, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
@@ -2418,7 +2438,7 @@ struct xLUstruct_t
             for (int i = 0;
                  i < SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT; ++i)
                 global[i] = local[i];
-            for (int i = 0; i < 10; ++i)
+            for (int i = 0; i < 21; ++i)
                 global_group[i] = local_group[i];
             for (int i = 0; i < 20; ++i)
                 global_graph[i] = local_graph[i];
@@ -2535,12 +2555,22 @@ struct xLUstruct_t
             "pending_cap_deferrals=%lld "
             "density_fallbacks=%lld "
             "gemm_capacity_fallbacks=%lld "
-            "unready_fallbacks=%lld\n",
+            "unready_fallbacks=%lld "
+            "single_fallbacks_lacol=%lld "
+            "single_fallbacks_larow=%lld "
+            "single_fallbacks_exclude=%lld "
+            "single_fallbacks_full=%lld "
+            "output_conflict_fallbacks_lacol=%lld "
+            "output_conflict_fallbacks_larow=%lld "
+            "output_conflict_fallbacks_exclude=%lld "
+            "output_conflict_fallbacks_full=%lld\n",
             global_group[0], global_group[1], global_group[2],
             global_group[3], global_group[4], global_group[5],
             global_group[6], global_group[7], global_group[8],
             global_group[9], global_group[10], global_group[11],
-            global_group[12]);
+            global_group[12], global_group[13], global_group[14],
+            global_group[15], global_group[16], global_group[17],
+            global_group[18], global_group[19], global_group[20]);
         std::printf(
             "SymFact V2 Pc-fragment taskflow graph: "
             "host_graph_bytes_accum=%lld task_desc_bytes=%lld "
