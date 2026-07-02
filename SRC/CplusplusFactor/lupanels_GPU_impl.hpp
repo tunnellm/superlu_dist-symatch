@@ -7186,8 +7186,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             else
                             {
                             auto collect_candidate_tids =
-                                [&](bool group_by_partner) {
-                                    std::vector<int> candidates;
+                                [&](bool group_by_partner,
+                                    std::vector<int> &candidates) {
+                                    candidates.clear();
                                     candidates.reserve(static_cast<size_t>(
                                         available_group_slots));
                                     candidates.push_back(tid);
@@ -7258,41 +7259,44 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         }
                                         candidates.push_back(cand_tid);
                                     }
-                                    return candidates;
                                 };
                             bool group_by_partner =
                                 single_mode !=
                                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
-                            std::vector<int> candidate_tids;
+                            std::vector<int> &candidate_tids =
+                                state.group_task_scratch;
+                            std::vector<int> &alternate_candidate_tids =
+                                state.group_alt_task_scratch;
                             if (single_mode ==
                                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                             {
                                 group_by_partner = true;
-                                candidate_tids =
-                                    collect_candidate_tids(true);
+                                collect_candidate_tids(true,
+                                                       candidate_tids);
                             }
                             else if (single_mode ==
                                      SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
                             {
                                 group_by_partner = false;
-                                candidate_tids =
-                                    collect_candidate_tids(false);
+                                collect_candidate_tids(false,
+                                                       candidate_tids);
                             }
                             else
                             {
-                                std::vector<int> by_partner =
-                                    collect_candidate_tids(true);
-                                std::vector<int> by_row =
-                                    collect_candidate_tids(false);
-                                if (by_row.size() > by_partner.size())
+                                collect_candidate_tids(true,
+                                                       candidate_tids);
+                                collect_candidate_tids(
+                                    false, alternate_candidate_tids);
+                                if (alternate_candidate_tids.size() >
+                                    candidate_tids.size())
                                 {
                                     group_by_partner = false;
-                                    candidate_tids.swap(by_row);
+                                    candidate_tids.swap(
+                                        alternate_candidate_tids);
                                 }
                                 else
                                 {
                                     group_by_partner = true;
-                                    candidate_tids.swap(by_partner);
                                 }
                             }
                             if (candidate_tids.size() > 1)
@@ -7314,7 +7318,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 }
                                 else
                                 {
-                                    std::vector<int> unlocked_candidate_tids;
+                                    std::vector<int> &unlocked_candidate_tids =
+                                        state.group_unlocked_task_scratch;
+                                    unlocked_candidate_tids.clear();
                                     unlocked_candidate_tids.reserve(
                                         candidate_tids.size());
                                     unlocked_candidate_tids.push_back(tid);
@@ -7354,8 +7360,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     queue[runnable_write++] = tid;
                                     continue;
                                 }
-                                std::vector<int> row_piece_ids;
-                                std::vector<int> partner_piece_ids;
+                                std::vector<int> &row_piece_ids =
+                                    state.group_row_piece_scratch;
+                                std::vector<int> &partner_piece_ids =
+                                    state.group_partner_piece_scratch;
+                                row_piece_ids.clear();
+                                partner_piece_ids.clear();
                                 if (group_by_partner)
                                 {
                                     partner_piece_ids.push_back(

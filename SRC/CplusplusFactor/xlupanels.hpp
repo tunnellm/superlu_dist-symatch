@@ -1500,6 +1500,8 @@ struct xLUstruct_t
             launched_task_groups_by_stream[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         std::vector<int> launched_group_task_ids;
         std::vector<int> group_task_scratch;
+        std::vector<int> group_alt_task_scratch;
+        std::vector<int> group_unlocked_task_scratch;
         std::vector<int> group_row_piece_scratch;
         std::vector<int> group_partner_piece_scratch;
         std::vector<int_t> group_pair_row_scratch;
@@ -1792,6 +1794,8 @@ struct xLUstruct_t
             }
             launched_group_task_ids.clear();
             group_task_scratch.clear();
+            group_alt_task_scratch.clear();
+            group_unlocked_task_scratch.clear();
             group_row_piece_scratch.clear();
             group_partner_piece_scratch.clear();
             group_pair_row_scratch.clear();
