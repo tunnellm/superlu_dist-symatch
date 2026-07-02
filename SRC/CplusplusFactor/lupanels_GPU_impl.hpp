@@ -1114,10 +1114,14 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
     }
     else
     {
-        std::vector<int> row_piece_ids;
-        std::vector<int> partner_piece_ids;
+        std::vector<int> &row_piece_ids =
+            state.group_row_piece_scratch;
+        std::vector<int> &partner_piece_ids =
+            state.group_partner_piece_scratch;
         const size_t output_count =
             dSymV2PcFragTaskflowOutputCount(task);
+        row_piece_ids.clear();
+        partner_piece_ids.clear();
         row_piece_ids.reserve(output_count);
         partner_piece_ids.reserve(output_count);
         auto add_unique_piece = [](std::vector<int> &pieces, int piece_id) {
