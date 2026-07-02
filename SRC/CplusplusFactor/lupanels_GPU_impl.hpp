@@ -6961,7 +6961,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
 
                                 if (exact_candidate_tids.size() <= 1 &&
                                     exact_output_count <= 1)
+                                {
+                                    ++symV2PcFragTaskflowStats
+                                          .grouped_no_candidate_fallbacks;
+                                    dSymV2PcFragTaskflowNoteGroupedFallbackMode(
+                                        symV2PcFragTaskflowStats
+                                            .grouped_no_candidate_fallbacks_by_mode,
+                                        launch_mode);
                                     return false;
+                                }
 
                                 ++symV2PcFragTaskflowStats.grouped_dispatch_attempts;
 

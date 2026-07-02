@@ -1994,9 +1994,11 @@ struct xLUstruct_t
         long long grouped_task_members;
         long long grouped_candidate_scans;
         long long grouped_single_fallbacks;
+        long long grouped_no_candidate_fallbacks;
         long long grouped_completed_pair_fallbacks;
         long long grouped_output_conflict_fallbacks;
         long long grouped_single_fallbacks_by_mode[16];
+        long long grouped_no_candidate_fallbacks_by_mode[16];
         long long grouped_output_conflict_fallbacks_by_mode[16];
         long long grouped_capacity_fallbacks;
         long long grouped_scratch_busy_deferrals;
@@ -2127,9 +2129,11 @@ struct xLUstruct_t
               grouped_dispatch_attempts(0),
               grouped_launches(0), grouped_task_members(0),
               grouped_candidate_scans(0), grouped_single_fallbacks(0),
+              grouped_no_candidate_fallbacks(0),
               grouped_completed_pair_fallbacks(0),
               grouped_output_conflict_fallbacks(0),
               grouped_single_fallbacks_by_mode(),
+              grouped_no_candidate_fallbacks_by_mode(),
               grouped_output_conflict_fallbacks_by_mode(),
               grouped_capacity_fallbacks(0),
               grouped_scratch_busy_deferrals(0),
@@ -2541,6 +2545,18 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_exchange_row_direct_stream_syncs
         };
         long long global_exchange_sync_sites[4] = {};
+        long long local_group_no_candidate[5] = {
+            symV2PcFragTaskflowStats.grouped_no_candidate_fallbacks,
+            symV2PcFragTaskflowStats.grouped_no_candidate_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL],
+            symV2PcFragTaskflowStats.grouped_no_candidate_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW],
+            symV2PcFragTaskflowStats.grouped_no_candidate_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_EXCLUDE],
+            symV2PcFragTaskflowStats.grouped_no_candidate_fallbacks_by_mode[
+                SYM_V2_PCFRAG_TASK_FULL]
+        };
+        long long global_group_no_candidate[5] = {};
         if (grid3d != NULL)
         {
             MPI_Reduce(local, global,
@@ -2568,6 +2584,9 @@ struct xLUstruct_t
             MPI_Reduce(local_exchange_sync_sites,
                        global_exchange_sync_sites, 4, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_group_no_candidate,
+                       global_group_no_candidate, 5, MPI_LONG_LONG,
+                       MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
@@ -2587,6 +2606,9 @@ struct xLUstruct_t
             for (int i = 0; i < 4; ++i)
                 global_exchange_sync_sites[i] =
                     local_exchange_sync_sites[i];
+            for (int i = 0; i < 5; ++i)
+                global_group_no_candidate[i] =
+                    local_group_no_candidate[i];
         }
         std::printf(
             "SymFact V2 Pc-fragment taskflow profile: "
@@ -2703,6 +2725,11 @@ struct xLUstruct_t
             "single_fallbacks_larow=%lld "
             "single_fallbacks_exclude=%lld "
             "single_fallbacks_full=%lld "
+            "no_candidate_fallbacks=%lld "
+            "no_candidate_fallbacks_lacol=%lld "
+            "no_candidate_fallbacks_larow=%lld "
+            "no_candidate_fallbacks_exclude=%lld "
+            "no_candidate_fallbacks_full=%lld "
             "output_conflict_fallbacks_lacol=%lld "
             "output_conflict_fallbacks_larow=%lld "
             "output_conflict_fallbacks_exclude=%lld "
@@ -2712,8 +2739,14 @@ struct xLUstruct_t
             global_group[6], global_group[7], global_group[8],
             global_group[9], global_group[10], global_group[11],
             global_group[12], global_group[13], global_group[14],
-            global_group[15], global_group[16], global_group[17],
-            global_group[18], global_group[19], global_group[20]);
+            global_group[15], global_group[16],
+            global_group_no_candidate[0],
+            global_group_no_candidate[1],
+            global_group_no_candidate[2],
+            global_group_no_candidate[3],
+            global_group_no_candidate[4],
+            global_group[17], global_group[18], global_group[19],
+            global_group[20]);
         std::printf(
             "SymFact V2 Pc-fragment taskflow graph: "
             "host_graph_bytes_accum=%lld task_desc_bytes=%lld "
