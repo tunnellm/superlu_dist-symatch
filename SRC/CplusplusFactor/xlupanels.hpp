@@ -1419,6 +1419,7 @@ struct xLUstruct_t
         std::vector<int> partner_piece_task_ids;
         std::vector<unsigned char> task_ready_inputs;
         std::vector<unsigned char> task_enqueued;
+        unsigned char use_generic_runnable_queue;
         std::vector<int> runnable_task_ids;
         std::vector<int> runnable_task_ids_by_mode[16];
         SymV2PcFragGidTaskQueueMap runnable_lookahead_col_by_gid;
@@ -1499,7 +1500,8 @@ struct xLUstruct_t
               producer_tasks_launched(0), producer_launch_cap_reported(0),
               producer_exchange_active(0), producer_exchange_pending(0),
               producer_stream_pending(0), output_conflicts_possible(0),
-              group_scratch_in_use(0), active_output_lock_count(0),
+              group_scratch_in_use(0), use_generic_runnable_queue(1),
+              active_output_lock_count(0),
               row_pieces_ready_count(0), partner_pieces_ready_count(0),
               producer_partner_recv_remaining(0),
               producer_row_recv_remaining(0), producer_ksupc(0)
@@ -1562,10 +1564,13 @@ struct xLUstruct_t
                 if (task_ready_inputs[pos] == 2 &&
                     !task_enqueued[pos])
                 {
-                    if (runnable_task_ids.size() >=
-                        runnable_task_ids.capacity())
-                        ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable queue capacity is undersized.");
-                    runnable_task_ids.push_back(tid);
+                    if (use_generic_runnable_queue)
+                    {
+                        if (runnable_task_ids.size() >=
+                            runnable_task_ids.capacity())
+                            ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable queue capacity is undersized.");
+                        runnable_task_ids.push_back(tid);
+                    }
                     unsigned char mode_mask = tasks[pos].mode_mask;
                     for (int mask = 1; mask < 16; mask <<= 1)
                     {
@@ -1683,6 +1688,7 @@ struct xLUstruct_t
             partner_piece_task_ids.clear();
             task_ready_inputs.clear();
             task_enqueued.clear();
+            use_generic_runnable_queue = 1;
             runnable_task_ids.clear();
             for (int mask = 0; mask < 16; ++mask)
                 runnable_task_ids_by_mode[mask].clear();
