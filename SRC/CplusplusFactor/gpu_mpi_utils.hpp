@@ -535,6 +535,12 @@ static inline int superlu_sym_v2_pcfrag_taskflow_group_budget()
     return cached;
 }
 
+static inline bool superlu_sym_v2_pcfrag_taskflow_group_defer_busy()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_TASKFLOW_GROUP_DEFER_BUSY", 1);
+}
+
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_core_check()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK", 1);
