@@ -2600,6 +2600,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     size_t mode_counts[16] = {};
     SymV2PcFragGidCounterMap lookahead_col_degrees;
     SymV2PcFragGidCounterMap lookahead_row_degrees;
+    std::map<std::pair<int_t, int>, size_t>
+        lookahead_col_group_degrees;
+    std::map<std::pair<int_t, int>, size_t>
+        lookahead_row_group_degrees;
     size_t planned_task_count = 0;
     for (int_t cb = 0; cb < nc; ++cb)
     {
@@ -2659,8 +2663,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 if (mode_mask & mask)
                     ++mode_counts[mask];
             ++lookahead_col_degrees[gj];
+            ++lookahead_col_group_degrees[
+                std::make_pair(gj, partner_piece)];
             if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+            {
                 ++lookahead_row_degrees[gi];
+                ++lookahead_row_group_degrees[
+                    std::make_pair(gi, row_piece)];
+            }
         }
     }
     size_t max_planned_tasks =
@@ -2701,6 +2711,63 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         (row_line_groups < partner_line_groups)
             ? row_line_groups
             : partner_line_groups;
+    auto group_degree_sum =
+        [](const std::map<std::pair<int_t, int>, size_t> &groups)
+            -> size_t {
+        size_t total = 0;
+        for (std::map<std::pair<int_t, int>, size_t>::const_iterator it =
+                 groups.begin();
+             it != groups.end(); ++it)
+        {
+            if (total > std::numeric_limits<size_t>::max() - it->second)
+                return std::numeric_limits<size_t>::max();
+            total += it->second;
+        }
+        return total;
+    };
+    auto group_degree_max =
+        [](const std::map<std::pair<int_t, int>, size_t> &groups)
+            -> size_t {
+        size_t max_degree = 0;
+        for (std::map<std::pair<int_t, int>, size_t>::const_iterator it =
+                 groups.begin();
+             it != groups.end(); ++it)
+            if (it->second > max_degree)
+                max_degree = it->second;
+        return max_degree;
+    };
+    const size_t lookahead_col_group_count =
+        lookahead_col_group_degrees.size();
+    const size_t lookahead_row_group_count =
+        lookahead_row_group_degrees.size();
+    const size_t lookahead_col_group_members =
+        group_degree_sum(lookahead_col_group_degrees);
+    const size_t lookahead_row_group_members =
+        group_degree_sum(lookahead_row_group_degrees);
+    const size_t lookahead_col_group_max_members =
+        group_degree_max(lookahead_col_group_degrees);
+    const size_t lookahead_row_group_max_members =
+        group_degree_max(lookahead_row_group_degrees);
+    const size_t full_partner_group_count = partner_line_groups;
+    const size_t full_row_group_count = row_line_groups;
+    size_t full_best_group_count =
+        (full_partner_group_count < full_row_group_count)
+            ? full_partner_group_count
+            : full_row_group_count;
+    size_t static_group_lower_bound =
+        lookahead_col_group_count;
+    auto checked_add_size = [](size_t a, size_t b) -> size_t {
+        if (a == std::numeric_limits<size_t>::max() ||
+            b > std::numeric_limits<size_t>::max() - a)
+            return std::numeric_limits<size_t>::max();
+        return a + b;
+    };
+    static_group_lower_bound =
+        checked_add_size(static_group_lower_bound,
+                         lookahead_row_group_count);
+    static_group_lower_bound =
+        checked_add_size(static_group_lower_bound,
+                         full_best_group_count);
     auto byte_product_or_max = [](size_t count, size_t bytes) -> size_t {
         if (bytes != 0 &&
             count > std::numeric_limits<size_t>::max() / bytes)
@@ -2839,6 +2906,31 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     max_size_to_stat(
         symV2PcFragTaskflowStats.graph_partner_line_max_members,
         partner_line_max_members);
+    add_size_to_stat(symV2PcFragTaskflowStats.coalesce_lacol_groups,
+                     lookahead_col_group_count);
+    add_size_to_stat(symV2PcFragTaskflowStats.coalesce_lacol_members,
+                     lookahead_col_group_members);
+    max_size_to_stat(symV2PcFragTaskflowStats.coalesce_lacol_max_members,
+                     lookahead_col_group_max_members);
+    add_size_to_stat(symV2PcFragTaskflowStats.coalesce_larow_groups,
+                     lookahead_row_group_count);
+    add_size_to_stat(symV2PcFragTaskflowStats.coalesce_larow_members,
+                     lookahead_row_group_members);
+    max_size_to_stat(symV2PcFragTaskflowStats.coalesce_larow_max_members,
+                     lookahead_row_group_max_members);
+    add_size_to_stat(symV2PcFragTaskflowStats.coalesce_full_partner_groups,
+                     full_partner_group_count);
+    max_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_full_partner_max_members,
+        partner_line_max_members);
+    add_size_to_stat(symV2PcFragTaskflowStats.coalesce_full_row_groups,
+                     full_row_group_count);
+    max_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_full_row_max_members,
+        row_line_max_members);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_static_group_lower_bound,
+        static_group_lower_bound);
     const char *taskflow_plan_diag =
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG");
     if (taskflow_plan_diag != NULL && taskflow_plan_diag[0] != '\0')
@@ -2855,7 +2947,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 "mode_queue_mask=%u row_line_groups=%zu "
                 "partner_line_groups=%zu line_group_lower_bound=%zu "
                 "row_line_max_members=%zu "
-                "partner_line_max_members=%zu\n",
+                "partner_line_max_members=%zu "
+                "lookahead_col_groups=%zu "
+                "lookahead_row_groups=%zu "
+                "static_group_lower_bound=%zu\n",
                 iam, static_cast<long long>(k),
                 state.row_pieces.size(), state.partner_pieces.size(),
                 planned_task_count, lookahead_col_degrees.size(),
@@ -2870,7 +2965,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 static_cast<unsigned>(state.runnable_mode_queue_mask),
                 row_line_groups, partner_line_groups,
                 line_group_lower_bound, row_line_max_members,
-                partner_line_max_members);
+                partner_line_max_members, lookahead_col_group_count,
+                lookahead_row_group_count, static_group_lower_bound);
         fflush(stderr);
         const char *taskflow_plan_diag_abort =
             std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG_ABORT");

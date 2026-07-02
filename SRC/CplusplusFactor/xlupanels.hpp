@@ -1928,6 +1928,17 @@ struct xLUstruct_t
         long long graph_line_group_lower_bound;
         long long graph_row_line_max_members;
         long long graph_partner_line_max_members;
+        long long coalesce_lacol_groups;
+        long long coalesce_lacol_members;
+        long long coalesce_lacol_max_members;
+        long long coalesce_larow_groups;
+        long long coalesce_larow_members;
+        long long coalesce_larow_max_members;
+        long long coalesce_full_partner_groups;
+        long long coalesce_full_partner_max_members;
+        long long coalesce_full_row_groups;
+        long long coalesce_full_row_max_members;
+        long long coalesce_static_group_lower_bound;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -2022,7 +2033,16 @@ struct xLUstruct_t
               graph_partner_line_groups(0),
               graph_line_group_lower_bound(0),
               graph_row_line_max_members(0),
-              graph_partner_line_max_members(0)
+              graph_partner_line_max_members(0),
+              coalesce_lacol_groups(0), coalesce_lacol_members(0),
+              coalesce_lacol_max_members(0),
+              coalesce_larow_groups(0), coalesce_larow_members(0),
+              coalesce_larow_max_members(0),
+              coalesce_full_partner_groups(0),
+              coalesce_full_partner_max_members(0),
+              coalesce_full_row_groups(0),
+              coalesce_full_row_max_members(0),
+              coalesce_static_group_lower_bound(0)
         {
         }
     };
@@ -2333,6 +2353,20 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.graph_partner_line_max_members
         };
         long long global_graph[20] = {};
+        long long local_coalesce[11] = {
+            symV2PcFragTaskflowStats.coalesce_lacol_groups,
+            symV2PcFragTaskflowStats.coalesce_lacol_members,
+            symV2PcFragTaskflowStats.coalesce_lacol_max_members,
+            symV2PcFragTaskflowStats.coalesce_larow_groups,
+            symV2PcFragTaskflowStats.coalesce_larow_members,
+            symV2PcFragTaskflowStats.coalesce_larow_max_members,
+            symV2PcFragTaskflowStats.coalesce_full_partner_groups,
+            symV2PcFragTaskflowStats.coalesce_full_partner_max_members,
+            symV2PcFragTaskflowStats.coalesce_full_row_groups,
+            symV2PcFragTaskflowStats.coalesce_full_row_max_members,
+            symV2PcFragTaskflowStats.coalesce_static_group_lower_bound
+        };
+        long long global_coalesce[11] = {};
         if (grid3d != NULL)
         {
             MPI_Reduce(local, global,
@@ -2342,6 +2376,8 @@ struct xLUstruct_t
                        MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_graph, global_graph, 20, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_coalesce, global_coalesce, 11,
+                       MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
@@ -2354,6 +2390,8 @@ struct xLUstruct_t
                 global_group[i] = local_group[i];
             for (int i = 0; i < 20; ++i)
                 global_graph[i] = local_graph[i];
+            for (int i = 0; i < 11; ++i)
+                global_coalesce[i] = local_coalesce[i];
         }
         std::printf(
             "SymFact V2 Pc-fragment taskflow profile: "
@@ -2488,6 +2526,23 @@ struct xLUstruct_t
             global_graph[12], global_graph[13], global_graph[14],
             global_graph[15], global_graph[16], global_graph[17],
             global_graph[18], global_graph[19]);
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow coalescing: "
+            "lookahead_col_groups=%lld lookahead_col_members=%lld "
+            "lookahead_col_max_members_rank_sum=%lld "
+            "lookahead_row_groups=%lld lookahead_row_members=%lld "
+            "lookahead_row_max_members_rank_sum=%lld "
+            "full_partner_groups=%lld "
+            "full_partner_max_members_rank_sum=%lld "
+            "full_row_groups=%lld "
+            "full_row_max_members_rank_sum=%lld "
+            "static_group_lower_bound=%lld\n",
+            global_coalesce[0], global_coalesce[1],
+            global_coalesce[2], global_coalesce[3],
+            global_coalesce[4], global_coalesce[5],
+            global_coalesce[6], global_coalesce[7],
+            global_coalesce[8], global_coalesce[9],
+            global_coalesce[10]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =
