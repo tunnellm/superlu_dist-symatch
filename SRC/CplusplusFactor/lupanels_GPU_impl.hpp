@@ -6300,7 +6300,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 if (compact_output_locks)
                 {
-                    std::vector<int_t> pending_output_ids;
+                    std::vector<int_t> &pending_output_ids =
+                        state.group_output_id_scratch;
+                    pending_output_ids.clear();
                     pending_output_ids.reserve(
                         static_cast<size_t>(pair_count));
                     for (int_t rb = row_start; rb < row_end; ++rb)

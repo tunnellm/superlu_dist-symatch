@@ -1508,6 +1508,7 @@ struct xLUstruct_t
         std::vector<int_t> group_pair_col_scratch;
         std::vector<int_t> group_row_index_scratch;
         std::vector<int_t> group_partner_index_scratch;
+        std::vector<int_t> group_output_id_scratch;
         int launched_task_pending_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int launched_task_pending_mode_by_stream[
@@ -1802,6 +1803,7 @@ struct xLUstruct_t
             group_pair_col_scratch.clear();
             group_row_index_scratch.clear();
             group_partner_index_scratch.clear();
+            group_output_id_scratch.clear();
             active_output_key_set.clear();
             active_output_lock_count = 0;
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)
