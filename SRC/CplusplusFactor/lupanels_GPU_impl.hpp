@@ -1265,6 +1265,36 @@ static inline bool dSymV2PcFragTaskflowTaskOutputsAlreadyComplete(
     return output_count > 0;
 }
 
+static inline bool dSymV2PcFragTaskflowTaskOutputsClaimedIncomplete(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core() ||
+        state.output_completion_ids.empty() ||
+        state.output_claimed.empty())
+        return false;
+    if (state.output_claimed.size() != state.output_completion_ids.size() ||
+        state.output_completed.size() != state.output_completion_ids.size())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW output claim/completion maps are not initialized.");
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    for (size_t o = 0; o < output_count; ++o)
+    {
+        int_t output_id =
+            dSymV2PcFragTaskflowCompactOutputIdAt(state, task, o);
+        if (output_id < 0)
+            return false;
+        size_t pos =
+            dSymV2PcFragTaskflowOutputCompletionIndexAt(
+                state, task, o, output_id);
+        if (pos >= state.output_claimed.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW claimed output id is not in the sparse completion map.");
+        if (state.output_claimed[pos] && !state.output_completed[pos])
+            return true;
+    }
+    return false;
+}
+
 static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -5054,6 +5084,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                    state.partner_pieces.size();
     };
     auto output_locked = [&](const SymV2PcFragTaskDesc &task) -> bool {
+        if (dSymV2PcFragTaskflowTaskOutputsClaimedIncomplete(state, task))
+            return true;
         if (!strict_output_conflicts)
             return false;
         const size_t output_count =
@@ -5410,6 +5442,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                        state.partner_pieces.size();
         };
         auto output_locked = [&](const SymV2PcFragTaskDesc &task) -> bool {
+            if (dSymV2PcFragTaskflowTaskOutputsClaimedIncomplete(state, task))
+                return true;
             if (!strict_output_conflicts)
                 return false;
             const size_t output_count =
