@@ -1834,6 +1834,12 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
     pending_required = 0;
     const bool skip_unrequired_poll =
         superlu_sym_v2_pcfrag_taskflow_skip_unrequired_poll();
+    const bool use_event_backoff =
+        !drain ||
+        (required_mode_mask != 0 &&
+         !(required_mode_mask &
+           xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL) &&
+         superlu_sym_v2_pcfrag_taskflow_drain_event_backoff());
     ++stats.task_completion_poll_calls;
     if (drain)
         ++stats.task_completion_drain_poll_calls;
@@ -1854,7 +1860,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 required_mode_gid);
         if (stream_pending_required <= 0)
             continue;
-        if (!drain && state.task_event_poll_skip[kind] > 0)
+        if (use_event_backoff && state.task_event_poll_skip[kind] > 0)
         {
             --state.task_event_poll_skip[kind];
             ++stats.task_completion_event_query_skips;
@@ -2013,7 +2019,7 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 task_ids[launched_write++] = tid;
                 continue;
             }
-            if (!drain &&
+            if (use_event_backoff &&
                 dSymV2PcFragTaskflowSkipEventQuery(state, stats, task))
             {
                 task_ids[launched_write++] = tid;
