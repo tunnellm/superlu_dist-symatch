@@ -1993,8 +1993,12 @@ struct xLUstruct_t
         long long grouped_launches;
         long long grouped_task_members;
         long long grouped_candidate_scans;
+        long long grouped_candidate_completed_rejects;
+        long long grouped_candidate_mode_rejects;
+        long long grouped_candidate_unready_rejects;
         long long grouped_single_fallbacks;
         long long grouped_no_candidate_fallbacks;
+        long long grouped_no_candidate_queue_remaining;
         long long grouped_completed_pair_fallbacks;
         long long grouped_output_conflict_fallbacks;
         long long grouped_single_fallbacks_by_mode[16];
@@ -2128,8 +2132,13 @@ struct xLUstruct_t
               task_completion_event_successes(0),
               grouped_dispatch_attempts(0),
               grouped_launches(0), grouped_task_members(0),
-              grouped_candidate_scans(0), grouped_single_fallbacks(0),
+              grouped_candidate_scans(0),
+              grouped_candidate_completed_rejects(0),
+              grouped_candidate_mode_rejects(0),
+              grouped_candidate_unready_rejects(0),
+              grouped_single_fallbacks(0),
               grouped_no_candidate_fallbacks(0),
+              grouped_no_candidate_queue_remaining(0),
               grouped_completed_pair_fallbacks(0),
               grouped_output_conflict_fallbacks(0),
               grouped_single_fallbacks_by_mode(),
@@ -2557,6 +2566,13 @@ struct xLUstruct_t
                 SYM_V2_PCFRAG_TASK_FULL]
         };
         long long global_group_no_candidate[5] = {};
+        long long local_group_detail[4] = {
+            symV2PcFragTaskflowStats.grouped_candidate_completed_rejects,
+            symV2PcFragTaskflowStats.grouped_candidate_mode_rejects,
+            symV2PcFragTaskflowStats.grouped_candidate_unready_rejects,
+            symV2PcFragTaskflowStats.grouped_no_candidate_queue_remaining
+        };
+        long long global_group_detail[4] = {};
         if (grid3d != NULL)
         {
             MPI_Reduce(local, global,
@@ -2587,6 +2603,9 @@ struct xLUstruct_t
             MPI_Reduce(local_group_no_candidate,
                        global_group_no_candidate, 5, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_group_detail,
+                       global_group_detail, 4, MPI_LONG_LONG,
+                       MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
@@ -2609,6 +2628,8 @@ struct xLUstruct_t
             for (int i = 0; i < 5; ++i)
                 global_group_no_candidate[i] =
                     local_group_no_candidate[i];
+            for (int i = 0; i < 4; ++i)
+                global_group_detail[i] = local_group_detail[i];
         }
         std::printf(
             "SymFact V2 Pc-fragment taskflow profile: "
@@ -2747,6 +2768,14 @@ struct xLUstruct_t
             global_group_no_candidate[4],
             global_group[17], global_group[18], global_group[19],
             global_group[20]);
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow grouping detail: "
+            "candidate_completed_rejects=%lld "
+            "candidate_mode_rejects=%lld "
+            "candidate_unready_rejects=%lld "
+            "no_candidate_queue_remaining=%lld\n",
+            global_group_detail[0], global_group_detail[1],
+            global_group_detail[2], global_group_detail[3]);
         std::printf(
             "SymFact V2 Pc-fragment taskflow graph: "
             "host_graph_bytes_accum=%lld task_desc_bytes=%lld "

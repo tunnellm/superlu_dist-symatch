@@ -6752,18 +6752,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         if (available_group_slots > 1)
                         {
                             bool grouped_seed_output_locked = false;
-                            auto task_ready_for_group =
-                                [&](SymV2PcFragTaskDesc &candidate) {
+                            auto task_group_reject_reason =
+                                [&](SymV2PcFragTaskDesc &candidate) -> int {
                                     if (candidate.launched ||
                                         candidate.complete)
-                                        return false;
+                                        return 1;
                                     if (task_launch_mode_for_request(
                                             candidate, single_mode,
                                             mode_gid) != launch_mode ||
                                         !dSymV2PcFragTaskflowTaskRequiredForMode(
                                             state, candidate, 1, single_mode,
                                             mode_gid))
-                                        return false;
+                                        return 2;
                                     if (candidate.task_id < 0 ||
                                         static_cast<size_t>(
                                             candidate.task_id) >=
@@ -6781,8 +6781,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         !state.task_enqueued
                                             [static_cast<size_t>(
                                                 candidate.task_id)])
-                                        return false;
-                                    return true;
+                                        return 3;
+                                    return 0;
+                                };
+                            auto task_ready_for_group =
+                                [&](SymV2PcFragTaskDesc &candidate) {
+                                    return task_group_reject_reason(
+                                               candidate) == 0;
                                 };
                             auto try_exact_group_dispatch = [&]() -> bool {
                                 if (!async_core ||
@@ -6913,8 +6918,21 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     SymV2PcFragTaskDesc &candidate =
                                         state.tasks[static_cast<size_t>(
                                             cand_tid)];
-                                    if (!task_ready_for_group(candidate))
+                                    int reject_reason =
+                                        task_group_reject_reason(candidate);
+                                    if (reject_reason != 0)
+                                    {
+                                        if (reject_reason == 1)
+                                            ++symV2PcFragTaskflowStats
+                                                  .grouped_candidate_completed_rejects;
+                                        else if (reject_reason == 2)
+                                            ++symV2PcFragTaskflowStats
+                                                  .grouped_candidate_mode_rejects;
+                                        else if (reject_reason == 3)
+                                            ++symV2PcFragTaskflowStats
+                                                  .grouped_candidate_unready_rejects;
                                         continue;
+                                    }
                                     if (output_locked(candidate) ||
                                         output_conflicts_with_selected(
                                             candidate))
@@ -6968,6 +6986,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         symV2PcFragTaskflowStats
                                             .grouped_no_candidate_fallbacks_by_mode,
                                         launch_mode);
+                                    symV2PcFragTaskflowStats
+                                        .grouped_no_candidate_queue_remaining +=
+                                        static_cast<long long>(
+                                            queue.size() - (i + 1));
                                     return false;
                                 }
 
