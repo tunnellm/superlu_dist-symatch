@@ -1229,6 +1229,13 @@ struct xLUstruct_t
         iterator end() { return entries.end(); }
         const_iterator end() const { return entries.end(); }
 
+        void assign_zero_from(const SymV2PcFragGidCounterMap &degrees)
+        {
+            entries.resize(degrees.entries.size());
+            for (size_t i = 0; i < degrees.entries.size(); ++i)
+                entries[i] = Entry(degrees.entries[i].first, 0);
+        }
+
         iterator find(int_t gid)
         {
             iterator it = lower_bound(gid);
@@ -1312,9 +1319,26 @@ struct xLUstruct_t
         typedef typename std::vector<Entry>::const_iterator const_iterator;
 
         void clear() { entries.clear(); }
+        void reserve(size_t count) { entries.reserve(count); }
         size_t size() const { return entries.size(); }
         iterator end() { return entries.end(); }
         const_iterator end() const { return entries.end(); }
+
+        void assign_from_degrees(const SymV2PcFragGidCounterMap &degrees)
+        {
+            entries.clear();
+            entries.reserve(degrees.entries.size());
+            for (typename SymV2PcFragGidCounterMap::const_iterator it =
+                     degrees.entries.begin();
+                 it != degrees.entries.end(); ++it)
+            {
+                entries.push_back(Entry(it->first));
+                if (it->second < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW runnable gid degree is negative.");
+                entries.back().second.reserve(
+                    static_cast<size_t>(it->second));
+            }
+        }
 
         iterator find(int_t gid)
         {

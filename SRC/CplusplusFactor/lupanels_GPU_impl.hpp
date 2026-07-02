@@ -2732,26 +2732,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             SymV2PcFragGidCounterMap &launched,
             SymV2PcFragGidCounterMap launched_by_stream[
                 SYM_V2_PCFRAG_TASK_STREAM_COUNT]) {
-        incomplete.reserve(degrees.size());
-        launched.reserve(degrees.size());
-        for (SymV2PcFragGidCounterMap::const_iterator it =
-                 degrees.entries.begin();
-             it != degrees.entries.end(); ++it)
-        {
-            incomplete[it->first] = 0;
-            launched[it->first] = 0;
-        }
+        incomplete.assign_zero_from(degrees);
+        launched.assign_zero_from(degrees);
         if (async_core)
         {
             for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
                  kind < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++kind)
-            {
-                launched_by_stream[kind].reserve(degrees.size());
-                for (SymV2PcFragGidCounterMap::const_iterator it =
-                         degrees.entries.begin();
-                     it != degrees.entries.end(); ++it)
-                    launched_by_stream[kind][it->first] = 0;
-            }
+                launched_by_stream[kind].assign_zero_from(degrees);
         }
     };
     prebuild_gid_counter_maps(
@@ -2904,16 +2891,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     if (need_piece_pair_lookup)
         std::sort(state.pair_task_entries.begin(),
                   state.pair_task_entries.end());
-    for (SymV2PcFragGidCounterMap::const_iterator it =
-             lookahead_col_degrees.entries.begin();
-         it != lookahead_col_degrees.entries.end(); ++it)
-        state.runnable_lookahead_col_by_gid[it->first].reserve(
-            static_cast<size_t>(it->second));
-    for (SymV2PcFragGidCounterMap::const_iterator it =
-             lookahead_row_degrees.entries.begin();
-         it != lookahead_row_degrees.entries.end(); ++it)
-        state.runnable_lookahead_row_by_gid[it->first].reserve(
-            static_cast<size_t>(it->second));
+    state.runnable_lookahead_col_by_gid.assign_from_degrees(
+        lookahead_col_degrees);
+    state.runnable_lookahead_row_by_gid.assign_from_degrees(
+        lookahead_row_degrees);
     if (!state.tasks.empty() &&
         superlu_sym_v2_pcfrag_taskflow_force_output_locks())
         state.output_conflicts_possible = 1;
