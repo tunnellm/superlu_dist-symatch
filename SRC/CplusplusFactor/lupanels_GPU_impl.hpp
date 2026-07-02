@@ -4809,7 +4809,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 release_completed_state();
                 return launched_this_call;
             }
-            if (!drain)
+            if (!drain &&
+                !(async_core && async_grouped_dispatch &&
+                  superlu_sym_v2_pcfrag_taskflow_coalesce_col()))
                 return launched_this_call;
         }
 
