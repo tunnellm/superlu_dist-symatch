@@ -2627,7 +2627,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     {
         size_t launched_reserve =
             static_cast<size_t>(
-                superlu_sym_v2_pcfrag_taskflow_progress_budget());
+                superlu_sym_v2_pcfrag_taskflow_effective_progress_budget());
         if (launched_reserve > planned_task_count)
             launched_reserve = planned_task_count;
         for (int kind = SYM_V2_PCFRAG_TASK_STREAM_MAIN;
@@ -3230,7 +3230,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     cublasHandle_t handle = A_gpu.cuHandles[streamId];
     double *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
     if (budget <= 0)
-        budget = superlu_sym_v2_pcfrag_taskflow_progress_budget();
+        budget = superlu_sym_v2_pcfrag_taskflow_effective_progress_budget();
     const int producer_task_limit =
         superlu_sym_v2_pcfrag_taskflow_producer_task_limit();
     if (producer_task_limit > 0)
@@ -3431,7 +3431,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
                          state, 0, 0, GLOBAL_BLOCK_NOT_FOUND)
                    : 0;
     const int in_flight_task_cap =
-        async_core ? superlu_sym_v2_pcfrag_taskflow_progress_budget() : 0;
+        async_core ? superlu_sym_v2_pcfrag_taskflow_effective_progress_budget() : 0;
     size_t runnable_write = 0;
     for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
     {
@@ -3824,7 +3824,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                  state, 0, 0, GLOBAL_BLOCK_NOT_FOUND)
                            : 0;
             const int in_flight_task_cap =
-                async_core ? superlu_sym_v2_pcfrag_taskflow_progress_budget()
+                async_core ? superlu_sym_v2_pcfrag_taskflow_effective_progress_budget()
                            : 0;
             size_t runnable_write = 0;
             for (size_t i = 0; i < state.runnable_task_ids.size(); ++i)
@@ -4461,7 +4461,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     return;
                 }
                 const int in_flight_task_cap =
-                    superlu_sym_v2_pcfrag_taskflow_progress_budget();
+                    superlu_sym_v2_pcfrag_taskflow_effective_progress_budget();
                 if (static_cast<int>(group_tasks.size()) >
                     in_flight_task_cap)
                 {
@@ -4777,7 +4777,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 dSymV2PcFragTaskflowPendingLaunchedAllForMode(
                     state, 0, 0, GLOBAL_BLOCK_NOT_FOUND);
             const int in_flight_task_cap =
-                superlu_sym_v2_pcfrag_taskflow_progress_budget();
+                superlu_sym_v2_pcfrag_taskflow_effective_progress_budget();
             for (unsigned single_mode = 1; single_mode < 16;
                  single_mode <<= 1)
             {
@@ -5884,7 +5884,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             taskflow_state->note_piece_ready(kind, piece.piece_id);
             if (pcfrag_taskflow_eager)
                 dSymV2PcFragTaskflowProgressGPU(
-                    k, superlu_sym_v2_pcfrag_taskflow_progress_budget());
+                    k, superlu_sym_v2_pcfrag_taskflow_effective_progress_budget());
         }
     };
     auto taskflow_validate_owned_pieces =
@@ -9011,7 +9011,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                         symV2PcFragTaskflowStats.producer_mpi_wait_requests +=
                             static_cast<long long>(completed);
                         dSymV2PcFragTaskflowProgressGPU(
-                            k, superlu_sym_v2_pcfrag_taskflow_progress_budget());
+                            k, superlu_sym_v2_pcfrag_taskflow_effective_progress_budget());
                         remaining -= completed;
                         idle_polls = 0;
                     }
