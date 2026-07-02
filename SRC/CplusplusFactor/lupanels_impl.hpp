@@ -7562,9 +7562,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                        res.owner_stream_id = static_cast<int>(
 	                            i / static_cast<size_t>(
 	                                    SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT));
-	                        res.active_stream_id = -1;
-	                        res.active_stream_kind =
-	                            SYM_V2_PCFRAG_TASK_STREAM_NONE;
 	                        res.resource_kind = static_cast<int>(
 	                            i % static_cast<size_t>(
 	                                    SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_COUNT));
