@@ -2871,6 +2871,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
 
             std::vector<int> unique_row_pieces;
             unique_row_pieces.reserve(j - i);
+            int last_row_piece = -1;
+            bool have_last_row_piece = false;
             for (size_t p = i; p < j; ++p)
             {
                 int row_piece = output_candidates[p].row_piece;
@@ -2878,17 +2880,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                     static_cast<size_t>(row_piece) >=
                         row_task_degrees.size())
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced column group has invalid row piece.");
-                bool seen = false;
-                for (size_t r = 0; r < unique_row_pieces.size(); ++r)
+                if (!have_last_row_piece || row_piece != last_row_piece)
                 {
-                    if (unique_row_pieces[r] == row_piece)
-                    {
-                        seen = true;
-                        break;
-                    }
-                }
-                if (!seen)
                     unique_row_pieces.push_back(row_piece);
+                    last_row_piece = row_piece;
+                    have_last_row_piece = true;
+                }
             }
             for (size_t r = 0; r < unique_row_pieces.size(); ++r)
                 ++row_task_degrees[
@@ -3410,12 +3407,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         bool row_lookahead_homogeneous = true;
         std::vector<int> unique_row_pieces;
         unique_row_pieces.reserve(end - begin);
-        auto add_unique_piece = [](std::vector<int> &ids, int piece_id) {
-            for (size_t i = 0; i < ids.size(); ++i)
-                if (ids[i] == piece_id)
-                    return;
-            ids.push_back(piece_id);
-        };
+        int last_row_piece = -1;
+        bool have_last_row_piece = false;
         for (size_t p = begin; p < end; ++p)
         {
             const TaskflowOutputCandidate &candidate =
@@ -3427,7 +3420,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 static_cast<size_t>(candidate.row_piece) >=
                     state.row_pieces.size())
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid row piece.");
-            add_unique_piece(unique_row_pieces, candidate.row_piece);
+            if (!have_last_row_piece ||
+                candidate.row_piece != last_row_piece)
+            {
+                unique_row_pieces.push_back(candidate.row_piece);
+                last_row_piece = candidate.row_piece;
+                have_last_row_piece = true;
+            }
             if (candidate.output.gi != candidate.output.gj)
             {
                 if (row_lookahead_gid == GLOBAL_BLOCK_NOT_FOUND)
