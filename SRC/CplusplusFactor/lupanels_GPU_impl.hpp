@@ -3172,8 +3172,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     };
     auto coalesced_candidate_group_end = [&](size_t begin) -> size_t {
         size_t fallback = same_partner_candidate_group_end(begin);
-        std::vector<int> row_piece_ids;
-        std::vector<int> partner_piece_ids;
+        std::vector<int> &row_piece_ids = state.group_row_piece_scratch;
+        std::vector<int> &partner_piece_ids =
+            state.group_partner_piece_scratch;
         int_t row_lda = 0;
         int_t partner_lda = 0;
         collect_candidate_group_pieces(
@@ -3752,9 +3753,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         int_t row_lookahead_gid = GLOBAL_BLOCK_NOT_FOUND;
         size_t row_lookahead_member_count = 0;
         bool row_lookahead_homogeneous = true;
-        std::vector<int> unique_row_pieces;
+        std::vector<int> &unique_row_pieces =
+            state.group_row_piece_scratch;
+        unique_row_pieces.clear();
         unique_row_pieces.reserve(end - begin);
-        std::vector<int> unique_partner_pieces;
+        std::vector<int> &unique_partner_pieces =
+            state.group_partner_piece_scratch;
+        unique_partner_pieces.clear();
         unique_partner_pieces.reserve(end - begin);
         for (size_t p = begin; p < end; ++p)
         {
