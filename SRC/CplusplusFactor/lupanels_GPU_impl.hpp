@@ -5685,7 +5685,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     row_piece_ids.size() *
                                     partner_piece_ids.size();
                                 if (dense_pairs >
-                                    exact_candidate_tids.size() * 4)
+                                    exact_candidate_tids.size() * 8)
                                     return false;
 
                                 int_t row_lda = 0;
