@@ -1132,6 +1132,8 @@ struct xLUstruct_t
         int scatter_group;
         int lookahead_col_gid_index;
         int lookahead_row_gid_index;
+        int lookahead_col_member_count;
+        int lookahead_row_member_count;
         int output_begin;
         int output_count;
         int_t output_id;
@@ -1150,7 +1152,9 @@ struct xLUstruct_t
               partner_piece_blk_begin(0), partner_piece_blk_end(0),
               gemm_m(0), gemm_n(0), gemm_k(0), mode_mask(0),
               scatter_group(-1), lookahead_col_gid_index(-1),
-              lookahead_row_gid_index(-1), output_begin(0),
+              lookahead_row_gid_index(-1),
+              lookahead_col_member_count(0),
+              lookahead_row_member_count(0), output_begin(0),
               output_count(0), output_id(GLOBAL_BLOCK_NOT_FOUND),
               required_inputs(2), launched(0), complete(0),
               launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
@@ -1605,7 +1609,7 @@ struct xLUstruct_t
                     }
                     if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                     {
-                        if (tasks[pos].output_count == 1 &&
+                        if (tasks[pos].lookahead_col_member_count > 0 &&
                             tasks[pos].lookahead_col_gid_index >= 0)
                         {
                             int idx = tasks[pos].lookahead_col_gid_index;
@@ -1646,18 +1650,12 @@ struct xLUstruct_t
                     }
                     if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
                     {
-                        if (tasks[pos].output_count == 1 &&
+                        if (tasks[pos].lookahead_row_member_count > 0 &&
                             tasks[pos].lookahead_row_gid_index >= 0)
                         {
                             int idx = tasks[pos].lookahead_row_gid_index;
-                            size_t out_pos =
-                                static_cast<size_t>(tasks[pos].output_begin);
-                            if (out_pos >= task_output_pool.size())
-                                ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
                             if (static_cast<size_t>(idx) >=
-                                    runnable_lookahead_row_by_gid.size() ||
-                                runnable_lookahead_row_by_gid.gid_at(idx) !=
-                                    task_output_pool[out_pos].gi)
+                                runnable_lookahead_row_by_gid.size())
                                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead row runnable compact gid is invalid.");
                             std::vector<int> &queue =
                                 runnable_lookahead_row_by_gid.value_at(idx);

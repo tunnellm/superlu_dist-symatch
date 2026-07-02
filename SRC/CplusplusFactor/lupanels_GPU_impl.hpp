@@ -1005,7 +1005,8 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
     {
         const size_t output_count =
             dSymV2PcFragTaskflowOutputCount(task);
-        if (output_count == 1 && task.lookahead_col_gid_index >= 0)
+        if (task.lookahead_col_member_count > 0 &&
+            task.lookahead_col_gid_index >= 0)
         {
             const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
                 dSymV2PcFragTaskflowOutputAt(state, task, 0);
@@ -1014,10 +1015,11 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
                     state.incomplete_lookahead_col_members_by_gid.size() ||
                 state.incomplete_lookahead_col_members_by_gid.gid_at(idx) !=
                     key.gj ||
-                state.incomplete_lookahead_col_members_by_gid.value_at(idx) <=
-                    0)
+                state.incomplete_lookahead_col_members_by_gid.value_at(idx) <
+                    task.lookahead_col_member_count)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column incomplete compact counter underflowed.");
-            --state.incomplete_lookahead_col_members_by_gid.value_at(idx);
+            state.incomplete_lookahead_col_members_by_gid.value_at(idx) -=
+                task.lookahead_col_member_count;
         }
         else
         {
@@ -1040,19 +1042,17 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
     {
         const size_t output_count =
             dSymV2PcFragTaskflowOutputCount(task);
-        if (output_count == 1 && task.lookahead_row_gid_index >= 0)
+        if (task.lookahead_row_member_count > 0 &&
+            task.lookahead_row_gid_index >= 0)
         {
-            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
-                dSymV2PcFragTaskflowOutputAt(state, task, 0);
             int idx = task.lookahead_row_gid_index;
             if (static_cast<size_t>(idx) >=
                     state.incomplete_lookahead_row_members_by_gid.size() ||
-                state.incomplete_lookahead_row_members_by_gid.gid_at(idx) !=
-                    key.gi ||
-                state.incomplete_lookahead_row_members_by_gid.value_at(idx) <=
-                    0)
+                state.incomplete_lookahead_row_members_by_gid.value_at(idx) <
+                    task.lookahead_row_member_count)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row incomplete compact counter underflowed.");
-            --state.incomplete_lookahead_row_members_by_gid.value_at(idx);
+            state.incomplete_lookahead_row_members_by_gid.value_at(idx) -=
+                task.lookahead_row_member_count;
         }
         else
         {
@@ -1509,7 +1509,8 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     {
         const size_t output_count =
             dSymV2PcFragTaskflowOutputCount(task);
-        if (output_count == 1 && task.lookahead_col_gid_index >= 0)
+        if (task.lookahead_col_member_count > 0 &&
+            task.lookahead_col_gid_index >= 0)
         {
             const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
                 dSymV2PcFragTaskflowOutputAt(state, task, 0);
@@ -1524,12 +1525,13 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
                 state.launched_lookahead_col_members_by_gid_by_stream[
                     kind].gid_at(idx) != key.gj)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched compact counter is missing a gid.");
+            int delta_count = delta * task.lookahead_col_member_count;
             state.launched_lookahead_col_members_by_gid.value_at(idx) +=
-                delta;
+                delta_count;
             if (state.launched_lookahead_col_members_by_gid.value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column launched counter underflowed.");
             state.launched_lookahead_col_members_by_gid_by_stream[
-                kind].value_at(idx) += delta;
+                kind].value_at(idx) += delta_count;
             if (state.launched_lookahead_col_members_by_gid_by_stream[
                     kind].value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column stream launched counter underflowed.");
@@ -1566,27 +1568,26 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
     {
         const size_t output_count =
             dSymV2PcFragTaskflowOutputCount(task);
-        if (output_count == 1 && task.lookahead_row_gid_index >= 0)
+        if (task.lookahead_row_member_count > 0 &&
+            task.lookahead_row_gid_index >= 0)
         {
-            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
-                dSymV2PcFragTaskflowOutputAt(state, task, 0);
             int idx = task.lookahead_row_gid_index;
             if (static_cast<size_t>(idx) >=
                     state.launched_lookahead_row_members_by_gid.size() ||
-                state.launched_lookahead_row_members_by_gid.gid_at(idx) !=
-                    key.gi ||
                 static_cast<size_t>(idx) >=
                     state.launched_lookahead_row_members_by_gid_by_stream[
                         kind].size() ||
-                state.launched_lookahead_row_members_by_gid_by_stream[
-                    kind].gid_at(idx) != key.gi)
+                state.launched_lookahead_row_members_by_gid.gid_at(idx) !=
+                    state.launched_lookahead_row_members_by_gid_by_stream[
+                        kind].gid_at(idx))
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched compact counter is missing a gid.");
+            int delta_count = delta * task.lookahead_row_member_count;
             state.launched_lookahead_row_members_by_gid.value_at(idx) +=
-                delta;
+                delta_count;
             if (state.launched_lookahead_row_members_by_gid.value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row launched counter underflowed.");
             state.launched_lookahead_row_members_by_gid_by_stream[
-                kind].value_at(idx) += delta;
+                kind].value_at(idx) += delta_count;
             if (state.launched_lookahead_row_members_by_gid_by_stream[
                     kind].value_at(idx) < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row stream launched counter underflowed.");
@@ -2907,7 +2908,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 ++row_lookahead_members;
             }
             if (row_lookahead_homogeneous &&
-                row_lookahead_gid != GLOBAL_BLOCK_NOT_FOUND)
+                row_lookahead_gid != GLOBAL_BLOCK_NOT_FOUND &&
+                row_lookahead_members == j - i)
             {
                 if (row_lookahead_members >
                     static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -3346,6 +3348,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 output.gj);
         if (task.lookahead_col_gid_index < 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column compact gid is missing.");
+        task.lookahead_col_member_count = 1;
         ++state.incomplete_lookahead_col_members_by_gid.value_at(
             task.lookahead_col_gid_index);
         if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
@@ -3355,6 +3358,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                     output.gi);
             if (task.lookahead_row_gid_index < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row compact gid is missing.");
+            task.lookahead_row_member_count = 1;
             ++state.incomplete_lookahead_row_members_by_gid.value_at(
                 task.lookahead_row_gid_index);
         }
@@ -3396,6 +3400,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid partner piece.");
         int_t gj = first.output.gj;
         int_t row_lookahead_gid = GLOBAL_BLOCK_NOT_FOUND;
+        size_t row_lookahead_member_count = 0;
         bool row_lookahead_homogeneous = true;
         std::vector<int> unique_row_pieces;
         unique_row_pieces.reserve(end - begin);
@@ -3423,6 +3428,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                     row_lookahead_gid = candidate.output.gi;
                 else if (row_lookahead_gid != candidate.output.gi)
                     row_lookahead_homogeneous = false;
+                ++row_lookahead_member_count;
             }
         }
         if (unique_row_pieces.empty())
@@ -3458,7 +3464,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
             SYM_V2_PCFRAG_TASK_EXCLUDE;
         if (row_lookahead_homogeneous &&
-            row_lookahead_gid != GLOBAL_BLOCK_NOT_FOUND)
+            row_lookahead_gid != GLOBAL_BLOCK_NOT_FOUND &&
+            row_lookahead_member_count == end - begin)
             task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
         if (state.task_output_pool.size() >
             static_cast<size_t>(std::numeric_limits<int>::max()) ||
@@ -3487,27 +3494,25 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             state.incomplete_lookahead_col_members_by_gid.index_of(gj);
         if (task.lookahead_col_gid_index < 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced lookahead-column gid is missing.");
+        task.lookahead_col_member_count = task.output_count;
         state.incomplete_lookahead_col_members_by_gid.value_at(
             task.lookahead_col_gid_index) += task.output_count;
         if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
         {
-            for (size_t p = begin; p < end; ++p)
-            {
-                int_t row_gid = output_candidates[p].output.gi;
-                if (row_gid == output_candidates[p].output.gj)
-                    continue;
-                if (row_gid != row_lookahead_gid)
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced row-lookahead group is not homogeneous.");
-                int idx =
-                    state.incomplete_lookahead_row_members_by_gid.index_of(
-                        row_gid);
-                if (idx < 0)
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced lookahead-row gid is missing.");
-                ++state.incomplete_lookahead_row_members_by_gid.value_at(
-                    idx);
-                if (task.output_count == 1)
-                    task.lookahead_row_gid_index = idx;
-            }
+            if (row_lookahead_member_count == 0 ||
+                row_lookahead_member_count >
+                    static_cast<size_t>(std::numeric_limits<int>::max()))
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced row-lookahead count is invalid.");
+            int idx =
+                state.incomplete_lookahead_row_members_by_gid.index_of(
+                    row_lookahead_gid);
+            if (idx < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced lookahead-row gid is missing.");
+            task.lookahead_row_gid_index = idx;
+            task.lookahead_row_member_count =
+                static_cast<int>(row_lookahead_member_count);
+            state.incomplete_lookahead_row_members_by_gid.value_at(idx) +=
+                task.lookahead_row_member_count;
         }
         int task_id = task.task_id;
         state.tasks.push_back(task);
