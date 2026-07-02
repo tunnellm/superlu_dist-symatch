@@ -1376,6 +1376,30 @@ static inline bool dSymV2PcFragTaskflowTaskRequiredForMode(
         return true;
     const size_t output_count =
         dSymV2PcFragTaskflowOutputCount(task);
+    if (required_mode_mask ==
+            xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL &&
+        task.lookahead_col_member_count > 0 &&
+        task.lookahead_col_gid_index >= 0)
+    {
+        int idx = task.lookahead_col_gid_index;
+        if (static_cast<size_t>(idx) >=
+            state.incomplete_lookahead_col_members_by_gid.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column compact gid index is invalid.");
+        return state.incomplete_lookahead_col_members_by_gid.gid_at(idx) ==
+               required_mode_gid;
+    }
+    if (required_mode_mask ==
+            xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW &&
+        task.lookahead_row_member_count > 0 &&
+        task.lookahead_row_gid_index >= 0)
+    {
+        int idx = task.lookahead_row_gid_index;
+        if (static_cast<size_t>(idx) >=
+            state.incomplete_lookahead_row_members_by_gid.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row compact gid index is invalid.");
+        return state.incomplete_lookahead_row_members_by_gid.gid_at(idx) ==
+               required_mode_gid;
+    }
     if (output_count > 1)
     {
         for (size_t o = 0; o < output_count; ++o)
@@ -4640,6 +4664,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 if (requested_gid == GLOBAL_BLOCK_NOT_FOUND)
                     return SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL;
+                if (task.lookahead_col_member_count > 0 &&
+                    task.lookahead_col_gid_index >= 0)
+                {
+                    int idx = task.lookahead_col_gid_index;
+                    if (static_cast<size_t>(idx) >=
+                        state.incomplete_lookahead_col_members_by_gid.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-column compact gid index is invalid.");
+                    if (state.incomplete_lookahead_col_members_by_gid.gid_at(
+                            idx) == requested_gid)
+                        return SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL;
+                    return 0;
+                }
                 const size_t output_count =
                     dSymV2PcFragTaskflowOutputCount(task);
                 for (size_t o = 0; o < output_count; ++o)
@@ -4652,6 +4688,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 if (requested_gid == GLOBAL_BLOCK_NOT_FOUND)
                     return SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+                if (task.lookahead_row_member_count > 0 &&
+                    task.lookahead_row_gid_index >= 0)
+                {
+                    int idx = task.lookahead_row_gid_index;
+                    if (static_cast<size_t>(idx) >=
+                        state.incomplete_lookahead_row_members_by_gid.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW lookahead-row compact gid index is invalid.");
+                    if (state.incomplete_lookahead_row_members_by_gid.gid_at(
+                            idx) == requested_gid)
+                        return SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+                    return 0;
+                }
                 const size_t output_count =
                     dSymV2PcFragTaskflowOutputCount(task);
                 for (size_t o = 0; o < output_count; ++o)
