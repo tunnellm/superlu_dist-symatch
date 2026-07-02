@@ -1746,6 +1746,8 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
         return 0;
     }
     pending_required = 0;
+    const bool skip_unrequired_poll =
+        superlu_sym_v2_pcfrag_taskflow_skip_unrequired_poll();
     ++stats.task_completion_poll_calls;
     if (drain)
         ++stats.task_completion_drain_poll_calls;
@@ -1792,6 +1794,13 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                         group_required;
             }
             else if (drain && required_mode_mask != 0 &&
+                     !(required_mode_mask &
+                       xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL))
+            {
+                task_groups[group_write++] = group;
+                continue;
+            }
+            else if (skip_unrequired_poll && required_mode_mask != 0 &&
                      !(required_mode_mask &
                        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL))
             {
@@ -1891,6 +1900,13 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                     ++stats.task_completion_drain_required_seen;
             }
             else if (drain && required_mode_mask != 0 &&
+                     !(required_mode_mask &
+                       xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL))
+            {
+                task_ids[launched_write++] = tid;
+                continue;
+            }
+            else if (skip_unrequired_poll && required_mode_mask != 0 &&
                      !(required_mode_mask &
                        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_FULL))
             {

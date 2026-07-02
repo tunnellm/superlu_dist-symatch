@@ -742,6 +742,13 @@ static inline int superlu_sym_v2_pcfrag_taskflow_event_poll_backoff_max()
     return cached;
 }
 
+static inline bool superlu_sym_v2_pcfrag_taskflow_skip_unrequired_poll()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_TASKFLOW_SKIP_UNREQUIRED_POLL",
+        superlu_sym_v2_pcfrag_taskflow_async_core() ? 1 : 0);
+}
+
 static inline int superlu_sym_v2_pcfrag_taskflow_producer_task_limit()
 {
     static int cached = -1;
