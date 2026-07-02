@@ -494,6 +494,12 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_force_output_locks()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_FORCE_OUTPUT_LOCKS", 0);
 }
 
+static inline bool superlu_sym_v2_pcfrag_taskflow_atomic_output_scatter()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_TASKFLOW_ATOMIC_OUTPUT_SCATTER", 0);
+}
+
 static inline bool superlu_sym_v2_pcfrag_taskflow_validate()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_VALIDATE", 0);
@@ -618,6 +624,8 @@ static inline size_t superlu_sym_v2_pcfrag_taskflow_max_planned_tasks()
 static inline bool superlu_sym_v2_pcfrag_taskflow_global_output_locks()
 {
     int default_value = superlu_sym_v2_pcfrag_taskflow_strict() ? 1 : 0;
+    if (superlu_sym_v2_pcfrag_taskflow_atomic_output_scatter())
+        default_value = 0;
     return superlu_sym_v2_env_bool_flag(
         "GPU3DV2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS", default_value);
 }

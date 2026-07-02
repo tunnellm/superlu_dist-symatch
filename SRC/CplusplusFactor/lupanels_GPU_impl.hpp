@@ -2333,8 +2333,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE requires GPU3DV2_PCFRAG_TASKFLOW_ASYNC_PIECES=1.");
     if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
         superlu_sym_v2_pcfrag_taskflow_strict() &&
-        !superlu_sym_v2_pcfrag_taskflow_global_output_locks())
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE strict mode requires global output locks.");
+        !superlu_sym_v2_pcfrag_taskflow_global_output_locks() &&
+        !superlu_sym_v2_pcfrag_taskflow_atomic_output_scatter())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE strict mode requires global output locks unless GPU3DV2_PCFRAG_TASKFLOW_ATOMIC_OUTPUT_SCATTER=1.");
     if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
         superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0)
         ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split task planning; currently disabled.");
