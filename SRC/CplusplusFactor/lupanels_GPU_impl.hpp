@@ -8283,6 +8283,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         {
             if (issued_pack)
                 gpuErrchk(cudaGetLastError());
+            bool partner_d2h_any = false;
             if (!cuda_aware)
             {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -8333,6 +8334,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                 symV2PartnerLExactSendBufsGPU[active_pos],
                                 sizeof(double) * static_cast<size_t>(size),
                                 cudaMemcpyDeviceToHost, stream));
+                            partner_d2h_any = true;
                         }
                     }
                 }
@@ -8400,6 +8402,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                             host_stage, d2h_src,
                             sizeof(double) * static_cast<size_t>(size),
                             cudaMemcpyDeviceToHost, stream));
+                        partner_d2h_any = true;
                     }
                 }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -8411,13 +8414,20 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
             double pack_stage_sync_t = SuperLU_timer_();
 #endif
-            if (pcfrag_taskflow && superlu_sym_v2_pcfrag_taskflow_async_core())
+            const bool taskflow_async_core =
+                pcfrag_taskflow &&
+                superlu_sym_v2_pcfrag_taskflow_async_core();
+            const bool need_pack_stage_sync =
+                taskflow_async_core ? partner_d2h_any : true;
+            if (taskflow_async_core && need_pack_stage_sync)
                 ++symV2PcFragTaskflowStats.producer_exchange_stream_syncs;
-            gpuErrchk(cudaStreamSynchronize(stream));
+            if (need_pack_stage_sync)
+                gpuErrchk(cudaStreamSynchronize(stream));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-            symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
-                             SYM_GPU3D_T_PARTNER_LFRAG_PACK_STAGE_SYNC,
-                             SuperLU_timer_() - pack_stage_sync_t);
+            if (need_pack_stage_sync)
+                symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
+                                 SYM_GPU3D_T_PARTNER_LFRAG_PACK_STAGE_SYNC,
+                                 SuperLU_timer_() - pack_stage_sync_t);
 #endif
         }
     }
@@ -9223,12 +9233,18 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                      SuperLU_timer_() - row_d2h_issue_t);
 #endif
                 }
-                if (row_packed_any || row_d2h_any)
+                const bool taskflow_async_core =
+                    pcfrag_taskflow &&
+                    superlu_sym_v2_pcfrag_taskflow_async_core();
+                const bool need_row_pack_stage_sync =
+                    taskflow_async_core ? row_d2h_any
+                                        : (row_packed_any || row_d2h_any);
+                if (need_row_pack_stage_sync)
                 {
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                     double row_pack_stage_sync_t = SuperLU_timer_();
 #endif
-                    if (pcfrag_taskflow && superlu_sym_v2_pcfrag_taskflow_async_core())
+                    if (taskflow_async_core)
                         ++symV2PcFragTaskflowStats.producer_exchange_stream_syncs;
                     gpuErrchk(cudaStreamSynchronize(stream));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
