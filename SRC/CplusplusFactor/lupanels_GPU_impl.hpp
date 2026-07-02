@@ -5496,6 +5496,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 ++symV2PcFragTaskflowStats.scatter_conflict_waits;
                 return 0;
             }
+            if (async_core &&
+                dSymV2PcFragTaskflowOutputCount(task) != 1)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW multi-output task reached single-piece launch.");
             if (row.d_index == NULL || row.d_val == NULL ||
                 col.d_index == NULL || col.d_val == NULL ||
                 task_handle == NULL || task_stream == NULL ||
@@ -6521,11 +6524,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     }
                                     exact_candidate_tids.push_back(cand_tid);
                                 }
-                                if (exact_candidate_tids.size() <= 1)
-                                    return false;
-
-                                ++symV2PcFragTaskflowStats.grouped_dispatch_attempts;
-
                                 std::vector<int> &row_piece_ids =
                                     state.group_row_piece_scratch;
                                 std::vector<int> &partner_piece_ids =
@@ -6554,6 +6552,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     exact_output_count);
                                 pair_rows.reserve(exact_output_count);
                                 pair_cols.reserve(exact_output_count);
+
+                                if (exact_candidate_tids.size() <= 1 &&
+                                    exact_output_count <= 1)
+                                    return false;
+
+                                ++symV2PcFragTaskflowStats.grouped_dispatch_attempts;
 
                                 auto local_piece_index =
                                     [](std::vector<int> &ids,
