@@ -3320,6 +3320,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
 }
 
 template <>
+int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
+    int streamId, int_t k, unsigned mode_mask, int_t mode_gid, int drain);
+
+template <>
 inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     int_t k, int budget)
 {
@@ -3342,6 +3346,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
     double *gemmBuff = A_gpu.gpuGemmBuffs[streamId];
     if (budget <= 0)
         budget = superlu_sym_v2_pcfrag_taskflow_effective_progress_budget();
+    const bool async_core =
+        superlu_sym_v2_pcfrag_taskflow_async_core();
     const int producer_task_limit =
         superlu_sym_v2_pcfrag_taskflow_producer_task_limit();
     if (producer_task_limit > 0)
@@ -3362,12 +3368,28 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
         }
         budget = SUPERLU_MIN(budget, producer_tasks_remaining);
     }
+    if (async_core &&
+        producer_task_limit == 0 &&
+        superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch())
+    {
+        int_t launched_grouped =
+            dSymV2PcFragTaskflowDispatchGPU(
+                streamId, k, SYM_V2_PCFRAG_TASK_FULL,
+                GLOBAL_BLOCK_NOT_FOUND, 0);
+        if (launched_grouped > 0)
+        {
+            symV2PcFragTaskflowStats.tasks_launched_progress +=
+                static_cast<long long>(launched_grouped);
+            return launched_grouped;
+        }
+        if (static_cast<size_t>(k) >= symV2PcFragTaskStates.size() ||
+            !state.initialized)
+            return 0;
+    }
     const bool strict_output_conflicts =
         superlu_sym_v2_pcfrag_taskflow_strict() &&
         (state.output_conflicts_possible ||
          superlu_sym_v2_pcfrag_taskflow_global_output_locks());
-    const bool async_core =
-        superlu_sym_v2_pcfrag_taskflow_async_core();
     const bool compact_output_locks =
         dSymV2PcFragTaskflowUseCompactOutputLocks(*this);
 
