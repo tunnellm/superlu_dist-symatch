@@ -1060,6 +1060,8 @@ static inline void dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(
             {
                 const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
                     dSymV2PcFragTaskflowOutputAt(state, task, o);
+                if (key.gi == key.gj)
+                    continue;
                 auto it =
                     state.incomplete_lookahead_row_members_by_gid.find(
                         key.gi);
@@ -1087,25 +1089,78 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
         xlu.symV2PcFragTaskflowStats;
     if (task.complete)
         return;
-    if (task.row_piece < 0 || task.partner_piece < 0 ||
-        static_cast<size_t>(task.row_piece) >= state.row_pieces.size() ||
-        static_cast<size_t>(task.partner_piece) >=
-            state.partner_pieces.size())
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task has invalid pieces.");
-    xLUstruct_t<double>::SymV2PcFragPieceDesc &row =
-        state.row_pieces[static_cast<size_t>(task.row_piece)];
-    xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
-        state.partner_pieces[static_cast<size_t>(task.partner_piece)];
     dSymV2PcFragTaskflowReleaseOutputLocks(
         xlu, state, task, strict_output_conflicts, true);
     dSymV2PcFragTaskflowNoteGemmResourceComplete(xlu, state, task);
     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
     task.complete = 1;
     --state.incomplete_task_count;
-    --row.pending_consumers;
-    --col.pending_consumers;
-    if (row.pending_consumers < 0 || col.pending_consumers < 0)
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+    if (task.output_count == 1)
+    {
+        if (task.row_piece < 0 || task.partner_piece < 0 ||
+            static_cast<size_t>(task.row_piece) >=
+                state.row_pieces.size() ||
+            static_cast<size_t>(task.partner_piece) >=
+                state.partner_pieces.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task has invalid pieces.");
+        xLUstruct_t<double>::SymV2PcFragPieceDesc &row =
+            state.row_pieces[static_cast<size_t>(task.row_piece)];
+        xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
+            state.partner_pieces[static_cast<size_t>(task.partner_piece)];
+        --row.pending_consumers;
+        --col.pending_consumers;
+        if (row.pending_consumers < 0 || col.pending_consumers < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW pending consumer count underflowed.");
+    }
+    else
+    {
+        std::vector<int> row_piece_ids;
+        std::vector<int> partner_piece_ids;
+        const size_t output_count =
+            dSymV2PcFragTaskflowOutputCount(task);
+        row_piece_ids.reserve(output_count);
+        partner_piece_ids.reserve(output_count);
+        auto add_unique_piece = [](std::vector<int> &pieces, int piece_id) {
+            for (size_t i = 0; i < pieces.size(); ++i)
+                if (pieces[i] == piece_id)
+                    return;
+            pieces.push_back(piece_id);
+        };
+        for (size_t o = 0; o < output_count; ++o)
+        {
+            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, o);
+            if (key.row_piece < 0 || key.partner_piece < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task output is missing piece ids.");
+            add_unique_piece(row_piece_ids, key.row_piece);
+            add_unique_piece(partner_piece_ids, key.partner_piece);
+        }
+        for (size_t i = 0; i < row_piece_ids.size(); ++i)
+        {
+            int piece_id = row_piece_ids[i];
+            if (piece_id < 0 ||
+                static_cast<size_t>(piece_id) >= state.row_pieces.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid row piece.");
+            xLUstruct_t<double>::SymV2PcFragPieceDesc &row =
+                state.row_pieces[static_cast<size_t>(piece_id)];
+            --row.pending_consumers;
+            if (row.pending_consumers < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW row pending consumer count underflowed.");
+        }
+        for (size_t i = 0; i < partner_piece_ids.size(); ++i)
+        {
+            int piece_id = partner_piece_ids[i];
+            if (piece_id < 0 ||
+                static_cast<size_t>(piece_id) >=
+                    state.partner_pieces.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid partner piece.");
+            xLUstruct_t<double>::SymV2PcFragPieceDesc &col =
+                state.partner_pieces[static_cast<size_t>(piece_id)];
+            --col.pending_consumers;
+            if (col.pending_consumers < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW partner pending consumer count underflowed.");
+        }
+    }
     ++stats.tasks_completed;
     ++stats.tasks_completed_async_core;
 }
@@ -1299,6 +1354,30 @@ static inline bool dSymV2PcFragTaskflowTaskRequiredForMode(
         return true;
     const size_t output_count =
         dSymV2PcFragTaskflowOutputCount(task);
+    if (output_count > 1)
+    {
+        for (size_t o = 0; o < output_count; ++o)
+        {
+            const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+                dSymV2PcFragTaskflowOutputAt(state, task, o);
+            bool covered = false;
+            if ((required_mode_mask &
+                 xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL) &&
+                key.gj == required_mode_gid)
+                covered = true;
+            if ((required_mode_mask &
+                 xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW) &&
+                key.gi == required_mode_gid)
+                covered = true;
+            if ((required_mode_mask &
+                 xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_EXCLUDE) &&
+                key.gj != required_mode_gid && key.gi != required_mode_gid)
+                covered = true;
+            if (!covered)
+                return false;
+        }
+        return true;
+    }
     for (size_t o = 0; o < output_count; ++o)
     {
         const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
@@ -1514,6 +1593,8 @@ static inline void dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
             {
                 const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
                     dSymV2PcFragTaskflowOutputAt(state, task, o);
+                if (key.gi == key.gj)
+                    continue;
                 auto it =
                     state.launched_lookahead_row_members_by_gid.find(
                         key.gi);
@@ -2095,7 +2176,24 @@ static inline int_t *dSymV2PcFragTaskflowAcquireIndexBlock(
         return ptr;
     }
     if (!allow_late_alloc)
+    {
+        size_t max_capacity = 0;
+        size_t live_blocks = 0;
+        for (size_t i = 0; i < pool.size(); ++i)
+        {
+            if (pool[i].ptr != NULL)
+            {
+                ++live_blocks;
+                if (pool[i].capacity > max_capacity)
+                    max_capacity = pool[i].capacity;
+            }
+        }
+        std::fprintf(stderr,
+                     "GPU3DV2 taskflow index arena miss: requested=%zu pool_size=%zu live_blocks=%zu max_capacity=%zu\n",
+                     count, pool.size(), live_blocks, max_capacity);
+        std::fflush(stderr);
         ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE index arena missed a required block.");
+    }
     int_t *ptr = NULL;
     gpuErrchk(cudaMalloc(
         reinterpret_cast<void **>(&ptr), sizeof(int_t) * count));
@@ -2217,13 +2315,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     const bool allow_taskflow_late_alloc =
         !async_core;
     const bool need_piece_pair_lookup = !async_core;
+    const bool coalesce_col_tasks =
+        async_core && superlu_sym_v2_pcfrag_taskflow_coalesce_col();
+    const bool effective_async_grouped_dispatch =
+        superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch();
     const bool use_generic_runnable_queue =
         !async_core ||
-        !superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch() ||
+        !effective_async_grouped_dispatch ||
         superlu_sym_v2_pcfrag_taskflow_producer_task_limit() > 0;
     const unsigned char runnable_mode_queue_mask =
         (async_core &&
-         superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch())
+         effective_async_grouped_dispatch)
             ? static_cast<unsigned char>(SYM_V2_PCFRAG_TASK_FULL)
             : static_cast<unsigned char>(
                   SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
@@ -2631,6 +2733,25 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     };
     std::vector<TaskflowGroupDegreeKey> lookahead_col_group_keys;
     std::vector<TaskflowGroupDegreeKey> lookahead_row_group_keys;
+    struct TaskflowOutputCandidate
+    {
+        int row_piece;
+        int partner_piece;
+        SymV2PcFragOutputKey output;
+        unsigned char mode_mask;
+
+        bool operator<(const TaskflowOutputCandidate &other) const
+        {
+            if (output.gj != other.output.gj)
+                return output.gj < other.output.gj;
+            if (partner_piece != other.partner_piece)
+                return partner_piece < other.partner_piece;
+            if (row_piece != other.row_piece)
+                return row_piece < other.row_piece;
+            return output.gi < other.output.gi;
+        }
+    };
+    std::vector<TaskflowOutputCandidate> output_candidates;
     size_t planned_task_count = 0;
     for (int_t cb = 0; cb < nc; ++cb)
     {
@@ -2683,21 +2804,96 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 SYM_V2_PCFRAG_TASK_EXCLUDE;
             if (gi != gj)
                 mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
-            ++planned_task_count;
-            ++row_task_degrees[static_cast<size_t>(row_piece)];
-            ++partner_task_degrees[static_cast<size_t>(partner_piece)];
-            for (int mask = 1; mask < 16; mask <<= 1)
-                if (mode_mask & mask)
-                    ++mode_counts[mask];
-            ++lookahead_col_degrees[gj];
-            lookahead_col_group_keys.push_back(
-                TaskflowGroupDegreeKey{gj, partner_piece});
-            if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+            if (coalesce_col_tasks)
             {
-                ++lookahead_row_degrees[gi];
-                lookahead_row_group_keys.push_back(
-                    TaskflowGroupDegreeKey{gi, row_piece});
+                output_candidates.push_back(
+                    TaskflowOutputCandidate{row_piece, partner_piece,
+                                            output, mode_mask});
             }
+            else
+            {
+                ++planned_task_count;
+                ++row_task_degrees[static_cast<size_t>(row_piece)];
+                ++partner_task_degrees[static_cast<size_t>(partner_piece)];
+                for (int mask = 1; mask < 16; mask <<= 1)
+                    if (mode_mask & mask)
+                        ++mode_counts[mask];
+                ++lookahead_col_degrees[gj];
+                lookahead_col_group_keys.push_back(
+                    TaskflowGroupDegreeKey{gj, partner_piece});
+                if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+                {
+                    ++lookahead_row_degrees[gi];
+                    lookahead_row_group_keys.push_back(
+                        TaskflowGroupDegreeKey{gi, row_piece});
+                }
+            }
+        }
+    }
+    if (coalesce_col_tasks)
+    {
+        std::sort(output_candidates.begin(), output_candidates.end());
+        for (size_t i = 0; i < output_candidates.size();)
+        {
+            size_t j = i + 1;
+            while (j < output_candidates.size() &&
+                   output_candidates[j].output.gj ==
+                       output_candidates[i].output.gj &&
+                   output_candidates[j].partner_piece ==
+                       output_candidates[i].partner_piece)
+                ++j;
+            ++planned_task_count;
+            int partner_piece = output_candidates[i].partner_piece;
+            if (partner_piece < 0 ||
+                static_cast<size_t>(partner_piece) >=
+                    partner_task_degrees.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced column group has invalid partner piece.");
+            ++partner_task_degrees[static_cast<size_t>(partner_piece)];
+            lookahead_col_group_keys.push_back(
+                TaskflowGroupDegreeKey{
+                    output_candidates[i].output.gj, partner_piece});
+            mode_counts[SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL] += j - i;
+            ++mode_counts[SYM_V2_PCFRAG_TASK_FULL];
+            ++mode_counts[SYM_V2_PCFRAG_TASK_EXCLUDE];
+            lookahead_col_degrees[output_candidates[i].output.gj] +=
+                static_cast<int>(j - i);
+
+            std::vector<int> unique_row_pieces;
+            unique_row_pieces.reserve(j - i);
+            for (size_t p = i; p < j; ++p)
+            {
+                int row_piece = output_candidates[p].row_piece;
+                if (row_piece < 0 ||
+                    static_cast<size_t>(row_piece) >=
+                        row_task_degrees.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced column group has invalid row piece.");
+                bool seen = false;
+                for (size_t r = 0; r < unique_row_pieces.size(); ++r)
+                {
+                    if (unique_row_pieces[r] == row_piece)
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen)
+                    unique_row_pieces.push_back(row_piece);
+            }
+            for (size_t r = 0; r < unique_row_pieces.size(); ++r)
+                ++row_task_degrees[
+                    static_cast<size_t>(unique_row_pieces[r])];
+            for (size_t p = i; p < j; ++p)
+            {
+                int_t row_gid = output_candidates[p].output.gi;
+                if (row_gid == output_candidates[p].output.gj)
+                    continue;
+                ++mode_counts[SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW];
+                ++lookahead_row_degrees[row_gid];
+                lookahead_row_group_keys.push_back(
+                    TaskflowGroupDegreeKey{
+                        row_gid, output_candidates[p].row_piece});
+            }
+            i = j;
         }
     }
     size_t max_planned_tasks =
@@ -2714,6 +2910,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         std::fflush(stderr);
         ABORT("GPU3DV2_PCFRAG_TASKFLOW planned task count exceeds guard.");
     }
+    size_t planned_output_count =
+        coalesce_col_tasks ? output_candidates.size() : planned_task_count;
     size_t row_line_groups = 0;
     size_t partner_line_groups = 0;
     size_t row_line_max_members = 0;
@@ -2805,7 +3003,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                                   sizeof(SymV2PcFragPairTaskEntry))
             : 0;
     size_t estimated_ready_bytes =
-        byte_product_or_max(planned_task_count, 2 * sizeof(unsigned char));
+        byte_product_or_max(planned_task_count,
+                            sizeof(int) + sizeof(unsigned char));
     size_t estimated_generic_queue_bytes =
         use_generic_runnable_queue
             ? byte_product_or_max(planned_task_count, sizeof(int))
@@ -2910,13 +3109,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     add_size_to_stat(symV2PcFragTaskflowStats.graph_event_count_est,
                      estimated_event_count);
     add_size_to_stat(symV2PcFragTaskflowStats.graph_output_count,
-                     planned_task_count);
+                     planned_output_count);
     max_size_to_stat(symV2PcFragTaskflowStats.graph_host_bytes_max_panel,
                      estimated_host_graph_bytes);
     max_size_to_stat(symV2PcFragTaskflowStats.graph_event_count_max_panel,
                      estimated_event_count);
     max_size_to_stat(symV2PcFragTaskflowStats.graph_output_count_max_panel,
-                     planned_task_count);
+                     planned_output_count);
     add_size_to_stat(symV2PcFragTaskflowStats.graph_row_line_groups,
                      row_line_groups);
     add_size_to_stat(symV2PcFragTaskflowStats.graph_partner_line_groups,
@@ -2998,7 +3197,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     }
 
     state.tasks.reserve(planned_task_count);
-    state.task_output_pool.reserve(planned_task_count);
+    state.task_output_pool.reserve(planned_output_count);
     if (need_piece_pair_lookup)
         state.pair_task_entries.reserve(planned_task_count);
     state.task_ready_inputs.reserve(planned_task_count);
@@ -3082,7 +3281,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.launched_lookahead_row_members_by_gid_by_stream);
     auto create_task_for_output =
         [&](int row_piece, int partner_piece,
-            const SymV2PcFragOutputKey &output,
+            SymV2PcFragOutputKey output,
             unsigned char mode_mask) {
         size_t rp = static_cast<size_t>(row_piece);
         size_t cp = static_cast<size_t>(partner_piece);
@@ -3111,6 +3310,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             static_cast<int>(state.task_output_pool.size());
         task.output_count = 1;
         task.output_id = output.output_id;
+        task.required_inputs = 2;
+        output.row_piece = row_piece;
+        output.partner_piece = partner_piece;
         state.task_output_pool.push_back(output);
         task.lookahead_col_gid_index =
             state.incomplete_lookahead_col_members_by_gid.index_of(
@@ -3155,6 +3357,177 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         ++state.row_pieces[rp].pending_consumers;
         ++state.partner_pieces[cp].pending_consumers;
     };
+    auto create_task_for_candidate_group =
+        [&](size_t begin, size_t end) {
+        if (begin >= end || end > output_candidates.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid candidate range.");
+        const TaskflowOutputCandidate &first = output_candidates[begin];
+        int partner_piece = first.partner_piece;
+        if (partner_piece < 0 ||
+            static_cast<size_t>(partner_piece) >=
+                state.partner_pieces.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid partner piece.");
+        int_t gj = first.output.gj;
+        bool has_row_lookahead = false;
+        std::vector<int> unique_row_pieces;
+        unique_row_pieces.reserve(end - begin);
+        auto add_unique_piece = [](std::vector<int> &ids, int piece_id) {
+            for (size_t i = 0; i < ids.size(); ++i)
+                if (ids[i] == piece_id)
+                    return;
+            ids.push_back(piece_id);
+        };
+        for (size_t p = begin; p < end; ++p)
+        {
+            const TaskflowOutputCandidate &candidate =
+                output_candidates[p];
+            if (candidate.output.gj != gj ||
+                candidate.partner_piece != partner_piece)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task group is not column homogeneous.");
+            if (candidate.row_piece < 0 ||
+                static_cast<size_t>(candidate.row_piece) >=
+                    state.row_pieces.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid row piece.");
+            add_unique_piece(unique_row_pieces, candidate.row_piece);
+            if (candidate.output.gi != candidate.output.gj)
+                has_row_lookahead = true;
+        }
+        if (unique_row_pieces.empty())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has no row inputs.");
+
+        SymV2PcFragTaskDesc task;
+        task.k = k;
+        task.task_id = static_cast<int>(state.tasks.size());
+        task.row_piece = first.row_piece;
+        task.partner_piece = partner_piece;
+        task.row_piece_blk_begin =
+            state.row_pieces[static_cast<size_t>(first.row_piece)]
+                .frag_blk_begin;
+        task.row_piece_blk_end =
+            state.row_pieces[static_cast<size_t>(first.row_piece)]
+                .frag_blk_end;
+        task.partner_piece_blk_begin =
+            state.partner_pieces[static_cast<size_t>(partner_piece)]
+                .frag_blk_begin;
+        task.partner_piece_blk_end =
+            state.partner_pieces[static_cast<size_t>(partner_piece)]
+                .frag_blk_end;
+        task.gemm_m = 0;
+        for (size_t r = 0; r < unique_row_pieces.size(); ++r)
+            task.gemm_m +=
+                state.row_pieces[
+                    static_cast<size_t>(unique_row_pieces[r])].nrows;
+        task.gemm_n =
+            state.partner_pieces[static_cast<size_t>(partner_piece)].nrows;
+        task.gemm_k = SuperSize(k);
+        task.mode_mask =
+            SYM_V2_PCFRAG_TASK_FULL |
+            SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+            SYM_V2_PCFRAG_TASK_EXCLUDE;
+        if (has_row_lookahead)
+            task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
+        if (state.task_output_pool.size() >
+            static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            end - begin >
+                static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            state.task_output_pool.size() >
+                static_cast<size_t>(std::numeric_limits<int>::max()) -
+                    (end - begin))
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task output pool is too large.");
+        task.output_begin =
+            static_cast<int>(state.task_output_pool.size());
+        task.output_count = static_cast<int>(end - begin);
+        task.output_id =
+            task.output_count == 1 ? first.output.output_id
+                                   : GLOBAL_BLOCK_NOT_FOUND;
+        task.required_inputs =
+            static_cast<int>(unique_row_pieces.size()) + 1;
+        for (size_t p = begin; p < end; ++p)
+        {
+            SymV2PcFragOutputKey output = output_candidates[p].output;
+            output.row_piece = output_candidates[p].row_piece;
+            output.partner_piece = output_candidates[p].partner_piece;
+            state.task_output_pool.push_back(output);
+        }
+        task.lookahead_col_gid_index =
+            state.incomplete_lookahead_col_members_by_gid.index_of(gj);
+        if (task.lookahead_col_gid_index < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced lookahead-column gid is missing.");
+        state.incomplete_lookahead_col_members_by_gid.value_at(
+            task.lookahead_col_gid_index) += task.output_count;
+        if (task.mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+        {
+            for (size_t p = begin; p < end; ++p)
+            {
+                int_t row_gid = output_candidates[p].output.gi;
+                if (row_gid == output_candidates[p].output.gj)
+                    continue;
+                int idx =
+                    state.incomplete_lookahead_row_members_by_gid.index_of(
+                        row_gid);
+                if (idx < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced lookahead-row gid is missing.");
+                ++state.incomplete_lookahead_row_members_by_gid.value_at(
+                    idx);
+                if (task.output_count == 1)
+                    task.lookahead_row_gid_index = idx;
+            }
+        }
+        int task_id = task.task_id;
+        state.tasks.push_back(task);
+        state.task_ready_inputs.push_back(0);
+        state.task_enqueued.push_back(0);
+        if (need_piece_pair_lookup)
+        {
+            for (size_t p = begin; p < end; ++p)
+                state.pair_task_entries.push_back(
+                    SymV2PcFragPairTaskEntry(
+                        output_candidates[p].row_piece,
+                        output_candidates[p].partner_piece, task_id));
+        }
+        for (size_t r = 0; r < unique_row_pieces.size(); ++r)
+        {
+            size_t rp = static_cast<size_t>(unique_row_pieces[r]);
+            int row_pos = row_piece_task_write[rp]++;
+            int row_end = state.row_piece_task_offsets[rp + 1];
+            if (row_pos < state.row_piece_task_offsets[rp] ||
+                row_pos >= row_end ||
+                static_cast<size_t>(row_pos) >=
+                    state.row_piece_task_ids.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced row-piece task adjacency overflowed.");
+            state.row_piece_task_ids[static_cast<size_t>(row_pos)] =
+                task_id;
+            ++state.row_pieces[rp].pending_consumers;
+        }
+        size_t cp = static_cast<size_t>(partner_piece);
+        int partner_pos = partner_piece_task_write[cp]++;
+        int partner_end = state.partner_piece_task_offsets[cp + 1];
+        if (partner_pos < state.partner_piece_task_offsets[cp] ||
+            partner_pos >= partner_end ||
+            static_cast<size_t>(partner_pos) >=
+                state.partner_piece_task_ids.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced partner-piece task adjacency overflowed.");
+        state.partner_piece_task_ids[static_cast<size_t>(partner_pos)] =
+            task_id;
+        ++state.partner_pieces[cp].pending_consumers;
+    };
+    if (coalesce_col_tasks)
+    {
+        for (size_t i = 0; i < output_candidates.size();)
+        {
+            size_t j = i + 1;
+            while (j < output_candidates.size() &&
+                   output_candidates[j].output.gj ==
+                       output_candidates[i].output.gj &&
+                   output_candidates[j].partner_piece ==
+                       output_candidates[i].partner_piece)
+                ++j;
+            create_task_for_candidate_group(i, j);
+            i = j;
+        }
+    }
+    else
+    {
     for (int_t cb = 0; cb < nc; ++cb)
     {
         int_t gj = gid_at(partner_frag, cb);
@@ -3209,6 +3582,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             create_task_for_output(row_piece, partner_piece, output,
                                    mode_mask);
         }
+    }
     }
     for (size_t rp = 0; rp < row_task_degrees.size(); ++rp)
         if (row_piece_task_write[rp] !=
@@ -3868,6 +4242,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             state.tasks[static_cast<size_t>(tid)];
         if (task.launched || task.complete)
             continue;
+        if (dSymV2PcFragTaskflowOutputCount(task) > 1)
+        {
+            state.runnable_task_ids[runnable_write++] = tid;
+            continue;
+        }
         if (launched >= budget)
         {
             state.runnable_task_ids[runnable_write++] = tid;
@@ -4282,6 +4661,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     state.tasks[static_cast<size_t>(tid)];
                 if (task.launched || task.complete)
                     continue;
+                if (dSymV2PcFragTaskflowOutputCount(task) > 1)
+                {
+                    state.runnable_task_ids[runnable_write++] = tid;
+                    continue;
+                }
                 if (async_core && pending_launched >= in_flight_task_cap)
                 {
                     state.runnable_task_ids[runnable_write++] = tid;
@@ -4656,6 +5040,221 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 task.launched ||
                 !task_matches_launch_mode(task, launch_mode))
                 return 0;
+            const size_t task_output_count =
+                dSymV2PcFragTaskflowOutputCount(task);
+            if (task_output_count > 1)
+            {
+                if (!async_core)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced tasks require async-core.");
+                if (task_handle == NULL || task_stream == NULL ||
+                    task_gemm == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task is missing stream resources.");
+                std::vector<int> &row_piece_ids =
+                    state.group_row_piece_scratch;
+                std::vector<int> &partner_piece_ids =
+                    state.group_partner_piece_scratch;
+                std::vector<int_t> &pair_rows =
+                    state.group_pair_row_scratch;
+                std::vector<int_t> &pair_cols =
+                    state.group_pair_col_scratch;
+                row_piece_ids.clear();
+                partner_piece_ids.clear();
+                pair_rows.clear();
+                pair_cols.clear();
+                row_piece_ids.reserve(task_output_count);
+                partner_piece_ids.reserve(task_output_count);
+                pair_rows.reserve(task_output_count);
+                pair_cols.reserve(task_output_count);
+                auto local_piece_index =
+                    [](std::vector<int> &ids, int piece_id) -> int_t {
+                    for (size_t p = 0; p < ids.size(); ++p)
+                        if (ids[p] == piece_id)
+                            return static_cast<int_t>(p);
+                    ids.push_back(piece_id);
+                    return static_cast<int_t>(ids.size() - 1);
+                };
+                for (size_t o = 0; o < task_output_count; ++o)
+                {
+                    const SymV2PcFragOutputKey &key =
+                        dSymV2PcFragTaskflowOutputAt(state, task, o);
+                    if (key.row_piece < 0 || key.partner_piece < 0 ||
+                        static_cast<size_t>(key.row_piece) >=
+                            state.row_pieces.size() ||
+                        static_cast<size_t>(key.partner_piece) >=
+                            state.partner_pieces.size())
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task output has invalid piece ids.");
+                    pair_rows.push_back(
+                        local_piece_index(row_piece_ids, key.row_piece));
+                    pair_cols.push_back(
+                        local_piece_index(partner_piece_ids,
+                                          key.partner_piece));
+                }
+                int_t row_lda = 0;
+                for (size_t ri = 0; ri < row_piece_ids.size(); ++ri)
+                {
+                    const SymV2PcFragPieceDesc &piece =
+                        state.row_pieces[
+                            static_cast<size_t>(row_piece_ids[ri])];
+                    if (!piece.ready)
+                    {
+                        ++symV2PcFragTaskflowStats.tasks_blocked_row;
+                        return 0;
+                    }
+                    if (piece.d_index == NULL || piece.d_val == NULL)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task row piece is missing device storage.");
+                    row_lda += piece.nrows;
+                }
+                int_t col_lda = 0;
+                for (size_t ci = 0; ci < partner_piece_ids.size(); ++ci)
+                {
+                    const SymV2PcFragPieceDesc &piece =
+                        state.partner_pieces[
+                            static_cast<size_t>(partner_piece_ids[ci])];
+                    if (!piece.ready)
+                    {
+                        ++symV2PcFragTaskflowStats.tasks_blocked_partner;
+                        return 0;
+                    }
+                    if (piece.d_index == NULL || piece.d_val == NULL)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task partner piece is missing device storage.");
+                    col_lda += piece.nrows;
+                }
+                if (row_lda <= 0 || col_lda <= 0)
+                    return 0;
+                if (output_locked(task))
+                {
+                    ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                    ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                    return 0;
+                }
+                std::vector<int_t> &row_group =
+                    state.group_row_index_scratch;
+                std::vector<int_t> &col_group =
+                    state.group_partner_index_scratch;
+                build_group_index_from_ids_into(
+                    state.row_pieces, row_piece_ids, row_group);
+                build_group_index_from_ids_into(
+                    state.partner_pieces, partner_piece_ids, col_group);
+                size_t row_index_count = row_group.size();
+                size_t col_index_count = col_group.size();
+                size_t pair_count = task_output_count;
+                size_t pair_index_count = 2 * pair_count;
+                size_t row_value_count =
+                    static_cast<size_t>(row_lda) *
+                    static_cast<size_t>(SuperSize(k));
+                size_t col_value_count =
+                    static_cast<size_t>(col_lda) *
+                    static_cast<size_t>(SuperSize(k));
+                size_t total_index_count =
+                    row_index_count + col_index_count + pair_index_count;
+                if (!dSymV2PcFragTaskflowPoolHasBlock(
+                         symV2PcFragTaskflowGroupIndexBlockPool,
+                         total_index_count) ||
+                    !dSymV2PcFragTaskflowPoolHasBlock(
+                         symV2PcFragTaskflowGroupValueBlockPool,
+                         row_value_count + col_value_count))
+                {
+                    ++symV2PcFragTaskflowStats.grouped_scratch_busy_deferrals;
+                    return 0;
+                }
+                size_t group_index_capacity = 0;
+                size_t group_value_capacity = 0;
+                int_t *group_index_pool =
+                    dSymV2PcFragTaskflowAcquireIndexBlock(
+                        symV2PcFragTaskflowGroupIndexBlockPool,
+                        total_index_count, &group_index_capacity,
+                        allow_taskflow_late_alloc,
+                        &symV2PcFragTaskflowStats
+                             .arena_index_late_allocs);
+                double *group_value_pool =
+                    dSymV2PcFragTaskflowAcquireValueBlock(
+                        symV2PcFragTaskflowGroupValueBlockPool,
+                        row_value_count + col_value_count,
+                        &group_value_capacity,
+                        allow_taskflow_late_alloc,
+                        &symV2PcFragTaskflowStats
+                             .arena_value_late_allocs);
+                if (group_index_pool == NULL ||
+                    total_index_count > group_index_capacity)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task index arena exhausted.");
+                if (group_value_pool == NULL ||
+                    row_value_count + col_value_count >
+                        group_value_capacity)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task value arena exhausted.");
+                int_t *row_group_gpu = group_index_pool;
+                int_t *col_group_gpu = row_group_gpu + row_index_count;
+                int_t *pair_rows_gpu = col_group_gpu + col_index_count;
+                int_t *pair_cols_gpu = pair_rows_gpu + pair_count;
+                double *row_group_val = group_value_pool;
+                double *col_group_val = row_group_val + row_value_count;
+                lock_outputs(task);
+                gpuErrchk(cudaMemcpyAsync(
+                    row_group_gpu, row_group.data(),
+                    sizeof(int_t) * row_index_count,
+                    cudaMemcpyHostToDevice, task_stream));
+                gpuErrchk(cudaMemcpyAsync(
+                    col_group_gpu, col_group.data(),
+                    sizeof(int_t) * col_index_count,
+                    cudaMemcpyHostToDevice, task_stream));
+                gpuErrchk(cudaMemcpyAsync(
+                    pair_rows_gpu, pair_rows.data(),
+                    sizeof(int_t) * pair_count,
+                    cudaMemcpyHostToDevice, task_stream));
+                gpuErrchk(cudaMemcpyAsync(
+                    pair_cols_gpu, pair_cols.data(),
+                    sizeof(int_t) * pair_count,
+                    cudaMemcpyHostToDevice, task_stream));
+                build_group_values_from_ids(
+                    state.row_pieces, row_piece_ids, row_lda,
+                    row_group_val, task_stream);
+                build_group_values_from_ids(
+                    state.partner_pieces, partner_piece_ids, col_lda,
+                    col_group_val, task_stream);
+                if (!all_pieces_ready())
+                    ++symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready;
+                dSymV2PcFragTaskflowWaitOnGemmResource(
+                    *this, state, task, streamId, task_stream,
+                    launch_mode);
+                dSymSchurCompUpdateTaskDualPiecePairListGroupGPU(
+                    static_cast<int_t>(pair_count),
+                    pair_rows_gpu, pair_cols_gpu, k,
+                    row_group, col_group,
+                    row_group_gpu, row_group_val,
+                    col_group_gpu, col_group_val,
+                    task_handle, task_stream, task_gemm);
+                task.launched = 1;
+                task.launch_stream_kind =
+                    task_stream_kind_for_launch_mode(launch_mode);
+                xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup group;
+                group.d_group_index_pool = group_index_pool;
+                group.group_index_pool_capacity = group_index_capacity;
+                group.d_group_value_pool = group_value_pool;
+                group.group_value_pool_capacity = group_value_capacity;
+                group.group_id = static_cast<int>(
+                    state.launched_group_task_ids.size());
+                group.task_begin = static_cast<int>(
+                    state.launched_group_task_ids.size());
+                group.task_count = 1;
+                group.launch_stream_kind = task.launch_stream_kind;
+                group.gemm_resource_kind = task.gemm_resource_kind;
+                group.done_event =
+                    dSymV2PcFragTaskflowAcquireEvent(
+                        symV2PcFragTaskflowEventPool, !async_core,
+                        &symV2PcFragTaskflowStats.arena_event_late_allocs);
+                gpuErrchk(cudaEventRecord(group.done_event, task_stream));
+                dSymV2PcFragTaskflowPublishGemmResourceTail(
+                    *this, state, task, streamId, task_stream);
+                state.launched_group_task_ids.push_back(task.task_id);
+                dSymV2PcFragTaskflowAdjustLaunchedTaskCounts(
+                    state, task, 1);
+                state.launched_task_groups_by_stream[
+                    group.launch_stream_kind].push_back(group);
+                if (dSymV2PcFragTaskflowForceTaskSync())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW_FORCE_TASK_SYNC is not supported with coalesced tasks.");
+                ++symV2PcFragTaskflowStats.tasks_launched;
+                count_task_launch_mode(launch_mode);
+                return 1;
+            }
             SymV2PcFragPieceDesc &row =
                 state.row_pieces[static_cast<size_t>(task.row_piece)];
             SymV2PcFragPieceDesc &col =
@@ -5516,9 +6115,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                             candidate.task_id) >=
                                             state.task_enqueued.size())
                                         ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped task id is invalid.");
+                                    if (candidate.required_inputs <= 0)
+                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped task has invalid input dependency count.");
                                     if (state.task_ready_inputs
                                             [static_cast<size_t>(
-                                                candidate.task_id)] < 2 ||
+                                                candidate.task_id)] <
+                                            candidate.required_inputs ||
                                         !state.task_enqueued
                                             [static_cast<size_t>(
                                                 candidate.task_id)])
@@ -5670,14 +6272,22 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 partner_piece_ids.clear();
                                 pair_rows.clear();
                                 pair_cols.clear();
-                                row_piece_ids.reserve(
-                                    exact_candidate_tids.size());
+                                size_t exact_output_count = 0;
+                                for (size_t ci = 0;
+                                     ci < exact_candidate_tids.size(); ++ci)
+                                {
+                                    const SymV2PcFragTaskDesc &candidate =
+                                        state.tasks[static_cast<size_t>(
+                                            exact_candidate_tids[ci])];
+                                    exact_output_count +=
+                                        dSymV2PcFragTaskflowOutputCount(
+                                            candidate);
+                                }
+                                row_piece_ids.reserve(exact_output_count);
                                 partner_piece_ids.reserve(
-                                    exact_candidate_tids.size());
-                                pair_rows.reserve(
-                                    exact_candidate_tids.size());
-                                pair_cols.reserve(
-                                    exact_candidate_tids.size());
+                                    exact_output_count);
+                                pair_rows.reserve(exact_output_count);
+                                pair_cols.reserve(exact_output_count);
 
                                 auto local_piece_index =
                                     [](std::vector<int> &ids,
@@ -5695,30 +6305,47 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     SymV2PcFragTaskDesc &candidate =
                                         state.tasks[static_cast<size_t>(
                                             exact_candidate_tids[ci])];
-                                    if (candidate.row_piece < 0 ||
-                                        candidate.partner_piece < 0 ||
-                                        static_cast<size_t>(
-                                            candidate.row_piece) >=
-                                            state.row_pieces.size() ||
-                                        static_cast<size_t>(
-                                            candidate.partner_piece) >=
-                                            state.partner_pieces.size())
-                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW exact grouped task has invalid piece ids.");
-                                    pair_rows.push_back(
-                                        local_piece_index(
-                                            row_piece_ids,
-                                            candidate.row_piece));
-                                    pair_cols.push_back(
-                                        local_piece_index(
-                                            partner_piece_ids,
-                                            candidate.partner_piece));
+                                    const size_t candidate_outputs =
+                                        dSymV2PcFragTaskflowOutputCount(
+                                            candidate);
+                                    for (size_t co = 0;
+                                         co < candidate_outputs; ++co)
+                                    {
+                                        const SymV2PcFragOutputKey &key =
+                                            dSymV2PcFragTaskflowOutputAt(
+                                                state, candidate, co);
+                                        int row_piece_id =
+                                            candidate_outputs == 1
+                                                ? candidate.row_piece
+                                                : key.row_piece;
+                                        int partner_piece_id =
+                                            candidate_outputs == 1
+                                                ? candidate.partner_piece
+                                                : key.partner_piece;
+                                        if (row_piece_id < 0 ||
+                                            partner_piece_id < 0 ||
+                                            static_cast<size_t>(
+                                                row_piece_id) >=
+                                                state.row_pieces.size() ||
+                                            static_cast<size_t>(
+                                                partner_piece_id) >=
+                                                state.partner_pieces.size())
+                                            ABORT("GPU3DV2_PCFRAG_TASKFLOW exact grouped task has invalid piece ids.");
+                                        pair_rows.push_back(
+                                            local_piece_index(
+                                                row_piece_ids,
+                                                row_piece_id));
+                                        pair_cols.push_back(
+                                            local_piece_index(
+                                                partner_piece_ids,
+                                                partner_piece_id));
+                                    }
                                 }
 
                                 size_t dense_pairs =
                                     row_piece_ids.size() *
                                     partner_piece_ids.size();
-                                if (dense_pairs >
-                                    exact_candidate_tids.size() * 8)
+                                if (dense_pairs > pair_rows.size() * 8)
                                     return false;
 
                                 int_t row_lda = 0;
@@ -5776,8 +6403,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     partner_piece_ids, col_group);
                                 size_t row_index_count = row_group.size();
                                 size_t col_index_count = col_group.size();
-                                size_t pair_count =
-                                    exact_candidate_tids.size();
+                                size_t pair_count = pair_rows.size();
                                 size_t pair_index_count = 2 * pair_count;
                                 size_t row_value_count =
                                     static_cast<size_t>(row_lda) *
@@ -5960,6 +6586,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             };
                             if (try_exact_group_dispatch())
                                 continue;
+                            if (superlu_sym_v2_pcfrag_taskflow_coalesce_col())
+                            {
+                                ++symV2PcFragTaskflowStats
+                                      .grouped_single_fallbacks;
+                            }
+                            else
+                            {
                             auto collect_candidate_tids =
                                 [&](bool group_by_partner) {
                                     std::vector<int> candidates;
@@ -6355,6 +6988,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     continue;
                                     }
                                 }
+                            }
                             }
                         }
                     }

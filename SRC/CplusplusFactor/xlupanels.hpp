@@ -1032,19 +1032,23 @@ struct xLUstruct_t
         int_t local_panel_j;
         int_t local_block_i;
         int_t output_id;
+        int row_piece;
+        int partner_piece;
 
         SymV2PcFragOutputKey()
             : gj(GLOBAL_BLOCK_NOT_FOUND), gi(GLOBAL_BLOCK_NOT_FOUND),
               local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
               local_block_i(GLOBAL_BLOCK_NOT_FOUND),
-              output_id(GLOBAL_BLOCK_NOT_FOUND)
+              output_id(GLOBAL_BLOCK_NOT_FOUND),
+              row_piece(-1), partner_piece(-1)
         {
         }
 
         SymV2PcFragOutputKey(int_t gj_, int_t gi_)
             : gj(gj_), gi(gi_), local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
               local_block_i(GLOBAL_BLOCK_NOT_FOUND),
-              output_id(GLOBAL_BLOCK_NOT_FOUND)
+              output_id(GLOBAL_BLOCK_NOT_FOUND),
+              row_piece(-1), partner_piece(-1)
         {
         }
 
@@ -1131,6 +1135,7 @@ struct xLUstruct_t
         int output_begin;
         int output_count;
         int_t output_id;
+        int required_inputs;
         unsigned char launched;
         unsigned char complete;
         unsigned char launch_stream_kind;
@@ -1147,7 +1152,7 @@ struct xLUstruct_t
               scatter_group(-1), lookahead_col_gid_index(-1),
               lookahead_row_gid_index(-1), output_begin(0),
               output_count(0), output_id(GLOBAL_BLOCK_NOT_FOUND),
-              launched(0), complete(0),
+              required_inputs(2), launched(0), complete(0),
               launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
               gemm_resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE)
 #ifdef HAVE_CUDA
@@ -1417,7 +1422,7 @@ struct xLUstruct_t
         std::vector<int> row_piece_task_ids;
         std::vector<int> partner_piece_task_offsets;
         std::vector<int> partner_piece_task_ids;
-        std::vector<unsigned char> task_ready_inputs;
+        std::vector<int> task_ready_inputs;
         std::vector<unsigned char> task_enqueued;
         unsigned char use_generic_runnable_queue;
         unsigned char runnable_mode_queue_mask;
@@ -1570,9 +1575,12 @@ struct xLUstruct_t
                 if (pos >= task_ready_inputs.size() ||
                     pos >= task_enqueued.size())
                     continue;
-                if (task_ready_inputs[pos] < 2)
+                int required_inputs = tasks[pos].required_inputs;
+                if (required_inputs <= 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW task has invalid input dependency count.");
+                if (task_ready_inputs[pos] < required_inputs)
                     ++task_ready_inputs[pos];
-                if (task_ready_inputs[pos] == 2 &&
+                if (task_ready_inputs[pos] == required_inputs &&
                     !task_enqueued[pos])
                 {
                     if (use_generic_runnable_queue)
@@ -1666,6 +1674,9 @@ struct xLUstruct_t
                                         tasks[pos].output_begin + o);
                                 if (out_pos >= task_output_pool.size())
                                     ABORT("GPU3DV2_PCFRAG_TASKFLOW task output pool index is invalid.");
+                                if (task_output_pool[out_pos].gi ==
+                                    task_output_pool[out_pos].gj)
+                                    continue;
                                 int_t gid = task_output_pool[out_pos].gi;
                                 auto it =
                                     runnable_lookahead_row_by_gid.find(gid);

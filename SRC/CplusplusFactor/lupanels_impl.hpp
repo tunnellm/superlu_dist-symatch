@@ -6921,6 +6921,22 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     size_t sparse_task_count =
                         taskflow_actual_task_count(k0, row_frag,
                                                    partner_frag);
+                    if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+                        superlu_sym_v2_pcfrag_taskflow_coalesce_col() &&
+                        sparse_task_count > 0)
+                    {
+                        size_t pair_index_total = xlu_checked_product(
+                            static_cast<size_t>(2), sparse_task_count,
+                            "taskflow coalesced group pair index total");
+                        size_t group_index_total = xlu_checked_sum_size(
+                            index_total, pair_index_total,
+                            "taskflow coalesced group index total");
+                        taskflow_group_index_counts.push_back(
+                            group_index_total);
+                        if (value_total > 0)
+                            taskflow_group_value_counts.push_back(
+                                value_total);
+                    }
                     size_t task_event_count = sparse_task_count;
                     if (superlu_sym_v2_pcfrag_taskflow_async_core())
                     {
@@ -7157,8 +7173,18 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                           [](size_t a, size_t b) { return a > b; });
                 if (superlu_sym_v2_pcfrag_taskflow_async_core())
                 {
-                    taskflow_group_index_counts = taskflow_index_counts;
-                    taskflow_group_value_counts = taskflow_value_counts;
+                    if (taskflow_group_index_counts.empty() &&
+                        taskflow_group_value_counts.empty())
+                    {
+                        taskflow_group_index_counts = taskflow_index_counts;
+                        taskflow_group_value_counts = taskflow_value_counts;
+                    }
+                    std::sort(taskflow_group_index_counts.begin(),
+                              taskflow_group_index_counts.end(),
+                              [](size_t a, size_t b) { return a > b; });
+                    std::sort(taskflow_group_value_counts.begin(),
+                              taskflow_group_value_counts.end(),
+                              [](size_t a, size_t b) { return a > b; });
                 }
 	                std::sort(taskflow_pinned_counts.begin(),
 	                          taskflow_pinned_counts.end(),
@@ -7167,10 +7193,35 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                          taskflow_event_counts.end(),
 	                          [](size_t a, size_t b) { return a > b; });
                 size_t group_slots = active_slots;
+                if (superlu_sym_v2_pcfrag_taskflow_async_core())
+                {
+                    size_t progress_slots = static_cast<size_t>(
+                        SUPERLU_MAX(1,
+                                    superlu_sym_v2_pcfrag_taskflow_effective_progress_budget()));
+                    group_slots = SUPERLU_MAX(group_slots, progress_slots);
+                }
                 if (taskflow_group_index_counts.size() > group_slots)
                     taskflow_group_index_counts.resize(group_slots);
                 if (taskflow_group_value_counts.size() > group_slots)
                     taskflow_group_value_counts.resize(group_slots);
+                if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+                    superlu_sym_v2_pcfrag_taskflow_coalesce_col())
+                {
+                    if (!taskflow_group_index_counts.empty())
+                    {
+                        size_t fill = taskflow_group_index_counts[0];
+                        while (taskflow_group_index_counts.size() <
+                               group_slots)
+                            taskflow_group_index_counts.push_back(fill);
+                    }
+                    if (!taskflow_group_value_counts.empty())
+                    {
+                        size_t fill = taskflow_group_value_counts[0];
+                        while (taskflow_group_value_counts.size() <
+                               group_slots)
+                            taskflow_group_value_counts.push_back(fill);
+                    }
+                }
 		                if (taskflow_index_counts.size() > active_slots)
 		                    taskflow_index_counts.resize(active_slots);
 		                if (taskflow_value_counts.size() > active_slots)
@@ -7265,8 +7316,11 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     }
                     return false;
                 };
-                const int taskflow_device_pool_copies =
+                int taskflow_device_pool_copies =
                     superlu_sym_v2_pcfrag_taskflow_async_core() ? 1 : 2;
+                if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
+                    superlu_sym_v2_pcfrag_taskflow_coalesce_col())
+                    taskflow_device_pool_copies = 2;
 	                for (size_t i = 0; i < taskflow_index_counts.size(); ++i)
 	                {
                     if (i == 0)
