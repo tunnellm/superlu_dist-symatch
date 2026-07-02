@@ -1439,6 +1439,13 @@ struct xLUstruct_t
         std::vector<SymV2PcFragLaunchedTaskGroup>
             launched_task_groups_by_stream[SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         std::vector<int> launched_group_task_ids;
+        std::vector<int> group_task_scratch;
+        std::vector<int> group_row_piece_scratch;
+        std::vector<int> group_partner_piece_scratch;
+        std::vector<int_t> group_pair_row_scratch;
+        std::vector<int_t> group_pair_col_scratch;
+        std::vector<int_t> group_row_index_scratch;
+        std::vector<int_t> group_partner_index_scratch;
         int launched_task_pending_by_stream[
             SYM_V2_PCFRAG_TASK_STREAM_COUNT];
         int launched_task_pending_mode_by_stream[
@@ -1720,6 +1727,13 @@ struct xLUstruct_t
                     launched_task_pending_mode_by_stream[i][mask] = 0;
             }
             launched_group_task_ids.clear();
+            group_task_scratch.clear();
+            group_row_piece_scratch.clear();
+            group_partner_piece_scratch.clear();
+            group_pair_row_scratch.clear();
+            group_pair_col_scratch.clear();
+            group_row_index_scratch.clear();
+            group_partner_index_scratch.clear();
             active_output_key_set.clear();
             active_output_lock_count = 0;
             for (int i = 0; i < SYM_V2_PCFRAG_TASK_STREAM_COUNT; ++i)

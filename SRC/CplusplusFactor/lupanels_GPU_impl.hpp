@@ -4568,9 +4568,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 dst += piece.nrows;
             }
         };
-        auto build_group_index_from_ids =
+        auto build_group_index_from_ids_into =
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
-                const std::vector<int> &piece_ids) -> std::vector<int_t> {
+                const std::vector<int> &piece_ids,
+                std::vector<int_t> &idx) {
             int_t nblocks = static_cast<int_t>(piece_ids.size());
             int_t nrows = 0;
             for (size_t p = 0; p < piece_ids.size(); ++p)
@@ -4581,9 +4582,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit piece id is invalid.");
                 nrows += pieces[static_cast<size_t>(piece_id)].nrows;
             }
-            std::vector<int_t> idx(
+            idx.assign(
                 static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * nblocks + 1 +
-                                    nrows), 0);
+                                    nrows),
+                0);
             idx[0] = nblocks;
             idx[1] = nrows;
             idx[2] = 0;
@@ -4606,6 +4608,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     idx[row_ptr++] =
                         piece.h_index[piece_row_ptr + static_cast<size_t>(r)];
             }
+        };
+        auto build_group_index_from_ids =
+            [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
+                const std::vector<int> &piece_ids) -> std::vector<int_t> {
+            std::vector<int_t> idx;
+            build_group_index_from_ids_into(pieces, piece_ids, idx);
             return idx;
         };
         auto build_group_values_from_ids =
@@ -5531,7 +5539,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     output_locked(task))
                                     return false;
 
-                                std::vector<int> exact_candidate_tids;
+                                std::vector<int> &exact_candidate_tids =
+                                    state.group_task_scratch;
+                                exact_candidate_tids.clear();
                                 exact_candidate_tids.reserve(
                                     static_cast<size_t>(max_candidates));
                                 exact_candidate_tids.push_back(tid);
@@ -5648,10 +5658,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
 
                                 ++symV2PcFragTaskflowStats.grouped_dispatch_attempts;
 
-                                std::vector<int> row_piece_ids;
-                                std::vector<int> partner_piece_ids;
-                                std::vector<int_t> pair_rows;
-                                std::vector<int_t> pair_cols;
+                                std::vector<int> &row_piece_ids =
+                                    state.group_row_piece_scratch;
+                                std::vector<int> &partner_piece_ids =
+                                    state.group_partner_piece_scratch;
+                                std::vector<int_t> &pair_rows =
+                                    state.group_pair_row_scratch;
+                                std::vector<int_t> &pair_cols =
+                                    state.group_pair_col_scratch;
+                                row_piece_ids.clear();
+                                partner_piece_ids.clear();
+                                pair_rows.clear();
+                                pair_cols.clear();
                                 row_piece_ids.reserve(
                                     exact_candidate_tids.size());
                                 partner_piece_ids.reserve(
@@ -5746,13 +5764,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                                 taskflow_gemm_capacity))
                                     return false;
 
-                                std::vector<int_t> row_group =
-                                    build_group_index_from_ids(
-                                        state.row_pieces, row_piece_ids);
-                                std::vector<int_t> col_group =
-                                    build_group_index_from_ids(
-                                        state.partner_pieces,
-                                        partner_piece_ids);
+                                std::vector<int_t> &row_group =
+                                    state.group_row_index_scratch;
+                                std::vector<int_t> &col_group =
+                                    state.group_partner_index_scratch;
+                                build_group_index_from_ids_into(
+                                    state.row_pieces, row_piece_ids,
+                                    row_group);
+                                build_group_index_from_ids_into(
+                                    state.partner_pieces,
+                                    partner_piece_ids, col_group);
                                 size_t row_index_count = row_group.size();
                                 size_t col_index_count = col_group.size();
                                 size_t pair_count =
