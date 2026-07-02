@@ -2614,10 +2614,23 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     size_t mode_counts[16] = {};
     SymV2PcFragGidCounterMap lookahead_col_degrees;
     SymV2PcFragGidCounterMap lookahead_row_degrees;
-    std::map<std::pair<int_t, int>, size_t>
-        lookahead_col_group_degrees;
-    std::map<std::pair<int_t, int>, size_t>
-        lookahead_row_group_degrees;
+    struct TaskflowGroupDegreeKey
+    {
+        int_t gid;
+        int piece;
+        bool operator<(const TaskflowGroupDegreeKey &other) const
+        {
+            if (gid != other.gid)
+                return gid < other.gid;
+            return piece < other.piece;
+        }
+        bool equals(const TaskflowGroupDegreeKey &other) const
+        {
+            return gid == other.gid && piece == other.piece;
+        }
+    };
+    std::vector<TaskflowGroupDegreeKey> lookahead_col_group_keys;
+    std::vector<TaskflowGroupDegreeKey> lookahead_row_group_keys;
     size_t planned_task_count = 0;
     for (int_t cb = 0; cb < nc; ++cb)
     {
@@ -2677,13 +2690,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 if (mode_mask & mask)
                     ++mode_counts[mask];
             ++lookahead_col_degrees[gj];
-            ++lookahead_col_group_degrees[
-                std::make_pair(gj, partner_piece)];
+            lookahead_col_group_keys.push_back(
+                TaskflowGroupDegreeKey{gj, partner_piece});
             if (mode_mask & SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
             {
                 ++lookahead_row_degrees[gi];
-                ++lookahead_row_group_degrees[
-                    std::make_pair(gi, row_piece)];
+                lookahead_row_group_keys.push_back(
+                    TaskflowGroupDegreeKey{gi, row_piece});
             }
         }
     }
@@ -2725,43 +2738,38 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         (row_line_groups < partner_line_groups)
             ? row_line_groups
             : partner_line_groups;
-    auto group_degree_sum =
-        [](const std::map<std::pair<int_t, int>, size_t> &groups)
-            -> size_t {
-        size_t total = 0;
-        for (std::map<std::pair<int_t, int>, size_t>::const_iterator it =
-                 groups.begin();
-             it != groups.end(); ++it)
+    auto summarize_group_keys =
+        [](std::vector<TaskflowGroupDegreeKey> &keys,
+           size_t *group_count, size_t *member_count,
+           size_t *max_members) {
+        std::sort(keys.begin(), keys.end());
+        *group_count = 0;
+        *member_count = keys.size();
+        *max_members = 0;
+        for (size_t i = 0; i < keys.size();)
         {
-            if (total > std::numeric_limits<size_t>::max() - it->second)
-                return std::numeric_limits<size_t>::max();
-            total += it->second;
+            size_t j = i + 1;
+            while (j < keys.size() && keys[j].equals(keys[i]))
+                ++j;
+            size_t members = j - i;
+            ++(*group_count);
+            if (members > *max_members)
+                *max_members = members;
+            i = j;
         }
-        return total;
     };
-    auto group_degree_max =
-        [](const std::map<std::pair<int_t, int>, size_t> &groups)
-            -> size_t {
-        size_t max_degree = 0;
-        for (std::map<std::pair<int_t, int>, size_t>::const_iterator it =
-                 groups.begin();
-             it != groups.end(); ++it)
-            if (it->second > max_degree)
-                max_degree = it->second;
-        return max_degree;
-    };
-    const size_t lookahead_col_group_count =
-        lookahead_col_group_degrees.size();
-    const size_t lookahead_row_group_count =
-        lookahead_row_group_degrees.size();
-    const size_t lookahead_col_group_members =
-        group_degree_sum(lookahead_col_group_degrees);
-    const size_t lookahead_row_group_members =
-        group_degree_sum(lookahead_row_group_degrees);
-    const size_t lookahead_col_group_max_members =
-        group_degree_max(lookahead_col_group_degrees);
-    const size_t lookahead_row_group_max_members =
-        group_degree_max(lookahead_row_group_degrees);
+    size_t lookahead_col_group_count = 0;
+    size_t lookahead_row_group_count = 0;
+    size_t lookahead_col_group_members = 0;
+    size_t lookahead_row_group_members = 0;
+    size_t lookahead_col_group_max_members = 0;
+    size_t lookahead_row_group_max_members = 0;
+    summarize_group_keys(
+        lookahead_col_group_keys, &lookahead_col_group_count,
+        &lookahead_col_group_members, &lookahead_col_group_max_members);
+    summarize_group_keys(
+        lookahead_row_group_keys, &lookahead_row_group_count,
+        &lookahead_row_group_members, &lookahead_row_group_max_members);
     const size_t full_partner_group_count = partner_line_groups;
     const size_t full_row_group_count = row_line_groups;
     size_t full_best_group_count =
