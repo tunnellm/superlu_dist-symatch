@@ -6269,11 +6269,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         -> bool {
                                     if (!strict_output_conflicts)
                                         return false;
-                                    if (compact_output_locks &&
-                                        candidate.output_count == 1 &&
-                                        candidate.output_id !=
-                                            GLOBAL_BLOCK_NOT_FOUND)
+                                    if (compact_output_locks)
                                     {
+                                        // Sparse planning creates each compact
+                                        // output id in exactly one task. Runtime
+                                        // conflicts are covered by output_locked().
                                         return false;
                                     }
                                     const size_t candidate_outputs =
