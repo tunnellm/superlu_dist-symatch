@@ -3209,8 +3209,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         {
             size_t j = coalesced_candidate_group_end(i);
             ++planned_task_count;
-            std::vector<int> unique_partner_pieces;
-            std::vector<int> unique_row_pieces;
+            std::vector<int> &unique_partner_pieces =
+                state.group_partner_piece_scratch;
+            std::vector<int> &unique_row_pieces =
+                state.group_row_piece_scratch;
             int_t ignored_row_lda = 0;
             int_t ignored_partner_lda = 0;
             collect_candidate_group_pieces(

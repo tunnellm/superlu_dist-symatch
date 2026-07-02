@@ -2693,6 +2693,33 @@ struct xLUstruct_t
             global_coalesce[6], global_coalesce[7],
             global_coalesce[8], global_coalesce[9],
             global_coalesce[10]);
+        long long planned_outputs = global_graph[11];
+        long long planned_tasks = global[SYM_V2_PCFRAG_TASKFLOW_TASKS_PLANNED];
+        long long launched_tasks = global[SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED];
+        long long tiled_gemm_tiles =
+            global[SYM_V2_PCFRAG_TASKFLOW_TASK_TILED_GEMM_TILES];
+        long long output_task_delta = planned_outputs - planned_tasks;
+        if (output_task_delta < 0)
+            output_task_delta = 0;
+        double outputs_per_task =
+            planned_tasks > 0
+                ? static_cast<double>(planned_outputs) /
+                      static_cast<double>(planned_tasks)
+                : 0.0;
+        double gemm_tiles_per_launch =
+            launched_tasks > 0
+                ? static_cast<double>(tiled_gemm_tiles) /
+                      static_cast<double>(launched_tasks)
+                : 0.0;
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow granularity: "
+            "planned_outputs=%lld planned_tasks=%lld "
+            "output_task_delta=%lld outputs_per_task=%.3f "
+            "tasks_launched=%lld gemm_tiles=%lld "
+            "gemm_tiles_per_launch=%.3f\n",
+            planned_outputs, planned_tasks, output_task_delta,
+            outputs_per_task, launched_tasks, tiled_gemm_tiles,
+            gemm_tiles_per_launch);
         std::printf(
             "SymFact V2 Pc-fragment taskflow exchange sync sites: "
             "partner=%lld row=%lld row_aggregate=%lld "
