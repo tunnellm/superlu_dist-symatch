@@ -7050,16 +7050,15 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 int_t num_lookahead = getNumLookAhead(options);
                 if (num_lookahead <= 0)
                     num_lookahead = 1;
-	                size_t active_slots =
-	                    static_cast<size_t>(SUPERLU_MAX(static_cast<int_t>(1),
-	                                                    num_lookahead));
-                if (A_gpu.numCudaStreams > 0)
+                size_t active_slots =
+                    static_cast<size_t>(SUPERLU_MAX(static_cast<int_t>(1),
+                                                    num_lookahead));
+                if (A_gpu.numCudaStreams > 0 &&
+                    A_gpu.numCudaStreams <= MAX_CUDA_STREAMS)
                 {
                     size_t stream_slots =
                         static_cast<size_t>(A_gpu.numCudaStreams);
-                    active_slots = SUPERLU_MIN(active_slots, stream_slots);
-                    active_slots = SUPERLU_MAX(active_slots,
-                                               static_cast<size_t>(1));
+                    active_slots = SUPERLU_MAX(active_slots, stream_slots);
                 }
                 if (superlu_sym_v2_pcfrag_taskflow_async_core())
                 {
@@ -7164,21 +7163,6 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 		                    taskflow_index_counts.resize(active_slots);
 		                if (taskflow_value_counts.size() > active_slots)
 		                    taskflow_value_counts.resize(active_slots);
-	                if (superlu_sym_v2_pcfrag_taskflow_async_core())
-	                {
-	                    size_t index_panel_blocks = taskflow_index_counts.size();
-	                    taskflow_index_counts.reserve(
-	                        xlu_checked_product(index_panel_blocks, static_cast<size_t>(2),
-	                                            "taskflow prewarm duplicated index blocks"));
-	                    for (size_t i = 0; i < index_panel_blocks; ++i)
-	                        taskflow_index_counts.push_back(taskflow_index_counts[i]);
-	                    size_t value_panel_blocks = taskflow_value_counts.size();
-	                    taskflow_value_counts.reserve(
-	                        xlu_checked_product(value_panel_blocks, static_cast<size_t>(2),
-	                                            "taskflow prewarm duplicated value blocks"));
-	                    for (size_t i = 0; i < value_panel_blocks; ++i)
-	                        taskflow_value_counts.push_back(taskflow_value_counts[i]);
-	                }
 		                if (taskflow_event_counts.size() > active_slots)
 		                    taskflow_event_counts.resize(active_slots);
 	                size_t pinned_slots =
