@@ -1100,6 +1100,55 @@ static inline int_t dSymV2PcFragTaskflowCompactOutputIdAt(
                state, task, output_offset).output_id;
 }
 
+static inline size_t dSymV2PcFragTaskflowOutputCompletionIndex(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    int_t output_id)
+{
+    std::vector<int_t>::const_iterator it =
+        std::lower_bound(state.output_completion_ids.begin(),
+                         state.output_completion_ids.end(), output_id);
+    if (it == state.output_completion_ids.end() ||
+        *it != output_id)
+        return state.output_completion_ids.size();
+    return static_cast<size_t>(it - state.output_completion_ids.begin());
+}
+
+static inline void dSymV2PcFragTaskflowMarkTaskOutputsComplete(
+    xLUstruct_t<double> &xlu,
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core() ||
+        state.output_completion_ids.empty())
+        return;
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    for (size_t o = 0; o < output_count; ++o)
+    {
+        int_t output_id =
+            dSymV2PcFragTaskflowCompactOutputIdAt(state, task, o);
+        if (output_id < 0)
+        {
+            ++xlu.symV2PcFragTaskflowStats.output_completion_missing_ids;
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task has no compact output id.");
+        }
+        size_t pos =
+            dSymV2PcFragTaskflowOutputCompletionIndex(state, output_id);
+        if (pos >= state.output_completed.size())
+        {
+            ++xlu.symV2PcFragTaskflowStats.output_completion_missing_ids;
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task output id is not in the sparse completion map.");
+        }
+        if (state.output_completed[pos])
+        {
+            ++xlu.symV2PcFragTaskflowStats.output_completion_duplicates;
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW output completed more than once.");
+        }
+        state.output_completed[pos] = 1;
+        ++xlu.symV2PcFragTaskflowStats.output_completion_marks;
+    }
+}
+
 static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -1252,6 +1301,7 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
         return;
     dSymV2PcFragTaskflowReleaseOutputLocks(
         xlu, state, task, strict_output_conflicts, true);
+    dSymV2PcFragTaskflowMarkTaskOutputsComplete(xlu, state, task);
     dSymV2PcFragTaskflowNoteGemmResourceComplete(xlu, state, task);
     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
     task.complete = 1;
@@ -3020,6 +3070,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         }
     };
     std::vector<TaskflowOutputCandidate> output_candidates;
+    std::vector<int_t> output_completion_ids;
     size_t planned_task_count = 0;
     for (int_t cb = 0; cb < nc; ++cb)
     {
@@ -3057,6 +3108,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             output.row_frag_block = row_frag_block;
             output.partner_frag_block = cb;
             assign_taskflow_output_id(output);
+            if (async_core)
+            {
+                if (output.output_id < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW async-core output is missing a compact id.");
+                output_completion_ids.push_back(output.output_id);
+            }
             unsigned char mode_mask =
                 SYM_V2_PCFRAG_TASK_FULL |
                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
@@ -3459,6 +3516,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     }
     size_t planned_output_count =
         coalesce_col_tasks ? output_candidates.size() : planned_task_count;
+    if (async_core)
+    {
+        std::sort(output_completion_ids.begin(),
+                  output_completion_ids.end());
+        std::vector<int_t>::iterator unique_end =
+            std::unique(output_completion_ids.begin(),
+                        output_completion_ids.end());
+        output_completion_ids.erase(unique_end,
+                                    output_completion_ids.end());
+        if (output_completion_ids.size() != planned_output_count)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW output completion map is not one-to-one with planned outputs.");
+        state.output_completion_ids.swap(output_completion_ids);
+        state.output_completed.assign(state.output_completion_ids.size(), 0);
+    }
     size_t row_line_groups = 0;
     size_t partner_line_groups = 0;
     size_t row_line_max_members = 0;
@@ -3585,6 +3656,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     size_t estimated_output_pool_bytes =
         byte_product_or_max(planned_output_count,
                             sizeof(SymV2PcFragOutputKey));
+    size_t estimated_output_completion_bytes =
+        async_core
+            ? byte_product_or_max(state.output_completion_ids.size(),
+                                  sizeof(int_t) + sizeof(unsigned char))
+            : 0;
     size_t estimated_launch_bookkeeping_bytes = 0;
     if (async_core)
     {
@@ -3641,6 +3717,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                         estimated_output_pool_bytes);
     estimated_host_graph_bytes =
         size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_output_completion_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
                         estimated_launch_bookkeeping_bytes);
     size_t estimated_event_count =
         size_sum_or_max(
@@ -3685,6 +3764,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                      estimated_counter_map_bytes);
     add_size_to_stat(symV2PcFragTaskflowStats.graph_output_pool_bytes,
                      estimated_output_pool_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_output_completion_bytes,
+                     estimated_output_completion_bytes);
     add_size_to_stat(
         symV2PcFragTaskflowStats.graph_launch_bookkeeping_bytes,
         estimated_launch_bookkeeping_bytes);

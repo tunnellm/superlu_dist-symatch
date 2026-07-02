@@ -1470,6 +1470,8 @@ struct xLUstruct_t
         std::vector<SymV2PcFragPieceDesc> partner_pieces;
         std::vector<SymV2PcFragTaskDesc> tasks;
         std::vector<SymV2PcFragOutputKey> task_output_pool;
+        std::vector<int_t> output_completion_ids;
+        std::vector<unsigned char> output_completed;
         std::vector<int> row_block_piece;
         std::vector<int> partner_block_piece;
         std::vector<SymV2PcFragPairTaskEntry> pair_task_entries;
@@ -1760,6 +1762,8 @@ struct xLUstruct_t
             partner_pieces.clear();
             tasks.clear();
             task_output_pool.clear();
+            output_completion_ids.clear();
+            output_completed.clear();
             row_block_piece.clear();
             partner_block_piece.clear();
             pair_task_entries.clear();
@@ -1979,6 +1983,9 @@ struct xLUstruct_t
         long long global_output_locks_acquired;
         long long global_output_locks_released;
         long long global_output_locks_live;
+        long long output_completion_marks;
+        long long output_completion_duplicates;
+        long long output_completion_missing_ids;
         long long gemm_resource_live_recorded;
         long long producer_exchange_stream_syncs;
         long long producer_exchange_partner_stream_syncs;
@@ -2020,6 +2027,7 @@ struct xLUstruct_t
         long long graph_gid_queue_bytes;
         long long graph_counter_map_bytes;
         long long graph_output_pool_bytes;
+        long long graph_output_completion_bytes;
         long long graph_launch_bookkeeping_bytes;
         long long graph_event_count_est;
         long long graph_output_count;
@@ -2128,6 +2136,9 @@ struct xLUstruct_t
               global_output_locks_acquired(0),
               global_output_locks_released(0),
               global_output_locks_live(0),
+              output_completion_marks(0),
+              output_completion_duplicates(0),
+              output_completion_missing_ids(0),
               gemm_resource_live_recorded(0),
               producer_exchange_stream_syncs(0),
               producer_exchange_partner_stream_syncs(0),
@@ -2163,6 +2174,7 @@ struct xLUstruct_t
               graph_queue_bytes(0), graph_csr_bytes(0),
               graph_mode_queue_bytes(0), graph_gid_queue_bytes(0),
               graph_counter_map_bytes(0), graph_output_pool_bytes(0),
+              graph_output_completion_bytes(0),
               graph_launch_bookkeeping_bytes(0),
               graph_event_count_est(0),
               graph_output_count(0),
@@ -2508,7 +2520,7 @@ struct xLUstruct_t
                 static_cast<long long>(
                     symV2PcFragTaskflowGlobalOutputLockState.size() *
                     sizeof(unsigned char));
-        long long local_graph[22] = {
+        long long local_graph[23] = {
             symV2PcFragTaskflowStats.graph_host_bytes,
             symV2PcFragTaskflowStats.graph_task_desc_bytes,
             symV2PcFragTaskflowStats.graph_pair_bytes,
@@ -2530,9 +2542,10 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.graph_partner_line_groups,
             symV2PcFragTaskflowStats.graph_line_group_lower_bound,
             symV2PcFragTaskflowStats.graph_row_line_max_members,
-            symV2PcFragTaskflowStats.graph_partner_line_max_members
+            symV2PcFragTaskflowStats.graph_partner_line_max_members,
+            symV2PcFragTaskflowStats.graph_output_completion_bytes
         };
-        long long global_graph[22] = {};
+        long long global_graph[23] = {};
         long long local_coalesce[20] = {
             symV2PcFragTaskflowStats.coalesce_lacol_groups,
             symV2PcFragTaskflowStats.coalesce_lacol_members,
@@ -2582,6 +2595,12 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.producer_exchange_row_direct_stream_syncs
         };
         long long global_exchange_sync_sites[4] = {};
+        long long local_output_completion[3] = {
+            symV2PcFragTaskflowStats.output_completion_marks,
+            symV2PcFragTaskflowStats.output_completion_duplicates,
+            symV2PcFragTaskflowStats.output_completion_missing_ids
+        };
+        long long global_output_completion[3] = {};
         long long local_group_no_candidate[5] = {
             symV2PcFragTaskflowStats.grouped_no_candidate_fallbacks,
             symV2PcFragTaskflowStats.grouped_no_candidate_fallbacks_by_mode[
@@ -2608,7 +2627,7 @@ struct xLUstruct_t
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_group, global_group, 21, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
-            MPI_Reduce(local_graph, global_graph, 22, MPI_LONG_LONG,
+            MPI_Reduce(local_graph, global_graph, 23, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_coalesce, global_coalesce, 16,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
@@ -2636,6 +2655,9 @@ struct xLUstruct_t
             MPI_Reduce(local_exchange_sync_sites,
                        global_exchange_sync_sites, 4, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_output_completion,
+                       global_output_completion, 3, MPI_LONG_LONG,
+                       MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_group_no_candidate,
                        global_group_no_candidate, 5, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
@@ -2652,7 +2674,7 @@ struct xLUstruct_t
                 global[i] = local[i];
             for (int i = 0; i < 21; ++i)
                 global_group[i] = local_group[i];
-            for (int i = 0; i < 22; ++i)
+            for (int i = 0; i < 23; ++i)
                 global_graph[i] = local_graph[i];
             for (int i = 0; i < 20; ++i)
                 global_coalesce[i] = local_coalesce[i];
@@ -2663,6 +2685,8 @@ struct xLUstruct_t
             for (int i = 0; i < 4; ++i)
                 global_exchange_sync_sites[i] =
                     local_exchange_sync_sites[i];
+            for (int i = 0; i < 3; ++i)
+                global_output_completion[i] = local_output_completion[i];
             for (int i = 0; i < 5; ++i)
                 global_group_no_candidate[i] =
                     local_group_no_candidate[i];
@@ -2829,7 +2853,8 @@ struct xLUstruct_t
             "row_line_groups=%lld partner_line_groups=%lld "
             "line_group_lower_bound=%lld "
             "row_line_max_members_rank_sum=%lld "
-            "partner_line_max_members_rank_sum=%lld\n",
+            "partner_line_max_members_rank_sum=%lld "
+            "output_completion_bytes=%lld\n",
             global_graph[0], global_graph[1], global_graph[2],
             global_graph[3], global_graph[4], global_graph[5],
             global_graph[6], global_graph[7], global_graph[8],
@@ -2837,7 +2862,7 @@ struct xLUstruct_t
             global_graph[12], global_graph[13], global_graph[14],
             global_graph[15], global_graph[16], global_graph[17],
             global_graph[18], global_graph[19], global_graph[20],
-            global_graph[21]);
+            global_graph[21], global_graph[22]);
         std::printf(
             "SymFact V2 Pc-fragment taskflow coalescing: "
             "lookahead_col_groups=%lld lookahead_col_members=%lld "
@@ -2989,6 +3014,11 @@ struct xLUstruct_t
             if (task_completion_event_success_mismatch < 0)
                 task_completion_event_success_mismatch =
                     -task_completion_event_success_mismatch;
+            long long output_completion_mark_mismatch =
+                global_output_completion[0] - global_graph[13];
+            if (output_completion_mark_mismatch < 0)
+                output_completion_mark_mismatch =
+                    -output_completion_mark_mismatch;
             if (superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch())
             {
                 gemm_tail_update_mismatch = 0;
@@ -3022,7 +3052,11 @@ struct xLUstruct_t
                 "producer_recv_pageable_posts=%lld "
                 "producer_progress_vector_growths=%lld "
                 "task_completion_event_successes=%lld "
-                "task_completion_event_success_mismatch=%lld\n",
+                "task_completion_event_success_mismatch=%lld "
+                "output_completion_marks=%lld "
+                "output_completion_duplicates=%lld "
+                "output_completion_missing_ids=%lld "
+                "output_completion_mark_mismatch=%lld\n",
                 late_allocs,
                 global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_WAITS],
                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_WAIT_CALLS],
@@ -3051,7 +3085,11 @@ struct xLUstruct_t
                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS],
                 global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS],
                 global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_SUCCESSES],
-                task_completion_event_success_mismatch);
+                task_completion_event_success_mismatch,
+                global_output_completion[0],
+                global_output_completion[1],
+                global_output_completion[2],
+                output_completion_mark_mismatch);
             if (superlu_sym_v2_pcfrag_taskflow_async_core_check() &&
                 (late_allocs != 0 ||
                  global[SYM_V2_PCFRAG_TASKFLOW_TASK_COMPLETION_EVENT_WAITS] != 0 ||
@@ -3068,7 +3106,10 @@ struct xLUstruct_t
                  global[SYM_V2_PCFRAG_TASKFLOW_GLOBAL_OUTPUT_LOCKS_LIVE] != 0 ||
                  global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_RECV_PAGEABLE_POSTS] != 0 ||
                  global[SYM_V2_PCFRAG_TASKFLOW_PRODUCER_PROGRESS_VECTOR_GROWTHS] != 0 ||
-                 task_completion_event_success_mismatch != 0))
+                 task_completion_event_success_mismatch != 0 ||
+                 global_output_completion[1] != 0 ||
+                 global_output_completion[2] != 0 ||
+                 output_completion_mark_mismatch != 0))
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK detected a contract violation.");
         }
         std::fflush(stdout);
