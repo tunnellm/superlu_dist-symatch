@@ -5191,6 +5191,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 pair_cols.reserve(task_output_count);
                 auto local_piece_index =
                     [](std::vector<int> &ids, int piece_id) -> int_t {
+                    if (!ids.empty() && ids.back() == piece_id)
+                        return static_cast<int_t>(ids.size() - 1);
                     for (size_t p = 0; p < ids.size(); ++p)
                         if (ids[p] == piece_id)
                             return static_cast<int_t>(p);
@@ -6461,6 +6463,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 auto local_piece_index =
                                     [](std::vector<int> &ids,
                                        int piece_id) -> int_t {
+                                    if (!ids.empty() &&
+                                        ids.back() == piece_id)
+                                        return static_cast<int_t>(
+                                            ids.size() - 1);
                                     for (size_t p = 0; p < ids.size(); ++p)
                                         if (ids[p] == piece_id)
                                             return static_cast<int_t>(p);
