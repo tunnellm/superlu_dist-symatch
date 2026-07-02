@@ -1113,6 +1113,63 @@ static inline size_t dSymV2PcFragTaskflowOutputCompletionIndex(
     return static_cast<size_t>(it - state.output_completion_ids.begin());
 }
 
+static inline size_t dSymV2PcFragTaskflowOutputCompletionIndexAt(
+    const xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task,
+    size_t output_offset, int_t output_id)
+{
+    const xLUstruct_t<double>::SymV2PcFragOutputKey &key =
+        dSymV2PcFragTaskflowOutputAt(state, task, output_offset);
+    if (key.output_completion_index >= 0)
+    {
+        size_t pos = static_cast<size_t>(key.output_completion_index);
+        if (pos < state.output_completion_ids.size() &&
+            state.output_completion_ids[pos] == output_id)
+            return pos;
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW output completion index does not match its output id.");
+    }
+    return dSymV2PcFragTaskflowOutputCompletionIndex(state, output_id);
+}
+
+static inline void dSymV2PcFragTaskflowClaimTaskOutputs(
+    xLUstruct_t<double> &xlu,
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core() ||
+        state.output_completion_ids.empty())
+        return;
+    if (state.output_claimed.size() != state.output_completion_ids.size())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW output claim map is not initialized.");
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    for (size_t o = 0; o < output_count; ++o)
+    {
+        int_t output_id =
+            dSymV2PcFragTaskflowCompactOutputIdAt(state, task, o);
+        if (output_id < 0)
+        {
+            ++xlu.symV2PcFragTaskflowStats.output_claim_missing_ids;
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW launched task has no compact output id.");
+        }
+        size_t pos =
+            dSymV2PcFragTaskflowOutputCompletionIndexAt(
+                state, task, o, output_id);
+        if (pos >= state.output_claimed.size())
+        {
+            ++xlu.symV2PcFragTaskflowStats.output_claim_missing_ids;
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW launched task output id is not in the sparse completion map.");
+        }
+        if (state.output_claimed[pos])
+        {
+            ++xlu.symV2PcFragTaskflowStats.output_claim_duplicates;
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW output claimed by more than one task launch.");
+        }
+        state.output_claimed[pos] = 1;
+        ++xlu.symV2PcFragTaskflowStats.output_claim_marks;
+    }
+}
+
 static inline void dSymV2PcFragTaskflowMarkTaskOutputsComplete(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -1133,11 +1190,17 @@ static inline void dSymV2PcFragTaskflowMarkTaskOutputsComplete(
             ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task has no compact output id.");
         }
         size_t pos =
-            dSymV2PcFragTaskflowOutputCompletionIndex(state, output_id);
+            dSymV2PcFragTaskflowOutputCompletionIndexAt(
+                state, task, o, output_id);
         if (pos >= state.output_completed.size())
         {
             ++xlu.symV2PcFragTaskflowStats.output_completion_missing_ids;
             ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task output id is not in the sparse completion map.");
+        }
+        if (!state.output_claimed.empty() && !state.output_claimed[pos])
+        {
+            ++xlu.symV2PcFragTaskflowStats.output_claim_missing_ids;
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task output was never claimed by a launch.");
         }
         if (state.output_completed[pos])
         {
@@ -3528,6 +3591,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         if (output_completion_ids.size() != planned_output_count)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW output completion map is not one-to-one with planned outputs.");
         state.output_completion_ids.swap(output_completion_ids);
+        state.output_claimed.assign(state.output_completion_ids.size(), 0);
         state.output_completed.assign(state.output_completion_ids.size(), 0);
     }
     size_t row_line_groups = 0;
@@ -3659,7 +3723,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     size_t estimated_output_completion_bytes =
         async_core
             ? byte_product_or_max(state.output_completion_ids.size(),
-                                  sizeof(int_t) + sizeof(unsigned char))
+                                  sizeof(int_t) +
+                                      2 * sizeof(unsigned char))
             : 0;
     size_t estimated_launch_bookkeeping_bytes = 0;
     if (async_core)
@@ -4004,6 +4069,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         state.incomplete_lookahead_row_members_by_gid,
         state.launched_lookahead_row_members_by_gid,
         state.launched_lookahead_row_members_by_gid_by_stream);
+    auto assign_output_completion_index =
+        [&](SymV2PcFragOutputKey &output) {
+        if (!async_core)
+            return;
+        if (output.output_id < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW output has no compact completion id.");
+        size_t pos =
+            dSymV2PcFragTaskflowOutputCompletionIndex(
+                state, output.output_id);
+        if (pos >= state.output_completion_ids.size() ||
+            pos > static_cast<size_t>(std::numeric_limits<int>::max()))
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW output completion id is missing during planning.");
+        output.output_completion_index = static_cast<int>(pos);
+    };
     auto create_task_for_output =
         [&](int row_piece, int partner_piece,
             SymV2PcFragOutputKey output,
@@ -4038,6 +4117,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         task.required_inputs = 2;
         output.row_piece = row_piece;
         output.partner_piece = partner_piece;
+        assign_output_completion_index(output);
         state.task_output_pool.push_back(output);
         task.lookahead_col_gid_index =
             state.incomplete_lookahead_col_members_by_gid.index_of(
@@ -4189,6 +4269,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             SymV2PcFragOutputKey output = output_candidates[p].output;
             output.row_piece = output_candidates[p].row_piece;
             output.partner_piece = output_candidates[p].partner_piece;
+            assign_output_completion_index(output);
             state.task_output_pool.push_back(output);
         }
         task.lookahead_col_gid_index =
@@ -5041,6 +5122,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressGPU(
             ABORT("GPU3DV2_PCFRAG_TASKFLOW progress task is missing owned device storage.");
         if (!all_pieces_ready())
             ++symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready;
+        dSymV2PcFragTaskflowClaimTaskOutputs(*this, state, task);
         lock_outputs(task);
         if (row.ready_event != NULL)
             gpuErrchk(cudaStreamWaitEvent(stream, row.ready_event, 0));
@@ -5493,6 +5575,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW task is missing owned device storage.");
                 if (!all_pieces_ready())
                     ++symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready;
+                dSymV2PcFragTaskflowClaimTaskOutputs(*this, state, task);
                 lock_outputs(task);
                 if (row.ready_event != NULL)
                     gpuErrchk(cudaStreamWaitEvent(stream, row.ready_event, 0));
@@ -6050,6 +6133,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 int_t *pair_cols_gpu = pair_rows_gpu + pair_count;
                 double *row_group_val = group_value_pool;
                 double *col_group_val = row_group_val + row_value_count;
+                dSymV2PcFragTaskflowClaimTaskOutputs(*this, state, task);
                 lock_outputs(task);
                 gpuErrchk(cudaMemcpyAsync(
                     row_group_gpu, row_group.data(),
@@ -6148,6 +6232,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW single task is missing owned resources.");
             if (!all_pieces_ready())
                 ++symV2PcFragTaskflowStats.early_task_launches_before_full_panel_ready;
+            dSymV2PcFragTaskflowClaimTaskOutputs(*this, state, task);
             lock_outputs(task);
             if (row.ready_event != NULL)
                 gpuErrchk(cudaStreamWaitEvent(
@@ -6502,8 +6587,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         group_value_capacity)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async value arena exhausted.");
                 for (size_t i = 0; i < group_task_ids.size(); ++i)
-                    lock_outputs(state.tasks[static_cast<size_t>(
-                        group_task_ids[i])]);
+                {
+                    SymV2PcFragTaskDesc &group_task =
+                        state.tasks[static_cast<size_t>(group_task_ids[i])];
+                    dSymV2PcFragTaskflowClaimTaskOutputs(
+                        *this, state, group_task);
+                    lock_outputs(group_task);
+                }
                 int_t *row_group_gpu = group_index_pool;
                 int_t *col_group_gpu =
                     group_index_pool + row_index_count;
@@ -6748,7 +6838,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     }
                 }
                 for (size_t i = 0; i < locked_tasks.size(); ++i)
+                {
+                    dSymV2PcFragTaskflowClaimTaskOutputs(
+                        *this, state, *locked_tasks[i]);
                     lock_outputs(*locked_tasks[i]);
+                }
             }
             int_t row_lda = 0;
             for (int_t rb = row_start; rb < row_end; ++rb)
@@ -7440,9 +7534,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
 
                                 for (size_t ci = 0;
                                      ci < exact_candidate_tids.size(); ++ci)
-                                    lock_outputs(
+                                {
+                                    SymV2PcFragTaskDesc &candidate =
                                         state.tasks[static_cast<size_t>(
-                                            exact_candidate_tids[ci])]);
+                                            exact_candidate_tids[ci])];
+                                    dSymV2PcFragTaskflowClaimTaskOutputs(
+                                        *this, state, candidate);
+                                    lock_outputs(candidate);
+                                }
 
                                 gpuErrchk(cudaMemcpyAsync(
                                     row_group_gpu, row_group.data(),
@@ -7884,9 +7983,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         group_value_pool + row_value_count;
                                     for (size_t ci = 0;
                                          ci < candidate_tids.size(); ++ci)
-                                        lock_outputs(
+                                    {
+                                        SymV2PcFragTaskDesc &candidate =
                                             state.tasks[static_cast<size_t>(
-                                                candidate_tids[ci])]);
+                                                candidate_tids[ci])];
+                                        dSymV2PcFragTaskflowClaimTaskOutputs(
+                                            *this, state, candidate);
+                                        lock_outputs(candidate);
+                                    }
                                     gpuErrchk(cudaMemcpyAsync(
                                         row_group_gpu, row_group.data(),
                                         sizeof(int_t) * row_index_count,
