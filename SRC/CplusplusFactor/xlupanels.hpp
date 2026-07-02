@@ -1916,6 +1916,11 @@ struct xLUstruct_t
         long long graph_host_bytes_max_panel;
         long long graph_event_count_max_panel;
         long long graph_output_count_max_panel;
+        long long graph_row_line_groups;
+        long long graph_partner_line_groups;
+        long long graph_line_group_lower_bound;
+        long long graph_row_line_max_members;
+        long long graph_partner_line_max_members;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -2005,7 +2010,12 @@ struct xLUstruct_t
               graph_output_count(0),
               graph_host_bytes_max_panel(0),
               graph_event_count_max_panel(0),
-              graph_output_count_max_panel(0)
+              graph_output_count_max_panel(0),
+              graph_row_line_groups(0),
+              graph_partner_line_groups(0),
+              graph_line_group_lower_bound(0),
+              graph_row_line_max_members(0),
+              graph_partner_line_max_members(0)
         {
         }
     };
@@ -2293,7 +2303,7 @@ struct xLUstruct_t
                 static_cast<long long>(
                     symV2PcFragTaskflowGlobalOutputLockState.size() *
                     sizeof(unsigned char));
-        long long local_graph[15] = {
+        long long local_graph[20] = {
             symV2PcFragTaskflowStats.graph_host_bytes,
             symV2PcFragTaskflowStats.graph_task_desc_bytes,
             symV2PcFragTaskflowStats.graph_pair_bytes,
@@ -2308,9 +2318,14 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.graph_output_count,
             symV2PcFragTaskflowStats.graph_host_bytes_max_panel,
             symV2PcFragTaskflowStats.graph_event_count_max_panel,
-            symV2PcFragTaskflowStats.graph_output_count_max_panel
+            symV2PcFragTaskflowStats.graph_output_count_max_panel,
+            symV2PcFragTaskflowStats.graph_row_line_groups,
+            symV2PcFragTaskflowStats.graph_partner_line_groups,
+            symV2PcFragTaskflowStats.graph_line_group_lower_bound,
+            symV2PcFragTaskflowStats.graph_row_line_max_members,
+            symV2PcFragTaskflowStats.graph_partner_line_max_members
         };
-        long long global_graph[15] = {};
+        long long global_graph[20] = {};
         if (grid3d != NULL)
         {
             MPI_Reduce(local, global,
@@ -2318,7 +2333,7 @@ struct xLUstruct_t
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_group, global_group, 10, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
-            MPI_Reduce(local_graph, global_graph, 15, MPI_LONG_LONG,
+            MPI_Reduce(local_graph, global_graph, 20, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
@@ -2330,7 +2345,7 @@ struct xLUstruct_t
                 global[i] = local[i];
             for (int i = 0; i < 10; ++i)
                 global_group[i] = local_group[i];
-            for (int i = 0; i < 15; ++i)
+            for (int i = 0; i < 20; ++i)
                 global_graph[i] = local_graph[i];
         }
         std::printf(
@@ -2454,12 +2469,18 @@ struct xLUstruct_t
             "global_output_lock_bytes=%lld event_count_est=%lld "
             "output_count=%lld host_graph_bytes_max_panel_sum=%lld "
             "event_count_max_panel_sum=%lld "
-            "output_count_max_panel_sum=%lld\n",
+            "output_count_max_panel_sum=%lld "
+            "row_line_groups=%lld partner_line_groups=%lld "
+            "line_group_lower_bound=%lld "
+            "row_line_max_members_rank_sum=%lld "
+            "partner_line_max_members_rank_sum=%lld\n",
             global_graph[0], global_graph[1], global_graph[2],
             global_graph[3], global_graph[4], global_graph[5],
             global_graph[6], global_graph[7], global_graph[8],
             global_graph[9], global_graph[10], global_graph[11],
-            global_graph[12], global_graph[13], global_graph[14]);
+            global_graph[12], global_graph[13], global_graph[14],
+            global_graph[15], global_graph[16], global_graph[17],
+            global_graph[18], global_graph[19]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =

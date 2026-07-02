@@ -2661,6 +2661,30 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         std::fflush(stderr);
         ABORT("GPU3DV2_PCFRAG_TASKFLOW planned task count exceeds guard.");
     }
+    size_t row_line_groups = 0;
+    size_t partner_line_groups = 0;
+    size_t row_line_max_members = 0;
+    size_t partner_line_max_members = 0;
+    for (size_t i = 0; i < row_task_degrees.size(); ++i)
+    {
+        if (row_task_degrees[i] == 0)
+            continue;
+        ++row_line_groups;
+        if (row_task_degrees[i] > row_line_max_members)
+            row_line_max_members = row_task_degrees[i];
+    }
+    for (size_t i = 0; i < partner_task_degrees.size(); ++i)
+    {
+        if (partner_task_degrees[i] == 0)
+            continue;
+        ++partner_line_groups;
+        if (partner_task_degrees[i] > partner_line_max_members)
+            partner_line_max_members = partner_task_degrees[i];
+    }
+    size_t line_group_lower_bound =
+        (row_line_groups < partner_line_groups)
+            ? row_line_groups
+            : partner_line_groups;
     auto byte_product_or_max = [](size_t count, size_t bytes) -> size_t {
         if (bytes != 0 &&
             count > std::numeric_limits<size_t>::max() / bytes)
@@ -2788,6 +2812,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                      estimated_event_count);
     max_size_to_stat(symV2PcFragTaskflowStats.graph_output_count_max_panel,
                      planned_task_count);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_row_line_groups,
+                     row_line_groups);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_partner_line_groups,
+                     partner_line_groups);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_line_group_lower_bound,
+                     line_group_lower_bound);
+    max_size_to_stat(symV2PcFragTaskflowStats.graph_row_line_max_members,
+                     row_line_max_members);
+    max_size_to_stat(
+        symV2PcFragTaskflowStats.graph_partner_line_max_members,
+        partner_line_max_members);
     const char *taskflow_plan_diag =
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG");
     if (taskflow_plan_diag != NULL && taskflow_plan_diag[0] != '\0')
@@ -2801,7 +2836,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 "mode_queue_bytes=%zu gid_queue_bytes=%zu "
                 "counter_map_bytes=%zu output_lock_bytes=%zu "
                 "event_count_est=%zu use_generic_queue=%d "
-                "mode_queue_mask=%u\n",
+                "mode_queue_mask=%u row_line_groups=%zu "
+                "partner_line_groups=%zu line_group_lower_bound=%zu "
+                "row_line_max_members=%zu "
+                "partner_line_max_members=%zu\n",
                 iam, static_cast<long long>(k),
                 state.row_pieces.size(), state.partner_pieces.size(),
                 planned_task_count, lookahead_col_degrees.size(),
@@ -2813,7 +2851,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 state.row_pieces.size() + state.partner_pieces.size() +
                     planned_task_count,
                 state.use_generic_runnable_queue ? 1 : 0,
-                static_cast<unsigned>(state.runnable_mode_queue_mask));
+                static_cast<unsigned>(state.runnable_mode_queue_mask),
+                row_line_groups, partner_line_groups,
+                line_group_lower_bound, row_line_max_members,
+                partner_line_max_members);
         fflush(stderr);
         const char *taskflow_plan_diag_abort =
             std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG_ABORT");
