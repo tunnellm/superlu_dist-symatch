@@ -5533,6 +5533,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         -> bool {
                                     if (!strict_output_conflicts)
                                         return false;
+                                    if (compact_output_locks &&
+                                        candidate.output_count == 1 &&
+                                        candidate.output_id !=
+                                            GLOBAL_BLOCK_NOT_FOUND)
+                                    {
+                                        return false;
+                                    }
                                     const size_t candidate_outputs =
                                         dSymV2PcFragTaskflowOutputCount(
                                             candidate);
