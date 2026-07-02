@@ -676,15 +676,7 @@ static inline int superlu_sym_v2_pcfrag_taskflow_progress_budget()
 
 static inline int superlu_sym_v2_pcfrag_taskflow_effective_progress_budget()
 {
-    int budget = superlu_sym_v2_pcfrag_taskflow_progress_budget();
-    if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
-        superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch())
-    {
-        int group_budget = superlu_sym_v2_pcfrag_taskflow_group_budget();
-        if (group_budget > 0 && group_budget < budget)
-            budget = group_budget;
-    }
-    return budget;
+    return superlu_sym_v2_pcfrag_taskflow_progress_budget();
 }
 
 static inline int superlu_sym_v2_pcfrag_taskflow_final_predrain_rounds()
