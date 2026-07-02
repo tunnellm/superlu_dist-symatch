@@ -2962,6 +2962,35 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 state.partner_pieces[
                     static_cast<size_t>(partner_piece_ids[c])].nrows;
     };
+    auto append_candidate_group_pieces =
+        [&](size_t begin, size_t end,
+            std::vector<int> &row_piece_ids,
+            std::vector<int> &partner_piece_ids,
+            int_t *row_lda, int_t *partner_lda) {
+        for (size_t p = begin; p < end; ++p)
+        {
+            int row_piece = output_candidates[p].row_piece;
+            int partner_piece = output_candidates[p].partner_piece;
+            if (row_piece < 0 ||
+                static_cast<size_t>(row_piece) >= state.row_pieces.size() ||
+                partner_piece < 0 ||
+                static_cast<size_t>(partner_piece) >=
+                    state.partner_pieces.size())
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced candidate has invalid piece id.");
+            size_t old_rows = row_piece_ids.size();
+            append_unique_piece_id(row_piece_ids, row_piece);
+            if (row_piece_ids.size() != old_rows)
+                *row_lda +=
+                    state.row_pieces[static_cast<size_t>(row_piece)]
+                        .nrows;
+            size_t old_partners = partner_piece_ids.size();
+            append_unique_piece_id(partner_piece_ids, partner_piece);
+            if (partner_piece_ids.size() != old_partners)
+                *partner_lda +=
+                    state.partner_pieces[
+                        static_cast<size_t>(partner_piece)].nrows;
+        }
+    };
     auto candidate_group_fits_gemm_capacity =
         [&](int_t row_lda, int_t partner_lda) -> bool {
         if (row_lda <= 0 || partner_lda <= 0)
@@ -2983,29 +3012,45 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     };
     auto coalesced_candidate_group_end = [&](size_t begin) -> size_t {
         size_t fallback = same_partner_candidate_group_end(begin);
-        size_t end = fallback;
-        while (end < output_candidates.size() &&
-               output_candidates[end].output.gj ==
-                   output_candidates[begin].output.gj)
-            ++end;
-        if (end == fallback)
-            return fallback;
-
         std::vector<int> row_piece_ids;
         std::vector<int> partner_piece_ids;
         int_t row_lda = 0;
         int_t partner_lda = 0;
         collect_candidate_group_pieces(
-            begin, end, row_piece_ids, partner_piece_ids, &row_lda,
+            begin, fallback, row_piece_ids, partner_piece_ids, &row_lda,
             &partner_lda);
-        size_t dense_pairs =
-            row_piece_ids.size() * partner_piece_ids.size();
-        size_t output_count = end - begin;
-        if (dense_pairs > output_count * 8)
-            return fallback;
-        if (!candidate_group_fits_gemm_capacity(row_lda, partner_lda))
-            return fallback;
-        return end;
+        size_t best = fallback;
+        size_t next = fallback;
+        while (next < output_candidates.size() &&
+               output_candidates[next].output.gj ==
+                   output_candidates[begin].output.gj)
+        {
+            size_t next_end = same_partner_candidate_group_end(next);
+            std::vector<int> trial_row_piece_ids = row_piece_ids;
+            std::vector<int> trial_partner_piece_ids = partner_piece_ids;
+            int_t trial_row_lda = row_lda;
+            int_t trial_partner_lda = partner_lda;
+            append_candidate_group_pieces(
+                next, next_end, trial_row_piece_ids,
+                trial_partner_piece_ids, &trial_row_lda,
+                &trial_partner_lda);
+            size_t dense_pairs =
+                trial_row_piece_ids.size() *
+                trial_partner_piece_ids.size();
+            size_t output_count = next_end - begin;
+            if (dense_pairs > output_count * 8)
+                break;
+            if (!candidate_group_fits_gemm_capacity(
+                    trial_row_lda, trial_partner_lda))
+                break;
+            row_piece_ids.swap(trial_row_piece_ids);
+            partner_piece_ids.swap(trial_partner_piece_ids);
+            row_lda = trial_row_lda;
+            partner_lda = trial_partner_lda;
+            best = next_end;
+            next = next_end;
+        }
+        return best;
     };
     if (coalesce_col_tasks)
     {
