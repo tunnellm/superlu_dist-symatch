@@ -1034,13 +1034,17 @@ struct xLUstruct_t
         int_t output_id;
         int row_piece;
         int partner_piece;
+        int_t row_frag_block;
+        int_t partner_frag_block;
 
         SymV2PcFragOutputKey()
             : gj(GLOBAL_BLOCK_NOT_FOUND), gi(GLOBAL_BLOCK_NOT_FOUND),
               local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
               local_block_i(GLOBAL_BLOCK_NOT_FOUND),
               output_id(GLOBAL_BLOCK_NOT_FOUND),
-              row_piece(-1), partner_piece(-1)
+              row_piece(-1), partner_piece(-1),
+              row_frag_block(GLOBAL_BLOCK_NOT_FOUND),
+              partner_frag_block(GLOBAL_BLOCK_NOT_FOUND)
         {
         }
 
@@ -1048,7 +1052,9 @@ struct xLUstruct_t
             : gj(gj_), gi(gi_), local_panel_j(GLOBAL_BLOCK_NOT_FOUND),
               local_block_i(GLOBAL_BLOCK_NOT_FOUND),
               output_id(GLOBAL_BLOCK_NOT_FOUND),
-              row_piece(-1), partner_piece(-1)
+              row_piece(-1), partner_piece(-1),
+              row_frag_block(GLOBAL_BLOCK_NOT_FOUND),
+              partner_frag_block(GLOBAL_BLOCK_NOT_FOUND)
         {
         }
 

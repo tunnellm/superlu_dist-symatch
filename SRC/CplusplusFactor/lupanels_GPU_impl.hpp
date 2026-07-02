@@ -2361,8 +2361,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         !superlu_sym_v2_pcfrag_taskflow_atomic_output_scatter())
         ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE strict mode requires global output locks unless GPU3DV2_PCFRAG_TASKFLOW_ATOMIC_OUTPUT_SCATTER=1.");
     if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
-        superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0)
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split task planning; currently disabled.");
+        superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0 &&
+        !superlu_sym_v2_pcfrag_taskflow_coalesce_col())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires async-core column coalescing.");
     if (!superlu_sym_v2_row_l_plan_v2_exchange() ||
         !superlu_sym_v2_row_l_direct_recv() ||
         !superlu_sym_v2_row_l_compressed_plan() ||
@@ -2584,8 +2585,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     };
     const int taskflow_piece_max_rows =
         superlu_sym_v2_pcfrag_taskflow_piece_max_rows();
-    if (taskflow_piece_max_rows > 0)
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split sparse task planning.");
+    if (taskflow_piece_max_rows > 0 &&
+        !(async_core && coalesce_col_tasks))
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires async-core column coalescing.");
     auto build_piece_ranges =
         [&](const std::vector<int_t> &frag, int_t nb,
             std::vector<TaskflowPieceRange> &ranges) {
@@ -2756,6 +2758,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     {
         int_t gid;
         int piece;
+        int_t block;
         bool operator<(const TaskflowGidPiece &other) const
         {
             return gid < other.gid;
@@ -2768,16 +2771,18 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         int piece = state.row_block_piece[static_cast<size_t>(rb)];
         if (piece >= 0)
             row_gid_to_piece.push_back(
-                TaskflowGidPiece{gid_at(row_frag, rb), piece});
+                TaskflowGidPiece{gid_at(row_frag, rb), piece, rb});
     }
     std::sort(row_gid_to_piece.begin(), row_gid_to_piece.end());
-    auto row_piece_for_gid = [&](int_t gid) -> int {
-        TaskflowGidPiece key{gid, -1};
+    auto row_piece_for_gid = [&](int_t gid, int_t *block) -> int {
+        TaskflowGidPiece key{gid, -1, GLOBAL_BLOCK_NOT_FOUND};
         std::vector<TaskflowGidPiece>::const_iterator it =
             std::lower_bound(
                 row_gid_to_piece.begin(), row_gid_to_piece.end(), key);
         if (it == row_gid_to_piece.end() || it->gid != gid)
             return -1;
+        if (block != NULL)
+            *block = it->block;
         return it->piece;
     };
     std::vector<size_t> row_task_degrees(state.row_pieces.size(), 0);
@@ -2848,13 +2853,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             int_t gi = dst_panel.gid(li);
             if (gi == k || gi < gj)
                 continue;
-            int row_piece = row_piece_for_gid(gi);
+            int_t row_frag_block = GLOBAL_BLOCK_NOT_FOUND;
+            int row_piece = row_piece_for_gid(gi, &row_frag_block);
             if (row_piece < 0 ||
                 static_cast<size_t>(row_piece) >= state.row_pieces.size())
                 continue;
             SymV2PcFragOutputKey output(gj, gi);
             output.local_panel_j = local_panel_j;
             output.local_block_i = li;
+            output.row_frag_block = row_frag_block;
+            output.partner_frag_block = cb;
             if (compact_output_locks)
             {
                 if (static_cast<size_t>(local_panel_j + 1) >=
@@ -3658,13 +3666,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             int_t gi = dst_panel.gid(li);
             if (gi == k || gi < gj)
                 continue;
-            int row_piece = row_piece_for_gid(gi);
+            int_t row_frag_block = GLOBAL_BLOCK_NOT_FOUND;
+            int row_piece = row_piece_for_gid(gi, &row_frag_block);
             if (row_piece < 0 ||
                 static_cast<size_t>(row_piece) >= state.row_pieces.size())
                 continue;
             SymV2PcFragOutputKey output(gj, gi);
             output.local_panel_j = local_panel_j;
             output.local_block_i = li;
+            output.row_frag_block = row_frag_block;
+            output.partner_frag_block = cb;
             if (compact_output_locks)
             {
                 if (static_cast<size_t>(local_panel_j + 1) >=
@@ -5101,7 +5112,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
                 const std::vector<int> &piece_ids,
                 std::vector<int_t> &idx) {
-            int_t nblocks = static_cast<int_t>(piece_ids.size());
+            int_t nblocks = 0;
             int_t nrows = 0;
             for (size_t p = 0; p < piece_ids.size(); ++p)
             {
@@ -5109,7 +5120,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (piece_id < 0 ||
                     static_cast<size_t>(piece_id) >= pieces.size())
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit piece id is invalid.");
-                nrows += pieces[static_cast<size_t>(piece_id)].nrows;
+                const SymV2PcFragPieceDesc &piece =
+                    pieces[static_cast<size_t>(piece_id)];
+                if (piece.nblocks <= 0 || piece.nrows < 0)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit piece shape is invalid.");
+                nblocks += piece.nblocks;
+                nrows += piece.nrows;
             }
             idx.assign(
                 static_cast<size_t>(LPANEL_HEADER_SIZE + 2 * nblocks + 1 +
@@ -5123,20 +5139,66 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             int_t px_ptr = LPANEL_HEADER_SIZE + nblocks;
             int_t row_ptr = LPANEL_HEADER_SIZE + 2 * nblocks + 1;
             idx[px_ptr] = 0;
-            for (int_t local = 0; local < nblocks; ++local)
+            int_t out_block = 0;
+            int_t row_base = 0;
+            for (size_t p = 0; p < piece_ids.size(); ++p)
             {
                 const SymV2PcFragPieceDesc &piece =
                     pieces[static_cast<size_t>(
-                        piece_ids[static_cast<size_t>(local)])];
-                idx[gid_ptr + local] = piece.gid_first;
-                idx[px_ptr + local + 1] =
-                    idx[px_ptr + local] + piece.nrows;
-                size_t piece_row_ptr =
-                    static_cast<size_t>(LPANEL_HEADER_SIZE + 3);
+                        piece_ids[p])];
+                if (piece.h_index.size() <
+                    static_cast<size_t>(LPANEL_HEADER_SIZE +
+                                        2 * piece.nblocks + 1 +
+                                        piece.nrows))
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit piece index is truncated.");
+                int_t piece_gid_ptr = LPANEL_HEADER_SIZE;
+                int_t piece_px_ptr = LPANEL_HEADER_SIZE + piece.nblocks;
+                int_t piece_row_ptr =
+                    LPANEL_HEADER_SIZE + 2 * piece.nblocks + 1;
+                for (int_t b = 0; b < piece.nblocks; ++b)
+                {
+                    idx[gid_ptr + out_block] =
+                        piece.h_index[static_cast<size_t>(
+                            piece_gid_ptr + b)];
+                    idx[px_ptr + out_block] =
+                        row_base +
+                        piece.h_index[static_cast<size_t>(
+                            piece_px_ptr + b)];
+                    ++out_block;
+                }
                 for (int_t r = 0; r < piece.nrows; ++r)
                     idx[row_ptr++] =
-                        piece.h_index[piece_row_ptr + static_cast<size_t>(r)];
+                        piece.h_index[static_cast<size_t>(
+                            piece_row_ptr + r)];
+                row_base += piece.nrows;
             }
+            if (out_block != nblocks || row_base != nrows)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped explicit index assembly count mismatch.");
+            idx[px_ptr + nblocks] = nrows;
+        };
+        auto local_block_index =
+            [](const std::vector<SymV2PcFragPieceDesc> &pieces,
+               const std::vector<int> &ids, int piece_id,
+               int_t frag_block) -> int_t {
+            int_t block_base = 0;
+            for (size_t p = 0; p < ids.size(); ++p)
+            {
+                int id = ids[p];
+                if (id < 0 || static_cast<size_t>(id) >= pieces.size())
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped local block has invalid piece id.");
+                const SymV2PcFragPieceDesc &piece =
+                    pieces[static_cast<size_t>(id)];
+                if (id == piece_id)
+                {
+                    if (frag_block < piece.frag_blk_begin ||
+                        frag_block >= piece.frag_blk_end)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped local block is outside its piece.");
+                    return block_base + (frag_block - piece.frag_blk_begin);
+                }
+                block_base += piece.nblocks;
+            }
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped local block did not find its piece.");
+            return GLOBAL_BLOCK_NOT_FOUND;
         };
         auto build_group_values_from_ids =
             [&](const std::vector<SymV2PcFragPieceDesc> &pieces,
@@ -5180,7 +5242,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 return 0;
             const size_t task_output_count =
                 dSymV2PcFragTaskflowOutputCount(task);
-            if (task_output_count > 1)
+            bool task_has_multi_block_pieces = false;
+            if (task.row_piece >= 0 && task.partner_piece >= 0 &&
+                static_cast<size_t>(task.row_piece) <
+                    state.row_pieces.size() &&
+                static_cast<size_t>(task.partner_piece) <
+                    state.partner_pieces.size())
+            {
+                task_has_multi_block_pieces =
+                    state.row_pieces[static_cast<size_t>(
+                        task.row_piece)].nblocks != 1 ||
+                    state.partner_pieces[static_cast<size_t>(
+                        task.partner_piece)].nblocks != 1;
+            }
+            if (task_output_count > 1 || task_has_multi_block_pieces)
             {
                 if (!async_core)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced tasks require async-core.");
@@ -5223,11 +5298,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         static_cast<size_t>(key.partner_piece) >=
                             state.partner_pieces.size())
                         ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task output has invalid piece ids.");
+                    local_piece_index(row_piece_ids, key.row_piece);
+                    local_piece_index(partner_piece_ids, key.partner_piece);
                     pair_rows.push_back(
-                        local_piece_index(row_piece_ids, key.row_piece));
+                        local_block_index(state.row_pieces, row_piece_ids,
+                                          key.row_piece,
+                                          key.row_frag_block));
                     pair_cols.push_back(
-                        local_piece_index(partner_piece_ids,
-                                          key.partner_piece));
+                        local_block_index(state.partner_pieces,
+                                          partner_piece_ids,
+                                          key.partner_piece,
+                                          key.partner_frag_block));
                 }
                 int_t row_lda = 0;
                 for (size_t ri = 0; ri < row_piece_ids.size(); ++ri)
@@ -6520,14 +6601,24 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                                 partner_piece_id) >=
                                                 state.partner_pieces.size())
                                             ABORT("GPU3DV2_PCFRAG_TASKFLOW exact grouped task has invalid piece ids.");
+                                        local_piece_index(
+                                            row_piece_ids,
+                                            row_piece_id);
+                                        local_piece_index(
+                                            partner_piece_ids,
+                                            partner_piece_id);
                                         pair_rows.push_back(
-                                            local_piece_index(
+                                            local_block_index(
+                                                state.row_pieces,
                                                 row_piece_ids,
-                                                row_piece_id));
+                                                row_piece_id,
+                                                key.row_frag_block));
                                         pair_cols.push_back(
-                                            local_piece_index(
+                                            local_block_index(
+                                                state.partner_pieces,
                                                 partner_piece_ids,
-                                                partner_piece_id));
+                                                partner_piece_id,
+                                                key.partner_frag_block));
                                     }
                                 }
 

@@ -6733,8 +6733,10 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     (!symV2PcFragTaskflowGlobalOutputLocks.empty() ||
                      symV2PcFragTaskflowGlobalOutputLocksLive != 0))
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE setup found stale global output locks.");
-	                if (superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0)
-	                    ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split sparse task planning; currently disabled.");
+                if (superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0 &&
+                    !(superlu_sym_v2_pcfrag_taskflow_async_core() &&
+                      superlu_sym_v2_pcfrag_taskflow_coalesce_col()))
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires async-core column coalescing.");
                 const char *taskflow_setup_diag =
                     std::getenv("GPU3DV2_PCFRAG_TASKFLOW_SETUP_DIAG");
                 auto taskflow_setup_mark = [&](const char *where) {
