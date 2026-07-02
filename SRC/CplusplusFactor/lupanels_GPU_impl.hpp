@@ -1278,6 +1278,8 @@ static inline bool dSymV2PcFragTaskflowTaskOutputsClaimedIncomplete(
         ABORT("GPU3DV2_PCFRAG_TASKFLOW output claim/completion maps are not initialized.");
     const size_t output_count =
         dSymV2PcFragTaskflowOutputCount(task);
+    bool any_claimed = false;
+    bool all_completed = output_count > 0;
     for (size_t o = 0; o < output_count; ++o)
     {
         int_t output_id =
@@ -1289,10 +1291,12 @@ static inline bool dSymV2PcFragTaskflowTaskOutputsClaimedIncomplete(
                 state, task, o, output_id);
         if (pos >= state.output_claimed.size())
             ABORT("GPU3DV2_PCFRAG_TASKFLOW claimed output id is not in the sparse completion map.");
-        if (state.output_claimed[pos] && !state.output_completed[pos])
-            return true;
+        if (state.output_claimed[pos])
+            any_claimed = true;
+        if (!state.output_completed[pos])
+            all_completed = false;
     }
-    return false;
+    return any_claimed && !all_completed;
 }
 
 static inline long long dSymV2PcFragTaskflowReleaseOutputLocks(
