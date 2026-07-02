@@ -1414,6 +1414,51 @@ struct xLUstruct_t
         }
     };
 
+    struct SymV2PcFragDeferredSendDesc
+    {
+        Ftype *buf;
+        int count;
+        int dest;
+        int tag;
+        unsigned char comm_kind;
+
+        enum
+        {
+            COMM_GRID = 0,
+            COMM_RSC = 1
+        };
+
+        SymV2PcFragDeferredSendDesc()
+            : buf(NULL), count(0), dest(-1), tag(0), comm_kind(COMM_GRID)
+        {
+        }
+
+        SymV2PcFragDeferredSendDesc(Ftype *buf_, int count_, int dest_,
+                                    int tag_, unsigned char comm_kind_)
+            : buf(buf_), count(count_), dest(dest_), tag(tag_),
+              comm_kind(comm_kind_)
+        {
+        }
+    };
+
+    struct SymV2PcFragDeferredSendBatch
+    {
+        int begin;
+        int count;
+        unsigned char posted;
+#ifdef HAVE_CUDA
+        cudaEvent_t ready_event;
+#endif
+
+        SymV2PcFragDeferredSendBatch()
+            : begin(0), count(0), posted(0)
+#ifdef HAVE_CUDA
+              , ready_event(NULL)
+#endif
+        {
+        }
+    };
+
     struct SymV2PcFragPanelTaskState
     {
         int_t k;
@@ -1494,6 +1539,10 @@ struct xLUstruct_t
         std::vector<int> producer_row_recv_offsets;
         std::vector<unsigned char> producer_row_recv_done;
         std::vector<MPI_Request> producer_send_reqs;
+        std::vector<SymV2PcFragDeferredSendDesc>
+            producer_deferred_send_descs;
+        std::vector<SymV2PcFragDeferredSendBatch>
+            producer_deferred_send_batches;
         std::vector<int> producer_progress_indices;
         std::vector<MPI_Status> producer_progress_statuses;
 #ifdef HAVE_CUDA
@@ -1781,6 +1830,8 @@ struct xLUstruct_t
             producer_row_recv_offsets.clear();
             producer_row_recv_done.clear();
             producer_send_reqs.clear();
+            producer_deferred_send_descs.clear();
+            producer_deferred_send_batches.clear();
             // Async-core progress scratch is setup-sized and intentionally
             // kept across panel resets so MPI_Testsome/Waitsome never grows
             // temporary vectors during factorization.

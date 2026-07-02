@@ -6946,6 +6946,9 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             sparse_task_count,
                             static_cast<size_t>(
                                 superlu_sym_v2_pcfrag_taskflow_progress_budget()));
+                        task_event_count = xlu_checked_sum_size(
+                            task_event_count, static_cast<size_t>(2),
+                            "taskflow prewarm deferred send events");
                     }
                     else
                     {
@@ -7106,9 +7109,17 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             progress_scratch_count)
                             state.producer_progress_indices.reserve(
                                 progress_scratch_count);
+                        if (state.producer_progress_indices.size() <
+                            progress_scratch_count)
+                            state.producer_progress_indices.resize(
+                                progress_scratch_count);
                         if (state.producer_progress_statuses.capacity() <
                             progress_scratch_count)
                             state.producer_progress_statuses.reserve(
+                                progress_scratch_count);
+                        if (state.producer_progress_statuses.size() <
+                            progress_scratch_count)
+                            state.producer_progress_statuses.resize(
                                 progress_scratch_count);
                         size_t partner_request_count =
                             static_cast<size_t>(Pr);
@@ -7158,6 +7169,14 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                             progress_scratch_count)
                             state.producer_send_reqs.reserve(
                                 progress_scratch_count);
+                        if (state.producer_deferred_send_descs.capacity() <
+                            progress_scratch_count)
+                            state.producer_deferred_send_descs.reserve(
+                                progress_scratch_count);
+                        if (state.producer_deferred_send_batches.capacity() <
+                            static_cast<size_t>(2))
+                            state.producer_deferred_send_batches.reserve(
+                                static_cast<size_t>(2));
                         if (state.producer_partner_progressive_assembled.capacity() <
                             static_cast<size_t>(Pr))
                             state.producer_partner_progressive_assembled.reserve(

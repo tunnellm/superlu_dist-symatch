@@ -791,6 +791,8 @@ static inline void dSymV2PcFragTaskflowWaitProducerSends(
     xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats,
     int boundary_wait)
 {
+    if (!state.producer_deferred_send_batches.empty())
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW cannot wait producer sends before deferred send posting completes.");
     dSymV2PcFragTaskflowCompactProducerSends(state);
     if (state.producer_send_reqs.empty())
         return;
@@ -808,8 +810,164 @@ static inline void dSymV2PcFragTaskflowWaitProducerSends(
 
 template <typename T>
 static inline void dSymV2PcFragTaskflowEnsureVectorCapacity(
+    std::vector<T> &buffer, size_t count, long long *growth_counter = NULL);
+
+static inline cudaEvent_t dSymV2PcFragTaskflowAcquireEvent(
+    std::vector<cudaEvent_t> &pool, bool allow_late_alloc,
+    long long *late_allocs);
+
+static inline void dSymV2PcFragTaskflowRecycleEvent(
+    std::vector<cudaEvent_t> &pool, cudaEvent_t &event);
+
+static inline int dSymV2PcFragTaskflowProgressProducerSends(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats);
+
+static inline void dSymV2PcFragTaskflowAddDeferredSend(
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats,
+    double *buf, int count, int dest, int tag, unsigned char comm_kind)
+{
+    if (count <= 0)
+        return;
+    if (buf == NULL || dest < 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send descriptor is invalid.");
+    size_t need = state.producer_deferred_send_descs.size() + 1;
+    dSymV2PcFragTaskflowEnsureVectorCapacity(
+        state.producer_deferred_send_descs, need,
+        &stats.producer_progress_vector_growths);
+    state.producer_deferred_send_descs.push_back(
+        xLUstruct_t<double>::SymV2PcFragDeferredSendDesc(
+            buf, count, dest, tag, comm_kind));
+}
+
+static inline void dSymV2PcFragTaskflowRecordDeferredSendBatch(
+    xLUstruct_t<double> &xlu,
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats,
+    cudaStream_t stream, size_t begin, size_t end,
+    bool allow_late_alloc)
+{
+    if (end <= begin)
+        return;
+    if (begin > state.producer_deferred_send_descs.size() ||
+        end > state.producer_deferred_send_descs.size() ||
+        end - begin > static_cast<size_t>(std::numeric_limits<int>::max()))
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send batch range is invalid.");
+    size_t need = state.producer_deferred_send_batches.size() + 1;
+    dSymV2PcFragTaskflowEnsureVectorCapacity(
+        state.producer_deferred_send_batches, need,
+        &stats.producer_progress_vector_growths);
+    xLUstruct_t<double>::SymV2PcFragDeferredSendBatch batch;
+    batch.begin = static_cast<int>(begin);
+    batch.count = static_cast<int>(end - begin);
+    batch.posted = 0;
+    batch.ready_event = dSymV2PcFragTaskflowAcquireEvent(
+        xlu.symV2PcFragTaskflowEventPool, allow_late_alloc,
+        &stats.arena_event_late_allocs);
+    gpuErrchk(cudaEventRecord(batch.ready_event, stream));
+    state.producer_deferred_send_batches.push_back(batch);
+}
+
+static inline int dSymV2PcFragTaskflowProgressDeferredSends(
+    xLUstruct_t<double> &xlu,
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats,
+    gridinfo_t *grid, gridinfo3d_t *grid3d, int drain)
+{
+    if (state.producer_deferred_send_batches.empty())
+        return 0;
+    int progressed = 0;
+    size_t write = 0;
+    for (size_t b = 0; b < state.producer_deferred_send_batches.size(); ++b)
+    {
+        xLUstruct_t<double>::SymV2PcFragDeferredSendBatch &batch =
+            state.producer_deferred_send_batches[b];
+        if (batch.posted)
+            continue;
+        if (batch.ready_event == NULL)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send batch has no event.");
+        cudaError_t event_rc = cudaEventQuery(batch.ready_event);
+        if (event_rc == cudaErrorNotReady)
+        {
+            if (!drain)
+            {
+                state.producer_deferred_send_batches[write++] = batch;
+                continue;
+            }
+            int idle_polls = 0;
+            do
+            {
+                dSymV2PcFragTaskflowProgressProducerSends(state, stats);
+                if (++idle_polls > 10000000)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send D2H drain made no CUDA progress.");
+                event_rc = cudaEventQuery(batch.ready_event);
+            } while (event_rc == cudaErrorNotReady);
+        }
+        if (event_rc != cudaSuccess)
+            gpuErrchk(event_rc);
+        int begin = batch.begin;
+        int count = batch.count;
+        if (begin < 0 || count < 0 ||
+            static_cast<size_t>(begin) >
+                state.producer_deferred_send_descs.size() ||
+            static_cast<size_t>(count) >
+                state.producer_deferred_send_descs.size() -
+                    static_cast<size_t>(begin))
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send descriptor range is invalid.");
+        size_t req_need =
+            state.producer_send_reqs.size() + static_cast<size_t>(count);
+        dSymV2PcFragTaskflowEnsureVectorCapacity(
+            state.producer_send_reqs, req_need,
+            &stats.producer_progress_vector_growths);
+        for (int i = 0; i < count; ++i)
+        {
+            const xLUstruct_t<double>::SymV2PcFragDeferredSendDesc &desc =
+                state.producer_deferred_send_descs[
+                    static_cast<size_t>(begin + i)];
+            if (desc.buf == NULL || desc.count <= 0 || desc.dest < 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send descriptor is invalid.");
+            MPI_Comm comm = MPI_COMM_NULL;
+            if (desc.comm_kind ==
+                xLUstruct_t<double>::SymV2PcFragDeferredSendDesc::COMM_GRID)
+            {
+                if (grid == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred grid send has no communicator.");
+                comm = grid->comm;
+            }
+            else if (
+                desc.comm_kind ==
+                xLUstruct_t<double>::SymV2PcFragDeferredSendDesc::COMM_RSC)
+            {
+                if (grid3d == NULL)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred row send has no communicator.");
+                comm = grid3d->rscp.comm;
+            }
+            else
+            {
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred send communicator kind is invalid.");
+            }
+            MPI_Request req;
+            MPI_Isend(desc.buf, desc.count, MPI_DOUBLE, desc.dest,
+                      desc.tag, comm, &req);
+            state.producer_send_reqs.push_back(req);
+            ++progressed;
+        }
+        dSymV2PcFragTaskflowRecycleEvent(
+            xlu.symV2PcFragTaskflowEventPool, batch.ready_event);
+        batch.posted = 1;
+    }
+    if (write != state.producer_deferred_send_batches.size())
+        state.producer_deferred_send_batches.resize(write);
+    if (state.producer_deferred_send_batches.empty())
+        state.producer_deferred_send_descs.clear();
+    return progressed;
+}
+
+template <typename T>
+static inline void dSymV2PcFragTaskflowEnsureVectorCapacity(
     std::vector<T> &buffer, size_t count,
-    long long *growth_counter = NULL)
+    long long *growth_counter)
 {
     if (count == 0 || buffer.capacity() >= count)
         return;
@@ -883,6 +1041,8 @@ static inline int dSymV2PcFragTaskflowProducerSendsComplete(
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
     xLUstruct_t<double>::SymV2PcFragTaskflowStats &stats, int drain)
 {
+    if (!state.producer_deferred_send_batches.empty())
+        return 0;
     dSymV2PcFragTaskflowCompactProducerSends(state);
     if (state.producer_send_reqs.empty())
         return 1;
@@ -3993,7 +4153,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowProgressExchangeGPU(
         symV2PcFragTaskStates[static_cast<size_t>(k)];
     if (!state.initialized)
         return 0;
-    int progressed = dSymV2PcFragTaskflowProgressProducerSends(
+    int progressed = dSymV2PcFragTaskflowProgressDeferredSends(
+        *this, state, symV2PcFragTaskflowStats, grid, grid3d, drain);
+    progressed += dSymV2PcFragTaskflowProgressProducerSends(
         state, symV2PcFragTaskflowStats);
     if (!state.producer_exchange_pending)
         return progressed;
@@ -8030,6 +8192,11 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     const bool pcfrag_taskflow_async_pieces =
         pcfrag_taskflow && !pcfrag_taskflow_validate &&
         superlu_sym_v2_pcfrag_taskflow_async_pieces();
+    const bool pcfrag_taskflow_defer_send_post =
+        pcfrag_taskflow_async_pieces &&
+        superlu_sym_v2_pcfrag_taskflow_async_core() &&
+        superlu_sym_v2_pcfrag_taskflow_defer_send_post() &&
+        !cuda_aware;
     const bool allow_taskflow_late_alloc =
         !(pcfrag_taskflow && superlu_sym_v2_pcfrag_taskflow_async_core());
     auto taskflow_update_pinned_high_water = [&]() {
@@ -8383,6 +8550,7 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     double *recv_host_base = NULL;
     bool partner_recvs_posted = false;
     size_t deferred_partner_send_req_count = 0;
+    bool defer_partner_send_post = false;
 
     auto setup_partner_recv_metadata = [&]()
     {
@@ -8808,8 +8976,13 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             const bool taskflow_async_core =
                 pcfrag_taskflow &&
                 superlu_sym_v2_pcfrag_taskflow_async_core();
+            defer_partner_send_post =
+                taskflow_async_core && pcfrag_taskflow_defer_send_post &&
+                partner_d2h_any && !exact_partner_fragment_demand;
             const bool need_pack_stage_sync =
-                taskflow_async_core ? partner_d2h_any : true;
+                taskflow_async_core ? (partner_d2h_any &&
+                                       !defer_partner_send_post)
+                                    : true;
             if (taskflow_async_core && need_pack_stage_sync)
             {
                 ++symV2PcFragTaskflowStats.producer_exchange_stream_syncs;
@@ -8906,6 +9079,14 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         }
         else
         {
+            size_t partner_deferred_begin = 0;
+            if (defer_partner_send_post)
+            {
+                if (taskflow_state == NULL || !taskflow_state->initialized)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred partner send has no state.");
+                partner_deferred_begin =
+                    taskflow_state->producer_deferred_send_descs.size();
+            }
             for (int pc = 0; pc < Pc; ++pc)
             {
                 int size = send_sizes[pc];
@@ -8973,12 +9154,26 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                    static_cast<long long>(size) *
                                        static_cast<long long>(sizeof(double)));
 #endif
+                    if (defer_partner_send_post)
+                    {
+                        dSymV2PcFragTaskflowAddDeferredSend(
+                            *taskflow_state, symV2PcFragTaskflowStats,
+                            hostbuf, size, dest, SLU_MPI_TAG(5, k),
+                            xLUstruct_t<double>::SymV2PcFragDeferredSendDesc::COMM_GRID);
+                        continue;
+                    }
                     MPI_Isend(cuda_aware ? sendbuf : hostbuf,
                               size, MPI_DOUBLE, dest,
                               SLU_MPI_TAG(5, k), grid->comm, &req);
                     send_reqs.push_back(req);
                 }
             }
+            if (defer_partner_send_post)
+                dSymV2PcFragTaskflowRecordDeferredSendBatch(
+                    *this, *taskflow_state, symV2PcFragTaskflowStats,
+                    stream, partner_deferred_begin,
+                    taskflow_state->producer_deferred_send_descs.size(),
+                    allow_taskflow_late_alloc);
         }
     }
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
@@ -10771,18 +10966,33 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                                  SuperLU_timer_() - row_d2h_issue_t);
                 double row_pack_stage_sync_t = SuperLU_timer_();
 #endif
-                if (pcfrag_taskflow && superlu_sym_v2_pcfrag_taskflow_async_core())
+                const bool defer_row_aggregate_send_post =
+                    pcfrag_taskflow_defer_send_post;
+                if (pcfrag_taskflow &&
+                    superlu_sym_v2_pcfrag_taskflow_async_core() &&
+                    !defer_row_aggregate_send_post)
                 {
                     ++symV2PcFragTaskflowStats.producer_exchange_stream_syncs;
                     ++symV2PcFragTaskflowStats.producer_exchange_row_aggregate_stream_syncs;
                 }
-                gpuErrchk(cudaStreamSynchronize(stream));
+                if (!defer_row_aggregate_send_post)
+                    gpuErrchk(cudaStreamSynchronize(stream));
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
-                symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
-                                 SYM_GPU3D_T_ROW_LFRAG_PACK_STAGE_SYNC,
-                                 SuperLU_timer_() - row_pack_stage_sync_t);
+                if (!defer_row_aggregate_send_post)
+                    symTimingAddBoth(SYM_GPU3D_T_LFRAG_PACK_STAGE_SYNC,
+                                     SYM_GPU3D_T_ROW_LFRAG_PACK_STAGE_SYNC,
+                                     SuperLU_timer_() - row_pack_stage_sync_t);
                 double row_send_post_t = SuperLU_timer_();
 #endif
+                size_t row_deferred_begin = 0;
+                if (defer_row_aggregate_send_post)
+                {
+                    if (taskflow_state == NULL ||
+                        !taskflow_state->initialized)
+                        ABORT("GPU3DV2_PCFRAG_TASKFLOW deferred row send has no state.");
+                    row_deferred_begin =
+                        taskflow_state->producer_deferred_send_descs.size();
+                }
                 for (int pc_dest = 0; pc_dest < Pc; ++pc_dest)
                 {
                     int count = symV2RowFragSendCountsScratch[static_cast<size_t>(pc_dest)];
@@ -10796,11 +11006,26 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
                     sym_v2_rowfrag_payload_bytes += send_bytes;
                     symV2PayloadProfileAdd(SYM_V2_PAYLOAD_ROWFRAG_MPI_SEND,
                                            send_bytes);
+                    if (defer_row_aggregate_send_post)
+                    {
+                        dSymV2PcFragTaskflowAddDeferredSend(
+                            *taskflow_state, symV2PcFragTaskflowStats,
+                            row_send_host_base + off, count, pc_dest,
+                            SLU_MPI_TAG(5, k),
+                            xLUstruct_t<double>::SymV2PcFragDeferredSendDesc::COMM_RSC);
+                        continue;
+                    }
                     MPI_Isend(row_send_host_base + off,
                               count, MPI_DOUBLE, pc_dest,
                               SLU_MPI_TAG(5, k), grid3d->rscp.comm, &req);
                     send_reqs.push_back(req);
                 }
+                if (defer_row_aggregate_send_post)
+                    dSymV2PcFragTaskflowRecordDeferredSendBatch(
+                        *this, *taskflow_state, symV2PcFragTaskflowStats,
+                        stream, row_deferred_begin,
+                        taskflow_state->producer_deferred_send_descs.size(),
+                        allow_taskflow_late_alloc);
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
                 symTimingAddBoth(SYM_GPU3D_T_LFRAG_SEND_POST,
                                  SYM_GPU3D_T_ROW_LFRAG_SEND_POST,
