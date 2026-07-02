@@ -3026,27 +3026,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                    output_candidates[begin].output.gj)
         {
             size_t next_end = same_partner_candidate_group_end(next);
-            std::vector<int> trial_row_piece_ids = row_piece_ids;
-            std::vector<int> trial_partner_piece_ids = partner_piece_ids;
-            int_t trial_row_lda = row_lda;
-            int_t trial_partner_lda = partner_lda;
             append_candidate_group_pieces(
-                next, next_end, trial_row_piece_ids,
-                trial_partner_piece_ids, &trial_row_lda,
-                &trial_partner_lda);
+                next, next_end, row_piece_ids, partner_piece_ids,
+                &row_lda, &partner_lda);
             size_t dense_pairs =
-                trial_row_piece_ids.size() *
-                trial_partner_piece_ids.size();
+                row_piece_ids.size() * partner_piece_ids.size();
             size_t output_count = next_end - begin;
             if (dense_pairs > output_count * 8)
                 break;
             if (!candidate_group_fits_gemm_capacity(
-                    trial_row_lda, trial_partner_lda))
+                    row_lda, partner_lda))
                 break;
-            row_piece_ids.swap(trial_row_piece_ids);
-            partner_piece_ids.swap(trial_partner_piece_ids);
-            row_lda = trial_row_lda;
-            partner_lda = trial_partner_lda;
             best = next_end;
             next = next_end;
         }
