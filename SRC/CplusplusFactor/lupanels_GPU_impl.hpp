@@ -2627,20 +2627,23 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     state.runnable_mode_queue_mask = runnable_mode_queue_mask;
     ++symV2PcFragTaskflowStats.taskflow_entries;
 
+    const bool assign_compact_output_ids = async_core;
     const bool compact_output_locks =
         async_core &&
         (superlu_sym_v2_pcfrag_taskflow_global_output_locks() ||
          superlu_sym_v2_pcfrag_taskflow_force_output_locks());
-    if (compact_output_locks)
+    int_t taskflow_output_id_space = 0;
+    if (assign_compact_output_ids)
     {
         const int_t local_panel_count = symV2PanelCount();
         if (local_panel_count < 0)
             ABORT("GPU3DV2_PCFRAG_TASKFLOW local panel count is invalid.");
+        bool rebuilt_output_offsets = false;
         if (symV2PcFragTaskflowOutputPanelOffsets.size() !=
             static_cast<size_t>(local_panel_count + 1))
         {
             if (symV2PcFragTaskflowGlobalOutputLocksLive != 0)
-                ABORT("GPU3DV2_PCFRAG_TASKFLOW cannot rebuild output lock ids while locks are live.");
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW cannot rebuild output ids while locks are live.");
             symV2PcFragTaskflowOutputPanelOffsets.assign(
                 static_cast<size_t>(local_panel_count + 1), 0);
             int_t prefix = 0;
@@ -2658,8 +2661,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             }
             symV2PcFragTaskflowOutputPanelOffsets[
                 static_cast<size_t>(local_panel_count)] = prefix;
+            rebuilt_output_offsets = true;
+        }
+        taskflow_output_id_space =
+            symV2PcFragTaskflowOutputPanelOffsets[
+                static_cast<size_t>(local_panel_count)];
+        if (compact_output_locks &&
+            (rebuilt_output_offsets ||
+             symV2PcFragTaskflowGlobalOutputLockState.size() !=
+                 static_cast<size_t>(taskflow_output_id_space)))
+        {
+            if (symV2PcFragTaskflowGlobalOutputLocksLive != 0)
+                ABORT("GPU3DV2_PCFRAG_TASKFLOW cannot rebuild output lock state while locks are live.");
             symV2PcFragTaskflowGlobalOutputLockState.assign(
-                static_cast<size_t>(prefix), 0);
+                static_cast<size_t>(taskflow_output_id_space), 0);
             symV2PcFragTaskflowGlobalOutputLocksLive = 0;
         }
     }
@@ -2675,6 +2690,23 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     auto strow_at = [](const std::vector<int_t> &frag, int_t b) -> int_t {
         int_t nb = frag.empty() ? 0 : frag[0];
         return frag[LPANEL_HEADER_SIZE + nb + b];
+    };
+    auto assign_taskflow_output_id =
+        [&](SymV2PcFragOutputKey &output) {
+        if (!assign_compact_output_ids)
+            return;
+        if (output.local_panel_j < 0 ||
+            output.local_block_i < 0 ||
+            static_cast<size_t>(output.local_panel_j + 1) >=
+                symV2PcFragTaskflowOutputPanelOffsets.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW output id panel/block is invalid.");
+        int_t base =
+            symV2PcFragTaskflowOutputPanelOffsets[
+                static_cast<size_t>(output.local_panel_j)];
+        output.output_id = base + output.local_block_i;
+        if (output.output_id < 0 ||
+            output.output_id >= taskflow_output_id_space)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW compact output id is invalid.");
     };
     auto compact_piece_index =
         [&](const std::vector<int_t> &frag,
@@ -3024,19 +3056,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             output.local_block_i = li;
             output.row_frag_block = row_frag_block;
             output.partner_frag_block = cb;
-            if (compact_output_locks)
-            {
-                if (static_cast<size_t>(local_panel_j + 1) >=
-                    symV2PcFragTaskflowOutputPanelOffsets.size())
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock panel id is invalid.");
-                output.output_id =
-                    symV2PcFragTaskflowOutputPanelOffsets[
-                        static_cast<size_t>(local_panel_j)] + li;
-                if (output.output_id < 0 ||
-                    static_cast<size_t>(output.output_id) >=
-                        symV2PcFragTaskflowGlobalOutputLockState.size())
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock id is invalid.");
-            }
+            assign_taskflow_output_id(output);
             unsigned char mode_mask =
                 SYM_V2_PCFRAG_TASK_FULL |
                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
@@ -4201,19 +4221,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             output.local_block_i = li;
             output.row_frag_block = row_frag_block;
             output.partner_frag_block = cb;
-            if (compact_output_locks)
-            {
-                if (static_cast<size_t>(local_panel_j + 1) >=
-                    symV2PcFragTaskflowOutputPanelOffsets.size())
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock panel id is invalid.");
-                output.output_id =
-                    symV2PcFragTaskflowOutputPanelOffsets[
-                        static_cast<size_t>(local_panel_j)] + li;
-                if (output.output_id < 0 ||
-                    static_cast<size_t>(output.output_id) >=
-                        symV2PcFragTaskflowGlobalOutputLockState.size())
-                    ABORT("GPU3DV2_PCFRAG_TASKFLOW output lock id is invalid.");
-            }
+            assign_taskflow_output_id(output);
             unsigned char mode_mask =
                 SYM_V2_PCFRAG_TASK_FULL |
                 SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
