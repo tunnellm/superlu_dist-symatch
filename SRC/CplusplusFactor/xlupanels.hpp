@@ -1874,6 +1874,16 @@ struct xLUstruct_t
         long long producer_recv_pageable_posts;
         long long producer_progress_vector_growths;
         long long task_completion_event_successes;
+        long long grouped_dispatch_attempts;
+        long long grouped_launches;
+        long long grouped_task_members;
+        long long grouped_candidate_scans;
+        long long grouped_single_fallbacks;
+        long long grouped_completed_pair_fallbacks;
+        long long grouped_output_conflict_fallbacks;
+        long long grouped_capacity_fallbacks;
+        long long grouped_scratch_busy_deferrals;
+        long long grouped_pending_cap_deferrals;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -1946,7 +1956,15 @@ struct xLUstruct_t
               producer_recv_pinned_posts(0),
               producer_recv_pageable_posts(0),
               producer_progress_vector_growths(0),
-              task_completion_event_successes(0)
+              task_completion_event_successes(0),
+              grouped_dispatch_attempts(0),
+              grouped_launches(0), grouped_task_members(0),
+              grouped_candidate_scans(0), grouped_single_fallbacks(0),
+              grouped_completed_pair_fallbacks(0),
+              grouped_output_conflict_fallbacks(0),
+              grouped_capacity_fallbacks(0),
+              grouped_scratch_busy_deferrals(0),
+              grouped_pending_cap_deferrals(0)
         {
         }
     };
@@ -2211,11 +2229,26 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.task_completion_event_successes
         };
         long long global[SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT] = {};
+        long long local_group[10] = {
+            symV2PcFragTaskflowStats.grouped_dispatch_attempts,
+            symV2PcFragTaskflowStats.grouped_launches,
+            symV2PcFragTaskflowStats.grouped_task_members,
+            symV2PcFragTaskflowStats.grouped_candidate_scans,
+            symV2PcFragTaskflowStats.grouped_single_fallbacks,
+            symV2PcFragTaskflowStats.grouped_completed_pair_fallbacks,
+            symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks,
+            symV2PcFragTaskflowStats.grouped_capacity_fallbacks,
+            symV2PcFragTaskflowStats.grouped_scratch_busy_deferrals,
+            symV2PcFragTaskflowStats.grouped_pending_cap_deferrals
+        };
+        long long global_group[10] = {};
         if (grid3d != NULL)
         {
             MPI_Reduce(local, global,
                        SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_group, global_group, 10, MPI_LONG_LONG,
+                       MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
         }
@@ -2224,6 +2257,8 @@ struct xLUstruct_t
             for (int i = 0;
                  i < SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT; ++i)
                 global[i] = local[i];
+            for (int i = 0; i < 10; ++i)
+                global_group[i] = local_group[i];
         }
         std::printf(
             "SymFact V2 Pc-fragment taskflow profile: "
@@ -2324,6 +2359,19 @@ struct xLUstruct_t
             global[80], global[81], global[82], global[83], global[84],
             global[85], global[86], global[87], global[88], global[89],
             global[90], global[91], global[92]);
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow grouping: "
+            "attempts=%lld launches=%lld task_members=%lld "
+            "candidate_scans=%lld single_fallbacks=%lld "
+            "completed_pair_fallbacks=%lld "
+            "output_conflict_fallbacks=%lld "
+            "capacity_fallbacks=%lld "
+            "scratch_busy_deferrals=%lld "
+            "pending_cap_deferrals=%lld\n",
+            global_group[0], global_group[1], global_group[2],
+            global_group[3], global_group[4], global_group[5],
+            global_group[6], global_group[7], global_group[8],
+            global_group[9]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =

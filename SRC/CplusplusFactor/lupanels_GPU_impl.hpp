@@ -4489,6 +4489,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (!async_grouped_dispatch || !lookahead_group ||
                     state.group_scratch_in_use)
                 {
+                    if (async_grouped_dispatch && lookahead_group &&
+                        state.group_scratch_in_use)
+                        ++symV2PcFragTaskflowStats.grouped_scratch_busy_deferrals;
                     launch_range_as_singles();
                     return;
                 }
@@ -4518,6 +4521,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         if (task == NULL ||
                             !task_matches_launch_mode(*task, launch_mode))
                             continue;
+                        ++symV2PcFragTaskflowStats.grouped_candidate_scans;
                         if (task->complete)
                         {
                             ++completed_pair_count;
@@ -4529,14 +4533,20 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         {
                             ++symV2PcFragTaskflowStats.tasks_blocked_output;
                             ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                            ++symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks;
                             launch_range_as_singles();
                             return;
                         }
                         group_tasks.push_back(task);
                     }
                 }
+                ++symV2PcFragTaskflowStats.grouped_dispatch_attempts;
                 if (group_tasks.size() <= 1 || completed_pair_count > 0)
                 {
+                    if (group_tasks.size() <= 1)
+                        ++symV2PcFragTaskflowStats.grouped_single_fallbacks;
+                    if (completed_pair_count > 0)
+                        ++symV2PcFragTaskflowStats.grouped_completed_pair_fallbacks;
                     launch_range_as_singles();
                     return;
                 }
@@ -4545,6 +4555,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (static_cast<int>(group_tasks.size()) >
                     in_flight_task_cap)
                 {
+                    ++symV2PcFragTaskflowStats.grouped_capacity_fallbacks;
                     launch_range_as_singles();
                     return;
                 }
@@ -4554,7 +4565,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (pending_launched +
                         static_cast<int>(group_tasks.size()) >
                     in_flight_task_cap)
+                {
+                    ++symV2PcFragTaskflowStats.grouped_pending_cap_deferrals;
                     return;
+                }
                 if (group_handle == NULL || group_stream == NULL ||
                     group_gemm == NULL)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async task has no stream resources.");
@@ -4653,6 +4667,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 res.active_task_id = group_tasks[0]->task_id;
                 ++res.updates;
                 ++symV2PcFragTaskflowStats.gemm_resource_tail_updates;
+                ++symV2PcFragTaskflowStats.grouped_launches;
+                symV2PcFragTaskflowStats.grouped_task_members +=
+                    static_cast<long long>(group_tasks.size());
                 for (size_t i = 0; i < group_tasks.size(); ++i)
                 {
                     SymV2PcFragTaskDesc &task = *group_tasks[i];
@@ -4938,6 +4955,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         state.group_scratch_in_use &&
                         superlu_sym_v2_pcfrag_taskflow_group_defer_busy())
                     {
+                        ++symV2PcFragTaskflowStats.grouped_scratch_busy_deferrals;
                         queue[runnable_write++] = tid;
                         continue;
                     }
@@ -4992,6 +5010,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                              available_group_slots;
                                          ++j)
                                     {
+                                        ++symV2PcFragTaskflowStats.grouped_candidate_scans;
                                         int cand_tid = queue[j];
                                         if (cand_tid < 0 ||
                                             static_cast<size_t>(cand_tid) >=
@@ -5091,11 +5110,13 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             }
                             if (candidate_tids.size() > 1)
                             {
+                                ++symV2PcFragTaskflowStats.grouped_dispatch_attempts;
                                 bool can_group = true;
                                 if (output_locked(task))
                                 {
                                     ++symV2PcFragTaskflowStats.tasks_blocked_output;
                                     ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                    ++symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks;
                                     can_group = false;
                                 }
                                 else
@@ -5114,6 +5135,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         {
                                             ++symV2PcFragTaskflowStats.tasks_blocked_output;
                                             ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                            ++symV2PcFragTaskflowStats.grouped_output_conflict_fallbacks;
                                             continue;
                                         }
                                         unlocked_candidate_tids.push_back(
@@ -5121,7 +5143,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     }
                                     candidate_tids.swap(unlocked_candidate_tids);
                                     if (candidate_tids.size() <= 1)
+                                    {
+                                        ++symV2PcFragTaskflowStats.grouped_single_fallbacks;
                                         can_group = false;
+                                    }
                                 }
                                 std::vector<int> row_piece_ids;
                                 std::vector<int> partner_piece_ids;
@@ -5275,6 +5300,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     res.active_task_id = task.task_id;
                                     ++res.updates;
                                     ++symV2PcFragTaskflowStats.gemm_resource_tail_updates;
+                                    ++symV2PcFragTaskflowStats.grouped_launches;
+                                    symV2PcFragTaskflowStats.grouped_task_members +=
+                                        static_cast<long long>(
+                                            candidate_tids.size());
                                     for (size_t ci = 0;
                                          ci < candidate_tids.size(); ++ci)
                                     {
