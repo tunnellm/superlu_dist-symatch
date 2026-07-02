@@ -6196,6 +6196,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 in_flight_task_cap - pending_launched;
                         if (available_group_slots > 1)
                         {
+                            bool grouped_seed_output_locked = false;
                             auto task_ready_for_group =
                                 [&](SymV2PcFragTaskDesc &candidate) {
                                     if (candidate.launched ||
@@ -6252,6 +6253,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         symV2PcFragTaskflowStats
                                             .grouped_output_conflict_fallbacks_by_mode,
                                         launch_mode);
+                                    grouped_seed_output_locked = true;
                                     return false;
                                 }
 
@@ -6720,6 +6722,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             };
                             if (try_exact_group_dispatch())
                                 continue;
+                            if (grouped_seed_output_locked)
+                            {
+                                queue[runnable_write++] = tid;
+                                continue;
+                            }
                             if (superlu_sym_v2_pcfrag_taskflow_coalesce_col())
                             {
                                 ++symV2PcFragTaskflowStats
@@ -6845,6 +6852,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             {
                                 ++symV2PcFragTaskflowStats.grouped_dispatch_attempts;
                                 bool can_group = true;
+                                bool grouped_seed_output_locked = false;
                                 if (output_locked(task))
                                 {
                                     ++symV2PcFragTaskflowStats.tasks_blocked_output;
@@ -6854,6 +6862,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         symV2PcFragTaskflowStats
                                             .grouped_output_conflict_fallbacks_by_mode,
                                         launch_mode);
+                                    grouped_seed_output_locked = true;
                                     can_group = false;
                                 }
                                 else
@@ -6892,6 +6901,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                             launch_mode);
                                         can_group = false;
                                     }
+                                }
+                                if (grouped_seed_output_locked)
+                                {
+                                    queue[runnable_write++] = tid;
+                                    continue;
                                 }
                                 std::vector<int> row_piece_ids;
                                 std::vector<int> partner_piece_ids;
