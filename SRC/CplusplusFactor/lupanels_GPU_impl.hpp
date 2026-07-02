@@ -650,6 +650,16 @@ static inline void dSymV2PcFragTaskflowRecyclePoolPush(
     pool.push_back(block);
 }
 
+template <typename T>
+static inline bool dSymV2PcFragTaskflowPoolHasBlock(
+    const std::vector<T> &pool, size_t count)
+{
+    for (size_t i = 0; i < pool.size(); ++i)
+        if (pool[i].ptr != NULL && pool[i].capacity >= count)
+            return true;
+    return false;
+}
+
 static inline double *dSymV2PcFragTaskflowEnsurePinnedHost(
     std::vector<xLUstruct_t<double>::SymV2PcFragHostValueBlock> &pool,
     double **buffer, size_t *capacity, size_t count,
@@ -1805,7 +1815,31 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 }
                 dSymV2PcFragTaskflowRecycleEvent(
                     xlu.symV2PcFragTaskflowEventPool, group.done_event);
-                state.group_scratch_in_use = 0;
+                if (group.d_group_index_pool != NULL)
+                {
+                    dSymV2PcFragTaskflowRecyclePoolPush(
+                        xlu.symV2PcFragTaskflowIndexBlockPool,
+                        xLUstruct_t<double>::SymV2PcFragGpuIndexBlock(
+                            group.d_group_index_pool,
+                            group.group_index_pool_capacity),
+                        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE index pool capacity is undersized.");
+                    group.d_group_index_pool = NULL;
+                    group.group_index_pool_capacity = 0;
+                }
+                if (group.d_group_value_pool != NULL)
+                {
+                    dSymV2PcFragTaskflowRecyclePoolPush(
+                        xlu.symV2PcFragTaskflowValueBlockPool,
+                        xLUstruct_t<double>::SymV2PcFragGpuValueBlock(
+                            group.d_group_value_pool,
+                            group.group_value_pool_capacity),
+                        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE value pool capacity is undersized.");
+                    group.d_group_value_pool = NULL;
+                    group.group_value_pool_capacity = 0;
+                }
+                if (group.d_group_index_pool == NULL &&
+                    group.d_group_value_pool == NULL)
+                    state.group_scratch_in_use = 0;
                 if (group_required > 0)
                     pending_required -= group_required;
                 continue;
@@ -3656,6 +3690,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
              superlu_sym_v2_pcfrag_taskflow_global_output_locks());
         const bool async_core =
             superlu_sym_v2_pcfrag_taskflow_async_core();
+        const bool allow_taskflow_late_alloc = !async_core;
         const bool async_grouped_dispatch =
             async_core &&
             superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch();
@@ -4487,7 +4522,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     (launch_mode & (SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
                                     SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)) != 0;
                 if (!async_grouped_dispatch || !lookahead_group ||
-                    state.group_scratch_in_use)
+                    (!async_core && state.group_scratch_in_use))
                 {
                     if (async_grouped_dispatch && lookahead_group &&
                         state.group_scratch_in_use)
@@ -4572,8 +4607,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 if (group_handle == NULL || group_stream == NULL ||
                     group_gemm == NULL)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async task has no stream resources.");
-                for (size_t i = 0; i < group_tasks.size(); ++i)
-                    lock_outputs(*group_tasks[i]);
                 int_t row_lda = 0;
                 for (int rp = row_piece_start; rp < row_piece_end; ++rp)
                     row_lda += state.row_pieces[static_cast<size_t>(rp)].nrows;
@@ -4595,20 +4628,64 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 size_t col_value_count =
                     static_cast<size_t>(col_lda) *
                     static_cast<size_t>(SuperSize(k));
-                if (state.d_group_index_pool == NULL ||
+                if (async_core &&
+                    (!dSymV2PcFragTaskflowPoolHasBlock(
+                         symV2PcFragTaskflowIndexBlockPool,
+                         row_index_count + col_index_count) ||
+                     !dSymV2PcFragTaskflowPoolHasBlock(
+                         symV2PcFragTaskflowValueBlockPool,
+                         row_value_count + col_value_count)))
+                {
+                    ++symV2PcFragTaskflowStats.grouped_scratch_busy_deferrals;
+                    launch_range_as_singles();
+                    return;
+                }
+                size_t group_index_capacity = 0;
+                size_t group_value_capacity = 0;
+                int_t *group_index_pool = state.d_group_index_pool;
+                double *group_value_pool = state.d_group_value_pool;
+                if (async_core)
+                {
+                    group_index_pool =
+                        dSymV2PcFragTaskflowAcquireIndexBlock(
+                            symV2PcFragTaskflowIndexBlockPool,
+                            row_index_count + col_index_count,
+                            &group_index_capacity,
+                            allow_taskflow_late_alloc,
+                            &symV2PcFragTaskflowStats
+                                 .arena_index_late_allocs);
+                    group_value_pool =
+                        dSymV2PcFragTaskflowAcquireValueBlock(
+                            symV2PcFragTaskflowValueBlockPool,
+                            row_value_count + col_value_count,
+                            &group_value_capacity,
+                            allow_taskflow_late_alloc,
+                            &symV2PcFragTaskflowStats
+                                 .arena_value_late_allocs);
+                }
+                else
+                {
+                    group_index_capacity =
+                        state.group_index_pool_capacity;
+                    group_value_capacity =
+                        state.group_value_pool_capacity;
+                }
+                if (group_index_pool == NULL ||
                     row_index_count + col_index_count >
-                        state.group_index_pool_capacity)
+                        group_index_capacity)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async index arena exhausted.");
-                if (state.d_group_value_pool == NULL ||
+                if (group_value_pool == NULL ||
                     row_value_count + col_value_count >
-                        state.group_value_pool_capacity)
+                        group_value_capacity)
                     ABORT("GPU3DV2_PCFRAG_TASKFLOW grouped async value arena exhausted.");
-                int_t *row_group_gpu = state.d_group_index_pool;
+                for (size_t i = 0; i < group_tasks.size(); ++i)
+                    lock_outputs(*group_tasks[i]);
+                int_t *row_group_gpu = group_index_pool;
                 int_t *col_group_gpu =
-                    state.d_group_index_pool + row_index_count;
-                double *row_group_val = state.d_group_value_pool;
+                    group_index_pool + row_index_count;
+                double *row_group_val = group_value_pool;
                 double *col_group_val =
-                    state.d_group_value_pool + row_value_count;
+                    group_value_pool + row_value_count;
                 gpuErrchk(cudaMemcpyAsync(
                     row_group_gpu, row_group.data(),
                     sizeof(int_t) * row_index_count,
@@ -4648,6 +4725,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     col_group_gpu, col_group_val,
                     group_handle, group_stream, group_gemm);
                 xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup group;
+                if (async_core)
+                {
+                    group.d_group_index_pool = group_index_pool;
+                    group.group_index_pool_capacity =
+                        group_index_capacity;
+                    group.d_group_value_pool = group_value_pool;
+                    group.group_value_pool_capacity =
+                        group_value_capacity;
+                }
                 group.group_id = static_cast<int>(
                     state.launched_group_task_ids.size());
                 group.task_begin = static_cast<int>(
@@ -4684,7 +4770,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 }
                 state.launched_task_groups_by_stream[
                     group.launch_stream_kind].push_back(group);
-                state.group_scratch_in_use = 1;
+                if (!async_core)
+                    state.group_scratch_in_use = 1;
                 return;
             }
             int pair_count = 0;
@@ -4946,12 +5033,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         task_gemm = A_gpu.gpuGemmBuffs[streamId];
                     }
                     if (async_grouped_dispatch &&
+                        !async_core &&
                         state.group_scratch_in_use &&
                         superlu_sym_v2_pcfrag_taskflow_group_defer_busy())
                     {
                         progress_launched_tasks(0, 0);
                     }
                     if (async_grouped_dispatch &&
+                        !async_core &&
                         state.group_scratch_in_use &&
                         superlu_sym_v2_pcfrag_taskflow_group_defer_busy())
                     {
@@ -4960,7 +5049,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                         continue;
                     }
                     if (async_grouped_dispatch &&
-                        !state.group_scratch_in_use)
+                        (async_core || !state.group_scratch_in_use))
                     {
                         int available_group_slots =
                             superlu_sym_v2_pcfrag_taskflow_group_budget();
@@ -5208,24 +5297,70 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     size_t col_value_count =
                                         static_cast<size_t>(col_lda) *
                                         static_cast<size_t>(SuperSize(k));
-                                    if (state.d_group_index_pool == NULL ||
-                                        row_index_count + col_index_count >
-                                            state.group_index_pool_capacity)
-                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW explicit grouped async index arena exhausted.");
-                                    if (state.d_group_value_pool == NULL ||
-                                        row_value_count + col_value_count >
-                                            state.group_value_pool_capacity)
-                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW explicit grouped async value arena exhausted.");
-                                    int_t *row_group_gpu =
+                                    if (async_core &&
+                                        (!dSymV2PcFragTaskflowPoolHasBlock(
+                                             symV2PcFragTaskflowIndexBlockPool,
+                                             row_index_count +
+                                                 col_index_count) ||
+                                         !dSymV2PcFragTaskflowPoolHasBlock(
+                                             symV2PcFragTaskflowValueBlockPool,
+                                             row_value_count +
+                                                 col_value_count)))
+                                    {
+                                        ++symV2PcFragTaskflowStats.grouped_scratch_busy_deferrals;
+                                    }
+                                    else
+                                    {
+                                    size_t group_index_capacity = 0;
+                                    size_t group_value_capacity = 0;
+                                    int_t *group_index_pool =
                                         state.d_group_index_pool;
+                                    double *group_value_pool =
+                                        state.d_group_value_pool;
+                                    if (async_core)
+                                    {
+                                        group_index_pool =
+                                            dSymV2PcFragTaskflowAcquireIndexBlock(
+                                                symV2PcFragTaskflowIndexBlockPool,
+                                                row_index_count +
+                                                    col_index_count,
+                                                &group_index_capacity,
+                                                allow_taskflow_late_alloc,
+                                                &symV2PcFragTaskflowStats
+                                                     .arena_index_late_allocs);
+                                        group_value_pool =
+                                            dSymV2PcFragTaskflowAcquireValueBlock(
+                                                symV2PcFragTaskflowValueBlockPool,
+                                                row_value_count +
+                                                    col_value_count,
+                                                &group_value_capacity,
+                                                allow_taskflow_late_alloc,
+                                                &symV2PcFragTaskflowStats
+                                                     .arena_value_late_allocs);
+                                    }
+                                    else
+                                    {
+                                        group_index_capacity =
+                                            state.group_index_pool_capacity;
+                                        group_value_capacity =
+                                            state.group_value_pool_capacity;
+                                    }
+                                    if (group_index_pool == NULL ||
+                                        row_index_count + col_index_count >
+                                            group_index_capacity)
+                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW explicit grouped async index arena exhausted.");
+                                    if (group_value_pool == NULL ||
+                                        row_value_count + col_value_count >
+                                            group_value_capacity)
+                                        ABORT("GPU3DV2_PCFRAG_TASKFLOW explicit grouped async value arena exhausted.");
+                                    int_t *row_group_gpu = group_index_pool;
                                     int_t *col_group_gpu =
-                                        state.d_group_index_pool +
+                                        group_index_pool +
                                         row_index_count;
                                     double *row_group_val =
-                                        state.d_group_value_pool;
+                                        group_value_pool;
                                     double *col_group_val =
-                                        state.d_group_value_pool +
-                                        row_value_count;
+                                        group_value_pool + row_value_count;
                                     for (size_t ci = 0;
                                          ci < candidate_tids.size(); ++ci)
                                         lock_outputs(
@@ -5275,6 +5410,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         col_group_gpu, col_group_val,
                                         task_handle, task_stream, task_gemm);
                                     xLUstruct_t<double>::SymV2PcFragLaunchedTaskGroup group;
+                                    if (async_core)
+                                    {
+                                        group.d_group_index_pool =
+                                            group_index_pool;
+                                        group.group_index_pool_capacity =
+                                            group_index_capacity;
+                                        group.d_group_value_pool =
+                                            group_value_pool;
+                                        group.group_value_pool_capacity =
+                                            group_value_capacity;
+                                    }
                                     group.group_id = static_cast<int>(
                                         state.launched_group_task_ids.size());
                                     group.task_begin = static_cast<int>(
@@ -5325,7 +5471,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     state.launched_task_groups_by_stream[
                                         group.launch_stream_kind]
                                         .push_back(group);
-                                    state.group_scratch_in_use = 1;
+                                    if (!async_core)
+                                        state.group_scratch_in_use = 1;
                                     launched_this_call +=
                                         static_cast<int>(
                                             candidate_tids.size());
@@ -5333,6 +5480,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         static_cast<int>(
                                             candidate_tids.size());
                                     continue;
+                                    }
                                 }
                             }
                         }

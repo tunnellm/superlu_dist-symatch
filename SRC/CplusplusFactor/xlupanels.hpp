@@ -1190,15 +1190,21 @@ struct xLUstruct_t
         unsigned char gemm_resource_kind;
 #ifdef HAVE_CUDA
         cudaEvent_t done_event;
+        int_t *d_group_index_pool;
+        Ftype *d_group_value_pool;
 #endif
+        size_t group_index_pool_capacity;
+        size_t group_value_pool_capacity;
 
         SymV2PcFragLaunchedTaskGroup()
             : group_id(-1), task_begin(0), task_count(0),
               launch_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
               gemm_resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE)
 #ifdef HAVE_CUDA
-              , done_event(NULL)
+              , done_event(NULL), d_group_index_pool(NULL),
+              d_group_value_pool(NULL)
 #endif
+              , group_index_pool_capacity(0), group_value_pool_capacity(0)
         {
         }
     };
