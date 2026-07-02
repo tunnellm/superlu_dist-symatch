@@ -54,6 +54,122 @@ static inline bool superlu_sym_v2_async_factor()
     return cached != 0;
 }
 
+
+// SYM_V2_PCFRAG_STAGE7_ENV_BEGIN
+static inline bool superlu_sym_v2_pcfrag_stage7_cache()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached != 0;
+    const char *env = std::getenv("GPU3DV2_PCFRAG_STAGE7_CACHE");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0;
+        return false;
+    }
+    const int parsed = superlu_env_truthy(env);
+    if (parsed < 0)
+        ABORT("GPU3DV2_PCFRAG_STAGE7_CACHE must be a boolean value.");
+    cached = parsed;
+    return cached != 0;
+}
+
+static inline int superlu_sym_v2_pcfrag_stage7_slots(int fallback)
+{
+    static int cached = -2;
+    if (cached != -2)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_PCFRAG_STAGE7_SLOTS");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = fallback > 0 ? fallback : 0;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 1024)
+        ABORT("GPU3DV2_PCFRAG_STAGE7_SLOTS must be an integer in [0,1024].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
+static inline double superlu_sym_v2_pcfrag_stage7_mem_fraction()
+{
+    static double cached = -1.0;
+    if (cached >= 0.0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_PCFRAG_STAGE7_MEM_FRACTION");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0.50;
+        return cached;
+    }
+    char *end = NULL;
+    double value = std::strtod(env, &end);
+    if (end == env || *end != '\0' || value <= 0.0 || value > 0.90)
+        ABORT("GPU3DV2_PCFRAG_STAGE7_MEM_FRACTION must be in (0,0.90].");
+    cached = value;
+    return cached;
+}
+
+static inline long superlu_sym_v2_pcfrag_stage7_min_free_mb()
+{
+    static long cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_PCFRAG_STAGE7_MIN_FREE_MB");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 4096;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 1024L * 1024L)
+        ABORT("GPU3DV2_PCFRAG_STAGE7_MIN_FREE_MB must be a nonnegative integer.");
+    cached = value;
+    return cached;
+}
+
+static inline int superlu_sym_v2_pcfrag_stage7_min_distance()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_PCFRAG_STAGE7_MIN_DISTANCE");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 1;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 1024)
+        ABORT("GPU3DV2_PCFRAG_STAGE7_MIN_DISTANCE must be an integer in [0,1024].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
+static inline int superlu_sym_v2_pcfrag_stage7_block_limit()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env = std::getenv("GPU3DV2_PCFRAG_STAGE7_BLOCK_LIMIT");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 0; // 0 means no automatic disable on blocking consumes.
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 2147483647L)
+        ABORT("GPU3DV2_PCFRAG_STAGE7_BLOCK_LIMIT must be a nonnegative integer.");
+    cached = static_cast<int>(value);
+    return cached;
+}
+// SYM_V2_PCFRAG_STAGE7_ENV_END
+
 static inline bool superlu_sym_v2_batch_ancestor_reduce()
 {
     static int cached = -1;
@@ -515,7 +631,53 @@ static inline int superlu_sym_v2_pcfrag_async_progress_stage5_spin()
     cached = static_cast<int>(value);
     return cached;
 }
+
+
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE6_FLAG_BEGIN
+static inline bool superlu_sym_v2_pcfrag_async_progress_stage6()
+{
+    bool enabled = superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_STAGE6", 0);
+    if (enabled && superlu_sym_v2_pcfrag_async_progress_stage5())
+        ABORT("GPU3DV2_PCFRAG_ASYNC_PROGRESS_STAGE5 and GPU3DV2_PCFRAG_ASYNC_PROGRESS_STAGE6 are mutually exclusive.");
+    return enabled;
+}
+
+static inline bool superlu_sym_v2_pcfrag_async_progress_stage6_advance_only()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_STAGE6_ADVANCE_ONLY", 1);
+}
+
+static inline bool superlu_sym_v2_pcfrag_async_progress_stage6_profile()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_STAGE6_PROFILE",
+        superlu_sym_v2_pcfrag_async_progress_stage6() ? 1 : 0);
+}
+
+static inline int superlu_sym_v2_pcfrag_async_progress_stage6_min_distance()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env = std::getenv(
+        "GPU3DV2_PCFRAG_ASYNC_PROGRESS_STAGE6_MIN_DISTANCE");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 1;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 1048576L)
+        ABORT("GPU3DV2_PCFRAG_ASYNC_PROGRESS_STAGE6_MIN_DISTANCE must be an integer in [0,1048576].");
+    cached = static_cast<int>(value);
+    return cached;
+}
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE6_FLAG_END
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_FLAG_END
+
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_FLAG_END
 
 

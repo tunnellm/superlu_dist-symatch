@@ -2715,8 +2715,14 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateDualFragmentsGPU(
         return 0;
 
     // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_BEGIN
+    SymV2PcFragStage7Slot *pcfrag_stage7_slot =
+        dSymV2PcFragStage7SlotForPanel(k);
+    if (pcfrag_stage7_slot != NULL && !pcfrag_stage7_slot->ready)
+        ABORT("SymFact V2 Stage7 consumed fragments before the slot was ready.");
+
     SymV2PcFragAsyncState *pcfrag_async_state = NULL;
-    if (superlu_sym_v2_pcfrag_async_progress() &&
+    if (pcfrag_stage7_slot == NULL &&
+        superlu_sym_v2_pcfrag_async_progress() &&
         static_cast<size_t>(k) < symV2PcFragAsyncStates.size())
     {
         SymV2PcFragAsyncState &candidate =
@@ -2730,18 +2736,26 @@ int_t xLUstruct_t<Ftype>::dSymLookAheadUpdateDualFragmentsGPU(
         }
     }
 
-    int_t *row_idx = pcfrag_async_state != NULL
-        ? pcfrag_async_state->row_index_device
-        : A_gpu.symV2RowFragIdxRecvBufs[streamId];
-    Ftype *row_val = pcfrag_async_state != NULL
-        ? pcfrag_async_state->row_value_device
-        : A_gpu.symV2RowFragValRecvBufs[streamId];
-    int_t *col_idx = pcfrag_async_state != NULL
-        ? pcfrag_async_state->partner_index_device
-        : A_gpu.symPartnerLidxRecvBufs[streamId];
-    Ftype *col_val = pcfrag_async_state != NULL
-        ? pcfrag_async_state->partner_value_device
-        : A_gpu.symPartnerLvalRecvBufs[streamId];
+    int_t *row_idx = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->row_index_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->row_index_device
+            : A_gpu.symV2RowFragIdxRecvBufs[streamId]);
+    Ftype *row_val = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->row_value_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->row_value_device
+            : A_gpu.symV2RowFragValRecvBufs[streamId]);
+    int_t *col_idx = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->partner_index_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->partner_index_device
+            : A_gpu.symPartnerLidxRecvBufs[streamId]);
+    Ftype *col_val = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->partner_value_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->partner_value_device
+            : A_gpu.symPartnerLvalRecvBufs[streamId]);
     // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_END
     if (row_idx == NULL || row_val == NULL || col_idx == NULL || col_val == NULL)
         ABORT("SymFact V2 Pc-fragment GPU buffers are missing.");
@@ -2803,8 +2817,14 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneDualFragmentsGPU(
         return 0;
 
     // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_BEGIN
+    SymV2PcFragStage7Slot *pcfrag_stage7_slot =
+        dSymV2PcFragStage7SlotForPanel(k);
+    if (pcfrag_stage7_slot != NULL && !pcfrag_stage7_slot->ready)
+        ABORT("SymFact V2 Stage7 consumed fragments before the slot was ready.");
+
     SymV2PcFragAsyncState *pcfrag_async_state = NULL;
-    if (superlu_sym_v2_pcfrag_async_progress() &&
+    if (pcfrag_stage7_slot == NULL &&
+        superlu_sym_v2_pcfrag_async_progress() &&
         static_cast<size_t>(k) < symV2PcFragAsyncStates.size())
     {
         SymV2PcFragAsyncState &candidate =
@@ -2818,18 +2838,26 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateExcludeOneDualFragmentsGPU(
         }
     }
 
-    int_t *row_idx = pcfrag_async_state != NULL
-        ? pcfrag_async_state->row_index_device
-        : A_gpu.symV2RowFragIdxRecvBufs[streamId];
-    Ftype *row_val = pcfrag_async_state != NULL
-        ? pcfrag_async_state->row_value_device
-        : A_gpu.symV2RowFragValRecvBufs[streamId];
-    int_t *col_idx = pcfrag_async_state != NULL
-        ? pcfrag_async_state->partner_index_device
-        : A_gpu.symPartnerLidxRecvBufs[streamId];
-    Ftype *col_val = pcfrag_async_state != NULL
-        ? pcfrag_async_state->partner_value_device
-        : A_gpu.symPartnerLvalRecvBufs[streamId];
+    int_t *row_idx = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->row_index_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->row_index_device
+            : A_gpu.symV2RowFragIdxRecvBufs[streamId]);
+    Ftype *row_val = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->row_value_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->row_value_device
+            : A_gpu.symV2RowFragValRecvBufs[streamId]);
+    int_t *col_idx = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->partner_index_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->partner_index_device
+            : A_gpu.symPartnerLidxRecvBufs[streamId]);
+    Ftype *col_val = pcfrag_stage7_slot != NULL
+        ? pcfrag_stage7_slot->partner_value_device
+        : (pcfrag_async_state != NULL
+            ? pcfrag_async_state->partner_value_device
+            : A_gpu.symPartnerLvalRecvBufs[streamId]);
     // SYM_V2_PCFRAG_ASYNC_PROGRESS_CONSUMER_END
     if (row_idx == NULL || row_val == NULL || col_idx == NULL || col_val == NULL)
         ABORT("SymFact V2 Pc-fragment GPU buffers are missing.");

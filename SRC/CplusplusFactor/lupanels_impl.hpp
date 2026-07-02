@@ -418,6 +418,9 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
         [SYM_V2_PAYLOAD_BIN_COUNT] = {};
     long long payload_max_bytes[SYM_V2_PAYLOAD_COUNT]
         [SYM_V2_PAYLOAD_BIN_COUNT] = {};
+    #ifdef HAVE_CUDA
+    long long stage7_sum_stat[SYM_V2_PCFRAG_STAGE7_STAT_COUNT] = {};
+    #endif
     struct { double val; int rank; } local_max_time[SYM_V2_FACTOR_COUNT];
     struct { double val; int rank; } global_max_time[SYM_V2_FACTOR_COUNT];
     int nranks = 1;
@@ -445,6 +448,11 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
                payload_slots, MPI_LONG_LONG_INT, MPI_SUM, 0, grid3d->comm);
     MPI_Reduce(&symV2PayloadProfileMaxBytes[0][0], &payload_max_bytes[0][0],
                payload_slots, MPI_LONG_LONG_INT, MPI_MAX, 0, grid3d->comm);
+    #ifdef HAVE_CUDA
+    MPI_Reduce(symV2PcFragStage7Stat, stage7_sum_stat,
+               SYM_V2_PCFRAG_STAGE7_STAT_COUNT, MPI_LONG_LONG, MPI_SUM,
+               0, grid3d->comm);
+    #endif
 
     if (grid3d->iam != 0)
         return;
@@ -485,6 +493,28 @@ void xLUstruct_t<Ftype>::printSymV2FactorProfile()
                    total_mb, avg_kb, max_mb);
         }
     }
+#ifdef HAVE_CUDA
+    if (superlu_sym_v2_pcfrag_stage7_cache())
+    {
+        static const char *stage7_labels[SYM_V2_PCFRAG_STAGE7_STAT_COUNT] = {
+            "issued",
+            "fallback_sync",
+            "pool_miss",
+            "ready_progress",
+            "consume_ready",
+            "consume_blocking",
+            "released",
+            "disabled_blocking"
+        };
+        printf("Stage7 Pc-fragment exchange-owned cache stats:\n");
+        for (int i = 0; i < SYM_V2_PCFRAG_STAGE7_STAT_COUNT; ++i)
+        {
+            if (stage7_sum_stat[i] == 0)
+                continue;
+            printf("  %-24s %16lld\n", stage7_labels[i], stage7_sum_stat[i]);
+        }
+    }
+#endif
     fflush(stdout);
 }
 

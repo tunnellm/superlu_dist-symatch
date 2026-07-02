@@ -10,6 +10,7 @@
 #include "lupanels_GPU.cuh"
 #include "xlupanels_GPU.cuh"
 #include "gpuCommon.hpp"
+#include "gpu_mpi_utils.hpp"
 #endif
 #include "commWrapper.hpp"
 #include "anc25d.hpp"
@@ -1364,6 +1365,365 @@ struct xLUstruct_t
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_LEAN_HOST_STATE_END
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_STATE_END
 
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE6_STATE_BEGIN
+    int symV2PcFragAsyncStage6IssueContext = 0;
+    int symV2PcFragAsyncStage6IssueDistance = 0;
+    long long symV2PcFragAsyncStage6Candidates = 0;
+    long long symV2PcFragAsyncStage6AsyncIssued = 0;
+    long long symV2PcFragAsyncStage6SyncFallback = 0;
+    long long symV2PcFragAsyncStage6FallbackNoSlack = 0;
+    long long symV2PcFragAsyncStage6FallbackDistance = 0;
+    long long symV2PcFragAsyncStage6StreamCollisions = 0;
+    long long symV2PcFragAsyncStage6FallbackCollision = 0;
+    long long symV2PcFragAsyncStage6ConsumeReady = 0;
+    long long symV2PcFragAsyncStage6ConsumeBlocking = 0;
+    long long symV2PcFragAsyncStage6FinalComplete = 0;
+    long long symV2PcFragAsyncStage6CompleteReadyCalls = 0;
+    long long symV2PcFragAsyncStage6CompleteReadyPanels = 0;
+
+    void symV2PcFragAsyncStage6ResetIssueContext()
+    {
+        symV2PcFragAsyncStage6IssueContext = 0;
+        symV2PcFragAsyncStage6IssueDistance = 0;
+    }
+
+    void printSymV2PcFragAsyncStage6Profile()
+    {
+        if (!superlu_sym_v2_pcfrag_async_progress_stage6_profile())
+            return;
+        long long local[13] = {
+            symV2PcFragAsyncStage6Candidates,
+            symV2PcFragAsyncStage6AsyncIssued,
+            symV2PcFragAsyncStage6SyncFallback,
+            symV2PcFragAsyncStage6FallbackNoSlack,
+            symV2PcFragAsyncStage6FallbackDistance,
+            symV2PcFragAsyncStage6StreamCollisions,
+            symV2PcFragAsyncStage6FallbackCollision,
+            symV2PcFragAsyncStage6ConsumeReady,
+            symV2PcFragAsyncStage6ConsumeBlocking,
+            symV2PcFragAsyncStage6FinalComplete,
+            symV2PcFragAsyncStage6CompleteReadyCalls,
+            symV2PcFragAsyncStage6CompleteReadyPanels,
+            static_cast<long long>(superlu_sym_v2_pcfrag_async_progress_stage6_min_distance())
+        };
+        long long global[13] = {};
+        if (grid3d != NULL)
+        {
+            MPI_Reduce(local, global, 13, MPI_LONG_LONG, MPI_SUM, 0,
+                       grid3d->comm);
+            if (grid3d->iam != 0)
+                return;
+        }
+        else
+        {
+            for (int i = 0; i < 13; ++i)
+                global[i] = local[i];
+        }
+        std::printf(
+            "SymFact V2 Pc-fragment Stage6 profile: "
+            "candidates=%lld async_issued=%lld sync_fallback=%lld "
+            "fallback_no_slack=%lld fallback_distance=%lld "
+            "stream_collisions=%lld fallback_collision=%lld "
+            "consume_ready=%lld consume_blocking=%lld final_complete=%lld "
+            "complete_ready_calls=%lld complete_ready_panels=%lld "
+            "min_distance_sum=%lld\n",
+            global[0], global[1], global[2], global[3], global[4],
+            global[5], global[6], global[7], global[8], global[9],
+            global[10], global[11], global[12]);
+        std::fflush(stdout);
+    }
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE6_STATE_END
+
+
+// SYM_V2_PCFRAG_STAGE7_SLOT_STATE_BEGIN
+    enum SymV2PcFragStage7StatId
+    {
+        SYM_V2_PCFRAG_STAGE7_ISSUED = 0,
+        SYM_V2_PCFRAG_STAGE7_FALLBACK_SYNC,
+        SYM_V2_PCFRAG_STAGE7_POOL_MISS,
+        SYM_V2_PCFRAG_STAGE7_READY_PROGRESS,
+        SYM_V2_PCFRAG_STAGE7_CONSUME_READY,
+        SYM_V2_PCFRAG_STAGE7_CONSUME_BLOCKING,
+        SYM_V2_PCFRAG_STAGE7_RELEASED,
+        SYM_V2_PCFRAG_STAGE7_DISABLED_BLOCKING,
+        SYM_V2_PCFRAG_STAGE7_STAT_COUNT
+    };
+    long long symV2PcFragStage7Stat[SYM_V2_PCFRAG_STAGE7_STAT_COUNT] = {};
+    int symV2PcFragStage7Disable = 0;
+
+    void symV2PcFragStage7StatAdd(SymV2PcFragStage7StatId id,
+                                  long long value = 1)
+    {
+        if (id < 0 || id >= SYM_V2_PCFRAG_STAGE7_STAT_COUNT)
+            return;
+        symV2PcFragStage7Stat[id] += value;
+    }
+
+    struct SymV2PcFragStage7Slot
+    {
+        int slot_id;
+        int_t active_k;
+        int stream_offset;
+        int active;
+        int send_d2h_event_recorded;
+        int send_stage_ready;
+        int sends_posted;
+        int partner_recvs_done;
+        int row_recvs_done;
+        int recv_h2d_issued;
+        int ready_event_recorded;
+        int ready;
+        int consumer_completed;
+        int partner_recv_total;
+        int partner_send_total;
+        int row_recv_total;
+        int row_send_total;
+        int partner_self_pr;
+        int partner_self_count;
+        std::vector<int> partner_recv_sizes;
+        std::vector<int> partner_recv_offsets;
+        std::vector<int> partner_recv_peers;
+        std::vector<int> partner_send_counts;
+        std::vector<int> partner_send_offsets;
+        std::vector<int> row_recv_offsets;
+        std::vector<int> row_send_counts;
+        std::vector<int> row_send_offsets;
+        std::vector<MPI_Request> partner_recv_reqs;
+        std::vector<MPI_Request> partner_send_reqs;
+        std::vector<MPI_Request> row_recv_reqs;
+        std::vector<MPI_Request> row_send_reqs;
+        Ftype *partner_recv_host_base;
+        Ftype *partner_send_host_base;
+        Ftype *row_recv_host_base;
+        Ftype *row_send_host_base;
+        size_t partner_recv_host_capacity;
+        size_t partner_send_host_capacity;
+        size_t row_recv_host_capacity;
+        size_t row_send_host_capacity;
+        int_t partner_empty_header[LPANEL_HEADER_SIZE];
+        int_t row_empty_header[LPANEL_HEADER_SIZE];
+        int_t *partner_index_device;
+        Ftype *partner_value_device;
+        Ftype *partner_stage_device;
+        Ftype *partner_send_stage_device;
+        int_t *row_index_device;
+        Ftype *row_value_device;
+        Ftype *row_send_stage_device;
+        size_t partner_index_capacity;
+        size_t partner_value_capacity;
+        size_t partner_stage_capacity;
+        size_t partner_send_stage_capacity;
+        size_t row_index_capacity;
+        size_t row_value_capacity;
+        size_t row_send_stage_capacity;
+        cudaStream_t stream;
+        cudaEvent_t send_d2h_done_event;
+        cudaEvent_t ready_event;
+
+        SymV2PcFragStage7Slot()
+            : slot_id(-1), active_k(-1), stream_offset(-1), active(0),
+              send_d2h_event_recorded(0), send_stage_ready(0), sends_posted(0),
+              partner_recvs_done(1), row_recvs_done(1), recv_h2d_issued(0),
+              ready_event_recorded(0), ready(0), consumer_completed(0),
+              partner_recv_total(0), partner_send_total(0), row_recv_total(0),
+              row_send_total(0), partner_self_pr(-1), partner_self_count(0),
+              partner_recv_host_base(NULL), partner_send_host_base(NULL),
+              row_recv_host_base(NULL), row_send_host_base(NULL),
+              partner_recv_host_capacity(0), partner_send_host_capacity(0),
+              row_recv_host_capacity(0), row_send_host_capacity(0),
+              partner_index_device(NULL), partner_value_device(NULL),
+              partner_stage_device(NULL), partner_send_stage_device(NULL),
+              row_index_device(NULL), row_value_device(NULL),
+              row_send_stage_device(NULL), partner_index_capacity(0),
+              partner_value_capacity(0), partner_stage_capacity(0),
+              partner_send_stage_capacity(0), row_index_capacity(0),
+              row_value_capacity(0), row_send_stage_capacity(0), stream(NULL),
+              send_d2h_done_event(NULL), ready_event(NULL)
+        {
+            for (int i = 0; i < LPANEL_HEADER_SIZE; ++i)
+            {
+                partner_empty_header[i] = 0;
+                row_empty_header[i] = 0;
+            }
+        }
+
+        ~SymV2PcFragStage7Slot()
+        {
+            releaseOwnedBuffers();
+        }
+
+        SymV2PcFragStage7Slot(const SymV2PcFragStage7Slot &) = delete;
+        SymV2PcFragStage7Slot &operator=(const SymV2PcFragStage7Slot &) = delete;
+
+        SymV2PcFragStage7Slot(SymV2PcFragStage7Slot &&other) noexcept
+            : SymV2PcFragStage7Slot()
+        {
+            swapWith(other);
+        }
+
+        SymV2PcFragStage7Slot &operator=(SymV2PcFragStage7Slot &&other) noexcept
+        {
+            if (this != &other)
+            {
+                releaseOwnedBuffers();
+                swapWith(other);
+            }
+            return *this;
+        }
+
+        void swapWith(SymV2PcFragStage7Slot &other) noexcept
+        {
+            using std::swap;
+            swap(slot_id, other.slot_id);
+            swap(active_k, other.active_k);
+            swap(stream_offset, other.stream_offset);
+            swap(active, other.active);
+            swap(send_d2h_event_recorded, other.send_d2h_event_recorded);
+            swap(send_stage_ready, other.send_stage_ready);
+            swap(sends_posted, other.sends_posted);
+            swap(partner_recvs_done, other.partner_recvs_done);
+            swap(row_recvs_done, other.row_recvs_done);
+            swap(recv_h2d_issued, other.recv_h2d_issued);
+            swap(ready_event_recorded, other.ready_event_recorded);
+            swap(ready, other.ready);
+            swap(consumer_completed, other.consumer_completed);
+            swap(partner_recv_total, other.partner_recv_total);
+            swap(partner_send_total, other.partner_send_total);
+            swap(row_recv_total, other.row_recv_total);
+            swap(row_send_total, other.row_send_total);
+            swap(partner_self_pr, other.partner_self_pr);
+            swap(partner_self_count, other.partner_self_count);
+            partner_recv_sizes.swap(other.partner_recv_sizes);
+            partner_recv_offsets.swap(other.partner_recv_offsets);
+            partner_recv_peers.swap(other.partner_recv_peers);
+            partner_send_counts.swap(other.partner_send_counts);
+            partner_send_offsets.swap(other.partner_send_offsets);
+            row_recv_offsets.swap(other.row_recv_offsets);
+            row_send_counts.swap(other.row_send_counts);
+            row_send_offsets.swap(other.row_send_offsets);
+            partner_recv_reqs.swap(other.partner_recv_reqs);
+            partner_send_reqs.swap(other.partner_send_reqs);
+            row_recv_reqs.swap(other.row_recv_reqs);
+            row_send_reqs.swap(other.row_send_reqs);
+            swap(partner_recv_host_base, other.partner_recv_host_base);
+            swap(partner_send_host_base, other.partner_send_host_base);
+            swap(row_recv_host_base, other.row_recv_host_base);
+            swap(row_send_host_base, other.row_send_host_base);
+            swap(partner_recv_host_capacity, other.partner_recv_host_capacity);
+            swap(partner_send_host_capacity, other.partner_send_host_capacity);
+            swap(row_recv_host_capacity, other.row_recv_host_capacity);
+            swap(row_send_host_capacity, other.row_send_host_capacity);
+            for (int i = 0; i < LPANEL_HEADER_SIZE; ++i)
+            {
+                swap(partner_empty_header[i], other.partner_empty_header[i]);
+                swap(row_empty_header[i], other.row_empty_header[i]);
+            }
+            swap(partner_index_device, other.partner_index_device);
+            swap(partner_value_device, other.partner_value_device);
+            swap(partner_stage_device, other.partner_stage_device);
+            swap(partner_send_stage_device, other.partner_send_stage_device);
+            swap(row_index_device, other.row_index_device);
+            swap(row_value_device, other.row_value_device);
+            swap(row_send_stage_device, other.row_send_stage_device);
+            swap(partner_index_capacity, other.partner_index_capacity);
+            swap(partner_value_capacity, other.partner_value_capacity);
+            swap(partner_stage_capacity, other.partner_stage_capacity);
+            swap(partner_send_stage_capacity, other.partner_send_stage_capacity);
+            swap(row_index_capacity, other.row_index_capacity);
+            swap(row_value_capacity, other.row_value_capacity);
+            swap(row_send_stage_capacity, other.row_send_stage_capacity);
+            swap(stream, other.stream);
+            swap(send_d2h_done_event, other.send_d2h_done_event);
+            swap(ready_event, other.ready_event);
+        }
+
+        void releaseOwnedBuffers()
+        {
+            if (partner_recv_host_base != NULL)
+                (void)cudaFreeHost(partner_recv_host_base);
+            if (partner_send_host_base != NULL)
+                (void)cudaFreeHost(partner_send_host_base);
+            if (row_recv_host_base != NULL)
+                (void)cudaFreeHost(row_recv_host_base);
+            if (row_send_host_base != NULL)
+                (void)cudaFreeHost(row_send_host_base);
+            if (partner_index_device != NULL)
+                (void)cudaFree(partner_index_device);
+            if (partner_value_device != NULL)
+                (void)cudaFree(partner_value_device);
+            if (partner_stage_device != NULL)
+                (void)cudaFree(partner_stage_device);
+            if (partner_send_stage_device != NULL)
+                (void)cudaFree(partner_send_stage_device);
+            if (row_index_device != NULL)
+                (void)cudaFree(row_index_device);
+            if (row_value_device != NULL)
+                (void)cudaFree(row_value_device);
+            if (row_send_stage_device != NULL)
+                (void)cudaFree(row_send_stage_device);
+            if (send_d2h_done_event != NULL)
+                (void)cudaEventDestroy(send_d2h_done_event);
+            if (ready_event != NULL)
+                (void)cudaEventDestroy(ready_event);
+            if (stream != NULL)
+                (void)cudaStreamDestroy(stream);
+            partner_recv_host_base = partner_send_host_base = NULL;
+            row_recv_host_base = row_send_host_base = NULL;
+            partner_index_device = row_index_device = NULL;
+            partner_value_device = partner_stage_device = NULL;
+            partner_send_stage_device = NULL;
+            row_value_device = row_send_stage_device = NULL;
+            partner_recv_host_capacity = partner_send_host_capacity = 0;
+            row_recv_host_capacity = row_send_host_capacity = 0;
+            partner_index_capacity = partner_value_capacity = 0;
+            partner_stage_capacity = partner_send_stage_capacity = 0;
+            row_index_capacity = row_value_capacity = row_send_stage_capacity = 0;
+            send_d2h_done_event = ready_event = NULL;
+            stream = NULL;
+        }
+
+        void resetRuntime()
+        {
+            active_k = -1;
+            stream_offset = -1;
+            active = 0;
+            send_d2h_event_recorded = 0;
+            send_stage_ready = 0;
+            sends_posted = 0;
+            partner_recvs_done = 1;
+            row_recvs_done = 1;
+            recv_h2d_issued = 0;
+            ready_event_recorded = 0;
+            ready = 0;
+            consumer_completed = 0;
+            partner_recv_total = 0;
+            partner_send_total = 0;
+            row_recv_total = 0;
+            row_send_total = 0;
+            partner_self_pr = -1;
+            partner_self_count = 0;
+            partner_recv_sizes.clear();
+            partner_recv_offsets.clear();
+            partner_recv_peers.clear();
+            partner_send_counts.clear();
+            partner_send_offsets.clear();
+            row_recv_offsets.clear();
+            row_send_counts.clear();
+            row_send_offsets.clear();
+            partner_recv_reqs.clear();
+            partner_send_reqs.clear();
+            row_recv_reqs.clear();
+            row_send_reqs.clear();
+        }
+    };
+
+    std::vector<SymV2PcFragStage7Slot> symV2PcFragStage7Slots;
+    std::vector<int> symV2PcFragStage7FreeSlots;
+    std::vector<int> symV2PcFragStage7LiveSlots;
+    std::vector<int> symV2PcFragStage7PanelToSlot;
+    std::vector<int> symV2PcFragStage7FutureDistance;
+    int symV2PcFragStage7Initialized = 0;
+// SYM_V2_PCFRAG_STAGE7_SLOT_STATE_END
     struct SymV2PcFragAsyncPinnedPool
     {
         Ftype *partner_recv_pinned;
@@ -1616,6 +1976,10 @@ struct xLUstruct_t
 #ifdef SLU_ENABLE_SYM_GPU3D_TIMING
         if (options != NULL && options->SymFact == YES)
             printSymGPU3DTiming();
+#endif
+#ifdef HAVE_CUDA
+        if (options != NULL && options->SymFact == YES)
+            printSymV2PcFragAsyncStage6Profile();
 #endif
 
         XLU_V2_DTOR_TRACE("begin");
@@ -2027,6 +2391,9 @@ struct xLUstruct_t
     int_t dSymV2CudaStreamSynchronizeWithProgressGPU(cudaStream_t stream);
     int_t dSymV2SyncLookAheadUpdateWithProgressGPU(int streamId);
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE5_DECL_END
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE6_DECL_BEGIN
+    int_t dSymV2LFragmentExchangeStage6AllowAsyncIssueGPU(int_t k, int stream_offset);
+// SYM_V2_PCFRAG_ASYNC_PROGRESS_STAGE6_DECL_END
     int_t dSymV2LFragmentExchangeCompleteProgressGPU(
         int_t k, int_t stream_offset, int final_sync);
     int_t dSymV2LFragmentExchangeFinalSyncGPU(int_t k, int_t stream_offset);
@@ -2041,6 +2408,19 @@ struct xLUstruct_t
     void dSymV2PcFragAsyncLiveRemove(int_t k);
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_CORRECTIVE_DECL_END
 // SYM_V2_PCFRAG_ASYNC_PROGRESS_DECL_END
+
+// SYM_V2_PCFRAG_STAGE7_DECL_BEGIN
+    int_t dSymV2PcFragStage7InitPoolGPU();
+    void dSymV2PcFragStage7MarkFuture(int_t k, int distance);
+    void dSymV2PcFragStage7ClearFuture(int_t k);
+    int_t dSymV2PcFragStage7MaybeIssueGPU(int_t k, int_t stream_offset);
+    int_t dSymV2PcFragStage7ProgressAllGPU();
+    int_t dSymV2PcFragStage7ConsumeGPU(int_t k, int_t stream_offset,
+                                       int final_sync);
+    int_t dSymV2PcFragStage7FinalSyncGPU(int_t k, int_t stream_offset);
+    int_t dSymV2PcFragStage7ReleaseGPU(int_t k, int_t stream_offset);
+    SymV2PcFragStage7Slot *dSymV2PcFragStage7SlotForPanel(int_t k);
+// SYM_V2_PCFRAG_STAGE7_DECL_END
     int_t dSymV2LFragmentExchangeCompleteGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeReleaseGPU(int_t k, int_t stream_offset);
     bool symV2UsePcFragmentSchurPanel(int_t k) const;
