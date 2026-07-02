@@ -2521,9 +2521,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         !superlu_sym_v2_pcfrag_taskflow_atomic_output_scatter())
         ABORT("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE strict mode requires global output locks unless GPU3DV2_PCFRAG_TASKFLOW_ATOMIC_OUTPUT_SCATTER=1.");
     if (superlu_sym_v2_pcfrag_taskflow_async_core() &&
-        superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0 &&
-        !superlu_sym_v2_pcfrag_taskflow_coalesce_col())
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires async-core column coalescing.");
+        superlu_sym_v2_pcfrag_taskflow_piece_max_rows() > 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split sparse task planning.");
     if (!superlu_sym_v2_row_l_plan_v2_exchange() ||
         !superlu_sym_v2_row_l_direct_recv() ||
         !superlu_sym_v2_row_l_compressed_plan() ||
@@ -2745,9 +2744,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     };
     const int taskflow_piece_max_rows =
         superlu_sym_v2_pcfrag_taskflow_piece_max_rows();
-    if (taskflow_piece_max_rows > 0 &&
-        !(async_core && coalesce_col_tasks))
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires async-core column coalescing.");
+    if (taskflow_piece_max_rows > 0 && async_core)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split sparse task planning.");
     auto build_piece_ranges =
         [&](const std::vector<int_t> &frag, int_t nb,
             std::vector<TaskflowPieceRange> &ranges) {
