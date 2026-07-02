@@ -1420,6 +1420,7 @@ struct xLUstruct_t
         std::vector<unsigned char> task_ready_inputs;
         std::vector<unsigned char> task_enqueued;
         unsigned char use_generic_runnable_queue;
+        unsigned char runnable_mode_queue_mask;
         std::vector<int> runnable_task_ids;
         std::vector<int> runnable_task_ids_by_mode[16];
         SymV2PcFragGidTaskQueueMap runnable_lookahead_col_by_gid;
@@ -1501,7 +1502,7 @@ struct xLUstruct_t
               producer_exchange_active(0), producer_exchange_pending(0),
               producer_stream_pending(0), output_conflicts_possible(0),
               group_scratch_in_use(0), use_generic_runnable_queue(1),
-              active_output_lock_count(0),
+              runnable_mode_queue_mask(0x0f), active_output_lock_count(0),
               row_pieces_ready_count(0), partner_pieces_ready_count(0),
               producer_partner_recv_remaining(0),
               producer_row_recv_remaining(0), producer_ksupc(0)
@@ -1575,6 +1576,8 @@ struct xLUstruct_t
                     for (int mask = 1; mask < 16; mask <<= 1)
                     {
                         if ((mode_mask & mask) == 0)
+                            continue;
+                        if ((runnable_mode_queue_mask & mask) == 0)
                             continue;
                         if (runnable_task_ids_by_mode[mask].size() >=
                             runnable_task_ids_by_mode[mask].capacity())
@@ -1689,6 +1692,7 @@ struct xLUstruct_t
             task_ready_inputs.clear();
             task_enqueued.clear();
             use_generic_runnable_queue = 1;
+            runnable_mode_queue_mask = 0x0f;
             runnable_task_ids.clear();
             for (int mask = 0; mask < 16; ++mask)
                 runnable_task_ids_by_mode[mask].clear();

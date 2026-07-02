@@ -2191,6 +2191,15 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         !async_core ||
         !superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch() ||
         superlu_sym_v2_pcfrag_taskflow_producer_task_limit() > 0;
+    const unsigned char runnable_mode_queue_mask =
+        (async_core &&
+         superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch())
+            ? static_cast<unsigned char>(SYM_V2_PCFRAG_TASK_FULL)
+            : static_cast<unsigned char>(
+                  SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
+                  SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW |
+                  SYM_V2_PCFRAG_TASK_EXCLUDE |
+                  SYM_V2_PCFRAG_TASK_FULL);
 
     auto release_taskflow_state = [&](SymV2PcFragPanelTaskState &s) {
         for (size_t i = 0; i < s.row_pieces.size(); ++i)
@@ -2252,6 +2261,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     state.producer_exchange_active = 1;
     state.use_generic_runnable_queue =
         use_generic_runnable_queue ? 1 : 0;
+    state.runnable_mode_queue_mask = runnable_mode_queue_mask;
     ++symV2PcFragTaskflowStats.taskflow_entries;
 
     const bool compact_output_locks =
@@ -2678,8 +2688,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         byte_product_or_max(2 * planned_task_count, sizeof(int));
     size_t estimated_mode_queue_bytes = 0;
     for (int mask = 1; mask < 16; mask <<= 1)
-        estimated_mode_queue_bytes +=
-            byte_product_or_max(mode_counts[mask], sizeof(int));
+        if (runnable_mode_queue_mask & mask)
+            estimated_mode_queue_bytes +=
+                byte_product_or_max(mode_counts[mask], sizeof(int));
     size_t estimated_gid_queue_bytes =
         byte_product_or_max(
             mode_counts[SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL] +
@@ -2789,7 +2800,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 "generic_queue_bytes=%zu csr_bytes=%zu "
                 "mode_queue_bytes=%zu gid_queue_bytes=%zu "
                 "counter_map_bytes=%zu output_lock_bytes=%zu "
-                "event_count_est=%zu use_generic_queue=%d\n",
+                "event_count_est=%zu use_generic_queue=%d "
+                "mode_queue_mask=%u\n",
                 iam, static_cast<long long>(k),
                 state.row_pieces.size(), state.partner_pieces.size(),
                 planned_task_count, lookahead_col_degrees.size(),
@@ -2800,7 +2812,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 estimated_counter_map_bytes, estimated_output_lock_bytes,
                 state.row_pieces.size() + state.partner_pieces.size() +
                     planned_task_count,
-                state.use_generic_runnable_queue ? 1 : 0);
+                state.use_generic_runnable_queue ? 1 : 0,
+                static_cast<unsigned>(state.runnable_mode_queue_mask));
         fflush(stderr);
         const char *taskflow_plan_diag_abort =
             std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG_ABORT");
@@ -2818,7 +2831,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     if (use_generic_runnable_queue)
         state.runnable_task_ids.reserve(planned_task_count);
     for (int mask = 1; mask < 16; mask <<= 1)
-        state.runnable_task_ids_by_mode[mask].reserve(mode_counts[mask]);
+        if (runnable_mode_queue_mask & mask)
+            state.runnable_task_ids_by_mode[mask].reserve(mode_counts[mask]);
     if (async_core)
     {
         size_t launched_reserve =
@@ -5112,8 +5126,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
             {
                 if ((mode_mask & single_mode) == 0)
                     continue;
-                std::vector<int> *queue_ptr =
-                    &state.runnable_task_ids_by_mode[single_mode];
+                std::vector<int> *queue_ptr = NULL;
                 if (mode_gid != GLOBAL_BLOCK_NOT_FOUND &&
                     single_mode == SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
                 {
@@ -5131,6 +5144,23 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     if (it == state.runnable_lookahead_row_by_gid.end())
                         continue;
                     queue_ptr = &it->second;
+                }
+                else if (state.runnable_mode_queue_mask & single_mode)
+                {
+                    queue_ptr = &state.runnable_task_ids_by_mode[
+                        single_mode];
+                }
+                else if ((state.runnable_mode_queue_mask &
+                          SYM_V2_PCFRAG_TASK_FULL) &&
+                         single_mode != SYM_V2_PCFRAG_TASK_FULL)
+                {
+                    queue_ptr =
+                        &state.runnable_task_ids_by_mode[
+                            SYM_V2_PCFRAG_TASK_FULL];
+                }
+                else
+                {
+                    continue;
                 }
                 std::vector<int> &queue = *queue_ptr;
                 size_t runnable_write = 0;
