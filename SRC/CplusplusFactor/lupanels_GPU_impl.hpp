@@ -2519,8 +2519,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     };
     const int taskflow_piece_max_rows =
         superlu_sym_v2_pcfrag_taskflow_piece_max_rows();
-    if (taskflow_piece_max_rows > 0 && !async_core)
-        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS currently requires GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE=1.");
+    if (taskflow_piece_max_rows > 0)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_PIECE_MAX_ROWS>0 requires mode-split sparse task planning.");
     auto build_piece_ranges =
         [&](const std::vector<int_t> &frag, int_t nb,
             std::vector<TaskflowPieceRange> &ranges) {
