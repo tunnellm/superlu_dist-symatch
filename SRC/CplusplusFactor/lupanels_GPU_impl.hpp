@@ -2886,16 +2886,39 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             for (size_t r = 0; r < unique_row_pieces.size(); ++r)
                 ++row_task_degrees[
                     static_cast<size_t>(unique_row_pieces[r])];
+            int_t row_lookahead_gid = GLOBAL_BLOCK_NOT_FOUND;
+            int row_lookahead_piece = -1;
+            size_t row_lookahead_members = 0;
+            bool row_lookahead_homogeneous = true;
             for (size_t p = i; p < j; ++p)
             {
                 int_t row_gid = output_candidates[p].output.gi;
                 if (row_gid == output_candidates[p].output.gj)
                     continue;
-                ++mode_counts[SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW];
-                ++lookahead_row_degrees[row_gid];
+                if (row_lookahead_gid == GLOBAL_BLOCK_NOT_FOUND)
+                {
+                    row_lookahead_gid = row_gid;
+                    row_lookahead_piece = output_candidates[p].row_piece;
+                }
+                else if (row_lookahead_gid != row_gid)
+                {
+                    row_lookahead_homogeneous = false;
+                }
+                ++row_lookahead_members;
+            }
+            if (row_lookahead_homogeneous &&
+                row_lookahead_gid != GLOBAL_BLOCK_NOT_FOUND)
+            {
+                if (row_lookahead_members >
+                    static_cast<size_t>(std::numeric_limits<int>::max()))
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced row-lookahead degree is too large.");
+                mode_counts[SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW] +=
+                    row_lookahead_members;
+                lookahead_row_degrees[row_lookahead_gid] +=
+                    static_cast<int>(row_lookahead_members);
                 lookahead_row_group_keys.push_back(
                     TaskflowGroupDegreeKey{
-                        row_gid, output_candidates[p].row_piece});
+                        row_lookahead_gid, row_lookahead_piece});
             }
             i = j;
         }
@@ -3372,7 +3395,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 state.partner_pieces.size())
             ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid partner piece.");
         int_t gj = first.output.gj;
-        bool has_row_lookahead = false;
+        int_t row_lookahead_gid = GLOBAL_BLOCK_NOT_FOUND;
+        bool row_lookahead_homogeneous = true;
         std::vector<int> unique_row_pieces;
         unique_row_pieces.reserve(end - begin);
         auto add_unique_piece = [](std::vector<int> &ids, int piece_id) {
@@ -3394,7 +3418,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has invalid row piece.");
             add_unique_piece(unique_row_pieces, candidate.row_piece);
             if (candidate.output.gi != candidate.output.gj)
-                has_row_lookahead = true;
+            {
+                if (row_lookahead_gid == GLOBAL_BLOCK_NOT_FOUND)
+                    row_lookahead_gid = candidate.output.gi;
+                else if (row_lookahead_gid != candidate.output.gi)
+                    row_lookahead_homogeneous = false;
+            }
         }
         if (unique_row_pieces.empty())
             ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task has no row inputs.");
@@ -3428,7 +3457,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             SYM_V2_PCFRAG_TASK_FULL |
             SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL |
             SYM_V2_PCFRAG_TASK_EXCLUDE;
-        if (has_row_lookahead)
+        if (row_lookahead_homogeneous &&
+            row_lookahead_gid != GLOBAL_BLOCK_NOT_FOUND)
             task.mode_mask |= SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW;
         if (state.task_output_pool.size() >
             static_cast<size_t>(std::numeric_limits<int>::max()) ||
@@ -3466,6 +3496,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 int_t row_gid = output_candidates[p].output.gi;
                 if (row_gid == output_candidates[p].output.gj)
                     continue;
+                if (row_gid != row_lookahead_gid)
+                    ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced row-lookahead group is not homogeneous.");
                 int idx =
                     state.incomplete_lookahead_row_members_by_gid.index_of(
                         row_gid);
