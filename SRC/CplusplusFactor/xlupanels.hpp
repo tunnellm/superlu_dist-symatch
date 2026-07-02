@@ -1892,6 +1892,20 @@ struct xLUstruct_t
         long long grouped_capacity_fallbacks;
         long long grouped_scratch_busy_deferrals;
         long long grouped_pending_cap_deferrals;
+        long long graph_host_bytes;
+        long long graph_task_desc_bytes;
+        long long graph_pair_bytes;
+        long long graph_ready_bytes;
+        long long graph_queue_bytes;
+        long long graph_csr_bytes;
+        long long graph_mode_queue_bytes;
+        long long graph_gid_queue_bytes;
+        long long graph_counter_map_bytes;
+        long long graph_event_count_est;
+        long long graph_output_count;
+        long long graph_host_bytes_max_panel;
+        long long graph_event_count_max_panel;
+        long long graph_output_count_max_panel;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -1972,7 +1986,16 @@ struct xLUstruct_t
               grouped_output_conflict_fallbacks(0),
               grouped_capacity_fallbacks(0),
               grouped_scratch_busy_deferrals(0),
-              grouped_pending_cap_deferrals(0)
+              grouped_pending_cap_deferrals(0),
+              graph_host_bytes(0), graph_task_desc_bytes(0),
+              graph_pair_bytes(0), graph_ready_bytes(0),
+              graph_queue_bytes(0), graph_csr_bytes(0),
+              graph_mode_queue_bytes(0), graph_gid_queue_bytes(0),
+              graph_counter_map_bytes(0), graph_event_count_est(0),
+              graph_output_count(0),
+              graph_host_bytes_max_panel(0),
+              graph_event_count_max_panel(0),
+              graph_output_count_max_panel(0)
         {
         }
     };
@@ -2254,12 +2277,38 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.grouped_pending_cap_deferrals
         };
         long long global_group[10] = {};
+        long long local_output_lock_bytes = 0;
+        if (!symV2PcFragTaskflowGlobalOutputLockState.empty())
+            local_output_lock_bytes =
+                static_cast<long long>(
+                    symV2PcFragTaskflowGlobalOutputLockState.size() *
+                    sizeof(unsigned char));
+        long long local_graph[15] = {
+            symV2PcFragTaskflowStats.graph_host_bytes,
+            symV2PcFragTaskflowStats.graph_task_desc_bytes,
+            symV2PcFragTaskflowStats.graph_pair_bytes,
+            symV2PcFragTaskflowStats.graph_ready_bytes,
+            symV2PcFragTaskflowStats.graph_queue_bytes,
+            symV2PcFragTaskflowStats.graph_csr_bytes,
+            symV2PcFragTaskflowStats.graph_mode_queue_bytes,
+            symV2PcFragTaskflowStats.graph_gid_queue_bytes,
+            symV2PcFragTaskflowStats.graph_counter_map_bytes,
+            local_output_lock_bytes,
+            symV2PcFragTaskflowStats.graph_event_count_est,
+            symV2PcFragTaskflowStats.graph_output_count,
+            symV2PcFragTaskflowStats.graph_host_bytes_max_panel,
+            symV2PcFragTaskflowStats.graph_event_count_max_panel,
+            symV2PcFragTaskflowStats.graph_output_count_max_panel
+        };
+        long long global_graph[15] = {};
         if (grid3d != NULL)
         {
             MPI_Reduce(local, global,
                        SYM_V2_PCFRAG_TASKFLOW_PROFILE_COUNT,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_group, global_group, 10, MPI_LONG_LONG,
+                       MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_graph, global_graph, 15, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
             if (grid3d->iam != 0)
                 return;
@@ -2271,6 +2320,8 @@ struct xLUstruct_t
                 global[i] = local[i];
             for (int i = 0; i < 10; ++i)
                 global_group[i] = local_group[i];
+            for (int i = 0; i < 15; ++i)
+                global_graph[i] = local_graph[i];
         }
         std::printf(
             "SymFact V2 Pc-fragment taskflow profile: "
@@ -2384,6 +2435,21 @@ struct xLUstruct_t
             global_group[3], global_group[4], global_group[5],
             global_group[6], global_group[7], global_group[8],
             global_group[9]);
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow graph: "
+            "host_graph_bytes_accum=%lld task_desc_bytes=%lld "
+            "pair_bytes=%lld ready_bytes=%lld queue_bytes=%lld "
+            "csr_bytes=%lld mode_queue_bytes=%lld "
+            "gid_queue_bytes=%lld counter_map_bytes=%lld "
+            "global_output_lock_bytes=%lld event_count_est=%lld "
+            "output_count=%lld host_graph_bytes_max_panel_sum=%lld "
+            "event_count_max_panel_sum=%lld "
+            "output_count_max_panel_sum=%lld\n",
+            global_graph[0], global_graph[1], global_graph[2],
+            global_graph[3], global_graph[4], global_graph[5],
+            global_graph[6], global_graph[7], global_graph[8],
+            global_graph[9], global_graph[10], global_graph[11],
+            global_graph[12], global_graph[13], global_graph[14]);
         if (superlu_sym_v2_pcfrag_taskflow_async_core())
         {
             long long late_allocs =

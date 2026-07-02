@@ -2687,6 +2687,88 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             ? symV2PcFragTaskflowGlobalOutputLockState.size() *
                   sizeof(unsigned char)
             : 0;
+    auto size_sum_or_max = [](size_t a, size_t b) -> size_t {
+        if (a == std::numeric_limits<size_t>::max() ||
+            b > std::numeric_limits<size_t>::max() - a)
+            return std::numeric_limits<size_t>::max();
+        return a + b;
+    };
+    size_t estimated_host_graph_bytes = 0;
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_task_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_pair_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_ready_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_queue_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_csr_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_mode_queue_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_gid_queue_bytes);
+    estimated_host_graph_bytes =
+        size_sum_or_max(estimated_host_graph_bytes,
+                        estimated_counter_map_bytes);
+    size_t estimated_event_count =
+        size_sum_or_max(
+            state.row_pieces.size() + state.partner_pieces.size(),
+            planned_task_count);
+    auto add_size_to_stat = [](long long &stat, size_t value) {
+        const long long max_ll = std::numeric_limits<long long>::max();
+        if (stat == max_ll ||
+            value > static_cast<size_t>(max_ll - stat))
+        {
+            stat = max_ll;
+            return;
+        }
+        stat += static_cast<long long>(value);
+    };
+    auto max_size_to_stat = [](long long &stat, size_t value) {
+        const long long max_ll = std::numeric_limits<long long>::max();
+        long long converted =
+            (value > static_cast<size_t>(max_ll))
+                ? max_ll
+                : static_cast<long long>(value);
+        if (converted > stat)
+            stat = converted;
+    };
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_host_bytes,
+                     estimated_host_graph_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_task_desc_bytes,
+                     estimated_task_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_pair_bytes,
+                     estimated_pair_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_ready_bytes,
+                     estimated_ready_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_queue_bytes,
+                     estimated_queue_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_csr_bytes,
+                     estimated_csr_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_mode_queue_bytes,
+                     estimated_mode_queue_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_gid_queue_bytes,
+                     estimated_gid_queue_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_counter_map_bytes,
+                     estimated_counter_map_bytes);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_event_count_est,
+                     estimated_event_count);
+    add_size_to_stat(symV2PcFragTaskflowStats.graph_output_count,
+                     planned_task_count);
+    max_size_to_stat(symV2PcFragTaskflowStats.graph_host_bytes_max_panel,
+                     estimated_host_graph_bytes);
+    max_size_to_stat(symV2PcFragTaskflowStats.graph_event_count_max_panel,
+                     estimated_event_count);
+    max_size_to_stat(symV2PcFragTaskflowStats.graph_output_count_max_panel,
+                     planned_task_count);
     const char *taskflow_plan_diag =
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG");
     if (taskflow_plan_diag != NULL && taskflow_plan_diag[0] != '\0')
