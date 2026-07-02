@@ -494,12 +494,6 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_force_output_locks()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_FORCE_OUTPUT_LOCKS", 0);
 }
 
-static inline bool superlu_sym_v2_pcfrag_taskflow_atomic_output_scatter()
-{
-    return superlu_sym_v2_env_bool_flag(
-        "GPU3DV2_PCFRAG_TASKFLOW_ATOMIC_OUTPUT_SCATTER", 0);
-}
-
 static inline bool superlu_sym_v2_pcfrag_taskflow_validate()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_VALIDATE", 0);
@@ -513,6 +507,13 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_async_pieces()
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_core()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE", 0);
+}
+
+static inline bool superlu_sym_v2_pcfrag_taskflow_atomic_output_scatter()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_PCFRAG_TASKFLOW_ATOMIC_OUTPUT_SCATTER",
+        superlu_sym_v2_pcfrag_taskflow_async_core() ? 1 : 0);
 }
 
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_grouped_dispatch()
