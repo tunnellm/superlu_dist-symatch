@@ -1059,7 +1059,8 @@ static inline bool dSymV2PcFragTaskflowUseCompactOutputLocks(
     const xLUstruct_t<double> &xlu)
 {
     return superlu_sym_v2_pcfrag_taskflow_async_core() &&
-           superlu_sym_v2_pcfrag_taskflow_global_output_locks() &&
+           (superlu_sym_v2_pcfrag_taskflow_global_output_locks() ||
+            superlu_sym_v2_pcfrag_taskflow_force_output_locks()) &&
            !xlu.symV2PcFragTaskflowGlobalOutputLockState.empty();
 }
 
@@ -2627,7 +2628,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     ++symV2PcFragTaskflowStats.taskflow_entries;
 
     const bool compact_output_locks =
-        async_core && superlu_sym_v2_pcfrag_taskflow_global_output_locks();
+        async_core &&
+        (superlu_sym_v2_pcfrag_taskflow_global_output_locks() ||
+         superlu_sym_v2_pcfrag_taskflow_force_output_locks());
     if (compact_output_locks)
     {
         const int_t local_panel_count = symV2PanelCount();
