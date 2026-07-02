@@ -1496,6 +1496,43 @@ static inline void dSymV2PcFragTaskflowReleaseTaskConsumers(
     }
 }
 
+static inline bool dSymV2PcFragTaskflowRetireAlreadyCompletedTask(
+    xLUstruct_t<double> &xlu,
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    xLUstruct_t<double>::SymV2PcFragTaskDesc &task);
+
+static inline void dSymV2PcFragTaskflowRetireRequiredOwnersForTaskOutputs(
+    xLUstruct_t<double> &xlu,
+    xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
+    const xLUstruct_t<double>::SymV2PcFragTaskDesc &task)
+{
+    if (!superlu_sym_v2_pcfrag_taskflow_async_core() ||
+        state.output_owner_task_ids.empty())
+        return;
+    const size_t output_count =
+        dSymV2PcFragTaskflowOutputCount(task);
+    for (size_t o = 0; o < output_count; ++o)
+    {
+        int_t output_id =
+            dSymV2PcFragTaskflowCompactOutputIdAt(state, task, o);
+        if (output_id < 0)
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task output has no owner id.");
+        size_t pos =
+            dSymV2PcFragTaskflowOutputCompletionIndexAt(
+                state, task, o, output_id);
+        if (pos >= state.output_owner_task_ids.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task output owner is missing.");
+        int owner_task_id = state.output_owner_task_ids[pos];
+        if (owner_task_id < 0 ||
+            static_cast<size_t>(owner_task_id) >= state.tasks.size())
+            ABORT("GPU3DV2_PCFRAG_TASKFLOW completed task output owner is invalid.");
+        if (owner_task_id == task.task_id)
+            continue;
+        dSymV2PcFragTaskflowRetireAlreadyCompletedTask(
+            xlu, state, state.tasks[static_cast<size_t>(owner_task_id)]);
+    }
+}
+
 static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
     xLUstruct_t<double> &xlu,
     xLUstruct_t<double>::SymV2PcFragPanelTaskState &state,
@@ -1509,6 +1546,8 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
     dSymV2PcFragTaskflowReleaseOutputLocks(
         xlu, state, task, strict_output_conflicts, true);
     dSymV2PcFragTaskflowMarkTaskOutputsComplete(xlu, state, task);
+    dSymV2PcFragTaskflowRetireRequiredOwnersForTaskOutputs(
+        xlu, state, task);
     dSymV2PcFragTaskflowNoteGemmResourceComplete(xlu, state, task);
     dSymV2PcFragTaskflowNoteTaskCompleteForModeCounters(state, task);
     task.complete = 1;
@@ -3803,7 +3842,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         async_core
             ? byte_product_or_max(state.output_completion_ids.size(),
                                   sizeof(int_t) +
-                                      2 * sizeof(unsigned char))
+                                      2 * sizeof(unsigned char) +
+                                      sizeof(int))
             : 0;
     size_t estimated_launch_bookkeeping_bytes = 0;
     if (async_core)
