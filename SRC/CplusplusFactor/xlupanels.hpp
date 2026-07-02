@@ -3264,6 +3264,17 @@ struct xLUstruct_t
         int_t *col_frag_index, Ftype *col_frag_val,
         cublasHandle_t handle, cudaStream_t cuStream,
         Ftype *gemmBuff);
+    int_t dSymSchurCompUpdateTaskDualPiecePairListGroupGPU(
+        int_t pair_count,
+        int_t *pair_rows,
+        int_t *pair_cols,
+        int_t k,
+        const std::vector<int_t> &row_frag,
+        const std::vector<int_t> &col_frag,
+        int_t *row_frag_index, Ftype *row_frag_val,
+        int_t *col_frag_index, Ftype *col_frag_val,
+        cublasHandle_t handle, cudaStream_t cuStream,
+        Ftype *gemmBuff);
     int_t dSymSchurCompUpdateTaskDualPiecesGPU(
         int_t k,
         const std::vector<int_t> &row_piece,

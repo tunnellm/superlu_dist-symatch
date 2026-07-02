@@ -1427,6 +1427,123 @@ void scatterSymLowerTwoLFragmentRangeGPU_driver(
 }
 
 template <typename Ftype>
+__device__ void scatterSymLowerTwoLFragmentPairListGPU_dev(
+    int_t pair_count,
+    const int_t *pair_rows,
+    const int_t *pair_cols,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int_t *rowFragIndex,
+    int_t *colFragIndex,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    int_t pair_id = blockIdx.x;
+    if (pair_id < 0 || pair_id >= pair_count)
+        return;
+
+    int_t ii = pair_rows[pair_id];
+    int_t jj = pair_cols[pair_id];
+    if (ii < 0 || jj < 0 ||
+        ii >= rowFragIndex[0] || jj >= colFragIndex[0])
+        return;
+
+    int threadId = threadIdx.x;
+
+    int_t gi = symFragGid(rowFragIndex, ii);
+    int_t gj = symFragGid(colFragIndex, jj);
+    if (gi < gj)
+        return;
+
+    int_t lj = dA->lPanelIndex(gj);
+    if (lj < 0)
+        return;
+    int_t li = dA->lPanelVec[lj].find(gi);
+    if (li == GLOBAL_BLOCK_NOT_FOUND)
+        return;
+
+    Ftype *Dst = dA->lPanelVec[lj].blkPtr(li);
+    int_t lddst = dA->lPanelVec[lj].LDA();
+    int_t dstRowLen = dA->lPanelVec[lj].nbrow(li);
+    int_t *dstRowList = dA->lPanelVec[lj].rowList(li);
+    int_t dstColLen = dA->supersize(gj);
+
+    extern __shared__ int baseSharedPtr[];
+    int *rowS2D = baseSharedPtr;
+    int *colS2D = &rowS2D[dA->maxSuperSize];
+    int *dstIdx = &colS2D[dA->maxSuperSize];
+
+    int nrows = symFragNbrow(rowFragIndex, ii);
+    int ncols = symFragNbrow(colFragIndex, jj);
+
+    computeIndirectMapGPU(rowS2D, nrows, symFragRowList(rowFragIndex, ii),
+                          dstRowLen, dstRowList, dstIdx);
+    computeIndirectMapGPU(colS2D, ncols, symFragRowList(colFragIndex, jj),
+                          dstColLen, NULL, dstIdx);
+
+    int nThreads = blockDim.x;
+    int colsPerThreadBlock = nThreads / nrows;
+    if (colsPerThreadBlock < 1)
+        colsPerThreadBlock = 1;
+
+    int rowOff = symFragStRow(rowFragIndex, ii);
+    int colOff = symFragStRow(colFragIndex, jj);
+    Ftype *Src = &gemmBuff[rowOff + colOff * LDgemmBuff];
+
+    if (threadId < nrows * colsPerThreadBlock)
+    {
+        int i = threadId % nrows;
+        int j = threadId / nrows;
+        while (j < ncols)
+        {
+            int di = rowS2D[i];
+            int dj = colS2D[j];
+            if (di >= 0 && di < dstRowLen && dj >= 0 && dj < dstColLen)
+                atomicAddT<Ftype>(&Dst[di + lddst * dj],
+                                  -Src[i + LDgemmBuff * j]);
+            j += colsPerThreadBlock;
+        }
+    }
+}
+
+template <typename Ftype>
+__global__ void scatterSymLowerTwoLFragmentPairListGPU(
+    int_t pair_count,
+    const int_t *pair_rows,
+    const int_t *pair_cols,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int_t *rowFragIndex,
+    int_t *colFragIndex,
+    xLUstructGPU_t<Ftype> *dA)
+{
+    scatterSymLowerTwoLFragmentPairListGPU_dev(
+        pair_count, pair_rows, pair_cols, gemmBuff, LDgemmBuff,
+        rowFragIndex, colFragIndex, dA);
+}
+
+template <typename Ftype>
+void scatterSymLowerTwoLFragmentPairListGPU_driver(
+    int_t pair_count,
+    const int_t *pair_rows,
+    const int_t *pair_cols,
+    Ftype *gemmBuff, int LDgemmBuff,
+    int maxSuperSize, int ldt,
+    int_t *rowFragIndex,
+    int_t *colFragIndex,
+    xLUstructGPU_t<Ftype> *dA,
+    cudaStream_t cuStream)
+{
+    if (pair_count <= 0)
+        return;
+    dim3 dimBlock(ldt);
+    dim3 dimGrid(pair_count);
+    size_t sharedMemorySize = 3 * maxSuperSize * sizeof(int_t);
+    scatterSymLowerTwoLFragmentPairListGPU<Ftype>
+        <<<dimGrid, dimBlock, sharedMemorySize, cuStream>>>(
+            pair_count, pair_rows, pair_cols, gemmBuff, LDgemmBuff,
+            rowFragIndex, colFragIndex, dA);
+    gpuErrchk(cudaGetLastError());
+}
+
+template <typename Ftype>
 __device__ void scatterSymLowerTwoLFragmentTileGPU_dev(
     int_t ii, int_t jj,
     int rowOffset, int rowCount,
@@ -2797,6 +2914,79 @@ int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPieceGroupGPU(
         }
         col_beg = col_end;
     }
+    return 0;
+}
+
+template <typename Ftype>
+int_t xLUstruct_t<Ftype>::dSymSchurCompUpdateTaskDualPiecePairListGroupGPU(
+    int_t pair_count,
+    int_t *pair_rows,
+    int_t *pair_cols,
+    int_t k,
+    const std::vector<int_t> &row_frag,
+    const std::vector<int_t> &col_frag,
+    int_t *row_frag_index, Ftype *row_frag_val,
+    int_t *col_frag_index, Ftype *col_frag_val,
+    cublasHandle_t handle, cudaStream_t cuStream,
+    Ftype *gemmBuff)
+{
+    if (pair_count <= 0 || row_frag.empty() || col_frag.empty() ||
+        row_frag_index == NULL || row_frag_val == NULL ||
+        col_frag_index == NULL || col_frag_val == NULL ||
+        pair_rows == NULL || pair_cols == NULL)
+        return 0;
+    if (row_frag.size() < LPANEL_HEADER_SIZE ||
+        col_frag.size() < LPANEL_HEADER_SIZE)
+        ABORT("SymFact V2 Pc-fragment exact grouped GEMM has truncated metadata.");
+    int gemm_k = supersize(k);
+    if (row_frag[3] != gemm_k || col_frag[3] != gemm_k)
+        ABORT("SymFact V2 Pc-fragment exact grouped GEMM has inconsistent panel width.");
+    int_t row_blocks = row_frag[0];
+    int_t col_blocks = col_frag[0];
+    if (row_blocks <= 0 || col_blocks <= 0 || gemm_k <= 0)
+        return 0;
+    int gemm_m = xluSymFragHostStRow(row_frag, row_blocks);
+    int gemm_n = xluSymFragHostStRow(col_frag, col_blocks);
+    if (gemm_m <= 0 || gemm_n <= 0)
+        return 0;
+
+    int row_lda = row_frag[1];
+    int col_lda = col_frag[1];
+    if (row_lda <= 0 || col_lda <= 0)
+        ABORT("SymFact V2 Pc-fragment exact grouped GEMM has invalid fragment LDA.");
+
+    int64_t taskflow_gemm_capacity =
+        static_cast<int64_t>(A_gpu.gemmBufferSize);
+    const long long taskflow_gemm_cap =
+        superlu_sym_v2_pcfrag_taskflow_gemm_cap();
+    if (taskflow_gemm_cap > 0)
+        taskflow_gemm_capacity =
+            SUPERLU_MIN(taskflow_gemm_capacity,
+                        static_cast<int64_t>(taskflow_gemm_cap));
+    const int64_t gemm_capacity = SUPERLU_MAX(
+        static_cast<int64_t>(1), taskflow_gemm_capacity);
+    if (static_cast<int64_t>(gemm_m) *
+            static_cast<int64_t>(gemm_n) >
+        gemm_capacity)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW exact grouped GEMM exceeds GEMM buffer.");
+
+    cublasSetStream(handle, cuStream);
+    Ftype alpha = one<Ftype>();
+    Ftype beta = zeroT<Ftype>();
+    myCublasGemm<Ftype>(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                        gemm_m, gemm_n, gemm_k, &alpha,
+                        row_frag_val, row_lda,
+                        col_frag_val, col_lda, &beta,
+                        gemmBuff, gemm_m);
+
+    ++symV2PcFragTaskflowStats.task_tiled_gemm_tiles;
+    symV2PcFragTaskflowStats.task_tiled_block_pairs +=
+        static_cast<long long>(pair_count);
+
+    scatterSymLowerTwoLFragmentPairListGPU_driver<Ftype>(
+        pair_count, pair_rows, pair_cols, gemmBuff, gemm_m,
+        A_gpu.maxSuperSize, ldt, row_frag_index, col_frag_index,
+        dA_gpu, cuStream);
     return 0;
 }
 
