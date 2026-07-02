@@ -596,9 +596,12 @@ static inline size_t superlu_sym_v2_pcfrag_taskflow_max_planned_tasks()
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_MAX_PLANNED_TASKS");
     if (env == NULL || env[0] == '\0')
     {
-        cached = superlu_sym_v2_pcfrag_taskflow_async_core()
-                     ? static_cast<size_t>(5000000)
-                     : std::numeric_limits<size_t>::max();
+        if (superlu_sym_v2_pcfrag_taskflow())
+            cached = superlu_sym_v2_pcfrag_taskflow_coalesce_col()
+                         ? static_cast<size_t>(10000000)
+                         : static_cast<size_t>(5000000);
+        else
+            cached = std::numeric_limits<size_t>::max();
         return cached;
     }
     char *end = NULL;
