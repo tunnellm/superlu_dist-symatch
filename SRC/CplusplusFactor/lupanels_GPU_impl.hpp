@@ -1206,6 +1206,29 @@ static inline int dSymV2PcFragTaskflowGemmResourceForLaunchMode(
     return xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_MAIN;
 }
 
+static inline int dSymV2PcFragTaskflowStreamKindForLaunchMode(
+    unsigned launch_mode)
+{
+    if (launch_mode &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_COL)
+        return xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_LOOKAHEAD_L;
+    if (launch_mode &
+        xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_LOOKAHEAD_ROW)
+        return xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_LOOKAHEAD_U;
+    return xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_MAIN;
+}
+
+static inline bool dSymV2PcFragTaskflowGemmResourceNeedsWait(
+    const xLUstruct_t<double>::SymV2PcFragGemmResourceState &res,
+    int stream_id,
+    int stream_kind)
+{
+    if (!res.recorded)
+        return false;
+    return res.active_stream_id != stream_id ||
+           res.active_stream_kind != stream_kind;
+}
+
 static inline int dSymV2PcFragTaskflowGemmResourceSlot(
     int stream_id, int resource)
 {
@@ -1262,7 +1285,10 @@ static inline void dSymV2PcFragTaskflowWaitOnGemmResource(
     xLUstruct_t<double>::SymV2PcFragGemmResourceState &res =
         dSymV2PcFragTaskflowGemmResource(xlu, stream_id, resource);
     task.gemm_resource_kind = static_cast<unsigned char>(resource);
-    if (res.recorded)
+    int stream_kind =
+        dSymV2PcFragTaskflowStreamKindForLaunchMode(launch_mode);
+    if (dSymV2PcFragTaskflowGemmResourceNeedsWait(
+            res, stream_id, stream_kind))
     {
         gpuErrchk(cudaStreamWaitEvent(stream, res.tail_event, 0));
         ++xlu.symV2PcFragTaskflowStats.gemm_resource_tail_waits;
@@ -1286,6 +1312,8 @@ static inline void dSymV2PcFragTaskflowPublishGemmResourceTail(
         dSymV2PcFragTaskflowGemmResource(xlu, stream_id, resource);
     gpuErrchk(cudaEventRecord(res.tail_event, stream));
     res.recorded = 1;
+    res.active_stream_id = stream_id;
+    res.active_stream_kind = task.launch_stream_kind;
     res.active_task_id = task.task_id;
     ++res.updates;
     ++xlu.symV2PcFragTaskflowStats.gemm_resource_tail_updates;
@@ -1303,7 +1331,13 @@ static inline void dSymV2PcFragTaskflowNoteGemmResourceComplete(
         dSymV2PcFragTaskflowGemmResource(
             xlu, state.stream_offset, resource);
     if (res.active_task_id == task.task_id)
+    {
         res.active_task_id = -1;
+        res.active_stream_id = -1;
+        res.active_stream_kind =
+            xLUstruct_t<double>::SYM_V2_PCFRAG_TASK_STREAM_NONE;
+        res.recorded = 0;
+    }
 }
 
 static inline bool dSymV2PcFragTaskflowSkipEventQuery(
@@ -5744,7 +5778,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 xLUstruct_t<double>::SymV2PcFragGemmResourceState &res =
                     dSymV2PcFragTaskflowGemmResource(
                         *this, streamId, resource);
-                if (res.recorded)
+                int stream_kind =
+                    dSymV2PcFragTaskflowStreamKindForLaunchMode(
+                        launch_mode);
+                if (dSymV2PcFragTaskflowGemmResourceNeedsWait(
+                        res, streamId, stream_kind))
                 {
                     gpuErrchk(cudaStreamWaitEvent(
                         group_stream, res.tail_event, 0));
@@ -5784,6 +5822,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 gpuErrchk(cudaEventRecord(group.done_event, group_stream));
                 gpuErrchk(cudaEventRecord(res.tail_event, group_stream));
                 res.recorded = 1;
+                res.active_stream_id = streamId;
+                res.active_stream_kind = group.launch_stream_kind;
                 res.active_task_id = group_task_ids[0];
                 ++res.updates;
                 ++symV2PcFragTaskflowStats.gemm_resource_tail_updates;
@@ -6640,7 +6680,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 xLUstruct_t<double>::SymV2PcFragGemmResourceState &res =
                                     dSymV2PcFragTaskflowGemmResource(
                                         *this, streamId, resource);
-                                if (res.recorded)
+                                int stream_kind =
+                                    dSymV2PcFragTaskflowStreamKindForLaunchMode(
+                                        launch_mode);
+                                if (dSymV2PcFragTaskflowGemmResourceNeedsWait(
+                                        res, streamId, stream_kind))
                                 {
                                     gpuErrchk(cudaStreamWaitEvent(
                                         task_stream, res.tail_event, 0));
@@ -6685,6 +6729,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                 gpuErrchk(cudaEventRecord(
                                     res.tail_event, task_stream));
                                 res.recorded = 1;
+                                res.active_stream_id = streamId;
+                                res.active_stream_kind =
+                                    group.launch_stream_kind;
                                 res.active_task_id = task.task_id;
                                 ++res.updates;
                                 ++symV2PcFragTaskflowStats.gemm_resource_tail_updates;
@@ -7065,7 +7112,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     xLUstruct_t<double>::SymV2PcFragGemmResourceState &res =
                                         dSymV2PcFragTaskflowGemmResource(
                                             *this, streamId, resource);
-                                    if (res.recorded)
+                                    int stream_kind =
+                                        dSymV2PcFragTaskflowStreamKindForLaunchMode(
+                                            launch_mode);
+                                    if (dSymV2PcFragTaskflowGemmResourceNeedsWait(
+                                            res, streamId, stream_kind))
                                     {
                                         gpuErrchk(cudaStreamWaitEvent(
                                             task_stream, res.tail_event, 0));
@@ -7117,6 +7168,9 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     gpuErrchk(cudaEventRecord(
                                         res.tail_event, task_stream));
                                     res.recorded = 1;
+                                    res.active_stream_id = streamId;
+                                    res.active_stream_kind =
+                                        group.launch_stream_kind;
                                     res.active_task_id = task.task_id;
                                     ++res.updates;
                                     ++symV2PcFragTaskflowStats.gemm_resource_tail_updates;

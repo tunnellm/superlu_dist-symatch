@@ -1809,6 +1809,8 @@ struct xLUstruct_t
 #endif
         unsigned char recorded;
         int owner_stream_id;
+        int active_stream_id;
+        int active_stream_kind;
         int resource_kind;
         int active_task_id;
         long long waits;
@@ -1821,6 +1823,8 @@ struct xLUstruct_t
             :
 #endif
               recorded(0), owner_stream_id(-1),
+              active_stream_id(-1),
+              active_stream_kind(SYM_V2_PCFRAG_TASK_STREAM_NONE),
               resource_kind(SYM_V2_PCFRAG_TASK_GEMM_RESOURCE_NONE),
               active_task_id(-1), waits(0), updates(0)
         {
