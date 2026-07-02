@@ -5009,6 +5009,37 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                             if (candidate_tids.size() > 1)
                             {
                                 bool can_group = true;
+                                if (output_locked(task))
+                                {
+                                    ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                                    ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                    can_group = false;
+                                }
+                                else
+                                {
+                                    std::vector<int> unlocked_candidate_tids;
+                                    unlocked_candidate_tids.reserve(
+                                        candidate_tids.size());
+                                    unlocked_candidate_tids.push_back(tid);
+                                    for (size_t ci = 1;
+                                         ci < candidate_tids.size(); ++ci)
+                                    {
+                                        SymV2PcFragTaskDesc &candidate =
+                                            state.tasks[static_cast<size_t>(
+                                                candidate_tids[ci])];
+                                        if (output_locked(candidate))
+                                        {
+                                            ++symV2PcFragTaskflowStats.tasks_blocked_output;
+                                            ++symV2PcFragTaskflowStats.scatter_conflict_waits;
+                                            continue;
+                                        }
+                                        unlocked_candidate_tids.push_back(
+                                            candidate_tids[ci]);
+                                    }
+                                    candidate_tids.swap(unlocked_candidate_tids);
+                                    if (candidate_tids.size() <= 1)
+                                        can_group = false;
+                                }
                                 std::vector<int> row_piece_ids;
                                 std::vector<int> partner_piece_ids;
                                 if (group_by_partner)
@@ -5036,20 +5067,6 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                                 candidate_tids[ci])];
                                         partner_piece_ids.push_back(
                                             candidate.partner_piece);
-                                    }
-                                }
-                                for (size_t ci = 0;
-                                     ci < candidate_tids.size(); ++ci)
-                                {
-                                    SymV2PcFragTaskDesc &candidate =
-                                        state.tasks[static_cast<size_t>(
-                                            candidate_tids[ci])];
-                                    if (output_locked(candidate))
-                                    {
-                                        ++symV2PcFragTaskflowStats.tasks_blocked_output;
-                                        ++symV2PcFragTaskflowStats.scatter_conflict_waits;
-                                        can_group = false;
-                                        break;
                                     }
                                 }
                                 if (can_group)
