@@ -2034,6 +2034,15 @@ struct xLUstruct_t
         long long coalesce_full_row_groups;
         long long coalesce_full_row_max_members;
         long long coalesce_static_group_lower_bound;
+        long long coalesce_plan_same_partner_groups;
+        long long coalesce_plan_final_groups;
+        long long coalesce_plan_extended_groups;
+        long long coalesce_plan_same_partner_only_groups;
+        long long coalesce_plan_partner_group_members;
+        long long coalesce_plan_max_partner_groups_per_task;
+        long long coalesce_plan_density_breaks;
+        long long coalesce_plan_gemm_capacity_breaks;
+        long long coalesce_plan_gj_boundary_breaks;
         long long task_shape_single_output_tasks;
         long long task_shape_multi_output_tasks;
         long long task_shape_multi_output_members;
@@ -2151,6 +2160,15 @@ struct xLUstruct_t
               coalesce_full_row_groups(0),
               coalesce_full_row_max_members(0),
               coalesce_static_group_lower_bound(0),
+              coalesce_plan_same_partner_groups(0),
+              coalesce_plan_final_groups(0),
+              coalesce_plan_extended_groups(0),
+              coalesce_plan_same_partner_only_groups(0),
+              coalesce_plan_partner_group_members(0),
+              coalesce_plan_max_partner_groups_per_task(0),
+              coalesce_plan_density_breaks(0),
+              coalesce_plan_gemm_capacity_breaks(0),
+              coalesce_plan_gj_boundary_breaks(0),
               task_shape_single_output_tasks(0),
               task_shape_multi_output_tasks(0),
               task_shape_multi_output_members(0),
@@ -2484,7 +2502,7 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.graph_partner_line_max_members
         };
         long long global_graph[20] = {};
-        long long local_coalesce[11] = {
+        long long local_coalesce[20] = {
             symV2PcFragTaskflowStats.coalesce_lacol_groups,
             symV2PcFragTaskflowStats.coalesce_lacol_members,
             symV2PcFragTaskflowStats.coalesce_lacol_max_members,
@@ -2495,9 +2513,19 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.coalesce_full_partner_max_members,
             symV2PcFragTaskflowStats.coalesce_full_row_groups,
             symV2PcFragTaskflowStats.coalesce_full_row_max_members,
-            symV2PcFragTaskflowStats.coalesce_static_group_lower_bound
+            symV2PcFragTaskflowStats.coalesce_static_group_lower_bound,
+            symV2PcFragTaskflowStats.coalesce_plan_same_partner_groups,
+            symV2PcFragTaskflowStats.coalesce_plan_final_groups,
+            symV2PcFragTaskflowStats.coalesce_plan_extended_groups,
+            symV2PcFragTaskflowStats.coalesce_plan_same_partner_only_groups,
+            symV2PcFragTaskflowStats.coalesce_plan_partner_group_members,
+            symV2PcFragTaskflowStats.coalesce_plan_max_partner_groups_per_task,
+            symV2PcFragTaskflowStats.coalesce_plan_density_breaks,
+            symV2PcFragTaskflowStats.coalesce_plan_gemm_capacity_breaks,
+            symV2PcFragTaskflowStats.coalesce_plan_gj_boundary_breaks
         };
-        long long global_coalesce[11] = {};
+        long long global_coalesce[20] = {};
+        long long global_coalesce_plan_max_partner_groups = 0;
         long long local_task_shape[4] = {
             symV2PcFragTaskflowStats.task_shape_single_output_tasks,
             symV2PcFragTaskflowStats.task_shape_multi_output_tasks,
@@ -2522,8 +2550,15 @@ struct xLUstruct_t
                        MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_graph, global_graph, 20, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
-            MPI_Reduce(local_coalesce, global_coalesce, 11,
+            MPI_Reduce(local_coalesce, global_coalesce, 16,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(&local_coalesce[16],
+                       &global_coalesce_plan_max_partner_groups, 1,
+                       MPI_LONG_LONG, MPI_MAX, 0, grid3d->comm);
+            MPI_Reduce(&local_coalesce[17], &global_coalesce[17], 3,
+                       MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+            global_coalesce[16] =
+                global_coalesce_plan_max_partner_groups;
             MPI_Reduce(local_task_shape, global_task_shape, 3,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(&local_task_shape[3],
@@ -2545,7 +2580,7 @@ struct xLUstruct_t
                 global_group[i] = local_group[i];
             for (int i = 0; i < 20; ++i)
                 global_graph[i] = local_graph[i];
-            for (int i = 0; i < 11; ++i)
+            for (int i = 0; i < 20; ++i)
                 global_coalesce[i] = local_coalesce[i];
             for (int i = 0; i < 4; ++i)
                 global_task_shape[i] = local_task_shape[i];
@@ -2717,6 +2752,19 @@ struct xLUstruct_t
             global_coalesce[6], global_coalesce[7],
             global_coalesce[8], global_coalesce[9],
             global_coalesce[10]);
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow coalesce planner: "
+            "same_partner_groups=%lld final_groups=%lld "
+            "extended_groups=%lld same_partner_only_groups=%lld "
+            "partner_group_members=%lld "
+            "max_partner_groups_per_task=%lld "
+            "density_breaks=%lld gemm_capacity_breaks=%lld "
+            "gid_boundary_breaks=%lld\n",
+            global_coalesce[11], global_coalesce[12],
+            global_coalesce[13], global_coalesce[14],
+            global_coalesce[15], global_coalesce[16],
+            global_coalesce[17], global_coalesce[18],
+            global_coalesce[19]);
         long long planned_outputs = global_graph[11];
         long long planned_tasks = global[SYM_V2_PCFRAG_TASKFLOW_TASKS_PLANNED];
         long long launched_tasks = global[SYM_V2_PCFRAG_TASKFLOW_TASKS_LAUNCHED];

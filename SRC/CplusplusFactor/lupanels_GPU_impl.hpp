@@ -3170,7 +3170,17 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             return false;
         return true;
     };
-    auto coalesced_candidate_group_end = [&](size_t begin) -> size_t {
+    size_t plan_same_partner_groups = 0;
+    size_t plan_final_groups = 0;
+    size_t plan_extended_groups = 0;
+    size_t plan_same_partner_only_groups = 0;
+    size_t plan_partner_group_members = 0;
+    size_t plan_max_partner_groups_per_task = 0;
+    size_t plan_density_breaks = 0;
+    size_t plan_gemm_capacity_breaks = 0;
+    size_t plan_gj_boundary_breaks = 0;
+    auto coalesced_candidate_group_end =
+        [&](size_t begin, bool record_stats) -> size_t {
         size_t fallback = same_partner_candidate_group_end(begin);
         const int coalesce_density =
             superlu_sym_v2_pcfrag_taskflow_coalesce_density();
@@ -3184,6 +3194,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             &partner_lda);
         size_t best = fallback;
         size_t next = fallback;
+        size_t accepted_partner_groups = 1;
+        bool stopped_by_constraint = false;
         while (next < output_candidates.size() &&
                output_candidates[next].output.gj ==
                    output_candidates[begin].output.gj)
@@ -3201,13 +3213,39 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                     (dense_pairs + output_count - 1) / output_count;
                 if (dense_ratio_ceiling >
                     static_cast<size_t>(coalesce_density))
+                {
+                    if (record_stats)
+                        ++plan_density_breaks;
+                    stopped_by_constraint = true;
                     break;
+                }
             }
             if (!candidate_group_fits_gemm_capacity(
                     row_lda, partner_lda))
+            {
+                if (record_stats)
+                    ++plan_gemm_capacity_breaks;
+                stopped_by_constraint = true;
                 break;
+            }
             best = next_end;
             next = next_end;
+            ++accepted_partner_groups;
+        }
+        if (record_stats)
+        {
+            ++plan_final_groups;
+            plan_same_partner_groups += accepted_partner_groups;
+            plan_partner_group_members += accepted_partner_groups;
+            if (accepted_partner_groups > plan_max_partner_groups_per_task)
+                plan_max_partner_groups_per_task =
+                    accepted_partner_groups;
+            if (accepted_partner_groups > 1)
+                ++plan_extended_groups;
+            else
+                ++plan_same_partner_only_groups;
+            if (!stopped_by_constraint)
+                ++plan_gj_boundary_breaks;
         }
         return best;
     };
@@ -3215,7 +3253,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     {
         for (size_t i = 0; i < output_candidates.size();)
         {
-            size_t j = coalesced_candidate_group_end(i);
+            size_t j = coalesced_candidate_group_end(i, true);
             ++planned_task_count;
             std::vector<int> &unique_partner_pieces =
                 state.group_partner_piece_scratch;
@@ -3547,6 +3585,33 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     add_size_to_stat(
         symV2PcFragTaskflowStats.coalesce_static_group_lower_bound,
         static_group_lower_bound);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_same_partner_groups,
+        plan_same_partner_groups);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_final_groups,
+        plan_final_groups);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_extended_groups,
+        plan_extended_groups);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_same_partner_only_groups,
+        plan_same_partner_only_groups);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_partner_group_members,
+        plan_partner_group_members);
+    max_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_max_partner_groups_per_task,
+        plan_max_partner_groups_per_task);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_density_breaks,
+        plan_density_breaks);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_gemm_capacity_breaks,
+        plan_gemm_capacity_breaks);
+    add_size_to_stat(
+        symV2PcFragTaskflowStats.coalesce_plan_gj_boundary_breaks,
+        plan_gj_boundary_breaks);
     const char *taskflow_plan_diag =
         std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG");
     if (taskflow_plan_diag != NULL && taskflow_plan_diag[0] != '\0')
@@ -3566,7 +3631,16 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 "partner_line_max_members=%zu "
                 "lookahead_col_groups=%zu "
                 "lookahead_row_groups=%zu "
-                "static_group_lower_bound=%zu\n",
+                "static_group_lower_bound=%zu "
+                "coalesce_same_partner_groups=%zu "
+                "coalesce_final_groups=%zu "
+                "coalesce_extended_groups=%zu "
+                "coalesce_same_partner_only_groups=%zu "
+                "coalesce_partner_group_members=%zu "
+                "coalesce_max_partner_groups_per_task=%zu "
+                "coalesce_density_breaks=%zu "
+                "coalesce_gemm_capacity_breaks=%zu "
+                "coalesce_gid_boundary_breaks=%zu\n",
                 iam, static_cast<long long>(k),
                 state.row_pieces.size(), state.partner_pieces.size(),
                 planned_task_count, lookahead_col_degrees.size(),
@@ -3582,7 +3656,12 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 row_line_groups, partner_line_groups,
                 line_group_lower_bound, row_line_max_members,
                 partner_line_max_members, lookahead_col_group_count,
-                lookahead_row_group_count, static_group_lower_bound);
+                lookahead_row_group_count, static_group_lower_bound,
+                plan_same_partner_groups, plan_final_groups,
+                plan_extended_groups, plan_same_partner_only_groups,
+                plan_partner_group_members,
+                plan_max_partner_groups_per_task, plan_density_breaks,
+                plan_gemm_capacity_breaks, plan_gj_boundary_breaks);
         fflush(stderr);
         const char *taskflow_plan_diag_abort =
             std::getenv("GPU3DV2_PCFRAG_TASKFLOW_PLAN_DIAG_ABORT");
@@ -3930,7 +4009,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     {
         for (size_t i = 0; i < output_candidates.size();)
         {
-            size_t j = coalesced_candidate_group_end(i);
+            size_t j = coalesced_candidate_group_end(i, false);
             create_task_for_candidate_group(i, j);
             i = j;
         }
