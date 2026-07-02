@@ -563,6 +563,26 @@ static inline bool superlu_sym_v2_pcfrag_taskflow_coalesce_col()
         superlu_sym_v2_pcfrag_taskflow_async_core() ? 1 : 0);
 }
 
+static inline int superlu_sym_v2_pcfrag_taskflow_coalesce_density()
+{
+    static int cached = -1;
+    if (cached >= 0)
+        return cached;
+    const char *env =
+        std::getenv("GPU3DV2_PCFRAG_TASKFLOW_COALESCE_DENSITY");
+    if (env == NULL || env[0] == '\0')
+    {
+        cached = 8;
+        return cached;
+    }
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 1048576L)
+        ABORT("GPU3DV2_PCFRAG_TASKFLOW_COALESCE_DENSITY must be an integer in [0,1048576]; 0 disables the density cutoff.");
+    cached = static_cast<int>(value);
+    return cached;
+}
+
 static inline bool superlu_sym_v2_pcfrag_taskflow_async_core_check()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE_CHECK", 1);

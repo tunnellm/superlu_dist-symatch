@@ -2034,6 +2034,10 @@ struct xLUstruct_t
         long long coalesce_full_row_groups;
         long long coalesce_full_row_max_members;
         long long coalesce_static_group_lower_bound;
+        long long task_shape_single_output_tasks;
+        long long task_shape_multi_output_tasks;
+        long long task_shape_multi_output_members;
+        long long task_shape_max_outputs_per_task;
 
         SymV2PcFragTaskflowStats()
             : row_pieces_created(0), partner_pieces_created(0),
@@ -2146,7 +2150,11 @@ struct xLUstruct_t
               coalesce_full_partner_max_members(0),
               coalesce_full_row_groups(0),
               coalesce_full_row_max_members(0),
-              coalesce_static_group_lower_bound(0)
+              coalesce_static_group_lower_bound(0),
+              task_shape_single_output_tasks(0),
+              task_shape_multi_output_tasks(0),
+              task_shape_multi_output_members(0),
+              task_shape_max_outputs_per_task(0)
         {
         }
     };
@@ -2490,6 +2498,14 @@ struct xLUstruct_t
             symV2PcFragTaskflowStats.coalesce_static_group_lower_bound
         };
         long long global_coalesce[11] = {};
+        long long local_task_shape[4] = {
+            symV2PcFragTaskflowStats.task_shape_single_output_tasks,
+            symV2PcFragTaskflowStats.task_shape_multi_output_tasks,
+            symV2PcFragTaskflowStats.task_shape_multi_output_members,
+            symV2PcFragTaskflowStats.task_shape_max_outputs_per_task
+        };
+        long long global_task_shape[4] = {};
+        long long global_task_shape_max_outputs = 0;
         long long local_exchange_sync_sites[4] = {
             symV2PcFragTaskflowStats.producer_exchange_partner_stream_syncs,
             symV2PcFragTaskflowStats.producer_exchange_row_stream_syncs,
@@ -2508,6 +2524,12 @@ struct xLUstruct_t
                        MPI_SUM, 0, grid3d->comm);
             MPI_Reduce(local_coalesce, global_coalesce, 11,
                        MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(local_task_shape, global_task_shape, 3,
+                       MPI_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+            MPI_Reduce(&local_task_shape[3],
+                       &global_task_shape_max_outputs, 1,
+                       MPI_LONG_LONG, MPI_MAX, 0, grid3d->comm);
+            global_task_shape[3] = global_task_shape_max_outputs;
             MPI_Reduce(local_exchange_sync_sites,
                        global_exchange_sync_sites, 4, MPI_LONG_LONG,
                        MPI_SUM, 0, grid3d->comm);
@@ -2525,6 +2547,8 @@ struct xLUstruct_t
                 global_graph[i] = local_graph[i];
             for (int i = 0; i < 11; ++i)
                 global_coalesce[i] = local_coalesce[i];
+            for (int i = 0; i < 4; ++i)
+                global_task_shape[i] = local_task_shape[i];
             for (int i = 0; i < 4; ++i)
                 global_exchange_sync_sites[i] =
                     local_exchange_sync_sites[i];
@@ -2701,25 +2725,56 @@ struct xLUstruct_t
         long long output_task_delta = planned_outputs - planned_tasks;
         if (output_task_delta < 0)
             output_task_delta = 0;
+        long long grouped_launches = global_group[1];
+        long long grouped_task_members = global_group[2];
+        long long single_task_launches = launched_tasks - grouped_task_members;
+        if (single_task_launches < 0)
+            single_task_launches = 0;
+        long long estimated_task_launches =
+            single_task_launches + grouped_launches;
         double outputs_per_task =
             planned_tasks > 0
                 ? static_cast<double>(planned_outputs) /
                       static_cast<double>(planned_tasks)
+                : 0.0;
+        double tasks_per_launch =
+            estimated_task_launches > 0
+                ? static_cast<double>(launched_tasks) /
+                      static_cast<double>(estimated_task_launches)
                 : 0.0;
         double gemm_tiles_per_launch =
             launched_tasks > 0
                 ? static_cast<double>(tiled_gemm_tiles) /
                       static_cast<double>(launched_tasks)
                 : 0.0;
+        long long coalesce_density =
+            static_cast<long long>(
+                superlu_sym_v2_pcfrag_taskflow_coalesce_density());
         std::printf(
             "SymFact V2 Pc-fragment taskflow granularity: "
             "planned_outputs=%lld planned_tasks=%lld "
             "output_task_delta=%lld outputs_per_task=%.3f "
             "tasks_launched=%lld gemm_tiles=%lld "
-            "gemm_tiles_per_launch=%.3f\n",
+            "gemm_tiles_per_launch=%.3f "
+            "estimated_task_launches=%lld tasks_per_launch=%.3f "
+            "coalesce_density=%lld\n",
             planned_outputs, planned_tasks, output_task_delta,
             outputs_per_task, launched_tasks, tiled_gemm_tiles,
-            gemm_tiles_per_launch);
+            gemm_tiles_per_launch, estimated_task_launches,
+            tasks_per_launch, coalesce_density);
+        double multi_output_avg =
+            global_task_shape[1] > 0
+                ? static_cast<double>(global_task_shape[2]) /
+                      static_cast<double>(global_task_shape[1])
+                : 0.0;
+        std::printf(
+            "SymFact V2 Pc-fragment taskflow task shape: "
+            "single_output_tasks=%lld multi_output_tasks=%lld "
+            "multi_output_members=%lld multi_output_avg=%.3f "
+            "max_outputs_per_task=%lld\n",
+            global_task_shape[0], global_task_shape[1],
+            global_task_shape[2], multi_output_avg,
+            global_task_shape[3]);
         std::printf(
             "SymFact V2 Pc-fragment taskflow exchange sync sites: "
             "partner=%lld row=%lld row_aggregate=%lld "

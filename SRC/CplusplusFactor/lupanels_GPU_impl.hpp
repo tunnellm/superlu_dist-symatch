@@ -3172,6 +3172,8 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     };
     auto coalesced_candidate_group_end = [&](size_t begin) -> size_t {
         size_t fallback = same_partner_candidate_group_end(begin);
+        const int coalesce_density =
+            superlu_sym_v2_pcfrag_taskflow_coalesce_density();
         std::vector<int> &row_piece_ids = state.group_row_piece_scratch;
         std::vector<int> &partner_piece_ids =
             state.group_partner_piece_scratch;
@@ -3193,8 +3195,14 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
             size_t dense_pairs =
                 row_piece_ids.size() * partner_piece_ids.size();
             size_t output_count = next_end - begin;
-            if (dense_pairs > output_count * 8)
-                break;
+            if (coalesce_density > 0 && output_count > 0)
+            {
+                size_t dense_ratio_ceiling =
+                    (dense_pairs + output_count - 1) / output_count;
+                if (dense_ratio_ceiling >
+                    static_cast<size_t>(coalesce_density))
+                    break;
+            }
             if (!candidate_group_fits_gemm_capacity(
                     row_lda, partner_lda))
                 break;
@@ -3999,6 +4007,32 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
     if (need_piece_pair_lookup)
         std::sort(state.pair_task_entries.begin(),
                   state.pair_task_entries.end());
+    long long local_single_output_tasks = 0;
+    long long local_multi_output_tasks = 0;
+    long long local_multi_output_members = 0;
+    long long local_max_outputs_per_task = 0;
+    for (size_t tid = 0; tid < state.tasks.size(); ++tid)
+    {
+        int output_count = state.tasks[tid].output_count;
+        if (output_count <= 1)
+        {
+            ++local_single_output_tasks;
+            continue;
+        }
+        ++local_multi_output_tasks;
+        local_multi_output_members += output_count;
+        if (output_count > local_max_outputs_per_task)
+            local_max_outputs_per_task = output_count;
+    }
+    symV2PcFragTaskflowStats.task_shape_single_output_tasks +=
+        local_single_output_tasks;
+    symV2PcFragTaskflowStats.task_shape_multi_output_tasks +=
+        local_multi_output_tasks;
+    symV2PcFragTaskflowStats.task_shape_multi_output_members +=
+        local_multi_output_members;
+    symV2PcFragTaskflowStats.task_shape_max_outputs_per_task =
+        SUPERLU_MAX(symV2PcFragTaskflowStats.task_shape_max_outputs_per_task,
+                    local_max_outputs_per_task);
     state.runnable_lookahead_col_by_gid.assign_from_degrees(
         lookahead_col_degrees);
     state.runnable_lookahead_row_by_gid.assign_from_degrees(
