@@ -1124,11 +1124,27 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
         partner_piece_ids.clear();
         row_piece_ids.reserve(output_count);
         partner_piece_ids.reserve(output_count);
-        auto add_unique_piece = [](std::vector<int> &pieces, int piece_id) {
-            for (size_t i = 0; i < pieces.size(); ++i)
-                if (pieces[i] == piece_id)
-                    return;
-            pieces.push_back(piece_id);
+        auto compact_piece_ids = [](std::vector<int> &pieces) {
+            if (pieces.empty())
+                return;
+            bool nondecreasing = true;
+            for (size_t i = 1; i < pieces.size(); ++i)
+            {
+                if (pieces[i] < pieces[i - 1])
+                {
+                    nondecreasing = false;
+                    break;
+                }
+            }
+            if (!nondecreasing)
+                std::sort(pieces.begin(), pieces.end());
+            size_t write = 1;
+            for (size_t i = 1; i < pieces.size(); ++i)
+            {
+                if (pieces[i] != pieces[write - 1])
+                    pieces[write++] = pieces[i];
+            }
+            pieces.resize(write);
         };
         for (size_t o = 0; o < output_count; ++o)
         {
@@ -1136,9 +1152,11 @@ static inline void dSymV2PcFragTaskflowCompleteLaunchedTask(
                 dSymV2PcFragTaskflowOutputAt(state, task, o);
             if (key.row_piece < 0 || key.partner_piece < 0)
                 ABORT("GPU3DV2_PCFRAG_TASKFLOW coalesced task output is missing piece ids.");
-            add_unique_piece(row_piece_ids, key.row_piece);
-            add_unique_piece(partner_piece_ids, key.partner_piece);
+            row_piece_ids.push_back(key.row_piece);
+            partner_piece_ids.push_back(key.partner_piece);
         }
+        compact_piece_ids(row_piece_ids);
+        compact_piece_ids(partner_piece_ids);
         for (size_t i = 0; i < row_piece_ids.size(); ++i)
         {
             int piece_id = row_piece_ids[i];
