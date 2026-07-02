@@ -1832,22 +1832,22 @@ static inline int dSymV2PcFragTaskflowProgressLaunchedTasks(
                 if (group.d_group_index_pool != NULL)
                 {
                     dSymV2PcFragTaskflowRecyclePoolPush(
-                        xlu.symV2PcFragTaskflowIndexBlockPool,
+                        xlu.symV2PcFragTaskflowGroupIndexBlockPool,
                         xLUstruct_t<double>::SymV2PcFragGpuIndexBlock(
                             group.d_group_index_pool,
                             group.group_index_pool_capacity),
-                        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE index pool capacity is undersized.");
+                        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE group index pool capacity is undersized.");
                     group.d_group_index_pool = NULL;
                     group.group_index_pool_capacity = 0;
                 }
                 if (group.d_group_value_pool != NULL)
                 {
                     dSymV2PcFragTaskflowRecyclePoolPush(
-                        xlu.symV2PcFragTaskflowValueBlockPool,
+                        xlu.symV2PcFragTaskflowGroupValueBlockPool,
                         xLUstruct_t<double>::SymV2PcFragGpuValueBlock(
                             group.d_group_value_pool,
                             group.group_value_pool_capacity),
-                        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE value pool capacity is undersized.");
+                        "GPU3DV2_PCFRAG_TASKFLOW_ASYNC_CORE group value pool capacity is undersized.");
                     group.d_group_value_pool = NULL;
                     group.group_value_pool_capacity = 0;
                 }
@@ -2444,7 +2444,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
         gpuErrchk(cudaMemset(
             state.d_value_pool, 0, sizeof(double) * total_value_count));
     }
-    if (total_index_count > 0)
+    if (!async_core && total_index_count > 0)
     {
         state.d_group_index_pool =
             dSymV2PcFragTaskflowAcquireIndexBlock(
@@ -2453,7 +2453,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowBeginGPU(
                 allow_taskflow_late_alloc,
                 &symV2PcFragTaskflowStats.arena_index_late_allocs);
     }
-    if (total_value_count > 0)
+    if (!async_core && total_value_count > 0)
     {
         state.d_group_value_pool =
             dSymV2PcFragTaskflowAcquireValueBlock(
@@ -4657,10 +4657,10 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                     static_cast<size_t>(SuperSize(k));
                 if (async_core &&
                     (!dSymV2PcFragTaskflowPoolHasBlock(
-                         symV2PcFragTaskflowIndexBlockPool,
+                         symV2PcFragTaskflowGroupIndexBlockPool,
                          row_index_count + col_index_count) ||
                      !dSymV2PcFragTaskflowPoolHasBlock(
-                         symV2PcFragTaskflowValueBlockPool,
+                         symV2PcFragTaskflowGroupValueBlockPool,
                          row_value_count + col_value_count)))
                 {
                     ++symV2PcFragTaskflowStats.grouped_scratch_busy_deferrals;
@@ -4675,7 +4675,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                 {
                     group_index_pool =
                         dSymV2PcFragTaskflowAcquireIndexBlock(
-                            symV2PcFragTaskflowIndexBlockPool,
+                            symV2PcFragTaskflowGroupIndexBlockPool,
                             row_index_count + col_index_count,
                             &group_index_capacity,
                             allow_taskflow_late_alloc,
@@ -4683,7 +4683,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                  .arena_index_late_allocs);
                     group_value_pool =
                         dSymV2PcFragTaskflowAcquireValueBlock(
-                            symV2PcFragTaskflowValueBlockPool,
+                            symV2PcFragTaskflowGroupValueBlockPool,
                             row_value_count + col_value_count,
                             &group_value_capacity,
                             allow_taskflow_late_alloc,
@@ -5326,11 +5326,11 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                         static_cast<size_t>(SuperSize(k));
                                     if (async_core &&
                                         (!dSymV2PcFragTaskflowPoolHasBlock(
-                                             symV2PcFragTaskflowIndexBlockPool,
+                                             symV2PcFragTaskflowGroupIndexBlockPool,
                                              row_index_count +
                                                  col_index_count) ||
                                          !dSymV2PcFragTaskflowPoolHasBlock(
-                                             symV2PcFragTaskflowValueBlockPool,
+                                             symV2PcFragTaskflowGroupValueBlockPool,
                                              row_value_count +
                                                  col_value_count)))
                                     {
@@ -5348,7 +5348,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                     {
                                         group_index_pool =
                                             dSymV2PcFragTaskflowAcquireIndexBlock(
-                                                symV2PcFragTaskflowIndexBlockPool,
+                                                symV2PcFragTaskflowGroupIndexBlockPool,
                                                 row_index_count +
                                                     col_index_count,
                                                 &group_index_capacity,
@@ -5357,7 +5357,7 @@ inline int_t xLUstruct_t<double>::dSymV2PcFragTaskflowDispatchGPU(
                                                      .arena_index_late_allocs);
                                         group_value_pool =
                                             dSymV2PcFragTaskflowAcquireValueBlock(
-                                                symV2PcFragTaskflowValueBlockPool,
+                                                symV2PcFragTaskflowGroupValueBlockPool,
                                                 row_value_count +
                                                     col_value_count,
                                                 &group_value_capacity,

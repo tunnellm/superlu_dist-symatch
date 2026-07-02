@@ -2120,6 +2120,10 @@ struct xLUstruct_t
         symV2PcFragTaskflowIndexBlockPool;
     std::vector<SymV2PcFragGpuValueBlock>
         symV2PcFragTaskflowValueBlockPool;
+    std::vector<SymV2PcFragGpuIndexBlock>
+        symV2PcFragTaskflowGroupIndexBlockPool;
+    std::vector<SymV2PcFragGpuValueBlock>
+        symV2PcFragTaskflowGroupValueBlockPool;
     std::vector<SymV2PcFragHostValueBlock>
         symV2PcFragTaskflowPinnedBlockPool;
 #endif

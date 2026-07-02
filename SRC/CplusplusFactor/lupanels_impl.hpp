@@ -6750,6 +6750,8 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 taskflow_setup_mark("enter");
                 std::vector<size_t> taskflow_index_counts;
                 std::vector<size_t> taskflow_value_counts;
+                std::vector<size_t> taskflow_group_index_counts;
+                std::vector<size_t> taskflow_group_value_counts;
                 std::vector<size_t> taskflow_pinned_counts;
                 std::vector<size_t> taskflow_event_counts;
                 auto add_fragment_taskflow_counts =
@@ -7153,12 +7155,22 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                 std::sort(taskflow_value_counts.begin(),
                           taskflow_value_counts.end(),
                           [](size_t a, size_t b) { return a > b; });
+                if (superlu_sym_v2_pcfrag_taskflow_async_core())
+                {
+                    taskflow_group_index_counts = taskflow_index_counts;
+                    taskflow_group_value_counts = taskflow_value_counts;
+                }
 	                std::sort(taskflow_pinned_counts.begin(),
 	                          taskflow_pinned_counts.end(),
 	                          [](size_t a, size_t b) { return a > b; });
 	                std::sort(taskflow_event_counts.begin(),
 	                          taskflow_event_counts.end(),
 	                          [](size_t a, size_t b) { return a > b; });
+                size_t group_slots = active_slots;
+                if (taskflow_group_index_counts.size() > group_slots)
+                    taskflow_group_index_counts.resize(group_slots);
+                if (taskflow_group_value_counts.size() > group_slots)
+                    taskflow_group_value_counts.resize(group_slots);
 		                if (taskflow_index_counts.size() > active_slots)
 		                    taskflow_index_counts.resize(active_slots);
 		                if (taskflow_value_counts.size() > active_slots)
@@ -7218,6 +7230,12 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                                          sizeof(int_t));
                     print_prewarm_counts("value", taskflow_value_counts,
                                          sizeof(double));
+                    print_prewarm_counts("group_index",
+                                         taskflow_group_index_counts,
+                                         sizeof(int_t));
+                    print_prewarm_counts("group_value",
+                                         taskflow_group_value_counts,
+                                         sizeof(double));
                     print_prewarm_counts("pinned", taskflow_pinned_counts,
                                          sizeof(double));
                     print_prewarm_counts("events", taskflow_event_counts,
@@ -7247,11 +7265,13 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
                     }
                     return false;
                 };
+                const int taskflow_device_pool_copies =
+                    superlu_sym_v2_pcfrag_taskflow_async_core() ? 1 : 2;
 	                for (size_t i = 0; i < taskflow_index_counts.size(); ++i)
 	                {
                     if (i == 0)
                         taskflow_setup_mark("before_index_prewarm");
-	                    for (int copy = 0; copy < 2; ++copy)
+	                    for (int copy = 0; copy < taskflow_device_pool_copies; ++copy)
 	                    {
                         size_t capacity = taskflow_index_counts[i];
                         if (capacity == 0 || index_pool_has_block(capacity))
@@ -7268,6 +7288,45 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                    }
 	                }
                 taskflow_setup_mark("after_index_prewarm");
+
+                std::vector<unsigned char> matched_group_index_blocks(
+                    symV2PcFragTaskflowGroupIndexBlockPool.size(), 0);
+                auto group_index_pool_has_block =
+                    [&](size_t capacity) -> bool {
+                    for (size_t i = 0;
+                         i < symV2PcFragTaskflowGroupIndexBlockPool.size();
+                         ++i)
+                    {
+                        if (matched_group_index_blocks[i] ||
+                            symV2PcFragTaskflowGroupIndexBlockPool[i].ptr ==
+                                NULL ||
+                            symV2PcFragTaskflowGroupIndexBlockPool[i]
+                                    .capacity < capacity)
+                            continue;
+                        matched_group_index_blocks[i] = 1;
+                        return true;
+                    }
+                    return false;
+                };
+                for (size_t i = 0; i < taskflow_group_index_counts.size();
+                     ++i)
+                {
+                    if (i == 0)
+                        taskflow_setup_mark("before_group_index_prewarm");
+                    size_t capacity = taskflow_group_index_counts[i];
+                    if (capacity == 0 ||
+                        group_index_pool_has_block(capacity))
+                        continue;
+                    int_t *ptr = NULL;
+                    gpuErrchk(cudaMalloc(
+                        reinterpret_cast<void **>(&ptr),
+                        sizeof(int_t) * capacity));
+                    symV2PcFragTaskflowGroupIndexBlockPool.push_back(
+                        SymV2PcFragGpuIndexBlock(ptr, capacity));
+                    matched_group_index_blocks.push_back(1);
+                    ++symV2PcFragTaskflowStats.arena_index_prewarm_blocks;
+                }
+                taskflow_setup_mark("after_group_index_prewarm");
 
                 std::vector<unsigned char> matched_value_blocks(
                     symV2PcFragTaskflowValueBlockPool.size(), 0);
@@ -7289,7 +7348,7 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                {
                     if (i == 0)
                         taskflow_setup_mark("before_value_prewarm");
-	                    for (int copy = 0; copy < 2; ++copy)
+	                    for (int copy = 0; copy < taskflow_device_pool_copies; ++copy)
 	                    {
                         size_t capacity = taskflow_value_counts[i];
                         if (capacity == 0 || value_pool_has_block(capacity))
@@ -7306,6 +7365,45 @@ inline int xLUstruct_t<double>::initSymFactWorkspace()
 	                    }
 	                }
                 taskflow_setup_mark("after_value_prewarm");
+
+                std::vector<unsigned char> matched_group_value_blocks(
+                    symV2PcFragTaskflowGroupValueBlockPool.size(), 0);
+                auto group_value_pool_has_block =
+                    [&](size_t capacity) -> bool {
+                    for (size_t i = 0;
+                         i < symV2PcFragTaskflowGroupValueBlockPool.size();
+                         ++i)
+                    {
+                        if (matched_group_value_blocks[i] ||
+                            symV2PcFragTaskflowGroupValueBlockPool[i].ptr ==
+                                NULL ||
+                            symV2PcFragTaskflowGroupValueBlockPool[i]
+                                    .capacity < capacity)
+                            continue;
+                        matched_group_value_blocks[i] = 1;
+                        return true;
+                    }
+                    return false;
+                };
+                for (size_t i = 0; i < taskflow_group_value_counts.size();
+                     ++i)
+                {
+                    if (i == 0)
+                        taskflow_setup_mark("before_group_value_prewarm");
+                    size_t capacity = taskflow_group_value_counts[i];
+                    if (capacity == 0 ||
+                        group_value_pool_has_block(capacity))
+                        continue;
+                    double *ptr = NULL;
+                    gpuErrchk(cudaMalloc(
+                        reinterpret_cast<void **>(&ptr),
+                        sizeof(double) * capacity));
+                    symV2PcFragTaskflowGroupValueBlockPool.push_back(
+                        SymV2PcFragGpuValueBlock(ptr, capacity));
+                    matched_group_value_blocks.push_back(1);
+                    ++symV2PcFragTaskflowStats.arena_value_prewarm_blocks;
+                }
+                taskflow_setup_mark("after_group_value_prewarm");
 
                 std::vector<unsigned char> matched_pinned_blocks(
                     symV2PcFragTaskflowPinnedBlockPool.size(), 0);
@@ -7742,6 +7840,18 @@ inline int xLUstruct_t<double>::freeSymFactWorkspace()
         if (symV2PcFragTaskflowValueBlockPool[b].ptr != NULL)
             gpuErrchk(cudaFree(symV2PcFragTaskflowValueBlockPool[b].ptr));
     symV2PcFragTaskflowValueBlockPool.clear();
+    for (size_t b = 0;
+         b < symV2PcFragTaskflowGroupIndexBlockPool.size(); ++b)
+        if (symV2PcFragTaskflowGroupIndexBlockPool[b].ptr != NULL)
+            gpuErrchk(cudaFree(
+                symV2PcFragTaskflowGroupIndexBlockPool[b].ptr));
+    symV2PcFragTaskflowGroupIndexBlockPool.clear();
+    for (size_t b = 0;
+         b < symV2PcFragTaskflowGroupValueBlockPool.size(); ++b)
+        if (symV2PcFragTaskflowGroupValueBlockPool[b].ptr != NULL)
+            gpuErrchk(cudaFree(
+                symV2PcFragTaskflowGroupValueBlockPool[b].ptr));
+    symV2PcFragTaskflowGroupValueBlockPool.clear();
     for (size_t b = 0; b < symV2PcFragTaskflowPinnedBlockPool.size(); ++b)
         if (symV2PcFragTaskflowPinnedBlockPool[b].ptr != NULL)
             gpuErrchk(cudaFreeHost(
