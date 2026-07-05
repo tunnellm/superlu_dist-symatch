@@ -105,6 +105,8 @@ class xlpanelGPU_t
 
         DEVICE_CALLABLE
         int_t find(int_t k);
+        DEVICE_CALLABLE
+        int_t findSerial(int_t k);
         // // for L panel I don't need any special transformation function
         // int_t panelSolve(int_t ksupsz, Ftype *DiagBlk, int_t LDD);
         // int_t diagFactor(int_t k, Ftype *UBlk, int_t LDU, Ftype thresh, int_t *xsup,
@@ -407,6 +409,8 @@ struct xLUstructGPU_t
     int maxSuperSize;
     // Ftype arrays are problematic 
     cudaStream_t cuStreams[MAX_CUDA_STREAMS];
+    cudaEvent_t panelReadyEvents[MAX_CUDA_STREAMS];
+    cudaEvent_t symV2PartnerLPackReadyEvents[MAX_CUDA_STREAMS];
     cublasHandle_t cuHandles[MAX_CUDA_STREAMS];
     
     int* dperm_c_supno;
@@ -424,8 +428,18 @@ struct xLUstructGPU_t
     
     Ftype* LvalRecvBufs[MAX_CUDA_STREAMS];
     Ftype* UvalRecvBufs[MAX_CUDA_STREAMS];
+    Ftype* symPartnerLvalRecvBufs[MAX_CUDA_STREAMS];
+    Ftype* symPartnerLStageBufs[MAX_CUDA_STREAMS];
+    Ftype* symPartnerLSendStageBufs[MAX_CUDA_STREAMS];
+    Ftype* symV2RowFragStageBufs[MAX_CUDA_STREAMS];
+    Ftype* symV2RowFragValRecvBufs[MAX_CUDA_STREAMS];
+    int_t* symV2RowFragIdxRecvBufs[MAX_CUDA_STREAMS];
+    int_t* symV2RowFragSendMapStageBufs[MAX_CUDA_STREAMS];
+    Ftype* symV2RawPanelBufs[MAX_CUDA_STREAMS];
+    cudaEvent_t symV2RawPanelReadyEvents[MAX_CUDA_STREAMS];
     int_t* LidxRecvBufs[MAX_CUDA_STREAMS];
     int_t* UidxRecvBufs[MAX_CUDA_STREAMS];
+    int_t* symPartnerLidxRecvBufs[MAX_CUDA_STREAMS];
 
     cusolverDnHandle_t cuSolveHandles[MAX_CUDA_STREAMS];
     Ftype* diagFactWork[MAX_CUDA_STREAMS];
@@ -440,6 +454,8 @@ struct xLUstructGPU_t
     cudaStream_t lookAheadUStream[MAX_CUDA_STREAMS];
 
     Ftype *lookAheadUGemmBuffer[MAX_CUDA_STREAMS];
+    int useSymV2PanelIndex;
+    int_t *symV2PanelLocalIndex;
     
     __device__
     int_t supersize(int_t k) { return xsup[k + 1] - xsup[k]; }
@@ -447,6 +463,13 @@ struct xLUstructGPU_t
     int_t g2lRow(int_t k) { return k / Pr; }
     __device__
     int_t g2lCol(int_t k) { return k / Pc; }
+    __device__
+    int_t lPanelIndex(int_t k)
+    {
+        return (useSymV2PanelIndex && symV2PanelLocalIndex != NULL)
+                   ? symV2PanelLocalIndex[k]
+                   : g2lCol(k);
+    }
     
 };/* xLUstructGPU_t{} */
 

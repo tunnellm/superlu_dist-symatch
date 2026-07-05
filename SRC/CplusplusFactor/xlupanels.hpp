@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <iostream>
+#include <cstddef>
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
 #include "symldl_v2_core.hpp"
@@ -15,6 +16,15 @@
 // class lpanelGPU_t;
 // class upanelGPU_t;
 #define GLOBAL_BLOCK_NOT_FOUND -1
+
+#ifdef HAVE_CUDA
+struct SymV2RowDownSendSegmentGPU
+{
+    size_t map_offset;
+    int_t nrows;
+    int_t dst_row_offset;
+};
+#endif
 // it can be templatized for Ftype and complex Ftype
 
 
@@ -102,6 +112,8 @@ public:
     int_t find(int_t k);
     // for L panel I don't need any special transformation function
     int_t panelSolve(int_t ksupsz, Ftype *DiagBlk, int_t LDD);
+    int_t panelSolveSymmetric(int_t ksupsz, Ftype *DiagBlk, int_t LDD,
+                              Ftype *Work, int_t LDWork);
     int_t diagFactor(int_t k, Ftype *UBlk, int_t LDU, threshPivValType<Ftype> thresh, int_t *xsup,
                      superlu_dist_options_t *options, SuperLUStat_t *stat, int *info);
     int_t packDiagBlock(Ftype *DiagLBlk, int_t LDD);
@@ -144,6 +156,10 @@ public:
                         int_t ksupsz,
                         Ftype *DiagBlk, // device pointer
                         int_t LDD);
+    int_t panelSolveSymmetricGPU(cublasHandle_t handle, cudaStream_t cuStream,
+                                 int_t ksupsz,
+                                 Ftype *DiagBlk, int_t LDD,
+                                 Ftype *Work, int_t LDWork);
 
     int_t diagFactorPackDiagBlockGPU(int_t k,
                                      Ftype *UBlk, int_t LDU,     // CPU pointers
@@ -363,6 +379,7 @@ struct xLUstruct_t
 
     diagFactBufs_type<Ftype>** dFBufs; /* stores L and U diagonal blocks */
     int superlu_acc_offload;
+    int symGPU3DVersion = 0;
     // myNodeCount,
     // treePerm
     // myZeroTrIdxs
@@ -378,6 +395,14 @@ struct xLUstruct_t
     std::vector<Ftype *> diagFactBufs; /* stores diagonal blocks,
                        each one is a normal dense matrix.
                     Sherry: where are they free'd ?? */
+    Ftype *symFactWork = NULL;
+    int *symFactIPIV = NULL;
+    int64_t symFactWorkSize = 0;
+    int symFactTagUb = 0;
+    std::vector<Ftype *> symV2DiagBlocks;
+#ifdef HAVE_CUDA
+    std::vector<Ftype *> symV2DiagBlocksGPU;
+#endif
     std::vector<Ftype *> LvalRecvBufs;
     std::vector<Ftype *> UvalRecvBufs;
     std::vector<int_t *> LidxRecvBufs;
@@ -388,6 +413,104 @@ struct xLUstruct_t
     std::vector<int_t> UvalSendCounts;
     std::vector<int_t> LidxSendCounts;
     std::vector<int_t> UidxSendCounts;
+
+#ifdef HAVE_CUDA
+    std::vector<Ftype *> symV2PartnerLSendBufsGPU;
+    std::vector<int_t *> symL2LSendMapsGPU;
+    Ftype *symV2PartnerLSendBufPoolGPU = NULL;
+    int_t *symL2LSendMapPoolGPU = NULL;
+    int_t *symV2PartnerLRecvMapPoolGPU = NULL;
+    int_t *symV2RowFragRecvMapPoolGPU = NULL;
+    SymV2RowDownSendSegmentGPU *symV2RowDownSendSegPoolGPU = NULL;
+    size_t symV2PartnerLSendBufPoolCount = 0;
+    size_t symL2LSendMapPoolCount = 0;
+    size_t symV2PartnerLRecvMapPoolCount = 0;
+    size_t symV2RowFragRecvMapPoolCount = 0;
+    size_t symV2RowDownSendSegPoolCount = 0;
+    std::vector<SymV2RowDownSendSegmentGPU *> symV2RowDownSendSegsGPU;
+
+    std::vector<std::vector<int_t> > symL2LSendMeta;
+    std::vector<std::vector<Ftype> > symV2PartnerLHostSendBufs;
+    std::vector<Ftype *> symV2PartnerLHostSendBufsPinned;
+    std::vector<size_t> symV2PartnerLMapOffsets;
+    std::vector<int_t> symV2PartnerLPackedMaps;
+
+    struct SymV2RowDownSeg
+    {
+        int_t gid;
+        int_t chunk_pc;
+        int_t nrows;
+        int_t dst_row_offset;
+        int_t value_count;
+        size_t map_offset;
+    };
+    std::vector<int> symV2RowDownSendSizes;
+    std::vector<SymV2RowDownSendSegmentGPU> symV2RowDownSendSegsHost;
+    std::vector<size_t> symV2RowDownSendSegOffsets;
+    std::vector<int> symV2RowDownSendSegCounts;
+    std::vector<size_t> symV2RowDownSegOffsets;
+    std::vector<SymV2RowDownSeg> symV2RowDownSegs;
+    std::vector<int> symV2RowDownRecvSizes;
+    std::vector<unsigned char> symV2RowDownPlanReady;
+
+    Ftype *symV2PartnerLHostSendPoolPinned = NULL;
+    Ftype *symV2PartnerLHostRecvPoolPinned = NULL;
+    Ftype *symV2RowFragHostRecvPoolPinned = NULL;
+    Ftype *symV2RowFragHostSendPoolPinned = NULL;
+    size_t symV2PartnerLHostSendPoolPinnedCount = 0;
+    size_t symV2PartnerLHostRecvPoolPinnedCount = 0;
+    size_t symV2RowFragHostRecvPoolPinnedCount = 0;
+    size_t symV2RowFragHostSendPoolPinnedCount = 0;
+    int symV2PartnerLHostRecvPinned = 0;
+    int symV2RowFragHostRecvPinned = 0;
+    int symV2RowFragHostSendPinned = 0;
+
+    std::vector<size_t> symV2PartnerLHostSendScratchOffsets;
+    std::vector<int> symV2ExchangeSendSizesScratch;
+    std::vector<int> symV2ExchangeRecvSizesScratch;
+    std::vector<int> symV2ExchangeRecvOffsetsScratch;
+    std::vector<MPI_Request> symV2ExchangeRecvReqsScratch;
+    std::vector<MPI_Request> symV2ExchangeSendReqsScratch;
+    std::vector<int> symV2ExchangeRecvPeersScratch;
+    std::vector<int> symV2ExchangeWaitIndicesScratch;
+    std::vector<MPI_Status> symV2ExchangeWaitStatusesScratch;
+    std::vector<int> symV2RowFragSendCountsScratch;
+    std::vector<int> symV2RowFragSendOffsetsScratch;
+    std::vector<MPI_Request> symV2RowFragSendReqsScratch;
+
+    std::vector<int> symV2PartnerLSendSizes;
+    std::vector<unsigned char> symV2PartnerLSendRowActive;
+    std::vector<unsigned char> symV2RowFragSendActive;
+    std::vector<unsigned char> symV2PartnerLPrepacked;
+    std::vector<int> symV2PartnerLRecvSizes;
+    std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
+    std::vector<std::vector<int_t> > symV2PartnerLRecvIndexBySrc;
+    std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
+    std::vector<size_t> symV2PartnerLRecvMapOffsets;
+    std::vector<int_t *> symV2PartnerLRecvMapsGPU;
+    std::vector<int> symV2RowFragRecvSizes;
+    std::vector<std::vector<int_t> > symV2RowFragRecvIndex;
+    std::vector<std::vector<int_t> > symV2RowFragRecvMap;
+    std::vector<size_t> symV2RowFragRecvMapOffsets;
+    std::vector<int_t *> symV2RowFragRecvMapsGPU;
+    std::vector<int> symPanelReadyEventIds;
+    std::vector<unsigned char> symV2UsePcFragmentSchur;
+    std::vector<int_t> symV2RawPanelNodes;
+
+    void *symV2LPanelArenaGPU = NULL;
+    void *symV2StreamArenaGPU = NULL;
+    void *symV2GemmArenaGPU = NULL;
+    size_t symV2LPanelArenaBytes = 0;
+    size_t symV2StreamArenaBytes = 0;
+    size_t symV2GemmArenaBytes = 0;
+
+    int_t maxSymV2RowFragStageCount = 0;
+    int_t maxSymV2RowFragValRecvCount = 0;
+    int_t maxSymV2RowFragIdxRecvCount = 0;
+    int_t maxSymV2RowFragValSendCount = 0;
+    std::vector<Ftype *> symV2RowFragHostRecvBufs;
+    std::vector<Ftype *> symV2RowFragHostSendBufs;
+#endif
 
     //
     #pragma warning disabling bcastStruct
@@ -406,6 +529,27 @@ struct xLUstruct_t
     int_t supersize(int_t k) { return xsup[k + 1] - xsup[k]; }
     int_t g2lRow(int_t k) { return k / Pr; }
     int_t g2lCol(int_t k) { return k / Pc; }
+    int_t symV2PanelRoot(int_t k);
+    int_t symV2DiagRoot(int_t k);
+    int_t symV2DiagProc(int_t k);
+    int_t symV2PanelIndex(int_t k);
+    int_t symV2RowIndex(int_t k);
+    int_t symV2PanelCount();
+    int_t symV2RowCount();
+    int_t symV2PanelGid(int_t local_index);
+    int_t symV2RowGid(int_t local_index);
+    bool useSymV2Solve() const
+    {
+        return options != NULL &&
+               options->SymFact == YES &&
+               symGPU3DVersion == 2;
+    }
+    bool needsUPanelStorage() const
+    {
+        return !useSymV2Solve();
+    }
+    bool symV2ScheduleActive() const;
+    int_t symV2ForestLevelCount() const;
 
     anc25d_t anc25d;
     // For GPU acceleration
@@ -630,6 +774,10 @@ struct xLUstruct_t
 
     int_t dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
     int_t dPanelBcastGPU(int_t k, int_t offset);
+    int_t pdgstrf3dSymV2();
+    int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
+    bool symV2UsePcFragmentSchurPanel(int_t k) const;
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);
@@ -660,3 +808,80 @@ struct xLUstruct_t
     int_t dDFactPSolveGPU(int_t k, int_t handle_offset, int buffer_offset, diagFactBufs_type<Ftype>** dFBufs);
 #endif
 };
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelRoot(int_t k)
+{
+    return symldl_v2_panel_root(trf3Dpartition, k, grid);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2DiagRoot(int_t k)
+{
+    return symldl_v2_diag_root(trf3Dpartition, k, grid);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2DiagProc(int_t k)
+{
+    return symldl_v2_owner_2d(trf3Dpartition, k, grid);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelIndex(int_t k)
+{
+    return symldl_v2_panel_local_index(trf3Dpartition, k);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowIndex(int_t k)
+{
+    return symldl_v2_row_local_index(trf3Dpartition, k);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelCount()
+{
+    return useSymV2Solve() && trf3Dpartition != NULL
+               ? trf3Dpartition->symV2LocalPanelCount
+               : CEILING(nsupers, Pc);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowCount()
+{
+    return useSymV2Solve() && trf3Dpartition != NULL
+               ? trf3Dpartition->symV2LocalRowCount
+               : CEILING(nsupers, Pr);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelGid(int_t local_index)
+{
+    return useSymV2Solve() && trf3Dpartition != NULL &&
+                   trf3Dpartition->symV2LocalPanelGids != NULL
+               ? trf3Dpartition->symV2LocalPanelGids[local_index]
+               : local_index * Pc + mycol;
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowGid(int_t local_index)
+{
+    return useSymV2Solve() && trf3Dpartition != NULL &&
+                   trf3Dpartition->symV2LocalRowGids != NULL
+               ? trf3Dpartition->symV2LocalRowGids[local_index]
+               : local_index * Pr + myrow;
+}
+
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2ScheduleActive() const
+{
+    return useSymV2Solve() && trf3Dpartition != NULL &&
+           trf3Dpartition->symV2ScheduleEnabled;
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2ForestLevelCount() const
+{
+    return symV2ScheduleActive() ? trf3Dpartition->maxLvl : maxLvl;
+}

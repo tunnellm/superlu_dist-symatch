@@ -66,6 +66,18 @@ static inline bool superlu_sym_v2_async_factor()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ASYNC_FACTOR", 1);
 }
 
+static inline int superlu_sym_v2_gpu3d_version()
+{
+    const char *env = std::getenv("GPU3DVERSION");
+    if (env == NULL || env[0] == '\0') return 0;
+
+    char *end = NULL;
+    long value = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || value < 0 || value > 2)
+        ABORT("GPU3DVERSION must be one of 0, 1, or 2.");
+    return static_cast<int>(value);
+}
+
 static inline bool superlu_sym_v2_pinned_staging()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PINNED_STAGING", 1);

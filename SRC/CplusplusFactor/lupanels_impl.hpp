@@ -106,6 +106,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     Pr = grid->nprow;
     myrow = MYROW(iam, grid);
     mycol = MYCOL(iam, grid);
+    symGPU3DVersion =
+        (options != NULL && options->SymFact == YES)
+            ? superlu_sym_v2_gpu3d_version()
+            : 0;
     xsup = LUstruct->Glu_persist->xsup;
     int_t **Lrowind_bc_ptr = LUstruct->Llu->Lrowind_bc_ptr;
     int_t **Ufstnz_br_ptr = LUstruct->Llu->Ufstnz_br_ptr;
@@ -610,4 +614,3 @@ int_t xLUstruct_t<Ftype>::dPanelBcast(int_t k, int_t offset)
     }
     return 0;
 }
-
