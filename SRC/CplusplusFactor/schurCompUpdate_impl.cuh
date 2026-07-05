@@ -11,6 +11,7 @@
 #include "lupanels.hpp"
 #include "gpuCommon.hpp"
 #include "cublas_cusolver_wrappers.hpp"
+#include "symldl_v2_gpu_workspace_impl.cuh"
 
 #define USABLE_GPU_MEM_FRACTION 0.9
 
@@ -695,6 +696,16 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     A_gpu.Pr = Pr;
     A_gpu.Pc = Pc;
     A_gpu.maxSuperSize = ldt;
+    const bool sym_v2_mode = useSymV2Solve();
+    const bool need_u_panel_storage = needsUPanelStorage();
+    const int_t local_l_panel_count =
+        sym_v2_mode ? symV2PanelCount() : CEILING(nsupers, Pc);
+    const int_t local_u_panel_count =
+        need_u_panel_storage ? (sym_v2_mode ? symV2RowCount()
+                                            : CEILING(nsupers, Pr))
+                             : 0;
+    const int_t gpu_u_panel_count =
+        need_u_panel_storage ? local_u_panel_count : 1;
 
     /* Sherry: this mapping may be inefficient on Frontier */
     /*Mapping to device*/
@@ -723,9 +734,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     size_t max_nzcol = 0;  
     
     /*Memory for lpapenl and upanel Data*/
-    for (i = 0; i < CEILING(nsupers, Pc); ++i)
+    for (i = 0; i < local_l_panel_count; ++i)
     {
-        if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+        int_t k0 = sym_v2_mode ? symV2PanelGid(i) : i * Pc + mycol;
+        if (k0 < nsupers && isNodeInMyGrid[k0] == 1)
         {
             memReqData += lPanelVec[i].totalSize();
             totalNzvalSize += lPanelVec[i].nzvalSize();
@@ -734,9 +746,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 	    //max_gemmCsize = SUPERoLU_MAX(max_gemmCsize, ???);
         }
     }
-    for (i = 0; i < CEILING(nsupers, Pr); ++i)
+    for (i = 0; i < local_u_panel_count; ++i)
     {
-        if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
+        int_t k0 = sym_v2_mode ? symV2RowGid(i) : i * Pr + myrow;
+        if (k0 < nsupers && isNodeInMyGrid[k0] == 1)
         {
             memReqData += uPanelVec[i].totalSize();
             totalNzvalSize += uPanelVec[i].nzvalSize();
@@ -746,8 +759,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     }
     max_gemmCsize = max_nzcol*max_nzrow;
     
-    memReqData += CEILING(nsupers, Pc) * sizeof(lpanelGPU_t);
-    memReqData += CEILING(nsupers, Pr) * sizeof(upanelGPU_t);
+    memReqData += local_l_panel_count * sizeof(lpanelGPU_t);
+    memReqData += gpu_u_panel_count * sizeof(upanelGPU_t);
 
     memReqData += sizeof(xLUstructGPU_t<Ftype>);
     
@@ -763,7 +776,20 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     A_gpu.gemmBufferSize = SUPERLU_MIN(maxBuffSize, SUPERLU_MAX(max_gemmCsize,totalNzvalSize)); /* Yang added 10/20/2023 */
  #endif
  
-    size_t dataPerStream = 3 * sizeof(Ftype) * maxLvalCount + 3 * sizeof(Ftype) * maxUvalCount + 2 * sizeof(int_t) * maxLidxCount + 2 * sizeof(int_t) * maxUidxCount + A_gpu.gemmBufferSize * sizeof(Ftype) + ldt * ldt * sizeof(Ftype);
+    size_t dataPerStream =
+        3 * sizeof(Ftype) * maxLvalCount +
+        3 * sizeof(Ftype) * maxUvalCount +
+        2 * sizeof(int_t) * maxLidxCount +
+        2 * sizeof(int_t) * maxUidxCount +
+        sizeof(Ftype) * maxSymPartnerLvalCount * 3 +
+        sizeof(int_t) * maxSymPartnerLidxCount +
+        sizeof(Ftype) * maxSymPartnerLSendStageCount +
+        sizeof(Ftype) * (maxSymV2RowFragStageCount +
+                         maxSymV2RowFragValRecvCount) +
+        sizeof(int_t) * (maxSymV2RowFragIdxRecvCount +
+                         maxSymV2RowFragValSendCount) +
+        A_gpu.gemmBufferSize * sizeof(Ftype) +
+        ldt * ldt * sizeof(Ftype);
     if (memReqData + 2 * dataPerStream > useableGPUMem)
     {
         printf("Not enough memory on GPU: available = %zu, required for 2 streams =%zu, exiting\n", useableGPUMem, memReqData + 2 * dataPerStream);
@@ -885,32 +911,41 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     xlpanelGPU_t<Ftype> *lPanelVec_GPU = copyLpanelsToGPU();
     tUsend = SuperLU_timer_() - tUsend;
 #else 
-    xupanelGPU_t<Ftype> *uPanelVec_GPU = new xupanelGPU_t<Ftype>[CEILING(nsupers, Pr)];
-    xlpanelGPU_t<Ftype> *lPanelVec_GPU = new xlpanelGPU_t<Ftype>[CEILING(nsupers, Pc)];
+    xupanelGPU_t<Ftype> *uPanelVec_GPU =
+        new xupanelGPU_t<Ftype>[gpu_u_panel_count];
+    xlpanelGPU_t<Ftype> *lPanelVec_GPU =
+        new xlpanelGPU_t<Ftype>[local_l_panel_count];
     tLsend = SuperLU_timer_();
-    for (i = 0; i < CEILING(nsupers, Pc); ++i)
+    for (i = 0; i < local_l_panel_count; ++i)
     {
-        if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+        int_t k0 = sym_v2_mode ? symV2PanelGid(i) : i * Pc + mycol;
+        if (k0 < nsupers && isNodeInMyGrid[k0] == 1)
             lPanelVec_GPU[i] = lPanelVec[i].copyToGPU();
     }
     tLsend = SuperLU_timer_() - tLsend;
     tUsend = SuperLU_timer_();
     // cudaCheckError();
-    for (i = 0; i < CEILING(nsupers, Pr); ++i)
+    for (i = 0; i < local_u_panel_count; ++i)
     {
-        if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
+        int_t k0 = sym_v2_mode ? symV2RowGid(i) : i * Pr + myrow;
+        if (k0 < nsupers && isNodeInMyGrid[k0] == 1)
             uPanelVec_GPU[i] = uPanelVec[i].copyToGPU();
     }
     tUsend = SuperLU_timer_() - tUsend;
 #endif
     tRegion[1] = SuperLU_timer_() - tRegion[1];
 
-    gpuErrchk(cudaMalloc(&A_gpu.lPanelVec, CEILING(nsupers, Pc) * sizeof(xlpanelGPU_t<Ftype>)));
+    gpuErrchk(cudaMalloc(&A_gpu.lPanelVec,
+                         local_l_panel_count *
+                             sizeof(xlpanelGPU_t<Ftype>)));
     gpuErrchk(cudaMemcpy(A_gpu.lPanelVec, lPanelVec_GPU,
-               CEILING(nsupers, Pc) * sizeof(xlpanelGPU_t<Ftype>), cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMalloc(&A_gpu.uPanelVec, CEILING(nsupers, Pr) * sizeof(xupanelGPU_t<Ftype>)));
+               local_l_panel_count * sizeof(xlpanelGPU_t<Ftype>),
+               cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMalloc(&A_gpu.uPanelVec,
+                         gpu_u_panel_count * sizeof(xupanelGPU_t<Ftype>)));
     gpuErrchk(cudaMemcpy(A_gpu.uPanelVec, uPanelVec_GPU,
-               CEILING(nsupers, Pr) * sizeof(xupanelGPU_t<Ftype>), cudaMemcpyHostToDevice));
+               gpu_u_panel_count * sizeof(xupanelGPU_t<Ftype>),
+               cudaMemcpyHostToDevice));
 
     delete [] uPanelVec_GPU;
     delete [] lPanelVec_GPU;
@@ -936,10 +971,21 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     /* Sherry: where are these freed ?? */
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
-        gpuErrchk(cudaMalloc(&A_gpu.LvalRecvBufs[stream], sizeof(Ftype) * maxLvalCount));
-        gpuErrchk(cudaMalloc(&A_gpu.UvalRecvBufs[stream], sizeof(Ftype) * maxUvalCount));
-        gpuErrchk(cudaMalloc(&A_gpu.LidxRecvBufs[stream], sizeof(int_t) * maxLidxCount));
-        gpuErrchk(cudaMalloc(&A_gpu.UidxRecvBufs[stream], sizeof(int_t) * maxUidxCount));
+        symldl_v2_cuda_malloc_optional(
+            (void **) &A_gpu.LvalRecvBufs[stream], maxLvalCount,
+            sizeof(Ftype), "L value receive buffer allocation overflows.");
+        symldl_v2_cuda_malloc_optional(
+            (void **) &A_gpu.UvalRecvBufs[stream],
+            need_u_panel_storage ? maxUvalCount : 0, sizeof(Ftype),
+            "U value receive buffer allocation overflows.");
+        symldl_v2_cuda_malloc_optional(
+            (void **) &A_gpu.LidxRecvBufs[stream], maxLidxCount,
+            sizeof(int_t), "L index receive buffer allocation overflows.");
+        symldl_v2_cuda_malloc_optional(
+            (void **) &A_gpu.UidxRecvBufs[stream],
+            need_u_panel_storage ? maxUidxCount : 0, sizeof(int_t),
+            "U index receive buffer allocation overflows.");
+        symldl_v2_setup_gpu_fragment_stream_buffers(this, stream);
         // allocate the space for diagonal factor on GPU
         gpuErrchk(cudaMalloc(&A_gpu.diagFactWork[stream], sizeof(Ftype) * dfactBufSize));
         gpuErrchk(cudaMalloc(&A_gpu.diagFactInfo[stream], sizeof(int)));
@@ -1035,6 +1081,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     // Allocate GPU copy of all the gemm buffer pointers and copy the host array to the GPU 
     gpuErrchk(cudaMalloc(&(A_gpu.dgpuGemmBuffs), sizeof(Ftype*) * num_gemmbufs));
     gpuErrchk(cudaMemcpy(A_gpu.dgpuGemmBuffs, A_gpu.gpuGemmBuffs, sizeof(Ftype*) * num_gemmbufs, cudaMemcpyHostToDevice));
+    symldl_v2_setup_gpu_panel_index(this);
 
     tcuMalloc = SuperLU_timer_() - tcuMalloc;
 #if ( PRNTlevel>=1 )

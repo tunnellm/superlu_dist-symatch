@@ -11,6 +11,7 @@
 #include "lupanels.hpp"  //unneeded??
 #include "xlupanels.hpp"
 #include "symldl_v2_workspace_impl.hpp"
+#include "symldl_v2_pcfrag_workspace_impl.hpp"
 #include "symldl_v2_diag_impl.hpp"
 #include "superlu_blas.hpp"
 
@@ -274,6 +275,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxUidxCount = sym_v2_mode ? 0 : *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
     maxLvalCount = *std::max_element(LvalSendCounts.begin(), LvalSendCounts.end());
     maxLidxCount = *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end());
+    maxSymPartnerLvalCount = sym_v2_mode ? 0 : maxLvalCount;
+    maxSymPartnerLidxCount = sym_v2_mode ? 0 : maxLidxCount;
+    maxSymPartnerLSendStageCount = 0;
+    symldl_v2_compute_pcfrag_scratch(this, LUstruct);
     if (sym_v2_mode)
         symldl_v2_allocate_factor_workspace(this);
 
@@ -319,6 +324,14 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         bcastUidx[i] = bcUidx;
         #endif
     }
+    if (sym_v2_mode)
+    {
+        symldl_v2_initialize_pcfrag_tables(this);
+#ifdef HAVE_CUDA
+        symldl_v2_build_partner_l_send_maps(this);
+#endif
+        symldl_v2_allocate_fragment_host_buffers(this);
+    }
 
     numDiagBufs = 2*options->num_lookaheads;
     diagFactBufs.resize(numDiagBufs);  /* Sherry?? numDiagBufs == 32 hard-coded */
@@ -361,6 +374,8 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     {
     #ifdef HAVE_CUDA
         setLUstruct_GPU();  /* Set up LU structure and buffers on GPU */
+        if (sym_v2_mode)
+            symldl_v2_materialize_pcfrag_metadata(this);
 	
         // TODO: remove it, checking is very slow 
         if(0)

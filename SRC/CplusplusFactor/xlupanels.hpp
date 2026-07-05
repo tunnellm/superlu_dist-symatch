@@ -393,6 +393,9 @@ struct xLUstruct_t
     int_t maxLidxCount = 0;
     int_t maxUvalCount = 0;
     int_t maxUidxCount = 0;
+    int_t maxSymPartnerLvalCount = 0;
+    int_t maxSymPartnerLidxCount = 0;
+    int_t maxSymPartnerLSendStageCount = 0;
     std::vector<Ftype *> diagFactBufs; /* stores diagonal blocks,
                        each one is a normal dense matrix.
                     Sherry: where are they free'd ?? */
@@ -406,8 +409,10 @@ struct xLUstruct_t
 #endif
     std::vector<Ftype *> LvalRecvBufs;
     std::vector<Ftype *> UvalRecvBufs;
+    std::vector<Ftype *> symPartnerLvalRecvBufs;
     std::vector<int_t *> LidxRecvBufs;
     std::vector<int_t *> UidxRecvBufs;
+    std::vector<int_t *> symPartnerLidxRecvBufs;
 
     // send and recv count for 2d comm
     std::vector<int_t> LvalSendCounts;
@@ -650,6 +655,46 @@ struct xLUstruct_t
             SUPERLU_FREE(UvalRecvBufs[i]);
             SUPERLU_FREE(LidxRecvBufs[i]);
             SUPERLU_FREE(UidxRecvBufs[i]);
+            if (i < (int) symPartnerLvalRecvBufs.size() &&
+                symPartnerLvalRecvBufs[i] != NULL)
+            {
+#ifdef HAVE_CUDA
+                if (symPartnerLvalRecvBufs[i] ==
+                    symV2PartnerLHostRecvPoolPinned)
+                {
+                }
+                else if (symV2PartnerLHostRecvPinned)
+                    cudaFreeHost(symPartnerLvalRecvBufs[i]);
+                else
+#endif
+                    SUPERLU_FREE(symPartnerLvalRecvBufs[i]);
+            }
+            if (i < (int) symPartnerLidxRecvBufs.size())
+                SUPERLU_FREE(symPartnerLidxRecvBufs[i]);
+#ifdef HAVE_CUDA
+            if (i < (int) symV2RowFragHostRecvBufs.size() &&
+                symV2RowFragHostRecvBufs[i] != NULL &&
+                symV2RowFragHostRecvBufs[i] != symV2RowFragHostRecvPoolPinned)
+            {
+#ifdef HAVE_CUDA
+                if (symV2RowFragHostRecvPinned)
+                    cudaFreeHost(symV2RowFragHostRecvBufs[i]);
+                else
+#endif
+                    SUPERLU_FREE(symV2RowFragHostRecvBufs[i]);
+            }
+            if (i < (int) symV2RowFragHostSendBufs.size() &&
+                symV2RowFragHostSendBufs[i] != NULL &&
+                symV2RowFragHostSendBufs[i] != symV2RowFragHostSendPoolPinned)
+            {
+#ifdef HAVE_CUDA
+                if (symV2RowFragHostSendPinned)
+                    cudaFreeHost(symV2RowFragHostSendBufs[i]);
+                else
+#endif
+                    SUPERLU_FREE(symV2RowFragHostSendBufs[i]);
+            }
+#endif
         }
 
         for (i = 0; i < numDiagBufs; i++)
