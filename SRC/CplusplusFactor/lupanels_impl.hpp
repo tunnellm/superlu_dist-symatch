@@ -63,6 +63,8 @@ int xLUstruct_t<Ftype>::freeDiagFactBufsArr(int_t num_bufs, diagFactBufs_type<Ft
 template <typename Ftype>
 xupanel_t<Ftype> xLUstruct_t<Ftype>::getKUpanel(int_t k, int_t offset)
 {
+    if (!needsUPanelStorage())
+        ABORT("SymFact GPU3DVERSION=2 does not materialize U panels.");
     return (
         myrow == krow(k) ? 
         uPanelVec[g2lRow(k)] : 
@@ -74,9 +76,10 @@ xupanel_t<Ftype> xLUstruct_t<Ftype>::getKUpanel(int_t k, int_t offset)
 template <typename Ftype>
 xlpanel_t<Ftype> xLUstruct_t<Ftype>::getKLpanel(int_t k, int_t offset)
 { 
+    int_t panel_root = symV2PanelRoot(k);
     return (
-        mycol == kcol(k) ? 
-        lPanelVec[g2lCol(k)] : 
+        mycol == panel_root ?
+        lPanelVec[symV2PanelIndex(k)] :
         xlpanel_t<Ftype>(LidxRecvBufs[offset], LvalRecvBufs[offset],
             A_gpu.LidxRecvBufs[offset], A_gpu.LvalRecvBufs[offset])
     );

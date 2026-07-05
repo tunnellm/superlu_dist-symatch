@@ -66,6 +66,12 @@ inline int_t xLUstruct_t<Ftype>::symV2ForestLevelCount() const
     return grid3d != NULL ? log2i(grid3d->zscp.Np) + 1 : maxLvl;
 }
 
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2UsePcFragmentSchurPanel(int_t) const
+{
+    return false;
+}
+
 template <>
 inline int_t xLUstruct_t<double>::symV2PanelRoot(int_t k)
 {
@@ -143,4 +149,21 @@ inline int_t xLUstruct_t<double>::symV2ForestLevelCount() const
     return symV2ScheduleActive()
                ? trf3Dpartition->maxLvl
                : (grid3d != NULL ? log2i(grid3d->zscp.Np) + 1 : maxLvl);
+}
+
+template <>
+inline bool xLUstruct_t<double>::symV2UsePcFragmentSchurPanel(int_t k) const
+{
+    if (!useSymV2Solve())
+        return false;
+    if (k < 0 || k >= nsupers)
+        return false;
+    if (!symV2UsePcFragmentSchur.empty())
+    {
+        if (static_cast<size_t>(k) >= symV2UsePcFragmentSchur.size())
+            return false;
+        return symV2UsePcFragmentSchur[static_cast<size_t>(k)] != 0;
+    }
+    return Pr > 1 && Pc > 1 && superlu_sym_v2_pc_fragment_schur() &&
+           superlu_sym_v2_pc_fragment_ldl_native();
 }
