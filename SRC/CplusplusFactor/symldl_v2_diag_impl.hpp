@@ -4,24 +4,7 @@
 #include <cstring>
 
 #include "xlupanels.hpp"
-#include "symldl_v2_workspace_impl.hpp"
-
-template <typename Ftype>
-static void symldl_v2_ensure_factor_work(xLUstruct_t<Ftype> *lu,
-                                         int64_t requested)
-{
-    if (requested <= lu->symFactWorkSize)
-        return;
-    Ftype *work = (Ftype *) SUPERLU_MALLOC(
-        symldl_v2_checked_product((size_t) requested, sizeof(Ftype),
-                                  "SymFact V2 workspace resize overflows."));
-    if (work == NULL)
-        ABORT("Malloc fails for SymFact V2 resized workspace.");
-    if (lu->symFactWork != NULL)
-        SUPERLU_FREE(lu->symFactWork);
-    lu->symFactWork = work;
-    lu->symFactWorkSize = requested;
-}
+#include "symldl_v2_diag_factor_impl.hpp"
 
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymDiagFactorPanelSolve(
@@ -70,128 +53,8 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
         ABORT("SymFact V2 inverse diagonal buffer is not allocated.");
 
     if (iam == sym_diag_proc)
-    {
-        int_t lk = symV2PanelIndex(k);
-        if (lk < 0 || lk >= symV2PanelCount())
-            ABORT("SymFact V2 diagonal owner has no local panel.");
-        xlpanel_t<double> &lpanel = lPanelVec[lk];
-        if (lpanel.isEmpty() || !lpanel.haveDiag() ||
-            lpanel.gid(0) != k || lpanel.nbrow(0) != ksupc)
-            ABORT("SymFact V2 diagonal owner has an invalid L-panel diagonal block.");
-
-        double *diag = lpanel.blkPtr(0);
-        int_t ldd = lpanel.LDA();
-        if (symFactWork == NULL || symFactIPIV == NULL)
-            ABORT("SymFact V2 factor workspace is not allocated.");
-
-#ifdef HAVE_CUDA
-        if (superlu_acc_offload)
-        {
-            int stream_id = (handle_offset >= 0 &&
-                             handle_offset < A_gpu.numCudaStreams)
-                                ? handle_offset
-                                : 0;
-            cudaStream_t stream = A_gpu.cuStreams[stream_id];
-            gpuErrchk(cudaMemcpy2DAsync(diag, ldd * sizeof(double),
-                                        lpanel.blkPtrGPU(0),
-                                        ldd * sizeof(double),
-                                        ksupc * sizeof(double), ksupc,
-                                        cudaMemcpyDeviceToHost, stream));
-            gpuErrchk(cudaStreamSynchronize(stream));
-        }
-#endif
-
-        if (symV2DiagBlocks.size() != (size_t) nsupers)
-            ABORT("SymFact V2 diagonal block vector has invalid size.");
-        if (symV2DiagBlocks[k] == NULL)
-        {
-            symV2DiagBlocks[k] = (double *) SUPERLU_MALLOC(
-                symldl_v2_checked_product(
-                    symldl_v2_checked_product((size_t) ksupc, (size_t) ksupc,
-                                              "SymFact V2 diagonal block allocation overflows."),
-                    sizeof(double),
-                    "SymFact V2 diagonal block allocation overflows."));
-            if (symV2DiagBlocks[k] == NULL)
-                ABORT("Malloc fails for SymFact V2 diagonal block.");
-        }
-
-        for (int_t j = 0; j < ksupc; ++j)
-            std::memcpy(&symV2DiagBlocks[k][j * ksupc],
-                        &diag[j * ldd], ksupc * sizeof(double));
-        for (int_t j = 0; j < ksupc; ++j)
-            for (int_t i = 0; i < j; ++i)
-                symV2DiagBlocks[k][i + j * ksupc] =
-                    symV2DiagBlocks[k][j + i * ksupc];
-
-        char uplo = 'L';
-        int n_i = (int) ksupc;
-        int ldd_i = (int) ldd;
-        int lwork = -1;
-        int lapack_info = 0;
-        int ntiny = 0;
-        int n2x2 = 0;
-        double thresh1 = thresh / 10.0;
-        double query = 0.0;
-
-        if (options->ReplaceTinyPivot == YES)
-            dsytrf_mod_(&uplo, &n_i, diag, &ldd_i, &thresh1,
-                        symFactIPIV, &query, &lwork, &lapack_info,
-                        &ntiny, &n2x2);
-        else
-            dsytrf_(&uplo, &n_i, diag, &ldd_i, symFactIPIV,
-                    &query, &lwork, &lapack_info);
-
-        int64_t requested_work = (int64_t) query;
-        if (requested_work < 1)
-            requested_work = 1;
-        symldl_v2_ensure_factor_work(this, requested_work);
-        lwork = (int) requested_work;
-
-        if (options->ReplaceTinyPivot == YES)
-        {
-            ntiny = 0;
-            n2x2 = 0;
-            dsytrf_mod_(&uplo, &n_i, diag, &ldd_i, &thresh1,
-                        symFactIPIV, symFactWork, &lwork, &lapack_info,
-                        &ntiny, &n2x2);
-            stat->TinyPivots += ntiny;
-            stat->sytrf_2x2 += n2x2;
-        }
-        else
-        {
-            dsytrf_(&uplo, &n_i, diag, &ldd_i, symFactIPIV,
-                    symFactWork, &lwork, &lapack_info);
-        }
-
-        if (lapack_info != 0)
-        {
-            if (lapack_info > 0)
-                *info = lapack_info + xsup[k];
-            else
-                *info = lapack_info - xsup[k];
-        }
-
-        int inertia[3];
-        inertia_from_dsytrf(uplo, n_i, diag, ldd_i, symFactIPIV,
-                            1e-30, inertia);
-        stat->inertia[0] += inertia[0];
-        stat->inertia[1] += inertia[1];
-        stat->inertia[2] += inertia[2];
-
-        dsytri_(&uplo, &n_i, diag, &ldd_i, symFactIPIV,
-                symFactWork, &lapack_info);
-        if (lapack_info != 0)
-            ABORT("SymFact V2 dsytri failed.");
-
-        for (int_t j = 0; j < ksupc; ++j)
-            for (int_t i = j + 1; i < ksupc; ++i)
-                diag[j + i * ldd] = diag[i + j * ldd];
-        for (int_t j = 0; j < ksupc; ++j)
-            std::memcpy(&invDiag[j * ksupc], &diag[j * ldd],
-                        ksupc * sizeof(double));
-
-        stat->ops[FACT] += (flops_t) ksupc * ksupc * ksupc;
-    }
+        symldl_v2_factor_invert_diag_owner(this, k, ksupc,
+                                           handle_offset, invDiag);
 
     if (mycol == sym_panel_root)
     {
