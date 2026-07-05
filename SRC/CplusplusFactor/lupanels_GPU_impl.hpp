@@ -194,6 +194,47 @@ int_t xlpanel_t<T>::panelSolveGPU(cublasHandle_t handle, cudaStream_t cuStream,
 }
 
 template <typename T>
+int_t xlpanel_t<T>::panelSolveSymmetricGPU(cublasHandle_t handle, cudaStream_t cuStream,
+                              int_t ksupsz,
+                              T *DiagBlk, // device pointer
+                              int_t LDD,
+                              T *Work, // device pointer
+                              int_t LDWork)
+{
+    if (isEmpty())
+        return 0;
+
+    T *lPanelStPtr = blkPtrGPU(0);
+    int_t len = nzrows();
+    if (haveDiag())
+    {
+        lPanelStPtr = blkPtrGPU(1);
+        len -= nbrow(0);
+    }
+
+    if (len <= 0)
+        return 0;
+    if (LDWork < len)
+        ABORT("Symmetric GPU L-panel workspace has an invalid leading dimension.");
+
+    T alpha = one<T>();
+    T beta = zeroT<T>();
+
+    cublasSetStream(handle, cuStream);
+    myCublasGemm<T>(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+                    len, ksupsz, ksupsz, &alpha,
+                    lPanelStPtr, LDA(),
+                    DiagBlk, LDD, &beta,
+                    Work, LDWork);
+
+    gpuErrchk(cudaMemcpy2DAsync(lPanelStPtr, LDA() * sizeof(T),
+                                Work, LDWork * sizeof(T),
+                                len * sizeof(T), ksupsz,
+                                cudaMemcpyDeviceToDevice, cuStream));
+    return 0;
+}
+
+template <typename T>
 int_t xlpanel_t<T>::diagFactorPackDiagBlockGPU(int_t k,
                                            T *UBlk, int_t LDU,     // CPU pointers
                                            T *DiagLBlk, int_t LDD, // CPU pointers
