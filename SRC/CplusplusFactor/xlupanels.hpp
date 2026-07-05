@@ -6,6 +6,7 @@
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
 #include "symldl_v2_core.hpp"
+#include "symldl_v2_types.hpp"
 #ifdef HAVE_CUDA
 #include "lupanels_GPU.cuh"
 #include "xlupanels_GPU.cuh"
@@ -18,14 +19,6 @@
 // class upanelGPU_t;
 #define GLOBAL_BLOCK_NOT_FOUND -1
 
-#ifdef HAVE_CUDA
-struct SymV2RowDownSendSegmentGPU
-{
-    size_t map_offset;
-    int_t nrows;
-    int_t dst_row_offset;
-};
-#endif
 // it can be templatized for Ftype and complex Ftype
 
 
@@ -441,15 +434,6 @@ struct xLUstruct_t
     std::vector<size_t> symV2PartnerLMapOffsets;
     std::vector<int_t> symV2PartnerLPackedMaps;
 
-    struct SymV2RowDownSeg
-    {
-        int_t gid;
-        int_t chunk_pc;
-        int_t nrows;
-        int_t dst_row_offset;
-        int_t value_count;
-        size_t map_offset;
-    };
     std::vector<int> symV2RowDownSendSizes;
     std::vector<SymV2RowDownSendSegmentGPU> symV2RowDownSendSegsHost;
     std::vector<size_t> symV2RowDownSendSegOffsets;
@@ -557,6 +541,11 @@ struct xLUstruct_t
     }
     bool symV2ScheduleActive() const;
     int_t symV2ForestLevelCount() const;
+    void symV2FreeDiagBlocks();
+    void symV2FreeStreamHostBuffers(int stream);
+#ifdef HAVE_CUDA
+    void symV2FreeGpuStorage();
+#endif
 
     anc25d_t anc25d;
     // For GPU acceleration
@@ -631,13 +620,7 @@ struct xLUstruct_t
         if (uPanelVec != NULL)
             delete[] uPanelVec;
 
-        if (symFactWork != NULL)
-            SUPERLU_FREE(symFactWork);
-        if (symFactIPIV != NULL)
-            SUPERLU_FREE(symFactIPIV);
-        for (size_t i = 0; i < symV2DiagBlocks.size(); ++i)
-            if (symV2DiagBlocks[i] != NULL)
-                SUPERLU_FREE(symV2DiagBlocks[i]);
+        symV2FreeDiagBlocks();
 
         /* free diagonal L and U blocks */
         // dfreeDiagFactBufsArr(maxLeafNodes, dFBufs);
@@ -655,46 +638,7 @@ struct xLUstruct_t
             SUPERLU_FREE(UvalRecvBufs[i]);
             SUPERLU_FREE(LidxRecvBufs[i]);
             SUPERLU_FREE(UidxRecvBufs[i]);
-            if (i < (int) symPartnerLvalRecvBufs.size() &&
-                symPartnerLvalRecvBufs[i] != NULL)
-            {
-#ifdef HAVE_CUDA
-                if (symPartnerLvalRecvBufs[i] ==
-                    symV2PartnerLHostRecvPoolPinned)
-                {
-                }
-                else if (symV2PartnerLHostRecvPinned)
-                    cudaFreeHost(symPartnerLvalRecvBufs[i]);
-                else
-#endif
-                    SUPERLU_FREE(symPartnerLvalRecvBufs[i]);
-            }
-            if (i < (int) symPartnerLidxRecvBufs.size())
-                SUPERLU_FREE(symPartnerLidxRecvBufs[i]);
-#ifdef HAVE_CUDA
-            if (i < (int) symV2RowFragHostRecvBufs.size() &&
-                symV2RowFragHostRecvBufs[i] != NULL &&
-                symV2RowFragHostRecvBufs[i] != symV2RowFragHostRecvPoolPinned)
-            {
-#ifdef HAVE_CUDA
-                if (symV2RowFragHostRecvPinned)
-                    cudaFreeHost(symV2RowFragHostRecvBufs[i]);
-                else
-#endif
-                    SUPERLU_FREE(symV2RowFragHostRecvBufs[i]);
-            }
-            if (i < (int) symV2RowFragHostSendBufs.size() &&
-                symV2RowFragHostSendBufs[i] != NULL &&
-                symV2RowFragHostSendBufs[i] != symV2RowFragHostSendPoolPinned)
-            {
-#ifdef HAVE_CUDA
-                if (symV2RowFragHostSendPinned)
-                    cudaFreeHost(symV2RowFragHostSendBufs[i]);
-                else
-#endif
-                    SUPERLU_FREE(symV2RowFragHostSendBufs[i]);
-            }
-#endif
+            symV2FreeStreamHostBuffers(i);
         }
 
         for (i = 0; i < numDiagBufs; i++)
@@ -709,38 +653,7 @@ struct xLUstruct_t
             SUPERLU_FREE(A_gpu.gpuGemmBuffs);
 
 #ifdef HAVE_CUDA
-            if (symV2PartnerLSendBufPoolGPU != NULL)
-                cudaFree(symV2PartnerLSendBufPoolGPU);
-            if (symL2LSendMapPoolGPU != NULL)
-                cudaFree(symL2LSendMapPoolGPU);
-            if (symV2PartnerLRecvMapPoolGPU != NULL)
-                cudaFree(symV2PartnerLRecvMapPoolGPU);
-            if (symV2RowFragRecvMapPoolGPU != NULL)
-                cudaFree(symV2RowFragRecvMapPoolGPU);
-            if (symV2RowDownSendSegPoolGPU != NULL)
-                cudaFree(symV2RowDownSendSegPoolGPU);
-            if (symV2LPanelArenaGPU != NULL)
-                cudaFree(symV2LPanelArenaGPU);
-            if (symV2StreamArenaGPU != NULL)
-                cudaFree(symV2StreamArenaGPU);
-            if (symV2GemmArenaGPU != NULL)
-                cudaFree(symV2GemmArenaGPU);
-            for (size_t i = 0; i < symV2PartnerLHostSendBufsPinned.size(); ++i)
-                if (symV2PartnerLHostSendBufsPinned[i] != NULL &&
-                    symV2PartnerLHostSendBufsPinned[i] !=
-                        symV2PartnerLHostSendPoolPinned)
-                    cudaFreeHost(symV2PartnerLHostSendBufsPinned[i]);
-            if (symV2PartnerLHostSendPoolPinned != NULL)
-                cudaFreeHost(symV2PartnerLHostSendPoolPinned);
-            if (symV2PartnerLHostRecvPoolPinned != NULL)
-                cudaFreeHost(symV2PartnerLHostRecvPoolPinned);
-            if (symV2RowFragHostRecvPoolPinned != NULL)
-                cudaFreeHost(symV2RowFragHostRecvPoolPinned);
-            if (symV2RowFragHostSendPoolPinned != NULL)
-                cudaFreeHost(symV2RowFragHostSendPoolPinned);
-            for (size_t i = 0; i < symV2DiagBlocksGPU.size(); ++i)
-                if (symV2DiagBlocksGPU[i] != NULL)
-                    cudaFree(symV2DiagBlocksGPU[i]);
+            symV2FreeGpuStorage();
 #endif
 
             for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
@@ -922,3 +835,4 @@ struct xLUstruct_t
 };
 
 #include "symldl_v2_accessors_impl.hpp"
+#include "symldl_v2_teardown_impl.hpp"

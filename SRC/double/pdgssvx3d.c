@@ -50,6 +50,43 @@ static int dSymV2SolveEnabled(superlu_dist_options_t *options, int gpu3dVersion)
 	       gpu3dVersion == 2;
 }
 
+static int_t dSymV2QuerySpace_dist(int_t n, dLUstruct_t *LUstruct,
+				   dtrf3Dpartition_t *trf3Dpartition,
+				   SuperLUStat_t *stat,
+				   superlu_dist_mem_usage_t *mem_usage)
+{
+	Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+	dLocalLU_t *Llu = LUstruct->Llu;
+	int_t *xsup = Glu_persist->xsup;
+	int_t iword = sizeof(int_t);
+	int_t dword = sizeof(double);
+	int_t nsupers = Glu_persist->supno[n - 1] + 1;
+
+	mem_usage->for_lu = 0.;
+	mem_usage->total = 0.;
+	if (trf3Dpartition == NULL ||
+	    trf3Dpartition->symV2LocalPanelGids == NULL ||
+	    Llu == NULL || Llu->Lrowind_bc_ptr == NULL) {
+		mem_usage->total = stat->peak_buffer;
+		return 0;
+	}
+
+	for (int_t lk = 0; lk < trf3Dpartition->symV2LocalPanelCount; ++lk) {
+		int_t gb = trf3Dpartition->symV2LocalPanelGids[lk];
+		if (gb < 0 || gb >= nsupers) continue;
+
+		int_t *index = Llu->Lrowind_bc_ptr[lk];
+		if (index != NULL) {
+			mem_usage->for_lu += (float)
+				((BC_HEADER + index[0] * LB_DESCRIPTOR + index[1]) * iword);
+			mem_usage->for_lu += (float)(index[1] * SuperSize(gb) * dword);
+		}
+	}
+
+	mem_usage->total = mem_usage->for_lu + stat->peak_buffer;
+	return 0;
+}
+
 static int_t *dSymV2CreateIdentityIpermSupno(int_t nsupers)
 {
 	int_t *iperm_c_supno = intMalloc_dist(nsupers);
@@ -618,6 +655,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     // get the 2d grid
     gridinfo_t *grid = &(grid3d->grid2d);
     iam = grid->iam;
+    int use_sym_v2_solve = dSymV2SolveEnabled(options, gpu3dVersion);
 
     /* Test the options choices. */
     *info = 0;
@@ -1477,7 +1515,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			int maxrecvsz = sp_ienv_dist(3, options)* nrhs + SUPERLU_MAX( XK_H, LSUM_H );
 			int ready_x_size = maxrecvsz*nc;
 			int ready_lsum_size = 2*maxrecvsz*nr;
-			if (get_acc_solve()){
+			if (!use_sym_v2_solve && get_acc_solve()){
 			nv_init_wrapper(grid->comm);
 		    dprepare_multiGPU_buffers(flag_bc_size,flag_rd_size,ready_x_size,ready_lsum_size,my_flag_bc_size,my_flag_rd_size);
 			}
@@ -1525,13 +1563,19 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 						  SCT, options, stat, thresh, info);
 
 			/* call pdgstrf3d() in C++ code */
-			if (dSymV2SolveEnabled(options, gpu3dVersion))
+			if (use_sym_v2_solve)
 				pdgstrf3d_LUv2(dLUgpu);
 			else
 				pdgstrf3d_LUv1(dLUgpu);
 
-			dCopyLUGPU2Host(dLUgpu, LUstruct);
-			dDestroyLUgpuHandle(dLUgpu);
+			if (use_sym_v2_solve && nrhs > 0 && *info == 0) {
+				SOLVEstruct->symldl_v2_factor_handle = (void *) dLUgpu;
+				dLUgpu = NULL;
+			} else {
+				dCopyLUGPU2Host(dLUgpu, LUstruct);
+			}
+			if (dLUgpu != NULL)
+				dDestroyLUgpuHandle(dLUgpu);
 		    //TODO: dCreateLUgpuHandle,pdgstrf3d_LUpackedInterface,dCopyLUGPU2Host,dDestroyLUgpuHandle haven't been created
 #else // non-templated version (not used anymore)
 			/* call constructor in C++ code */
@@ -1603,11 +1647,11 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 	} // matching if not SolveOnly ... end Factorization
 
 	/* Now proceed with the Solve setup */
-		if (get_new3dsolve()){
+		if (get_new3dsolve() && !use_sym_v2_solve){
 			dbroadcastAncestor3d(trf3Dpartition, LUstruct, grid3d, SCT);
 		}
 
-		if ( options->Fact != SamePattern_SameRowPerm) {
+		if ( options->Fact != SamePattern_SameRowPerm && !use_sym_v2_solve) {
 			if (get_new3dsolve() && Solve3D==true){
 				dtrs_compute_communication_structure(options, n, LUstruct,
 							ScalePermstruct, trf3Dpartition->supernodeMask, grid, stat);
@@ -1680,7 +1724,106 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 
 	} /* end if not Factored ... factor on all process layers */
 
-	if (grid3d->zscp.Iam == 0 ) { // only process layer 0 ... print Factor stats
+	if (use_sym_v2_solve && !factored && options->PrintStat) {
+		int_t tiny_pivots_local = stat->TinyPivots;
+		int_t sytrf_2x2_local = stat->sytrf_2x2;
+		int_t inertia_local[3] = {
+			stat->inertia[0], stat->inertia[1], stat->inertia[2]
+		};
+		int_t inertia_sum[3];
+		float for_lu = 0.0, total = 0.0, avg = 0.0, loc_max = 0.0;
+		float mem_stage[3] = {0.0, 0.0, 0.0};
+		struct { float val; int rank; } local_struct, global_struct;
+		int nprocs3d = grid3d->nprow * grid3d->npcol * grid3d->npdep;
+
+		MPI_Allreduce(&tiny_pivots_local, &stat->TinyPivots, 1,
+			      mpi_int_t, MPI_SUM, grid3d->comm);
+		MPI_Allreduce(&sytrf_2x2_local, &stat->sytrf_2x2, 1,
+			      mpi_int_t, MPI_SUM, grid3d->comm);
+		MPI_Allreduce(inertia_local, inertia_sum, 3, mpi_int_t,
+			      MPI_SUM, grid3d->comm);
+		stat->inertia[0] = inertia_sum[0];
+		stat->inertia[1] = inertia_sum[1];
+		stat->inertia[2] = inertia_sum[2];
+
+		dSymV2QuerySpace_dist(n, LUstruct, trf3Dpartition, stat,
+				      &num_mem_usage);
+
+		if (parSymbFact == TRUE)
+		{
+			mem_stage[0] = (-flinfo);
+			mem_stage[1] = (-dist_mem_use);
+			loc_max = SUPERLU_MAX( mem_stage[0], mem_stage[1]);
+			if (options->RowPerm != NO )
+				loc_max = SUPERLU_MAX(loc_max, GA_mem_use);
+		}
+		else
+		{
+			mem_stage[0] = symb_mem_usage.total + GA_mem_use;
+			mem_stage[1] = symb_mem_usage.for_lu + dist_mem_use + num_mem_usage.for_lu;
+			loc_max = SUPERLU_MAX(mem_stage[0], mem_stage[1] );
+		}
+
+		mem_stage[2] = num_mem_usage.total;
+		loc_max = SUPERLU_MAX(loc_max, mem_stage[2] );
+
+		local_struct.val = loc_max;
+		local_struct.rank = grid3d->iam;
+		MPI_Reduce( &local_struct, &global_struct, 1, MPI_FLOAT_INT,
+			   MPI_MAXLOC, 0, grid3d->comm );
+		int all_highmark_rank = global_struct.rank;
+		float all_highmark_mem = global_struct.val * 1e-6;
+
+		MPI_Reduce( &loc_max, &avg, 1, MPI_FLOAT, MPI_SUM, 0,
+			   grid3d->comm );
+		MPI_Reduce( &num_mem_usage.for_lu, &for_lu, 1, MPI_FLOAT,
+			   MPI_SUM, 0, grid3d->comm );
+		MPI_Reduce( &num_mem_usage.total, &total, 1, MPI_FLOAT,
+			   MPI_SUM, 0, grid3d->comm );
+
+		local_struct.val = num_mem_usage.for_lu;
+		MPI_Reduce(&local_struct, &global_struct, 1, MPI_FLOAT_INT,
+			   MPI_MAXLOC, 0, grid3d->comm);
+		int lu_max_rank = global_struct.rank;
+		float lu_max_mem = global_struct.val * 1e-6;
+
+		local_struct.val = stat->peak_buffer;
+		MPI_Reduce( &local_struct, &global_struct, 1, MPI_FLOAT_INT,
+			   MPI_MAXLOC, 0, grid3d->comm );
+		int buffer_peak_rank = global_struct.rank;
+		float buffer_peak = global_struct.val*1e-6;
+
+		if (grid3d->iam == 0)
+		{
+			printf("\n** Memory Usage **********************************\n");
+			printf("** Total highmark (MB):\n"
+			       "    Sum-of-all : %8.2f | Avg : %8.2f  | Max : %8.2f\n",
+			       avg * 1e-6,
+			       avg / nprocs3d * 1e-6,
+			       all_highmark_mem);
+			printf("    Max at rank %d, different stages (MB):\n"
+			       "\t. symbfact        %8.2f\n"
+			       "\t. distribution    %8.2f\n"
+			       "\t. numfact         %8.2f\n",
+			       all_highmark_rank, mem_stage[0] * 1e-6,
+			       mem_stage[1] * 1e-6, mem_stage[2] * 1e-6);
+			printf("** NUMfact space (MB): (sum-of-all-processes)\n"
+			       "    L/D :        %8.2f |  Total : %8.2f\n",
+			       for_lu * 1e-6, total * 1e-6);
+			printf("\t. max at rank %d, max L/D memory (MB): %8.2f\n"
+			       "\t. max at rank %d, peak buffer (MB):    %8.2f\n",
+			       lu_max_rank, lu_max_mem,
+			       buffer_peak_rank, buffer_peak);
+			printf("**************************************************\n\n");
+			printf("** number of Tiny Pivots: %8d\n\n", stat->TinyPivots);
+			printf("** number of 2x2 Pivots by sytrf: %8d\n\n", stat->sytrf_2x2);
+			printf("** Inertia (pos,neg,zero): %10d %10d %10d\n\n", stat->inertia[0],stat->inertia[1],stat->inertia[2]);
+			printf("info %10d\n",*info);
+			fflush(stdout);
+		}
+	}
+
+	if (!use_sym_v2_solve && grid3d->zscp.Iam == 0 ) { // only process layer 0 ... print Factor stats
 		if (!factored)
 		{
 			if (options->PrintStat)
@@ -1791,13 +1934,19 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 			/* Need to reset the solve's communication pattern,
 			because perm_r[] and/or perm_c[] is changed.    */
 			if ( options->SolveInitialized == YES ) { /* Initialized before */
+				void *sym_v2_factor_handle =
+					use_sym_v2_solve ? SOLVEstruct->symldl_v2_factor_handle : NULL;
+				if (use_sym_v2_solve)
+					SOLVEstruct->symldl_v2_factor_handle = NULL;
 				dSolveFinalize(options, SOLVEstruct); /* Clean up structure */
+				if (use_sym_v2_solve)
+					SOLVEstruct->symldl_v2_factor_handle = sym_v2_factor_handle;
 				pdgstrs_delete_device_lsum_x(SOLVEstruct);
 				options->SolveInitialized = NO;   /* Reset the solve state */
 			}
 			}
 
-			if (get_new3dsolve()){
+			if (get_new3dsolve() && !use_sym_v2_solve){
 
 
 			if (options->DiagInv == YES && (Fact != FACTORED))
@@ -1863,7 +2012,7 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				// checkGPU(gpuMalloc( (void**)&LUstruct->Llu->d_grid, sizeof(gridinfo_t)));
     			// checkGPU(gpuMemcpy(LUstruct->Llu->d_grid, grid, sizeof(gridinfo_t), gpuMemcpyHostToDevice));
 #endif
-if (get_acc_solve()){
+if (!use_sym_v2_solve && get_acc_solve()){
 #ifdef GPU_ACC
 				checkGPU(gpuMemcpy(LUstruct->Llu->d_Linv_bc_dat, LUstruct->Llu->Linv_bc_dat,
 								   (LUstruct->Llu->Linv_bc_cnt) * sizeof(double), gpuMemcpyHostToDevice));
@@ -1883,7 +2032,13 @@ if (get_acc_solve()){
 			/* Need to reset the solve's communication pattern,
 			because perm_r[] and/or perm_c[] is changed.    */
 			if ( options->SolveInitialized == YES ) { /* Initialized before */
+				void *sym_v2_factor_handle =
+					use_sym_v2_solve ? SOLVEstruct->symldl_v2_factor_handle : NULL;
+				if (use_sym_v2_solve)
+					SOLVEstruct->symldl_v2_factor_handle = NULL;
 				dSolveFinalize(options, SOLVEstruct); /* Clean up structure */
+				if (use_sym_v2_solve)
+					SOLVEstruct->symldl_v2_factor_handle = sym_v2_factor_handle;
 				pdgstrs_delete_device_lsum_x(SOLVEstruct);
 				options->SolveInitialized = NO;   /* Reset the solve state */
 			}
@@ -1966,7 +2121,7 @@ if (get_acc_solve()){
     			// checkGPU(gpuMemcpy(LUstruct->Llu->d_grid, grid, sizeof(gridinfo_t), gpuMemcpyHostToDevice));
 #endif
 
-if (get_acc_solve()){
+if (!use_sym_v2_solve && get_acc_solve()){
 #ifdef GPU_ACC
 
 				checkGPU(gpuMemcpy(LUstruct->Llu->d_Linv_bc_dat, LUstruct->Llu->Linv_bc_dat,
@@ -1988,7 +2143,7 @@ if (get_acc_solve()){
 		if ((nrhs > 0) && (*info == 0))
 		{
 		if (options->SolveInitialized == NO){
-			if (get_acc_solve()){
+			if (!use_sym_v2_solve && get_acc_solve()){
 			if (get_new3dsolve() && Solve3D==true){
 				pdgstrs_init_device_lsum_x(options, n, m_loc, nrhs, grid,LUstruct, SOLVEstruct,trf3Dpartition->supernodeMask);
 			}else{
@@ -2066,10 +2221,17 @@ if (get_acc_solve()){
 			the Solve data & communication structures, unless a new
 			factorization with Fact == DOFACT or SamePattern is asked for. */
 			{
-				dSolveInit(options, A, perm_r, perm_c, nrhs, LUstruct,
+				if (use_sym_v2_solve)
+					dSymV2SolveInit(options, A, perm_r, perm_c, nrhs,
+							LUstruct, trf3Dpartition, grid3d, SOLVEstruct);
+				else
+					dSolveInit(options, A, perm_r, perm_c, nrhs, LUstruct,
 							grid, SOLVEstruct);
 			}
-			if (get_new3dsolve()){
+			if (use_sym_v2_solve) {
+				pdgstrs3d_symldl (options, n, LUstruct,ScalePermstruct, trf3Dpartition, grid3d, X,
+				m_loc, fst_row, ldb, nrhs,SOLVEstruct, stat, info);
+			} else if (get_new3dsolve()){
 				pdgstrs3d_newsolve (options, n, LUstruct,ScalePermstruct, trf3Dpartition, grid3d, X,
 				m_loc, fst_row, ldb, nrhs,SOLVEstruct, stat, info);
 			}else{
@@ -2147,6 +2309,8 @@ if (get_acc_solve()){
 					SOLVEstruct1->diag_len = SOLVEstruct->diag_len;
 					SOLVEstruct1->gsmv_comm = SOLVEstruct->gsmv_comm;
 					SOLVEstruct1->A_colind_gsmv = SOLVEstruct->A_colind_gsmv;
+					SOLVEstruct1->symldl_v2_solve_meta = NULL;
+					SOLVEstruct1->symldl_v2_factor_handle = NULL;
 
 					/* Initialize the *gstrs_comm for 1 RHS. */
 					if (!(SOLVEstruct1->gstrs_comm = (pxgstrs_comm_t *)
@@ -2154,7 +2318,7 @@ if (get_acc_solve()){
 						ABORT ("Malloc fails for gstrs_comm[]");
 					pdgstrs_init (n, m_loc, 1, fst_row, perm_r, perm_c, grid,
 							LUstruct->Glu_persist, SOLVEstruct1);
-					if (get_acc_solve()){
+					if (!use_sym_v2_solve && get_acc_solve()){
 					int_t nsupers = getNsupers(n, LUstruct->Glu_persist);
 					pdgstrs_init_device_lsum_x(options, n, m_loc, 1, grid,LUstruct, SOLVEstruct1,trf3Dpartition->supernodeMask);
 					}
@@ -2317,6 +2481,8 @@ if (get_acc_solve()){
 					SOLVEstruct1->diag_len = SOLVEstruct->diag_len;
 					SOLVEstruct1->gsmv_comm = SOLVEstruct->gsmv_comm;
 					SOLVEstruct1->A_colind_gsmv = SOLVEstruct->A_colind_gsmv;
+					SOLVEstruct1->symldl_v2_solve_meta = NULL;
+					SOLVEstruct1->symldl_v2_factor_handle = NULL;
 
 					/* Initialize the *gstrs_comm for 1 RHS. */
 					if (!(SOLVEstruct1->gstrs_comm = (pxgstrs_comm_t *)
@@ -2324,7 +2490,7 @@ if (get_acc_solve()){
 						ABORT ("Malloc fails for gstrs_comm[]");
 					pdgstrs_init (n, m_loc, 1, fst_row, perm_r, perm_c, grid,
 							LUstruct->Glu_persist, SOLVEstruct1);
-					if (get_acc_solve()){
+					if (!use_sym_v2_solve && get_acc_solve()){
 					int_t nsupers = getNsupers(n, LUstruct->Glu_persist);
 					int* supernodeMask = int32Malloc_dist(nsupers);
 					for(int ii=0; ii<nsupers; ii++)

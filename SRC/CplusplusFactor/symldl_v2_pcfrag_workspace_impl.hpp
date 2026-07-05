@@ -1,11 +1,14 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstdio>
 #include <limits>
 #include <numeric>
 #include <vector>
 
 #include "xlupanels.hpp"
+#include "symldl_v2_config.hpp"
 
 template <typename Ftype>
 static size_t symldl_v2_alloc_bytes(int_t count, size_t elem_size,
@@ -17,6 +20,102 @@ static size_t symldl_v2_alloc_bytes(int_t count, size_t elem_size,
     if (elem_size != 0 && n > std::numeric_limits<size_t>::max() / elem_size)
         ABORT(what);
     return n * elem_size;
+}
+
+static inline void symldl_v2_cuda_malloc_or_abort(void **ptr, size_t bytes,
+                                                 const char *what)
+{
+    cudaError_t err = cudaMalloc(ptr, bytes);
+    if (err == cudaSuccess)
+        return;
+
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    cudaError_t mem_err = cudaMemGetInfo(&free_bytes, &total_bytes);
+    if (mem_err == cudaSuccess)
+        fprintf(stderr,
+                "%s: requested %zu bytes, free %zu bytes, total %zu bytes.\n",
+                what, bytes, free_bytes, total_bytes);
+    else
+        fprintf(stderr, "%s: requested %zu bytes.\n", what, bytes);
+    fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(err));
+    ABORT("SymFact V2 GPU allocation failed.");
+}
+
+template <typename Ftype>
+static void symldl_v2_trace_pcfrag_plan(xLUstruct_t<Ftype> *lu,
+                                        const char *where, int_t k,
+                                        int_t needed_count)
+{
+    if (!superlu_sym_v2_trace_pcfrag())
+        return;
+
+    static int printed = 0;
+    if (printed >= 64 || lu == NULL || lu->grid3d == NULL ||
+        k < 0 || k >= lu->nsupers)
+        return;
+
+    const std::vector<int_t> &partner =
+        lu->symV2PartnerLRecvIndex[static_cast<size_t>(k)];
+    const std::vector<int_t> &row =
+        lu->symV2RowFragRecvIndex[static_cast<size_t>(k)];
+    int_t partner_blocks = partner.empty() ? 0 : partner[0];
+    int_t partner_rows = partner.empty() ? 0 : partner[1];
+    int_t row_blocks = row.empty() ? 0 : row[0];
+    int_t row_rows = row.empty() ? 0 : row[1];
+
+    long long partner_recv = 0;
+    size_t partner_base =
+        static_cast<size_t>(k) * static_cast<size_t>(lu->Pr);
+    if (partner_base + static_cast<size_t>(lu->Pr) <=
+        lu->symV2PartnerLRecvSizes.size())
+    {
+        for (int pr = 0; pr < lu->Pr; ++pr)
+            partner_recv += lu->symV2PartnerLRecvSizes[
+                partner_base + static_cast<size_t>(pr)];
+    }
+
+    long long row_recv = 0;
+    size_t row_base = static_cast<size_t>(k) * static_cast<size_t>(lu->Pc);
+    if (row_base + static_cast<size_t>(lu->Pc) <=
+        lu->symV2RowFragRecvSizes.size())
+    {
+        for (int pc = 0; pc < lu->Pc; ++pc)
+            row_recv += lu->symV2RowFragRecvSizes[
+                row_base + static_cast<size_t>(pc)];
+    }
+
+    long long row_send = 0;
+    int_t lk = lu->symV2PanelIndex(k);
+    if (lk >= 0)
+    {
+        size_t send_base =
+            static_cast<size_t>(lk) * static_cast<size_t>(lu->Pc);
+        if (send_base + static_cast<size_t>(lu->Pc) <=
+            lu->symV2RowDownSendSizes.size())
+        {
+            for (int pc = 0; pc < lu->Pc; ++pc)
+                row_send += lu->symV2RowDownSendSizes[
+                    send_base + static_cast<size_t>(pc)];
+        }
+    }
+
+    if (needed_count == 0 && partner_blocks == 0 && row_blocks == 0 &&
+        partner_recv == 0 && row_recv == 0 && row_send == 0)
+        return;
+
+    std::fprintf(stderr,
+                 "[symv2-pcfrag] rank %d %s k %d panel_root %d diag_root %d needed %lld partner_blocks %lld partner_rows %lld partner_recv %lld row_blocks %lld row_rows %lld row_recv %lld row_send %lld\n",
+                 lu->grid3d->iam, where, static_cast<int>(k),
+                 static_cast<int>(lu->symV2PanelRoot(k)),
+                 static_cast<int>(lu->symV2DiagRoot(k)),
+                 static_cast<long long>(needed_count),
+                 static_cast<long long>(partner_blocks),
+                 static_cast<long long>(partner_rows), partner_recv,
+                 static_cast<long long>(row_blocks),
+                 static_cast<long long>(row_rows), row_recv, row_send);
+    std::fflush(stderr);
+    ++printed;
 }
 
 template <typename Ftype>
@@ -140,7 +239,8 @@ static void symldl_v2_compute_pcfrag_scratch(
             max_partner_meta =
                 SUPERLU_MAX(max_partner_meta, global_partner_meta[pos]);
         }
-        if (superlu_sym_v2_pc_fragment_schur() && lu->Pc > 1)
+        if (superlu_sym_v2_pc_fragment_schur() &&
+            superlu_sym_v2_pc_fragment_ldl_native() && lu->Pc > 1)
         {
             for (int pr = 0; pr < lu->Pr; ++pr)
             {
@@ -159,7 +259,8 @@ static void symldl_v2_compute_pcfrag_scratch(
         (max_partner_meta > 0) ? max_partner_meta + LPANEL_HEADER_SIZE + 1 : 0;
     long long max_row_idx =
         (max_row_meta > 0) ? max_row_meta + LPANEL_HEADER_SIZE + 1 : 0;
-    if (superlu_sym_v2_pc_fragment_schur() && lu->Pc > 1)
+    if (superlu_sym_v2_pc_fragment_schur() &&
+        superlu_sym_v2_pc_fragment_ldl_native() && lu->Pc > 1)
     {
         long long row_send_multiplier = static_cast<long long>(lu->Pc - 1);
         if (max_row_val > 0 &&
@@ -201,7 +302,9 @@ static void symldl_v2_allocate_fragment_host_buffers(xLUstruct_t<Ftype> *lu)
 
 #ifdef HAVE_CUDA
     bool pc_fragment =
-        superlu_sym_v2_pc_fragment_schur() && lu->Pr > 1 && lu->Pc > 1;
+        superlu_sym_v2_pc_fragment_schur() &&
+        superlu_sym_v2_pc_fragment_ldl_native() &&
+        lu->Pr > 1 && lu->Pc > 1;
     lu->symV2RowFragHostRecvBufs.assign(static_cast<size_t>(nstreams), NULL);
     lu->symV2RowFragHostSendBufs.assign(static_cast<size_t>(nstreams), NULL);
 
@@ -357,7 +460,8 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
     lu->symV2UsePcFragmentSchur.assign(
         static_cast<size_t>(lu->nsupers),
         (lu->Pr > 1 && lu->Pc > 1 &&
-         superlu_sym_v2_pc_fragment_schur()) ? 1 : 0);
+         superlu_sym_v2_pc_fragment_schur() &&
+         superlu_sym_v2_pc_fragment_ldl_native()) ? 1 : 0);
 
     size_t partner_active = symldl_v2_checked_product(
         l2l_slots, static_cast<size_t>(lu->Pr),
@@ -616,6 +720,32 @@ static void symldl_v2_build_partner_l_send_maps(xLUstruct_t<Ftype> *lu)
         int_t knsupc = lu->supersize(jb);
         int_t nsupr = lpanel.LDA();
         int_t first_block = lpanel.haveDiag() ? 1 : 0;
+        dLocalLU_t *Llu = lu->host_Llu;
+        int_t *raw_lsub = (Llu != NULL && Llu->Lrowind_bc_ptr != NULL)
+                              ? Llu->Lrowind_bc_ptr[lk]
+                              : NULL;
+        int_t *raw_lloc = (Llu != NULL && Llu->Lindval_loc_bc_ptr != NULL)
+                              ? Llu->Lindval_loc_bc_ptr[lk]
+                              : NULL;
+        if (raw_lsub == NULL || raw_lloc == NULL)
+            ABORT("SymFact V2 partner-L send maps require local L metadata.");
+        int_t raw_nb = 0;
+        int_t raw_idx_i = 0;
+        int_t raw_idx_v = 0;
+        if (lu->myrow == lu->symV2DiagRoot(jb))
+        {
+            raw_nb = raw_lsub[0] - 1;
+            raw_idx_i = raw_nb + 2;
+            raw_idx_v = 2 * raw_nb + 3;
+        }
+        else
+        {
+            raw_nb = raw_lsub[0];
+            raw_idx_i = raw_nb;
+            raw_idx_v = 2 * raw_nb;
+        }
+        if (raw_nb < 0 || raw_lsub[1] != nsupr)
+            ABORT("SymFact V2 partner-L local L metadata is inconsistent.");
         for (int_t lb = first_block; lb < lpanel.nblocks(); ++lb)
         {
             int_t ik = lpanel.gid(lb);
@@ -659,6 +789,14 @@ static void symldl_v2_build_partner_l_send_maps(xLUstruct_t<Ftype> *lu)
             size_t map_pos = map_write_offsets[flat];
             size_t map_end = lu->symV2PartnerLMapOffsets[flat] +
                              map_counts[flat];
+            int_t raw_lb = lb - first_block;
+            if (raw_lb < 0 || raw_lb >= raw_nb)
+                ABORT("SymFact V2 partner-L local L block is invalid.");
+            int_t raw_lptr = raw_lloc[raw_lb + raw_idx_i];
+            int_t raw_vptr = raw_lloc[raw_lb + raw_idx_v];
+            if (raw_lsub[raw_lptr] != ik ||
+                raw_lsub[raw_lptr + 1] != len)
+                ABORT("SymFact V2 partner-L local L block metadata mismatch.");
             for (int_t col = 0; col < knsupc; ++col)
             {
                 for (int_t i = 0; i < len; ++i)
@@ -667,7 +805,7 @@ static void symldl_v2_build_partner_l_send_maps(xLUstruct_t<Ftype> *lu)
                         ABORT("SymFact V2 partner-L send map overrun.");
                     int_t src_row = rows_sorted ? i : row_order[i].second;
                     lu->symV2PartnerLPackedMaps[map_pos++] =
-                        lpanel.blkPtrOffset(lb) + src_row + col * nsupr;
+                        raw_vptr + src_row + col * nsupr;
                 }
             }
             map_write_offsets[flat] = map_pos;
@@ -1386,6 +1524,7 @@ static void symldl_v2_build_row_down_maps(xLUstruct_t<Ftype> *lu)
     {
         size_t meta_pos = static_cast<size_t>(meta.displs[r]);
         size_t rank_end = meta_pos + static_cast<size_t>(meta.counts[r]);
+        int source_pr = MYROW(r, lu->grid);
         while (meta_pos < rank_end)
         {
             if (meta_pos + 3 > rank_end)
@@ -1644,7 +1783,7 @@ static void symldl_v2_build_row_down_maps(xLUstruct_t<Ftype> *lu)
                 recv_map.push_back(row_index[row_px_ptr + ib]);
                 recv_map.push_back(nrows);
                 recv_map.push_back(src_offset);
-                typename xLUstruct_t<Ftype>::SymV2RowDownSeg seg;
+                SymV2RowDownSeg seg;
                 seg.gid = recv_blocks[rb].gid;
                 seg.chunk_pc = chunk_pc;
                 seg.nrows = nrows;
@@ -1916,8 +2055,13 @@ static void symldl_v2_build_row_down_maps(xLUstruct_t<Ftype> *lu)
     }
 
     for (int_t k0 = 0; k0 < lu->nsupers; ++k0)
-        if (!needed_row_blocks_by_panel[static_cast<size_t>(k0)].empty())
+    {
+        int_t needed_count = static_cast<int_t>(
+            needed_row_blocks_by_panel[static_cast<size_t>(k0)].size());
+        if (needed_count > 0)
             lu->symV2RowDownPlanReady[static_cast<size_t>(k0)] = 1;
+        symldl_v2_trace_pcfrag_plan(lu, "plan", k0, needed_count);
+    }
 
     size_t total_recv_map = 0;
     for (size_t pos = 0; pos < lu->symV2RowFragRecvMap.size(); ++pos)
@@ -1945,9 +2089,10 @@ static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
             ABORT("SymFact V2 partner-L send map pool size mismatch.");
         if (lu->symL2LSendMapPoolGPU != NULL)
             ABORT("SymFact V2 partner-L send map pool already exists.");
-        gpuErrchk(cudaMalloc(
+        symldl_v2_cuda_malloc_or_abort(
             (void **) &lu->symL2LSendMapPoolGPU,
-            sizeof(int_t) * lu->symL2LSendMapPoolCount));
+            sizeof(int_t) * lu->symL2LSendMapPoolCount,
+            "SymFact V2 partner-L send map pool allocation");
         gpuErrchk(cudaMemcpy(lu->symL2LSendMapPoolGPU,
                              lu->symV2PartnerLPackedMaps.data(),
                              sizeof(int_t) * lu->symL2LSendMapPoolCount,
@@ -2029,9 +2174,10 @@ static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
                       lu->symV2PartnerLRecvMap[pos].end(),
                       packed.begin() + offset);
         }
-        gpuErrchk(cudaMalloc(
+        symldl_v2_cuda_malloc_or_abort(
             (void **) &lu->symV2PartnerLRecvMapPoolGPU,
-            sizeof(int_t) * lu->symV2PartnerLRecvMapPoolCount));
+            sizeof(int_t) * lu->symV2PartnerLRecvMapPoolCount,
+            "SymFact V2 partner receive map pool allocation");
         gpuErrchk(cudaMemcpy(lu->symV2PartnerLRecvMapPoolGPU,
                              packed.data(),
                              sizeof(int_t) *
@@ -2069,9 +2215,10 @@ static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
                       lu->symV2RowFragRecvMap[pos].end(),
                       packed.begin() + offset);
         }
-        gpuErrchk(cudaMalloc(
+        symldl_v2_cuda_malloc_or_abort(
             (void **) &lu->symV2RowFragRecvMapPoolGPU,
-            sizeof(int_t) * lu->symV2RowFragRecvMapPoolCount));
+            sizeof(int_t) * lu->symV2RowFragRecvMapPoolCount,
+            "SymFact V2 row-fragment receive map pool allocation");
         gpuErrchk(cudaMemcpy(lu->symV2RowFragRecvMapPoolGPU,
                              packed.data(),
                              sizeof(int_t) *
@@ -2093,10 +2240,11 @@ static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
         if (lu->symV2RowDownSendSegsHost.size() !=
             lu->symV2RowDownSendSegPoolCount)
             ABORT("SymFact V2 row-down send segment pool size mismatch.");
-        gpuErrchk(cudaMalloc(
+        symldl_v2_cuda_malloc_or_abort(
             (void **) &lu->symV2RowDownSendSegPoolGPU,
             sizeof(SymV2RowDownSendSegmentGPU) *
-                lu->symV2RowDownSendSegPoolCount));
+                lu->symV2RowDownSendSegPoolCount,
+            "SymFact V2 row-down send segment pool allocation");
         gpuErrchk(cudaMemcpy(lu->symV2RowDownSendSegPoolGPU,
                              lu->symV2RowDownSendSegsHost.data(),
                              sizeof(SymV2RowDownSendSegmentGPU) *

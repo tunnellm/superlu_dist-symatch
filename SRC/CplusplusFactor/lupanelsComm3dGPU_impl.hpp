@@ -1,9 +1,19 @@
 #include "mpi.h"
 // #include "cublasDefs.hhandle, "
+#include <limits>
 #include "lupanels.hpp"
 #include "cublas_cusolver_wrappers.hpp"
+#include "symldl_v2_config.hpp"
 
 #ifdef HAVE_CUDA
+
+static inline int symldl_v2_reduction_mpi_count(int_t count)
+{
+    if (count < 0 ||
+        count > static_cast<int_t>(std::numeric_limits<int>::max()))
+        ABORT("Panel reduction count exceeds MPI limit.");
+    return static_cast<int>(count);
+}
 
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
@@ -72,14 +82,23 @@ int_t xLUstruct_t<Ftype>::ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zSendLPanelGPU(int_t k0, int_t receiverGrid)
 {
-    
-	if (mycol == kcol(k0))
+    const int_t panel_root = useSymV2Solve() ? symV2PanelRoot(k0)
+                                             : kcol(k0);
+	if (mycol == panel_root)
 	{
-		int_t lk = g2lCol(k0);
-        if (!lPanelVec[lk].isEmpty())
+		int_t lk = useSymV2Solve() ? symV2PanelIndex(k0)
+                                   : g2lCol(k0);
+        int_t panel_count = useSymV2Solve() ? symV2PanelCount()
+                                            : CEILING(nsupers, Pc);
+        if (lk >= 0 && lk < panel_count &&
+            !lPanelVec[lk].isEmpty())
 		{
-            MPI_Send(lPanelVec[lk].blkPtrGPU(0), lPanelVec[lk].nzvalSize(), 
-                    get_mpi_type<Ftype>(), receiverGrid, k0, grid3d->zscp.comm);
+            int mpi_count =
+                symldl_v2_reduction_mpi_count(lPanelVec[lk].nzvalSize());
+            superlu_gpu_mpi_send(lPanelVec[lk].blkPtrGPU(0),
+                                 lPanelVec[lk].blkPtr(0), sizeof(Ftype),
+                                 mpi_count, get_mpi_type<Ftype>(),
+                                 receiverGrid, k0, grid3d->zscp.comm);
 			SCT->commVolRed += lPanelVec[lk].nzvalSize() * sizeof(Ftype);
 		}
 	}
@@ -89,15 +108,25 @@ int_t xLUstruct_t<Ftype>::zSendLPanelGPU(int_t k0, int_t receiverGrid)
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zRecvLPanelGPU(int_t k0, int_t senderGrid, Ftype alpha, Ftype beta)
 {
-    if (mycol == kcol(k0))
+    const int_t panel_root = useSymV2Solve() ? symV2PanelRoot(k0)
+                                             : kcol(k0);
+    if (mycol == panel_root)
 	{
-		int_t lk = g2lCol(k0);
-        if (!lPanelVec[lk].isEmpty())
+		int_t lk = useSymV2Solve() ? symV2PanelIndex(k0)
+                                   : g2lCol(k0);
+        int_t panel_count = useSymV2Solve() ? symV2PanelCount()
+                                            : CEILING(nsupers, Pc);
+        if (lk >= 0 && lk < panel_count &&
+            !lPanelVec[lk].isEmpty())
 		{
             
             MPI_Status status;
-			MPI_Recv(A_gpu.LvalRecvBufs[0], lPanelVec[lk].nzvalSize(), get_mpi_type<Ftype>(), senderGrid, k0,
-					 grid3d->zscp.comm, &status);
+            int mpi_count =
+                symldl_v2_reduction_mpi_count(lPanelVec[lk].nzvalSize());
+            superlu_gpu_mpi_recv(A_gpu.LvalRecvBufs[0], LvalRecvBufs[0],
+                                 sizeof(Ftype), mpi_count,
+                                 get_mpi_type<Ftype>(), senderGrid, k0,
+                                 grid3d->zscp.comm, &status);
 
 			/*reduce the updates*/
             cublasHandle_t handle=A_gpu.cuHandles[0];
@@ -115,14 +144,20 @@ int_t xLUstruct_t<Ftype>::zRecvLPanelGPU(int_t k0, int_t senderGrid, Ftype alpha
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zSendUPanelGPU(int_t k0, int_t receiverGrid)
 {
+    if (useSymV2Solve())
+        return 0;
     
 	if (myrow == krow(k0))
 	{
-		int_t lk = g2lRow(k0);
+        int_t lk = g2lRow(k0);
         if (!uPanelVec[lk].isEmpty())
 		{
-            MPI_Send(uPanelVec[lk].blkPtrGPU(0), uPanelVec[lk].nzvalSize(), 
-                    get_mpi_type<Ftype>(), receiverGrid, k0, grid3d->zscp.comm);
+            int mpi_count =
+                symldl_v2_reduction_mpi_count(uPanelVec[lk].nzvalSize());
+            superlu_gpu_mpi_send(uPanelVec[lk].blkPtrGPU(0),
+                                 uPanelVec[lk].blkPtr(0), sizeof(Ftype),
+                                 mpi_count, get_mpi_type<Ftype>(),
+                                 receiverGrid, k0, grid3d->zscp.comm);
 			SCT->commVolRed += uPanelVec[lk].nzvalSize() * sizeof(Ftype);
 		}
 	}
@@ -132,6 +167,9 @@ int_t xLUstruct_t<Ftype>::zSendUPanelGPU(int_t k0, int_t receiverGrid)
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::zRecvUPanelGPU(int_t k0, int_t senderGrid, Ftype alpha, Ftype beta)
 {
+    if (useSymV2Solve())
+        return 0;
+
     if (myrow == krow(k0))
 	{
 		int_t lk = g2lRow(k0);
@@ -139,8 +177,12 @@ int_t xLUstruct_t<Ftype>::zRecvUPanelGPU(int_t k0, int_t senderGrid, Ftype alpha
 		{
 
             MPI_Status status;
-			MPI_Recv(A_gpu.UvalRecvBufs[0], uPanelVec[lk].nzvalSize(), get_mpi_type<Ftype>(), senderGrid, k0,
-					 grid3d->zscp.comm, &status);
+            int mpi_count =
+                symldl_v2_reduction_mpi_count(uPanelVec[lk].nzvalSize());
+            superlu_gpu_mpi_recv(A_gpu.UvalRecvBufs[0], UvalRecvBufs[0],
+                                 sizeof(Ftype), mpi_count,
+                                 get_mpi_type<Ftype>(), senderGrid, k0,
+                                 grid3d->zscp.comm, &status);
 
 			/*reduce the updates*/
             cublasHandle_t handle=A_gpu.cuHandles[0];

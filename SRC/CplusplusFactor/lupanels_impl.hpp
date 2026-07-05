@@ -12,6 +12,7 @@
 #include "xlupanels.hpp"
 #include "symldl_v2_workspace_impl.hpp"
 #include "symldl_v2_pcfrag_workspace_impl.hpp"
+#include "symldl_v2_pcfrag_exchange_impl.cuh"
 #include "symldl_v2_diag_impl.hpp"
 #include "superlu_blas.hpp"
 
@@ -138,6 +139,9 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             ABORT("Invalid MPI tag upper bound for SymFact communication.");
         symldl_v2_initialize_diag_state(this);
     }
+    host_Llu = std::is_same<Ftype, double>::value
+                   ? reinterpret_cast<dLocalLU_t *>(LUstruct->Llu)
+                   : NULL;
     xsup = LUstruct->Glu_persist->xsup;
     int_t **Lrowind_bc_ptr = LUstruct->Llu->Lrowind_bc_ptr;
     int_t **Ufstnz_br_ptr = LUstruct->Llu->Ufstnz_br_ptr;

@@ -179,7 +179,10 @@ set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0")
 ######################################################################
 #
 #--------------------- MPI ---------------------
-find_package(MPI REQUIRED)
+find_package(MPI REQUIRED COMPONENTS C CXX)
+if (XSDK_ENABLE_Fortran)
+  find_package(MPI COMPONENTS Fortran)
+endif()
 if(MPI_C_FOUND)
     set(CMAKE_C_FLAGS "${MPI_C_COMPILE_FLAGS} ${CMAKE_C_FLAGS}")
     set(CMAKE_CXX_FLAGS "${MPI_CXX_COMPILE_FLAGS} ${CMAKE_CXX_FLAGS}")
@@ -573,6 +576,18 @@ if(TPL_ENABLE_MC80)
   set(MC80_FOUND TRUE)
 
   set(MC80_LIB ${TPL_MC80_LIBRARIES})
+  if (NOT XSDK_ENABLE_Fortran)
+    find_library(SUPERLU_MC80_GFORTRAN_LIBRARY
+                 NAMES gfortran libgfortran.so.5)
+    if (SUPERLU_MC80_GFORTRAN_LIBRARY)
+      list(APPEND MC80_LIB ${SUPERLU_MC80_GFORTRAN_LIBRARY})
+    else()
+      message(FATAL_ERROR "MC80 support requires the GNU Fortran runtime; set TPL_MC80_LIBRARIES to include it or enable Fortran.")
+    endif()
+  endif()
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie")
+  endif()
   set(MC80_LIB_EXPORT ${MC80_LIB})
 
 else()

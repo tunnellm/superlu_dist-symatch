@@ -1,6 +1,7 @@
 #pragma once
 
 #include "xlupanels.hpp"
+#include "symldl_v2_config.hpp"
 
 #ifdef HAVE_CUDA
 
@@ -29,9 +30,20 @@ static inline void symldl_v2_cuda_malloc_optional(void **ptr, int_t count,
 }
 
 template <typename Ftype>
+static void symldl_v2_setup_raw_panel_ring(xLUstruct_t<Ftype> *lu,
+                                           int nstreams)
+{
+    lu->symV2RawPanelNodes.clear();
+    if (lu->useSymV2Solve() && superlu_sym_v2_wpanel_cache())
+        lu->symV2RawPanelNodes.assign(static_cast<size_t>(nstreams),
+                                      (int_t) -1);
+}
+
+template <typename Ftype>
 static void symldl_v2_setup_gpu_fragment_stream_buffers(
     xLUstruct_t<Ftype> *lu, int stream)
 {
+    lu->A_gpu.symV2RawPanelBufs[stream] = NULL;
     if (!lu->useSymV2Solve())
     {
         lu->A_gpu.symPartnerLvalRecvBufs[stream] = NULL;
@@ -49,9 +61,13 @@ static void symldl_v2_setup_gpu_fragment_stream_buffers(
         (void **) &lu->A_gpu.symPartnerLvalRecvBufs[stream],
         lu->maxSymPartnerLvalCount, sizeof(Ftype),
         "SymFact V2 partner receive buffer allocation overflows.");
+    int_t partner_stage_count = lu->maxSymPartnerLvalCount;
+    if (lu->Pr <= 1)
+        partner_stage_count =
+            SUPERLU_MAX(partner_stage_count, lu->maxLvalCount);
     symldl_v2_cuda_malloc_optional(
         (void **) &lu->A_gpu.symPartnerLStageBufs[stream],
-        lu->maxSymPartnerLvalCount, sizeof(Ftype),
+        partner_stage_count, sizeof(Ftype),
         "SymFact V2 partner staging buffer allocation overflows.");
     symldl_v2_cuda_malloc_optional(
         (void **) &lu->A_gpu.symPartnerLSendStageBufs[stream],
@@ -78,6 +94,11 @@ static void symldl_v2_setup_gpu_fragment_stream_buffers(
         (void **) &lu->A_gpu.symV2RowFragSendMapStageBufs[stream],
         lu->maxSymV2RowFragValSendCount, sizeof(int_t),
         "SymFact V2 row send-map staging allocation overflows.");
+    symldl_v2_cuda_malloc_optional(
+        (void **) &lu->A_gpu.symV2RawPanelBufs[stream],
+        superlu_sym_v2_wpanel_cache() ? lu->maxLvalCount : 0,
+        sizeof(Ftype),
+        "SymFact V2 W-panel cache allocation overflows.");
 }
 
 template <typename Ftype>

@@ -22,6 +22,7 @@ set(headers
     CplusplusFactor/symldl_v2_factor_impl.hpp
     CplusplusFactor/symldl_v2_pcfrag_exchange_impl.cuh
     CplusplusFactor/symldl_v2_dual_fragment_schur_impl.cuh
+    CplusplusFactor/symldl_v2_solve_gpu_impl.cuh
     CplusplusFactor/symldl_v2_workspace_impl.hpp
     CplusplusFactor/commWrapper.hpp
     CplusplusFactor/lupanels_GPU.cuh
@@ -156,6 +157,7 @@ if(enable_double)
     double/pdgstrf2.c
     double/pdgstrs.c
     double/pdgstrs3d.c
+    double/dsymldl_v2_solve.c
     double/pdgstrs1.c
     double/pdgstrs_lsum.c
     double/pdgstrs_Bglobal.c
@@ -468,7 +470,11 @@ if (XSDK_ENABLE_Fortran)
 ## target_link_libraries(superlu_dist PUBLIC MPI::MPI_CXX MPI::MPI_C MPI::MPI_Fortran)
 ## PUBLIC keyword causes error:
 ##   The plain signature for target_link_libraries has already been used ...
-  target_link_libraries(superlu_dist MPI::MPI_CXX MPI::MPI_C MPI::MPI_Fortran)
+  if (MPI_Fortran_FOUND)
+    target_link_libraries(superlu_dist MPI::MPI_CXX MPI::MPI_C MPI::MPI_Fortran)
+  else()
+    target_link_libraries(superlu_dist MPI::MPI_CXX MPI::MPI_C)
+  endif()
 else()
   target_link_libraries(superlu_dist MPI::MPI_CXX MPI::MPI_C)
 endif()

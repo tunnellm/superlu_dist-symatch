@@ -24,10 +24,18 @@ at the top-level directory.
  */
 
 #include <math.h>
+#include <string.h>
 #include "superlu_ddefs.h"
 #ifdef GPU_ACC
 #include "gpu_api_utils.h"
 #endif
+
+static void
+pdutil_free_if_allocated(void *ptr)
+{
+    if (ptr != NULL)
+        SUPERLU_FREE(ptr);
+}
 
 /*! \brief Gather A from the distributed compressed row format to global A in compressed column format.
  */
@@ -415,6 +423,7 @@ void dLUstructInit(const int_t n, dLUstruct_t *LUstruct)
     if ( !(LUstruct->Llu = (dLocalLU_t *)
 	   SUPERLU_MALLOC(sizeof(dLocalLU_t))) )
 	ABORT("Malloc fails for LocalLU_t.");
+    memset(LUstruct->Llu, 0, sizeof(dLocalLU_t));
     LUstruct->Llu->inv = 0;
     LUstruct->dt = 'd';
     LUstruct->trf3Dpart = NULL;
@@ -429,9 +438,9 @@ void dLUstructFree(dLUstruct_t *LUstruct)
     CHECK_MALLOC(iam, "Enter dLUstructFree()");
 #endif
 
-    SUPERLU_FREE(LUstruct->etree);
-    SUPERLU_FREE(LUstruct->Glu_persist);
-    SUPERLU_FREE(LUstruct->Llu);
+    pdutil_free_if_allocated(LUstruct->etree);
+    pdutil_free_if_allocated(LUstruct->Glu_persist);
+    pdutil_free_if_allocated(LUstruct->Llu);
     dDestroy_trf3Dpartition(LUstruct->trf3Dpart);
 
 #if ( DEBUGlevel>=1 )
@@ -446,6 +455,7 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     int_t i, nb, nsupers;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
     dLocalLU_t *Llu = LUstruct->Llu;
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
 
 #if ( DEBUGlevel>=1 )
     int iam;
@@ -456,6 +466,17 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     dDestroy_Tree(n, grid, LUstruct);
 
     nsupers = Glu_persist->supno[n-1] + 1;
+    int sym_v2_l_only = trf3Dpart != NULL &&
+        trf3Dpart->symV2PanelLocalIndex != NULL &&
+        trf3Dpart->symV2RowLocalIndex != NULL &&
+        trf3Dpart->symV2LocalPanelGids != NULL &&
+        trf3Dpart->symV2LocalRowGids != NULL;
+    int_t local_panel_count = sym_v2_l_only
+        ? trf3Dpart->symV2LocalPanelCount
+        : CEILING(nsupers, grid->npcol);
+    int_t local_row_count = sym_v2_l_only
+        ? trf3Dpart->symV2LocalRowCount
+        : CEILING(nsupers, grid->nprow);
 
     /* Following are free'd in distribution routines */
     // nb = CEILING(nsupers, grid->npcol);
@@ -469,42 +490,45 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     //	    SUPERLU_FREE (Llu->Lnzval_bc_ptr[i]);
     //	}
 
-    SUPERLU_FREE (Llu->Lrowind_bc_ptr);
-    SUPERLU_FREE (Llu->Lrowind_bc_dat);
-    SUPERLU_FREE (Llu->Lrowind_bc_offset);
-    SUPERLU_FREE (Llu->Lnzval_bc_ptr);
-    SUPERLU_FREE (Llu->Lnzval_bc_dat);
-    SUPERLU_FREE (Llu->Lnzval_bc_offset);
+    pdutil_free_if_allocated(Llu->Lrowind_bc_ptr);
+    pdutil_free_if_allocated(Llu->Lrowind_bc_dat);
+    pdutil_free_if_allocated(Llu->Lrowind_bc_offset);
+    pdutil_free_if_allocated(Llu->Lnzval_bc_ptr);
+    pdutil_free_if_allocated(Llu->Lnzval_bc_dat);
+    pdutil_free_if_allocated(Llu->Lnzval_bc_offset);
 
     /* Following are free'd in distribution routines */
-    nb = CEILING(nsupers, grid->nprow);
-    for (i = 0; i < nb; ++i)
+    nb = local_row_count;
+    for (i = 0; Llu->Ufstnz_br_ptr && i < nb; ++i)
     	if ( Llu->Ufstnz_br_ptr[i] ) {
-    	    SUPERLU_FREE (Llu->Ufstnz_br_ptr[i]);
-    	    SUPERLU_FREE (Llu->Unzval_br_ptr[i]);
+	    pdutil_free_if_allocated(Llu->Ufstnz_br_ptr[i]);
+	    pdutil_free_if_allocated(Llu->Unzval_br_ptr[i]);
     	}
-    SUPERLU_FREE (Llu->Ufstnz_br_ptr);
+    pdutil_free_if_allocated(Llu->Ufstnz_br_ptr);
     // SUPERLU_FREE (Llu->Ufstnz_br_dat);
     // SUPERLU_FREE (Llu->Ufstnz_br_offset);
-    SUPERLU_FREE (Llu->Unzval_br_ptr);
+    pdutil_free_if_allocated(Llu->Unzval_br_ptr);
     // SUPERLU_FREE (Llu->Unzval_br_dat);
     // SUPERLU_FREE (Llu->Unzval_br_offset);
 
     /* The following can be freed after factorization. */
-    SUPERLU_FREE(Llu->ToRecv);
-    SUPERLU_FREE(Llu->ToSendD);
-    SUPERLU_FREE(Llu->ToSendR[0]);
-    SUPERLU_FREE(Llu->ToSendR);
+    pdutil_free_if_allocated(Llu->ToRecv);
+    pdutil_free_if_allocated(Llu->ToSendD);
+    if (Llu->ToSendR)
+        pdutil_free_if_allocated(Llu->ToSendR[0]);
+    pdutil_free_if_allocated(Llu->ToSendR);
 
     /* The following can be freed only after iterative refinement. */
-    SUPERLU_FREE(Llu->ilsum);
-    SUPERLU_FREE(Llu->fmod);
-    SUPERLU_FREE((Llu->fsendx_plist)[0]);
-    SUPERLU_FREE(Llu->fsendx_plist);
-    SUPERLU_FREE(Llu->bmod);
-    SUPERLU_FREE((Llu->bsendx_plist)[0]);
-    SUPERLU_FREE(Llu->bsendx_plist);
-    SUPERLU_FREE(Llu->mod_bit);
+    pdutil_free_if_allocated(Llu->ilsum);
+    pdutil_free_if_allocated(Llu->fmod);
+    if (Llu->fsendx_plist)
+        pdutil_free_if_allocated((Llu->fsendx_plist)[0]);
+    pdutil_free_if_allocated(Llu->fsendx_plist);
+    pdutil_free_if_allocated(Llu->bmod);
+    if (Llu->bsendx_plist)
+        pdutil_free_if_allocated((Llu->bsendx_plist)[0]);
+    pdutil_free_if_allocated(Llu->bsendx_plist);
+    pdutil_free_if_allocated(Llu->mod_bit);
 
     /* Following are free'd in distribution routines */
     // nb = CEILING(nsupers, grid->npcol);
@@ -512,9 +536,9 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     //	if ( Llu->Lindval_loc_bc_ptr[i]!=NULL) {
     //	    SUPERLU_FREE (Llu->Lindval_loc_bc_ptr[i]);
     //	}
-    SUPERLU_FREE(Llu->Lindval_loc_bc_ptr);
-    SUPERLU_FREE(Llu->Lindval_loc_bc_dat);
-    SUPERLU_FREE(Llu->Lindval_loc_bc_offset);
+    pdutil_free_if_allocated(Llu->Lindval_loc_bc_ptr);
+    pdutil_free_if_allocated(Llu->Lindval_loc_bc_dat);
+    pdutil_free_if_allocated(Llu->Lindval_loc_bc_offset);
 
     /* Following are free'd in distribution routines */
     // nb = CEILING(nsupers, grid->npcol);
@@ -526,32 +550,32 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     //	    SUPERLU_FREE(Llu->Uinv_bc_ptr[i]);
     //	}
     // }
-    SUPERLU_FREE(Llu->Linv_bc_ptr);
-    SUPERLU_FREE(Llu->Linv_bc_dat);
-    SUPERLU_FREE(Llu->Linv_bc_offset);
-    SUPERLU_FREE(Llu->Uinv_bc_ptr);
-    SUPERLU_FREE(Llu->Uinv_bc_dat);
-    SUPERLU_FREE(Llu->Uinv_bc_offset);
-    SUPERLU_FREE(Llu->Unnz);
+    pdutil_free_if_allocated(Llu->Linv_bc_ptr);
+    pdutil_free_if_allocated(Llu->Linv_bc_dat);
+    pdutil_free_if_allocated(Llu->Linv_bc_offset);
+    pdutil_free_if_allocated(Llu->Uinv_bc_ptr);
+    pdutil_free_if_allocated(Llu->Uinv_bc_dat);
+    pdutil_free_if_allocated(Llu->Uinv_bc_offset);
+    pdutil_free_if_allocated(Llu->Unnz);
 
     /* Following are free'd in distribution routines */
-    nb = CEILING(nsupers, grid->npcol);
-    for (i = 0; i < nb; ++i)
+    nb = local_panel_count;
+    for (i = 0; Llu->Urbs && i < nb; ++i)
     	if ( Llu->Urbs[i] ) {
-    	    SUPERLU_FREE(Llu->Ucb_indptr[i]);
-    	    SUPERLU_FREE(Llu->Ucb_valptr[i]);
+	    pdutil_free_if_allocated(Llu->Ucb_indptr[i]);
+	    pdutil_free_if_allocated(Llu->Ucb_valptr[i]);
     }
-    SUPERLU_FREE(Llu->Ucb_indptr);
+    pdutil_free_if_allocated(Llu->Ucb_indptr);
     // SUPERLU_FREE(Llu->Ucb_inddat);
     // SUPERLU_FREE(Llu->Ucb_indoffset);
-    SUPERLU_FREE(Llu->Ucb_valptr);
+    pdutil_free_if_allocated(Llu->Ucb_valptr);
     // SUPERLU_FREE(Llu->Ucb_valdat);
     // SUPERLU_FREE(Llu->Ucb_valoffset);
-    SUPERLU_FREE(Llu->Urbs);
+    pdutil_free_if_allocated(Llu->Urbs);
 
-    SUPERLU_FREE(Glu_persist->xsup);
-    SUPERLU_FREE(Glu_persist->supno);
-    SUPERLU_FREE(Llu->bcols_masked);
+    pdutil_free_if_allocated(Glu_persist->xsup);
+    pdutil_free_if_allocated(Glu_persist->supno);
+    pdutil_free_if_allocated(Llu->bcols_masked);
 
 #ifdef GPU_ACC
 if (get_acc_solve()){
@@ -774,8 +798,6 @@ pdgstrs_init(int_t n, int_t m_loc, int_t nrhs, int_t fst_row,
 
     return 0;
 } /* PDGSTRS_INIT */
-
-
 
 int_t
 pdgstrs_init_device_lsum_x(superlu_dist_options_t *options, int_t n, int_t m_loc, int_t nrhs, gridinfo_t *grid,
@@ -1192,6 +1214,8 @@ int dSolveInit(superlu_dist_options_t *options, SuperMatrix *A,
            SUPERLU_MALLOC(sizeof(pdgsmv_comm_t))) )
         ABORT("Malloc fails for gsmv_comm[]");
     SOLVEstruct->A_colind_gsmv = NULL;
+    SOLVEstruct->symldl_v2_solve_meta = NULL;
+    SOLVEstruct->symldl_v2_factor_handle = NULL;
 
     options->SolveInitialized = YES;
     return 0;
@@ -1202,19 +1226,34 @@ int dSolveInit(superlu_dist_options_t *options, SuperMatrix *A,
 void dSolveFinalize(superlu_dist_options_t *options, dSOLVEstruct_t *SOLVEstruct)
 {
     if ( options->SolveInitialized ) {
-        pxgstrs_finalize(SOLVEstruct->gstrs_comm);
+        pdgstrs3d_symldl_finalize(SOLVEstruct);
+        if ( SOLVEstruct->gstrs_comm ) {
+            pxgstrs_finalize(SOLVEstruct->gstrs_comm);
+            SOLVEstruct->gstrs_comm = NULL;
+        }
 
         if ( options->RefineInitialized ) {
             pdgsmv_finalize(SOLVEstruct->gsmv_comm);
 	    options->RefineInitialized = NO;
         }
-        SUPERLU_FREE(SOLVEstruct->gsmv_comm);
-        SUPERLU_FREE(SOLVEstruct->row_to_proc);
-        SUPERLU_FREE(SOLVEstruct->inv_perm_c);
-        SUPERLU_FREE(SOLVEstruct->diag_procs);
-        SUPERLU_FREE(SOLVEstruct->diag_len);
+        if ( SOLVEstruct->gsmv_comm )
+            SUPERLU_FREE(SOLVEstruct->gsmv_comm);
+        if ( SOLVEstruct->row_to_proc )
+            SUPERLU_FREE(SOLVEstruct->row_to_proc);
+        if ( SOLVEstruct->inv_perm_c )
+            SUPERLU_FREE(SOLVEstruct->inv_perm_c);
+        if ( SOLVEstruct->diag_procs )
+            SUPERLU_FREE(SOLVEstruct->diag_procs);
+        if ( SOLVEstruct->diag_len )
+            SUPERLU_FREE(SOLVEstruct->diag_len);
         if ( SOLVEstruct->A_colind_gsmv )
 	    SUPERLU_FREE(SOLVEstruct->A_colind_gsmv);
+        SOLVEstruct->gsmv_comm = NULL;
+        SOLVEstruct->row_to_proc = NULL;
+        SOLVEstruct->inv_perm_c = NULL;
+        SOLVEstruct->diag_procs = NULL;
+        SOLVEstruct->diag_len = NULL;
+        SOLVEstruct->A_colind_gsmv = NULL;
         options->SolveInitialized = NO;
     }
 } /* dSolveFinalize */
@@ -1320,6 +1359,7 @@ dDestroy_Tree(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     int i, nb, nsupers;
     Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
     dLocalLU_t *Llu = LUstruct->Llu;
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
 #if ( DEBUGlevel>=1 )
     int iam;
     MPI_Comm_rank( MPI_COMM_WORLD, &iam );
@@ -1327,38 +1367,43 @@ dDestroy_Tree(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
 #endif
 
     nsupers = Glu_persist->supno[n-1] + 1;
+    int sym_v2_l_only = trf3Dpart != NULL &&
+        trf3Dpart->symV2PanelLocalIndex != NULL &&
+        trf3Dpart->symV2RowLocalIndex != NULL &&
+        trf3Dpart->symV2LocalPanelGids != NULL &&
+        trf3Dpart->symV2LocalRowGids != NULL;
 
-    nb = CEILING(nsupers, grid->npcol);
+    nb = sym_v2_l_only ? trf3Dpart->symV2LocalPanelCount
+                       : CEILING(nsupers, grid->npcol);
     for (i=0;i<nb;++i){
-        if(Llu->LBtree_ptr[i].empty_==NO){
+        if(Llu->LBtree_ptr && Llu->LBtree_ptr[i].empty_==NO){
 			// BcTree_Destroy(Llu->LBtree_ptr[i],LUstruct->dt);
             C_BcTree_Nullify(&Llu->LBtree_ptr[i]);
 	}
-        if(Llu->UBtree_ptr[i].empty_==NO){
+        if(Llu->UBtree_ptr && Llu->UBtree_ptr[i].empty_==NO){
 			// BcTree_Destroy(Llu->UBtree_ptr[i],LUstruct->dt);
             C_BcTree_Nullify(&Llu->UBtree_ptr[i]);
 	}
     }
-    SUPERLU_FREE(Llu->LBtree_ptr);
-    SUPERLU_FREE(Llu->UBtree_ptr);
+    pdutil_free_if_allocated(Llu->LBtree_ptr);
+    pdutil_free_if_allocated(Llu->UBtree_ptr);
 
-    nb = CEILING(nsupers, grid->nprow);
+    nb = sym_v2_l_only ? trf3Dpart->symV2LocalRowCount
+                       : CEILING(nsupers, grid->nprow);
     for (i=0;i<nb;++i){
-        if(Llu->LRtree_ptr[i].empty_==NO){
+        if(Llu->LRtree_ptr && Llu->LRtree_ptr[i].empty_==NO){
 			// RdTree_Destroy(Llu->LRtree_ptr[i],LUstruct->dt);
             C_RdTree_Nullify(&Llu->LRtree_ptr[i]);
 	}
-        if(Llu->URtree_ptr[i].empty_==NO){
+        if(Llu->URtree_ptr && Llu->URtree_ptr[i].empty_==NO){
 			// RdTree_Destroy(Llu->URtree_ptr[i],LUstruct->dt);
             C_RdTree_Nullify(&Llu->URtree_ptr[i]);
 	}
     }
-    SUPERLU_FREE(Llu->LRtree_ptr);
-    SUPERLU_FREE(Llu->URtree_ptr);
+    pdutil_free_if_allocated(Llu->LRtree_ptr);
+    pdutil_free_if_allocated(Llu->URtree_ptr);
 
 #if ( DEBUGlevel>=1 )
     CHECK_MALLOC(iam, "Exit dDestroy_Tree()");
 #endif
 }
-
-

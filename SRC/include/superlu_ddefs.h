@@ -428,6 +428,8 @@ typedef struct {
     NRformat_loc3d* A3d; /* Point to 3D {A, B} gathered on 2D layer 0.
                             This needs to be peresistent between
 			    3D factorization and solve.  */
+    void *symldl_v2_solve_meta; /* GPU3DVERSION=2 SymFact solve metadata. */
+    void *symldl_v2_factor_handle; /* GPU3DVERSION=2 SymFact factor GPU state. */
     #ifdef GPU_ACC
     double *d_lsum, *d_lsum_save;      /* used for device lsum*/
     double *d_x;         /* used for device solution vector*/
@@ -643,6 +645,8 @@ extern void  pdgssvx(superlu_dist_options_t *, SuperMatrix *,
 extern void  pdCompute_Diag_Inv(superlu_dist_options_t *, int_t, dLUstruct_t *,gridinfo_t *, SuperLUStat_t *, int *);
 extern int  dSolveInit(superlu_dist_options_t *, SuperMatrix *, int_t [], int_t [],
 		       int_t, dLUstruct_t *, gridinfo_t *, dSOLVEstruct_t *);
+extern int  dSymV2SolveInit(superlu_dist_options_t *, SuperMatrix *, int_t [], int_t [],
+		       int_t, dLUstruct_t *, dtrf3Dpartition_t *, gridinfo3d_t *, dSOLVEstruct_t *);
 extern void dSolveFinalize(superlu_dist_options_t *, dSOLVEstruct_t *);
 extern void dDestroy_A3d_gathered_on_2d(dSOLVEstruct_t *, gridinfo3d_t *);
 extern int_t pdgstrs_init(int_t, int_t, int_t, int_t,
@@ -971,6 +975,21 @@ pdgstrs3d_newsolve (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUst
            dtrf3Dpartition_t*  trf3Dpartition, gridinfo3d_t *grid3d, double *B,
            int_t m_loc, int_t fst_row, int_t ldb, int nrhs,
            dSOLVEstruct_t * SOLVEstruct, SuperLUStat_t * stat, int *info);
+
+extern void
+pdgstrs3d_symldl (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
+           dScalePermstruct_t * ScalePermstruct,
+           dtrf3Dpartition_t*  trf3Dpartition, gridinfo3d_t *grid3d, double *B,
+           int_t m_loc, int_t fst_row, int_t ldb, int nrhs,
+           dSOLVEstruct_t * SOLVEstruct, SuperLUStat_t * stat, int *info);
+
+extern void
+pdgstrs3d_symldl_init_meta(superlu_dist_options_t *options, int_t n, int nrhs,
+           dLUstruct_t *LUstruct, dtrf3Dpartition_t *trf3Dpartition,
+           gridinfo3d_t *grid3d, dSOLVEstruct_t *SOLVEstruct);
+
+extern void
+pdgstrs3d_symldl_finalize(dSOLVEstruct_t *SOLVEstruct);
 
 extern int_t pdgsTrBackSolve3d(superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
                         dScalePermstruct_t * ScalePermstruct,

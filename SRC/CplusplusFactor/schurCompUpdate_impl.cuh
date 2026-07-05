@@ -776,14 +776,26 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     A_gpu.gemmBufferSize = SUPERLU_MIN(maxBuffSize, SUPERLU_MAX(max_gemmCsize,totalNzvalSize)); /* Yang added 10/20/2023 */
  #endif
  
+    int_t sym_v2_partner_stage_count = maxSymPartnerLvalCount;
+    if (sym_v2_mode && Pr <= 1)
+        sym_v2_partner_stage_count =
+            SUPERLU_MAX(sym_v2_partner_stage_count, maxLvalCount);
+    int_t sym_v2_raw_panel_count =
+        (sym_v2_mode && superlu_sym_v2_wpanel_cache()) ? maxLvalCount : 0;
+    int_t lookahead_u_count = maxUvalCount;
+    if (sym_v2_mode && Pr <= 1)
+        lookahead_u_count = SUPERLU_MAX(lookahead_u_count, maxLvalCount);
+
     size_t dataPerStream =
         3 * sizeof(Ftype) * maxLvalCount +
-        3 * sizeof(Ftype) * maxUvalCount +
+        sizeof(Ftype) * (2 * maxUvalCount + lookahead_u_count) +
         2 * sizeof(int_t) * maxLidxCount +
         2 * sizeof(int_t) * maxUidxCount +
-        sizeof(Ftype) * maxSymPartnerLvalCount * 3 +
+        sizeof(Ftype) * (2 * maxSymPartnerLvalCount +
+                         sym_v2_partner_stage_count) +
         sizeof(int_t) * maxSymPartnerLidxCount +
         sizeof(Ftype) * maxSymPartnerLSendStageCount +
+        sizeof(Ftype) * sym_v2_raw_panel_count +
         sizeof(Ftype) * (maxSymV2RowFragStageCount +
                          maxSymV2RowFragValRecvCount) +
         sizeof(int_t) * (maxSymV2RowFragIdxRecvCount +
@@ -818,6 +830,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     MPI_Allreduce(&numberOfStreams, &rNumberOfStreams, 1,
                   MPI_INT, MPI_MIN, grid3d->comm);
     A_gpu.numCudaStreams = rNumberOfStreams;
+    symldl_v2_setup_raw_panel_ring(this, rNumberOfStreams);
 
 #if ( PRNTlevel>=1 )    
     if (!grid3d->iam)
@@ -866,6 +879,20 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     {
 
         cudaStreamCreate(&A_gpu.cuStreams[stream]);
+        gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
+                                           cudaEventDisableTiming));
+        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+            gpuErrchk(cudaEventCreateWithFlags(
+                &A_gpu.symV2RawPanelReadyEvents[stream],
+                cudaEventDisableTiming));
+        gpuErrchk(cudaEventCreateWithFlags(
+            &A_gpu.symV2PartnerLPackReadyEvents[stream],
+            cudaEventDisableTiming));
+        gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[stream],
+                                  A_gpu.cuStreams[stream]));
+        gpuErrchk(cudaEventRecord(
+            A_gpu.symV2PartnerLPackReadyEvents[stream],
+            A_gpu.cuStreams[stream]));
         cublasCreate(&A_gpu.cuHandles[stream]);
         A_gpu.LvalRecvBufs[stream] = (Ftype *)gpuCurrentPtr;
         gpuCurrentPtr = (Ftype *)gpuCurrentPtr + maxLvalCount;
@@ -971,6 +998,21 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     /* Sherry: where are these freed ?? */
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
+        cudaStreamCreate(&A_gpu.cuStreams[stream]);
+        gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
+                                           cudaEventDisableTiming));
+        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+            gpuErrchk(cudaEventCreateWithFlags(
+                &A_gpu.symV2RawPanelReadyEvents[stream],
+                cudaEventDisableTiming));
+        gpuErrchk(cudaEventCreateWithFlags(
+            &A_gpu.symV2PartnerLPackReadyEvents[stream],
+            cudaEventDisableTiming));
+        gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[stream],
+                                  A_gpu.cuStreams[stream]));
+        gpuErrchk(cudaEventRecord(
+            A_gpu.symV2PartnerLPackReadyEvents[stream],
+            A_gpu.cuStreams[stream]));
         symldl_v2_cuda_malloc_optional(
             (void **) &A_gpu.LvalRecvBufs[stream], maxLvalCount,
             sizeof(Ftype), "L value receive buffer allocation overflows.");
@@ -991,9 +1033,19 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuErrchk(cudaMalloc(&A_gpu.diagFactInfo[stream], sizeof(int)));
 
         /*lookAhead buffers and stream*/
-        gpuErrchk(cudaMalloc(&A_gpu.lookAheadLGemmBuffer[stream], sizeof(Ftype) * maxLvalCount));
-
-        gpuErrchk(cudaMalloc(&A_gpu.lookAheadUGemmBuffer[stream], sizeof(Ftype) * maxUvalCount));
+        int_t lookahead_l_count = maxLvalCount;
+        int_t lookahead_u_count = maxUvalCount;
+        if (sym_v2_mode && Pr <= 1)
+            lookahead_u_count = SUPERLU_MAX(lookahead_u_count,
+                                            maxLvalCount);
+        symldl_v2_cuda_malloc_optional(
+            (void **) &A_gpu.lookAheadLGemmBuffer[stream],
+            lookahead_l_count, sizeof(Ftype),
+            "Lookahead L buffer allocation overflows.");
+        symldl_v2_cuda_malloc_optional(
+            (void **) &A_gpu.lookAheadUGemmBuffer[stream],
+            lookahead_u_count, sizeof(Ftype),
+            "Lookahead U buffer allocation overflows.");
 	// Sherry: replace this by new code 
         //cudaMalloc(&A_gpu.dFBufs[stream], ldt * ldt * sizeof(Ftype));
         //cudaMalloc(&A_gpu.gpuGemmBuffs[stream], A_gpu.gemmBufferSize * sizeof(Ftype));
@@ -1102,7 +1154,6 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     double tcuStreamCreate=SuperLU_timer_();
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
-        cudaStreamCreate(&A_gpu.cuStreams[stream]);
         cublasCreate(&A_gpu.cuHandles[stream]);
         /*lookAhead buffers and stream*/
         cublasCreate(&A_gpu.lookAheadLHandle[stream]);
@@ -1142,6 +1193,24 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::copyLUGPUtoHost()
 {
+    if (useSymV2Solve())
+    {
+        for (int_t i = 0; i < symV2PanelCount(); ++i)
+            if (symV2PanelGid(i) < nsupers &&
+                isNodeInMyGrid[symV2PanelGid(i)] == 1)
+                lPanelVec[i].copyFromGPU();
+
+        if (needsUPanelStorage())
+        {
+            if (uPanelVec == NULL)
+                ABORT("U host panel storage is missing.");
+            for (int_t i = 0; i < symV2RowCount(); ++i)
+                if (symV2RowGid(i) < nsupers &&
+                    isNodeInMyGrid[symV2RowGid(i)] == 1)
+                    uPanelVec[i].copyFromGPU();
+        }
+        return 0;
+    }
 
     for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
         if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
@@ -1156,6 +1225,27 @@ int_t xLUstruct_t<Ftype>::copyLUGPUtoHost()
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::copyLUHosttoGPU()
 {
+    if (useSymV2Solve())
+    {
+        for (int_t i = 0; i < symV2PanelCount(); ++i)
+            if (symV2PanelGid(i) < nsupers &&
+                isNodeInMyGrid[symV2PanelGid(i)] == 1)
+                lPanelVec[i].copyBackToGPU();
+
+        if (needsUPanelStorage())
+        {
+            if (uPanelVec == NULL)
+                ABORT("U host panel storage is missing.");
+            if (A_gpu.uPanelVec == NULL)
+                ABORT("U GPU panel storage is missing.");
+            for (int_t i = 0; i < symV2RowCount(); ++i)
+                if (symV2RowGid(i) < nsupers &&
+                    isNodeInMyGrid[symV2RowGid(i)] == 1)
+                    uPanelVec[i].copyBackToGPU();
+        }
+        return 0;
+    }
+
     for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
         if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
             lPanelVec[i].copyBackToGPU();
@@ -1169,6 +1259,25 @@ int_t xLUstruct_t<Ftype>::copyLUHosttoGPU()
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::checkGPU()
 {
+    if (useSymV2Solve())
+    {
+        for (int_t i = 0; i < symV2PanelCount(); ++i)
+            lPanelVec[i].checkGPU();
+
+        if (needsUPanelStorage())
+        {
+            if (uPanelVec == NULL)
+                ABORT("U host panel storage is missing.");
+            if (A_gpu.uPanelVec == NULL)
+                ABORT("U GPU panel storage is missing.");
+            for (int_t i = 0; i < symV2RowCount(); ++i)
+                uPanelVec[i].checkGPU();
+        }
+
+        std::cout << "Checking LU struct completed succesfully"
+                  << "\n";
+        return 0;
+    }
 
     for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
         lPanelVec[i].checkGPU();

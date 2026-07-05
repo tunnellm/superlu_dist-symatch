@@ -57,6 +57,11 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
     if (!useSymV2Solve())
         return dDiagFactorPanelSolve(k, buffer_offset, dFBufs);
 
+#ifdef HAVE_CUDA
+    if (superlu_acc_offload)
+        dSymV2PrepackLFragmentsGPU(k, handle_offset);
+#endif
+
 #ifndef SLU_HAVE_LAPACK
     ABORT("SymFact GPU3DVERSION=2 requires LAPACK dsytrf/dsytri support.");
     return 0;
@@ -96,6 +101,23 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
         int_t ldd = lpanel.LDA();
         if (symFactWork == NULL || symFactIPIV == NULL)
             ABORT("SymFact V2 factor workspace is not allocated.");
+
+#ifdef HAVE_CUDA
+        if (superlu_acc_offload)
+        {
+            int stream_id = (handle_offset >= 0 &&
+                             handle_offset < A_gpu.numCudaStreams)
+                                ? handle_offset
+                                : 0;
+            cudaStream_t stream = A_gpu.cuStreams[stream_id];
+            gpuErrchk(cudaMemcpy2DAsync(diag, ldd * sizeof(double),
+                                        lpanel.blkPtrGPU(0),
+                                        ldd * sizeof(double),
+                                        ksupc * sizeof(double), ksupc,
+                                        cudaMemcpyDeviceToHost, stream));
+            gpuErrchk(cudaStreamSynchronize(stream));
+        }
+#endif
 
         if (symV2DiagBlocks.size() != (size_t) nsupers)
             ABORT("SymFact V2 diagonal block vector has invalid size.");
@@ -210,6 +232,28 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
                   (int) sym_diag_root, grid3d->cscp.comm);
         MPI_Bcast(invDiag, diag_mpi_count, MPI_DOUBLE,
                   (int) sym_diag_root, grid3d->cscp.comm);
+#ifdef HAVE_CUDA
+        if (superlu_acc_offload)
+        {
+            if (symV2DiagBlocksGPU.size() != (size_t) nsupers)
+                ABORT("SymFact V2 device diagonal block vector has invalid size.");
+            if (symV2DiagBlocksGPU[k] == NULL)
+                gpuErrchk(cudaMalloc(
+                    (void **) &symV2DiagBlocksGPU[k],
+                    symldl_v2_checked_product(
+                        diag_count, sizeof(double),
+                        "SymFact V2 device diagonal block allocation overflows.")));
+            int stream_id = (buffer_offset >= 0 &&
+                             buffer_offset < A_gpu.numCudaStreams)
+                                ? buffer_offset
+                                : 0;
+            gpuErrchk(cudaMemcpyAsync(symV2DiagBlocksGPU[k],
+                                      symV2DiagBlocks[k],
+                                      diag_count * sizeof(double),
+                                      cudaMemcpyHostToDevice,
+                                      A_gpu.cuStreams[stream_id]));
+        }
+#endif
     }
 
     if (mycol == sym_panel_root)
@@ -249,15 +293,31 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
                                             ksupc * sizeof(double), ksupc,
                                             cudaMemcpyDeviceToDevice, stream));
             lpanel.panelSolveSymmetricGPU(handle, stream, ksupc, dInvDiag,
-                                          ksupc, A_gpu.gpuGemmBuffs[stream_id],
-                                          lpanel.LDA());
-            gpuErrchk(cudaStreamSynchronize(stream));
+                                          ksupc,
+                                          A_gpu.lookAheadLGemmBuffer[stream_id],
+                                          lpanel.nzrows());
+            gpuErrchk(cudaMemcpyAsync(dInvDiag, symV2DiagBlocks[k],
+                                      diag_count * sizeof(double),
+                                      cudaMemcpyHostToDevice, stream));
+            gpuErrchk(cudaEventRecord(A_gpu.panelReadyEvents[stream_id],
+                                      stream));
+            if (k >= 0 &&
+                static_cast<size_t>(k) < symPanelReadyEventIds.size())
+                symPanelReadyEventIds[k] = stream_id;
+            bool local_singleton_panel =
+                Pr == 1 && Pc == 1 &&
+                grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1;
+            bool async_v2_panel = superlu_sym_v2_async_factor();
+            if (!local_singleton_panel && !async_v2_panel)
+                gpuErrchk(cudaStreamSynchronize(stream));
         }
         else
 #endif
         {
+            symldl_v2_ensure_factor_work(
+                this, (int64_t) lpanel.nzrows() * (int64_t) ksupc);
             lpanel.panelSolveSymmetric(ksupc, invDiag, ksupc,
-                                       symFactWork, lpanel.LDA());
+                                       symFactWork, lpanel.nzrows());
         }
     }
 

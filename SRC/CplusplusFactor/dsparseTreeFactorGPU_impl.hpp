@@ -526,7 +526,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             /* L o o k   A h e a d   P a n e l   U p d a t e */
             if (useSymV2Solve())
             {
-                if (LidxSendCounts[k] > 0)
+                const bool pc_fragment_schur = symV2UsePcFragmentSchurPanel(k);
+                if (pc_fragment_schur || LidxSendCounts[k] > 0)
                     dSymV2LookAheadUpdateGPU(offset, k, k_parent, k_lpanel);
             }
             else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
@@ -572,7 +573,8 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             /*proceed with remaining SchurComplement update */
             if (useSymV2Solve())
             {
-                if (LidxSendCounts[k] > 0)
+                const bool pc_fragment_schur = symV2UsePcFragmentSchurPanel(k);
+                if (pc_fragment_schur || LidxSendCounts[k] > 0)
                     dSymV2SchurCompUpdateExcludeOneGPU(offset, k, k_parent, k_lpanel);
             }
             else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)

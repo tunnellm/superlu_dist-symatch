@@ -89,6 +89,16 @@ static inline bool superlu_sym_v2_pinned_staging_pool()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PINNED_STAGING_POOL", 0);
 }
 
+static inline bool superlu_sym_v2_wpanel_cache()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_WPANEL_CACHE", 0);
+}
+
+static inline bool superlu_sym_v2_trace_pcfrag()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_TRACE_PCFRAG", 0);
+}
+
 static inline bool superlu_sym_v2_pc_fragment_schur()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PC_FRAGMENT_SCHUR", 1);

@@ -2,12 +2,20 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "xlupanels.hpp"
 #include "cublas_cusolver_wrappers.hpp"
 
 #ifdef HAVE_CUDA
+
+static inline bool symldl_v2_trace_fragment_schur()
+{
+    const char *env = std::getenv("GPU3DV2_TRACE_FRAGMENT_SCHUR");
+    return env != NULL && env[0] != '\0' && env[0] != '0';
+}
 
 static __device__ int_t symldl_v2_frag_nblocks(const int_t *frag_index)
 {
@@ -54,6 +62,10 @@ static __device__ void symldl_v2_compute_indirect_map(
         __syncthreads();
         return;
     }
+
+    if (thread_id < src_len)
+        dst_idx[src_vec[thread_id]] = GLOBAL_BLOCK_NOT_FOUND;
+    __syncthreads();
 
     if (thread_id < dst_len)
         dst_idx[dst_vec[thread_id]] = thread_id;
@@ -472,6 +484,20 @@ static int_t symldl_v2_dual_fragment_lookahead(
 
     const std::vector<int_t> &row_frag = lu->symV2RowFragRecvIndex[k];
     const std::vector<int_t> &col_frag = lu->symV2PartnerLRecvIndex[k];
+    if (symldl_v2_trace_fragment_schur())
+    {
+        static int printed = 0;
+        if (printed < 32)
+        {
+            std::fprintf(stderr,
+                         "[symv2-frag-schur] rank %d lookahead k %d la %d row_blocks %d col_blocks %d\n",
+                         lu->grid3d != NULL ? lu->grid3d->iam : -1,
+                         static_cast<int>(k), static_cast<int>(laIdx),
+                         row_frag.empty() ? 0 : static_cast<int>(row_frag[0]),
+                         col_frag.empty() ? 0 : static_cast<int>(col_frag[0]));
+            ++printed;
+        }
+    }
     if (row_frag.empty() || col_frag.empty())
         return 0;
 
@@ -539,6 +565,20 @@ static int_t symldl_v2_dual_fragment_exclude(
 
     const std::vector<int_t> &row_frag = lu->symV2RowFragRecvIndex[k];
     const std::vector<int_t> &col_frag = lu->symV2PartnerLRecvIndex[k];
+    if (symldl_v2_trace_fragment_schur())
+    {
+        static int printed = 0;
+        if (printed < 32)
+        {
+            std::fprintf(stderr,
+                         "[symv2-frag-schur] rank %d exclude k %d ex %d row_blocks %d col_blocks %d\n",
+                         lu->grid3d != NULL ? lu->grid3d->iam : -1,
+                         static_cast<int>(k), static_cast<int>(ex),
+                         row_frag.empty() ? 0 : static_cast<int>(row_frag[0]),
+                         col_frag.empty() ? 0 : static_cast<int>(col_frag[0]));
+            ++printed;
+        }
+    }
     if (row_frag.empty() || col_frag.empty())
         return 0;
 
@@ -579,30 +619,33 @@ static int_t symldl_v2_dual_fragment_exclude(
     return 0;
 }
 
+#include "symldl_v2_l_fragment_schur_impl.cuh"
+#include "symldl_v2_ll_schur_impl.cuh"
+
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2LookAheadUpdateGPU(
-    int streamId, int_t k, int_t laIdx, xlpanel_t<Ftype> &)
+    int streamId, int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel)
 {
     if (Pr == 1)
-        ABORT("SymFact GPU3DVERSION=2 LL lookahead update is not implemented.");
+        return symldl_v2_ll_lookahead(this, streamId, k, laIdx, lpanel);
     if (symV2UsePcFragmentSchurPanel(k))
         return symldl_v2_dual_fragment_lookahead(
             this, streamId, k, laIdx);
-    ABORT("SymFact GPU3DVERSION=2 L-fragment lookahead update is not implemented.");
-    return 0;
+    return symldl_v2_l_fragment_lookahead(
+        this, streamId, k, laIdx, lpanel);
 }
 
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2SchurCompUpdateExcludeOneGPU(
-    int streamId, int_t k, int_t ex, xlpanel_t<Ftype> &)
+    int streamId, int_t k, int_t ex, xlpanel_t<Ftype> &lpanel)
 {
     if (Pr == 1)
-        ABORT("SymFact GPU3DVERSION=2 LL Schur update is not implemented.");
+        return symldl_v2_ll_exclude(this, streamId, k, ex, lpanel);
     if (symV2UsePcFragmentSchurPanel(k))
         return symldl_v2_dual_fragment_exclude(
             this, streamId, k, ex);
-    ABORT("SymFact GPU3DVERSION=2 L-fragment Schur update is not implemented.");
-    return 0;
+    return symldl_v2_l_fragment_exclude(
+        this, streamId, k, ex, lpanel);
 }
 
 #endif
