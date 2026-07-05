@@ -10,6 +10,7 @@ set(headers
     include/gpu_api_utils.h
     include/gpu_wrapper.h
     include/superlu_upacked.h
+    include/dsymldl_v2_partition.h
     include/superlu_FortranCInterface.h
     include/oneside.h
     CplusplusFactor/lupanels.hpp
@@ -137,6 +138,7 @@ if(enable_double)
     double/pddistribute.c
     double/pddistribute3d.c
     double/d3DPartition.c
+    double/dsymldl_v2_partition.c
     double/distCheckArray.c
     double/pddistribute-aux3d.c
     double/pdgstrf.c

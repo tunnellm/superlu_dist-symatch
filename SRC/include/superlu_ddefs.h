@@ -357,6 +357,22 @@ typedef struct
     int* supernodeMask;
     dLUValSubBuf_t  *LUvsb;
     SupernodeToGridMap_t* superGridMap;
+    int *symV2DiagOwner;  /* global rank owning each V2 inverse diagonal block */
+    int *symV2PanelRoot;  /* 2D process-column root for each V2 L panel */
+    int *symV2DiagRoot;   /* 2D process-row root for each V2 diagonal block */
+    int_t *symV2PanelLocalIndex; /* compact local L-panel index, or -1 */
+    int_t *symV2RowLocalIndex;   /* compact local row/diagonal index, or -1 */
+    int_t *symV2LocalPanelGids;  /* global supernodes with panels on my process column */
+    int_t *symV2LocalRowGids;    /* global supernodes with rows on my process row */
+    int_t symV2LocalPanelCount;
+    int_t symV2LocalRowCount;
+    int symV2ScheduleEnabled;    /* V2 uses an LDL-native forest/schedule. */
+    int_t symV2FactorLevelCount;
+    int_t *symV2FactorLevelPtr;  /* LDL topo-level offsets into symV2FactorNodes */
+    int_t *symV2FactorNodes;     /* leaf-to-root nodes for the LDL-native forest */
+    int_t *symV2NodeLevel;       /* leaf-to-root level per supernode */
+    int_t *symV2NodeOrder;       /* position in symV2FactorNodes per supernode */
+    int_t *symV2NodeIperm;       /* inverse map for LDL-native forest metadata */
     int maxLvl; // YL: store this to avoid the use of grid3d
 
     /* Sherry added the following 3 for variable size batch. 2/17/23 */
@@ -1305,7 +1321,12 @@ extern void dbcastPermutedSparseA(SuperMatrix *A,
                           Glu_freeable_t *Glu_freeable,
                           dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
 
-extern void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
+extern void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
+                                 gridinfo3d_t *grid3d);
+extern void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
+                                   Glu_freeable_t *Glu_freeable,
+                                   gridinfo3d_t *grid3d,
+                                   superlu_dist_options_t *options);
 
 
     /* from xtrf3Dpartition.h */
