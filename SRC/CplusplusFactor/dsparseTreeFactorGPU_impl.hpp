@@ -211,6 +211,9 @@ int_t xLUstruct_t<Ftype>::dDFactPSolveGPU(int_t k, int_t offset, diagFactBufs_ty
 
     /* Sherry: argument dFBufs[] is on CPU, not used in this routine */
 
+    if (useSymV2Solve())
+        return dSymDiagFactorPanelSolve(k, offset, offset, dFBufs);
+
     double t0 = SuperLU_timer_();
     int ksupc = SuperSize(k);
     cublasHandle_t cubHandle = A_gpu.cuHandles[offset];
@@ -270,6 +273,9 @@ int_t xLUstruct_t<Ftype>::dDFactPSolveGPU(int_t k, int_t handle_offset, int buff
 
     /* Sherry: argument dFBufs[] is on CPU, not used in this routine */
 
+    if (useSymV2Solve())
+        return dSymDiagFactorPanelSolve(k, handle_offset, buffer_offset, dFBufs);
+
     double t0 = SuperLU_timer_();
     int ksupc = SuperSize(k);
     cublasHandle_t cubHandle = A_gpu.cuHandles[handle_offset];
@@ -325,6 +331,9 @@ int_t xLUstruct_t<Ftype>::dDFactPSolveGPU(int_t k, int_t handle_offset, int buff
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFactBufs_type<Ftype> **dFBufs)
 {
+    if (useSymV2Solve())
+        return dSymDiagFactorPanelSolve(k, offset, offset, dFBufs);
+
     double t0 = SuperLU_timer_();
     int_t ksupc = SuperSize(k);
     cublasHandle_t cubHandle = A_gpu.cuHandles[offset];
@@ -375,6 +384,9 @@ int_t xLUstruct_t<Ftype>::dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFa
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
 {
+    if (useSymV2Solve())
+        ABORT("SymFact GPU3DVERSION=2 panel broadcast is not implemented.");
+
     double t0 = SuperLU_timer_();
     /*=======   Panel Broadcast             ======*/
     // upanel_t k_upanel(UidxRecvBufs[offset], UvalRecvBufs[offset],
@@ -1020,4 +1032,3 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPUBaseline(
 } /* dsparseTreeFactorGPUBaseline */
 
 #endif  /* match #if HAVE_CUDA  */
-

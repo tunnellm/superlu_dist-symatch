@@ -59,6 +59,7 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
 
 #ifndef SLU_HAVE_LAPACK
     ABORT("SymFact GPU3DVERSION=2 requires LAPACK dsytrf/dsytri support.");
+    return 0;
 #else
     int_t ksupc = SuperSize(k);
     int_t sym_panel_root = symV2PanelRoot(k);
