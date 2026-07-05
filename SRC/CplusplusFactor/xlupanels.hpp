@@ -372,7 +372,6 @@ struct xLUstruct_t
 
     diagFactBufs_type<Ftype>** dFBufs; /* stores L and U diagonal blocks */
     int superlu_acc_offload;
-    int symGPU3DVersion = 0;
     // myNodeCount,
     // treePerm
     // myZeroTrIdxs
