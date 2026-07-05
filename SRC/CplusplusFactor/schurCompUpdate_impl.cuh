@@ -739,7 +739,10 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         int_t k0 = sym_v2_mode ? symV2PanelGid(i) : i * Pc + mycol;
         if (k0 < nsupers && isNodeInMyGrid[k0] == 1)
         {
-            memReqData += lPanelVec[i].totalSize();
+            memReqData +=
+                (sym_v2_mode && superlu_sym_v2_panel_arena_enabled())
+                    ? symldl_v2_l_panel_arena_bytes(lPanelVec[i])
+                    : lPanelVec[i].totalSize();
             totalNzvalSize += lPanelVec[i].nzvalSize();
             if(lPanelVec[i].nzvalSize()>0)
                 max_nzrow = SUPERLU_MAX(lPanelVec[i].nzrows(),max_nzrow);
@@ -943,12 +946,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     xlpanelGPU_t<Ftype> *lPanelVec_GPU =
         new xlpanelGPU_t<Ftype>[local_l_panel_count];
     tLsend = SuperLU_timer_();
-    for (i = 0; i < local_l_panel_count; ++i)
-    {
-        int_t k0 = sym_v2_mode ? symV2PanelGid(i) : i * Pc + mycol;
-        if (k0 < nsupers && isNodeInMyGrid[k0] == 1)
-            lPanelVec_GPU[i] = lPanelVec[i].copyToGPU();
-    }
+    symldl_v2_copy_l_panels_to_gpu(this, lPanelVec_GPU,
+                                   local_l_panel_count);
     tLsend = SuperLU_timer_() - tLsend;
     tUsend = SuperLU_timer_();
     // cudaCheckError();
@@ -1027,28 +1026,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
             (void **) &A_gpu.UidxRecvBufs[stream],
             need_u_panel_storage ? maxUidxCount : 0, sizeof(int_t),
             "U index receive buffer allocation overflows.");
-        symldl_v2_setup_gpu_fragment_stream_buffers(this, stream);
-        // allocate the space for diagonal factor on GPU
-        gpuErrchk(cudaMalloc(&A_gpu.diagFactWork[stream], sizeof(Ftype) * dfactBufSize));
-        gpuErrchk(cudaMalloc(&A_gpu.diagFactInfo[stream], sizeof(int)));
-
-        /*lookAhead buffers and stream*/
-        int_t lookahead_l_count = maxLvalCount;
-        int_t lookahead_u_count = maxUvalCount;
-        if (sym_v2_mode && Pr <= 1)
-            lookahead_u_count = SUPERLU_MAX(lookahead_u_count,
-                                            maxLvalCount);
-        symldl_v2_cuda_malloc_optional(
-            (void **) &A_gpu.lookAheadLGemmBuffer[stream],
-            lookahead_l_count, sizeof(Ftype),
-            "Lookahead L buffer allocation overflows.");
-        symldl_v2_cuda_malloc_optional(
-            (void **) &A_gpu.lookAheadUGemmBuffer[stream],
-            lookahead_u_count, sizeof(Ftype),
-            "Lookahead U buffer allocation overflows.");
-	// Sherry: replace this by new code 
-        //cudaMalloc(&A_gpu.dFBufs[stream], ldt * ldt * sizeof(Ftype));
-        //cudaMalloc(&A_gpu.gpuGemmBuffs[stream], A_gpu.gemmBufferSize * sizeof(Ftype));
+        SymV2GpuStreamWorkspaceSpec<Ftype> stream_spec =
+            symldl_v2_make_stream_workspace_spec(this, dfactBufSize, true);
+        symldl_v2_setup_gpu_stream_workspace(this, stream, stream_spec);
     }
     
     /* Sherry: dfBufs[] changed to Ftype pointer **, max(batch, numCudaStreams) */
@@ -1100,7 +1080,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     A_gpu.dFBufs = (Ftype **) SUPERLU_MALLOC(num_dfbufs * sizeof(Ftype *));
     A_gpu.gpuGemmBuffs = (Ftype **) SUPERLU_MALLOC(num_gemmbufs * sizeof(Ftype *));
     
-    int l, sum_diag_size = 0, sum_gemmC_size = 0;
+    int l;
+    size_t sum_diag_size = 0;
+    size_t sum_gemmC_size = 0;
     
     if ( options->batchCount > 0 ) { /* set up variable-size buffers for batch code */
 	for (i = 0; i < num_dfbufs; ++i) {
@@ -1108,15 +1090,14 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 	    gpuErrchk(cudaMalloc(&(A_gpu.dFBufs[i]), l * l * sizeof(Ftype)));
 	    //printf("\t diagDims[%d] %d\n", i, l);
 	    gpuErrchk(cudaMalloc(&(A_gpu.gpuGemmBuffs[i]), trf3Dpartition->gemmCsizes[i] * sizeof(Ftype)));
-	    sum_diag_size += l * l;
-	    sum_gemmC_size += trf3Dpartition->gemmCsizes[i];
+	    sum_diag_size += static_cast<size_t>(l) * static_cast<size_t>(l);
+	    sum_gemmC_size += static_cast<size_t>(trf3Dpartition->gemmCsizes[i]);
 	}
     } else { /* uniform-size buffers */
-	l = ldt * ldt;
-	for (i = 0; i < num_dfbufs; ++i) {
-        gpuErrchk(cudaMalloc(&(A_gpu.dFBufs[i]), l * sizeof(Ftype)));
-	    gpuErrchk(cudaMalloc(&(A_gpu.gpuGemmBuffs[i]), A_gpu.gemmBufferSize * sizeof(Ftype)));
-	}
+        size_t dfbuf_elems =
+            static_cast<size_t>(ldt) * static_cast<size_t>(ldt);
+        symldl_v2_setup_gemm_workspace(this, num_dfbufs, dfbuf_elems,
+                                       &sum_diag_size, &sum_gemmC_size);
     }
     
     // Wajih: Adding allocation for batched LU and SCU marshalled data
@@ -1138,7 +1119,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     tcuMalloc = SuperLU_timer_() - tcuMalloc;
 #if ( PRNTlevel>=1 )
     printf("Time to allocate GPU memory: %g\n", tcuMalloc);
-    printf("\t.. sum_diag_size %d\t sum_gemmC_size %d\n", sum_diag_size, sum_gemmC_size);
+    printf("\t.. sum_diag_size %zu\t sum_gemmC_size %zu\n",
+           sum_diag_size, sum_gemmC_size);
     fflush(stdout);
 #endif
 

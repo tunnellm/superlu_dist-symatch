@@ -94,6 +94,16 @@ static inline bool superlu_sym_v2_wpanel_cache()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_WPANEL_CACHE", 0);
 }
 
+static inline bool superlu_sym_v2_panel_arena_enabled()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PANEL_ARENA", 0);
+}
+
+static inline bool superlu_sym_v2_workspace_arena_enabled()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_WORKSPACE_ARENA", 0);
+}
+
 static inline bool superlu_sym_v2_trace_pcfrag()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_TRACE_PCFRAG", 0);

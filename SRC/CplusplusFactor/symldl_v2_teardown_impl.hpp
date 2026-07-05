@@ -98,7 +98,8 @@ void xLUstruct_t<Ftype>::symV2FreeGpuStorage()
             cudaFree(symV2DiagBlocksGPU[i]);
 
     for (int stream = 0; stream < A_gpu.numCudaStreams; ++stream)
-        if (A_gpu.symV2RawPanelBufs[stream] != NULL)
+        if (A_gpu.symV2RawPanelBufs[stream] != NULL &&
+            symV2StreamArenaGPU == NULL)
             cudaFree(A_gpu.symV2RawPanelBufs[stream]);
 }
 #endif
