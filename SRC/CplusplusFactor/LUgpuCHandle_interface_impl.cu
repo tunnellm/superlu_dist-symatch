@@ -3,6 +3,7 @@
 #include "lupanels.hpp"
 #include "xlupanels.hpp"
 #include "lupanels_impl.hpp"
+#include "symldl_v2_factor_impl.hpp"
 #include "pdgstrf3d_upacked_impl.hpp" //unneeded?
 
 
@@ -55,7 +56,8 @@ extern "C"
 #endif
         }
 
-        LU_v1->packedU2skyline(LUstruct);
+        if (!LU_v1->useSymV2Solve())
+            LU_v1->packedU2skyline(LUstruct);
         tXferGpu2Host = SuperLU_timer_() - tXferGpu2Host;
 #if ( PRNTlevel >= 1 )	
         printf("Time to send data back= %g\n", tXferGpu2Host);
@@ -68,6 +70,12 @@ extern "C"
         xLUstruct_t<double> *LU_v1 = reinterpret_cast<xLUstruct_t<double> *>(LUHand);
         return LU_v1->pdgstrf3d();
         
+    }
+
+    int pdgstrf3d_LUv2(dLUgpu_Handle LUHand)
+    {
+        xLUstruct_t<double> *LU_v2 = reinterpret_cast<xLUstruct_t<double> *>(LUHand);
+        return LU_v2->pdgstrf3dSymV2();
     }
 
 

@@ -43,6 +43,7 @@ extern "C"
     int dCopyLUGPU2Host(dLUgpu_Handle LuH, dLUstruct_t *LUstruct);
 
     int pdgstrf3d_LUv1(dLUgpu_Handle LUHand);
+    int pdgstrf3d_LUv2(dLUgpu_Handle LUHand);
 
     // Forward declaration of structs 
     // Forward declarations

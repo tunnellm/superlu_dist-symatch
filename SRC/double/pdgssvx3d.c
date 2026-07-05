@@ -1503,11 +1503,14 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		// if(grid3d->zscp.Iam)
 		// get environment variable TRF3DVERSION
 #ifdef GPU_ACC
-		if (gpu3dVersion == 1)
+		if (gpu3dVersion == 2 && !dSymV2SolveEnabled(options, gpu3dVersion))
+			ABORT("GPU3DVERSION=2 requires SymFact=YES.");
+
+		if (gpu3dVersion == 1 || dSymV2SolveEnabled(options, gpu3dVersion))
 		{ /* this is the new C++ code in CplusplusFactor/ directory */
 #if (PRNTlevel>=1)
 			if (!grid3d->iam)
-				printf("Using pdgstrf3d+gpu version 1\n");
+				printf("Using pdgstrf3d+gpu version %d\n", gpu3dVersion);
 #endif
 
 			int ldt = sp_ienv_dist(3, options); /* Size of maximum supernode */
@@ -1522,7 +1525,10 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 						  SCT, options, stat, thresh, info);
 
 			/* call pdgstrf3d() in C++ code */
-			pdgstrf3d_LUv1(dLUgpu);
+			if (dSymV2SolveEnabled(options, gpu3dVersion))
+				pdgstrf3d_LUv2(dLUgpu);
+			else
+				pdgstrf3d_LUv1(dLUgpu);
 
 			dCopyLUGPU2Host(dLUgpu, LUstruct);
 			dDestroyLUgpuHandle(dLUgpu);
@@ -1585,6 +1591,10 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 		else /* gpu3dVersion==0, this is the old C code, with less GPU offload */
 #endif /* matching ifdef GPU_ACC */
 		{
+#ifndef GPU_ACC
+			if (dSymV2SolveEnabled(options, gpu3dVersion))
+				ABORT("SymFact GPU3DVERSION=2 requires GPU_ACC.");
+#endif
 			pdgstrf3d(options, m, n, anorm, trf3Dpartition, SCT, LUstruct,
 					  grid3d, stat, info);
 
