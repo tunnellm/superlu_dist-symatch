@@ -345,7 +345,6 @@ static void symldl_v2_clear_gpu_stream_workspace(xLUstruct_t<Ftype> *lu,
     lu->A_gpu.symV2RowFragIdxRecvBufs[stream] = NULL;
     lu->A_gpu.symV2RowFragSendMapStageBufs[stream] = NULL;
     lu->A_gpu.symV2RawPanelBufs[stream] = NULL;
-    lu->A_gpu.symV2RawPanelReadyEvents[stream] = NULL;
     lu->A_gpu.LidxRecvBufs[stream] = NULL;
     lu->A_gpu.UidxRecvBufs[stream] = NULL;
     lu->A_gpu.symPartnerLidxRecvBufs[stream] = NULL;
