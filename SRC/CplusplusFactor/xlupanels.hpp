@@ -725,6 +725,11 @@ struct xLUstruct_t
                 cudaFree(symV2StreamArenaGPU);
             if (symV2GemmArenaGPU != NULL)
                 cudaFree(symV2GemmArenaGPU);
+            for (size_t i = 0; i < symV2PartnerLHostSendBufsPinned.size(); ++i)
+                if (symV2PartnerLHostSendBufsPinned[i] != NULL &&
+                    symV2PartnerLHostSendBufsPinned[i] !=
+                        symV2PartnerLHostSendPoolPinned)
+                    cudaFreeHost(symV2PartnerLHostSendBufsPinned[i]);
             if (symV2PartnerLHostSendPoolPinned != NULL)
                 cudaFreeHost(symV2PartnerLHostSendPoolPinned);
             if (symV2PartnerLHostRecvPoolPinned != NULL)

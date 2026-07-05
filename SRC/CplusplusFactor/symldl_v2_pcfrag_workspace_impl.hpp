@@ -1990,6 +1990,21 @@ static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
                 lu->symV2PartnerLHostSendPoolPinned + offset;
         }
     }
+    else if (superlu_sym_v2_pinned_staging() && !superlu_cuda_aware_mpi())
+    {
+        for (size_t flat = 0; flat < lu->symV2PartnerLSendSizes.size();
+             ++flat)
+        {
+            int size = lu->symV2PartnerLSendSizes[flat];
+            if (size <= 0)
+                continue;
+            if (lu->symV2PartnerLHostSendBufsPinned[flat] != NULL)
+                ABORT("SymFact V2 partner send staging already exists.");
+            gpuErrchk(cudaMallocHost(
+                (void **) &lu->symV2PartnerLHostSendBufsPinned[flat],
+                sizeof(Ftype) * static_cast<size_t>(size)));
+        }
+    }
 
     if (lu->symV2PartnerLRecvMapPoolCount > 0)
     {
