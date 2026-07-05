@@ -2102,7 +2102,7 @@ static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
     }
 
     const bool stream_l2l_send_maps =
-        lu->Pc <= 1 && superlu_sym_v2_pc_fragment_ldl_native();
+        superlu_sym_v2_pc_fragment_ldl_native();
     if (lu->symL2LSendMapPoolCount > 0 && !stream_l2l_send_maps)
     {
         if (lu->symV2PartnerLPackedMaps.size() !=

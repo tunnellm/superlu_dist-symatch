@@ -85,6 +85,7 @@ static __global__ void symldl_v2_row_down_pack_segments_kernel(
     const double *lpanel,
     double *sendbuf,
     const int_t *base_sendmap,
+    size_t sendmap_base,
     const SymV2RowDownSendSegmentGPU *segments,
     int nsegments,
     int_t ksupc,
@@ -104,7 +105,7 @@ static __global__ void symldl_v2_row_down_pack_segments_kernel(
     {
         int_t row = idx % nrows;
         int_t col = idx / nrows;
-        size_t map_pos = seg.map_offset +
+        size_t map_pos = (seg.map_offset - sendmap_base) +
                          static_cast<size_t>(row) +
                          static_cast<size_t>(col) *
                              static_cast<size_t>(nrows);
@@ -734,6 +735,17 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         return symV2RowDownSendSizes[slot];
     };
 
+    int_t *row_down_sendmap_gpu = symL2LSendMapPoolGPU;
+    size_t row_down_sendmap_base = 0;
+    auto ensure_row_down_sendmap_gpu = [&]() -> int_t *
+    {
+        if (row_down_sendmap_gpu != NULL)
+            return row_down_sendmap_gpu;
+        row_down_sendmap_gpu = symldl_v2_panel_send_maps_gpu(
+            this, lk, stream_offset, stream, &row_down_sendmap_base);
+        return row_down_sendmap_gpu;
+    };
+
     auto row_pack_destination = [&](int pc_dest, double *dst_buf) -> int
     {
         if (mycol != kcol)
@@ -761,14 +773,15 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         int nsegments = symV2RowDownSendSegCounts[slot];
         SymV2RowDownSendSegmentGPU *segments =
             symV2RowDownSendSegsGPU[slot];
-        if (nsegments <= 0 || segments == NULL ||
-            symL2LSendMapPoolGPU == NULL)
+        int_t *sendmap = ensure_row_down_sendmap_gpu();
+        if (nsegments <= 0 || segments == NULL || sendmap == NULL)
             ABORT("SymFact V2 row-down send descriptors are missing.");
         int_t dst_lda = static_cast<int_t>(total / ksupc);
         symldl_v2_row_down_pack_segments_kernel
             <<<nsegments, 256, 0, stream>>>(
-                lpanel.gpuPanel.val, dst_buf, symL2LSendMapPoolGPU,
-                segments, nsegments, ksupc, dst_lda);
+                lpanel.gpuPanel.val, dst_buf, sendmap,
+                row_down_sendmap_base, segments, nsegments, ksupc,
+                dst_lda);
         gpuErrchk(cudaGetLastError());
         return total;
     };
