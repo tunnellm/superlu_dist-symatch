@@ -210,10 +210,7 @@ symldl_v2_make_stream_workspace_spec(xLUstruct_t<Ftype> *lu,
         (lu->useSymV2Solve() && superlu_sym_v2_wpanel_cache())
             ? lu->maxLvalCount
             : 0;
-    spec.pc_fragment_schur =
-        lu->useSymV2Solve() && lu->Pr > 1 && lu->Pc > 1 &&
-        superlu_sym_v2_pc_fragment_schur() &&
-        superlu_sym_v2_pc_fragment_ldl_native();
+    spec.pc_fragment_schur = symldl_v2_use_pc_fragment_schur(lu->grid3d);
     spec.need_partner_send_stage =
         spec.pc_fragment_schur &&
         superlu_sym_v2_row_l_separate_send_staging();

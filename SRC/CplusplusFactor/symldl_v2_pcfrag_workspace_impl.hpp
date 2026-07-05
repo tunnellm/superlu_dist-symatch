@@ -301,10 +301,7 @@ static void symldl_v2_allocate_fragment_host_buffers(xLUstruct_t<Ftype> *lu)
     lu->symPartnerLidxRecvBufs.assign(static_cast<size_t>(nstreams), NULL);
 
 #ifdef HAVE_CUDA
-    bool pc_fragment =
-        superlu_sym_v2_pc_fragment_schur() &&
-        superlu_sym_v2_pc_fragment_ldl_native() &&
-        lu->Pr > 1 && lu->Pc > 1;
+    bool pc_fragment = symldl_v2_use_pc_fragment_schur(lu->grid3d);
     lu->symV2RowFragHostRecvBufs.assign(static_cast<size_t>(nstreams), NULL);
     lu->symV2RowFragHostSendBufs.assign(static_cast<size_t>(nstreams), NULL);
 
@@ -459,9 +456,7 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
     lu->symPanelReadyEventIds.assign(static_cast<size_t>(lu->nsupers), -1);
     lu->symV2UsePcFragmentSchur.assign(
         static_cast<size_t>(lu->nsupers),
-        (lu->Pr > 1 && lu->Pc > 1 &&
-         superlu_sym_v2_pc_fragment_schur() &&
-         superlu_sym_v2_pc_fragment_ldl_native()) ? 1 : 0);
+        symldl_v2_use_pc_fragment_schur(lu->grid3d) ? 1 : 0);
 
     size_t partner_active = symldl_v2_checked_product(
         l2l_slots, static_cast<size_t>(lu->Pr),
@@ -702,7 +697,7 @@ static void symldl_v2_build_partner_l_send_maps(xLUstruct_t<Ftype> *lu)
     lu->symV2PartnerLPackedMaps.assign(total_partner_send, 0);
     lu->symL2LSendMapPoolCount = total_partner_send;
     lu->symV2PartnerLSendBufPoolCount =
-        superlu_sym_v2_pc_fragment_ldl_native() ? 0 : total_partner_send;
+        symldl_v2_use_pc_fragment_schur(lu->grid3d) ? 0 : total_partner_send;
     if (superlu_sym_v2_pinned_staging() &&
         superlu_sym_v2_pinned_staging_pool() &&
         !superlu_cuda_aware_mpi() && max_panel_scratch > 0)
@@ -2081,6 +2076,30 @@ static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
 {
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload)
         return;
+
+    if (lu->symV2PartnerLSendBufPoolCount > 0)
+    {
+        if (lu->symV2PartnerLSendBufPoolGPU != NULL)
+            ABORT("SymFact V2 partner send value pool already exists.");
+        symldl_v2_cuda_malloc_or_abort(
+            (void **) &lu->symV2PartnerLSendBufPoolGPU,
+            sizeof(Ftype) * lu->symV2PartnerLSendBufPoolCount,
+            "SymFact V2 partner send value pool allocation");
+        for (size_t flat = 0; flat < lu->symV2PartnerLSendSizes.size();
+             ++flat)
+        {
+            int size = lu->symV2PartnerLSendSizes[flat];
+            if (size <= 0)
+                continue;
+            size_t offset = lu->symV2PartnerLMapOffsets[flat];
+            if (offset + static_cast<size_t>(size) >
+                    lu->symV2PartnerLSendBufPoolCount ||
+                offset + static_cast<size_t>(size) < offset)
+                ABORT("SymFact V2 partner send value offset is invalid.");
+            lu->symV2PartnerLSendBufsGPU[flat] =
+                lu->symV2PartnerLSendBufPoolGPU + offset;
+        }
+    }
 
     if (lu->symL2LSendMapPoolCount > 0)
     {
