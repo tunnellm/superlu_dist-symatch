@@ -410,7 +410,6 @@ struct xLUstructGPU_t
     // Ftype arrays are problematic 
     cudaStream_t cuStreams[MAX_CUDA_STREAMS];
     cudaEvent_t panelReadyEvents[MAX_CUDA_STREAMS];
-    cudaEvent_t symV2PartnerLPackReadyEvents[MAX_CUDA_STREAMS];
     cublasHandle_t cuHandles[MAX_CUDA_STREAMS];
     
     int* dperm_c_supno;
@@ -428,18 +427,10 @@ struct xLUstructGPU_t
     
     Ftype* LvalRecvBufs[MAX_CUDA_STREAMS];
     Ftype* UvalRecvBufs[MAX_CUDA_STREAMS];
-    Ftype* symPartnerLvalRecvBufs[MAX_CUDA_STREAMS];
-    Ftype* symPartnerLStageBufs[MAX_CUDA_STREAMS];
-    Ftype* symPartnerLSendStageBufs[MAX_CUDA_STREAMS];
-    Ftype* symV2RowFragStageBufs[MAX_CUDA_STREAMS];
-    Ftype* symV2RowFragValRecvBufs[MAX_CUDA_STREAMS];
-    int_t* symV2RowFragIdxRecvBufs[MAX_CUDA_STREAMS];
-    int_t* symV2RowFragSendMapStageBufs[MAX_CUDA_STREAMS];
-    Ftype* symV2RawPanelBufs[MAX_CUDA_STREAMS];
-    cudaEvent_t symV2RawPanelReadyEvents[MAX_CUDA_STREAMS];
     int_t* LidxRecvBufs[MAX_CUDA_STREAMS];
     int_t* UidxRecvBufs[MAX_CUDA_STREAMS];
-    int_t* symPartnerLidxRecvBufs[MAX_CUDA_STREAMS];
+
+#include "symldl_v2_xlupanels_gpu_members.cuh"
 
     cusolverDnHandle_t cuSolveHandles[MAX_CUDA_STREAMS];
     Ftype* diagFactWork[MAX_CUDA_STREAMS];
@@ -454,8 +445,6 @@ struct xLUstructGPU_t
     cudaStream_t lookAheadUStream[MAX_CUDA_STREAMS];
 
     Ftype *lookAheadUGemmBuffer[MAX_CUDA_STREAMS];
-    int useSymV2PanelIndex;
-    int_t *symV2PanelLocalIndex;
     
     __device__
     int_t supersize(int_t k) { return xsup[k + 1] - xsup[k]; }
