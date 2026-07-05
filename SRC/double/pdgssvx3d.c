@@ -1339,7 +1339,11 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 			LUstruct->trf3Dpart = (dtrf3Dpartition_t *)SUPERLU_MALLOC(sizeof(dtrf3Dpartition_t));
 			// computes the new partition for 3D factorization here
 			trf3Dpartition=LUstruct->trf3Dpart;
-			dnewTrfPartitionInit(nsupers, LUstruct, grid3d);
+			if (options->SymFact == YES && gpu3dVersion == 2)
+				dSymV2TrfPartitionInit(nsupers, LUstruct, Glu_freeable,
+						       grid3d, options);
+			else
+				dnewTrfPartitionInit(nsupers, LUstruct, grid3d);
 		}
 	}
 	// perform the  3D distribution
