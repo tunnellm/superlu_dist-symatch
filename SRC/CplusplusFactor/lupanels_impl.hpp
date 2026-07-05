@@ -11,79 +11,9 @@
 #include "lupanels.hpp"  //unneeded??
 #include "xlupanels.hpp"
 #include "symldl_v2_lupanels_impl.hpp"
+#include "xlupanels_diag_buffers_impl.hpp"
+#include "xlupanels_gpu_panel_access_impl.hpp"
 #include "superlu_blas.hpp"
-
-template <typename Ftype>
-diagFactBufs_type<Ftype> **xLUstruct_t<Ftype>::initDiagFactBufsArr(int_t num_bufs, int_t ldt)
-{
-    
-    // diagFactBufs_type<Ftype> **dFBufs = new diagFactBufs_type<Ftype> *[num_bufs]; // use SuperLU_MALLOC instead
-    diagFactBufs_type<Ftype> **dFBufs = (diagFactBufs_type<Ftype> **)SUPERLU_MALLOC(num_bufs * sizeof(diagFactBufs_type<Ftype> *));
-    for (int i = 0; i < num_bufs; i++)
-    {
-        // dFBufs[i] = new diagFactBufs_type<Ftype>; // use SuperLU_MALLOC instead
-        dFBufs[i] = (diagFactBufs_type<Ftype> *)SUPERLU_MALLOC(sizeof(diagFactBufs_type<Ftype>));
-        dFBufs[i]->BlockUFactor = (Ftype *)SUPERLU_MALLOC(
-            symldl_v2_checked_product(
-                symldl_v2_checked_product((size_t) ldt, (size_t) ldt,
-                                          "diagonal factor buffer allocation overflows."),
-                sizeof(Ftype),
-                "diagonal factor buffer allocation overflows."));
-        dFBufs[i]->BlockLFactor = (Ftype *)SUPERLU_MALLOC(
-            symldl_v2_checked_product(
-                symldl_v2_checked_product((size_t) ldt, (size_t) ldt,
-                                          "diagonal factor buffer allocation overflows."),
-                sizeof(Ftype),
-                "diagonal factor buffer allocation overflows."));
-        if (dFBufs[i]->BlockUFactor == NULL || dFBufs[i]->BlockLFactor == NULL)
-            ABORT("Malloc fails for diagonal factor buffers.");
-    }
-    return dFBufs;
-}
-
-template <typename Ftype>
-int xLUstruct_t<Ftype>::freeDiagFactBufsArr(int_t num_bufs, diagFactBufs_type<Ftype> ** dFBufs)
-{
-    for (int i = 0; i < num_bufs; i++)
-    {
-        SUPERLU_FREE(dFBufs[i]->BlockUFactor);
-        SUPERLU_FREE(dFBufs[i]->BlockLFactor);
-        SUPERLU_FREE(dFBufs[i]);
-    }
-    /* Sherry fix:
-     * mxLeafNode can be 0 for the replicated layers of the processes ?? */
-    if ( num_bufs ) SUPERLU_FREE(dFBufs);
-
-    return 0;
-}
-
-
-#ifdef HAVE_CUDA
-template <typename Ftype>
-xupanel_t<Ftype> xLUstruct_t<Ftype>::getKUpanel(int_t k, int_t offset)
-{
-    if (!needsUPanelStorage())
-        ABORT("SymFact GPU3DVERSION=2 does not materialize U panels.");
-    return (
-        myrow == krow(k) ? 
-        uPanelVec[g2lRow(k)] : 
-        xupanel_t<Ftype>(UidxRecvBufs[offset], UvalRecvBufs[offset],
-            A_gpu.UidxRecvBufs[offset], A_gpu.UvalRecvBufs[offset])
-    );
-}
-
-template <typename Ftype>
-xlpanel_t<Ftype> xLUstruct_t<Ftype>::getKLpanel(int_t k, int_t offset)
-{ 
-    int_t panel_root = symV2PanelRoot(k);
-    return (
-        mycol == panel_root ?
-        lPanelVec[symV2PanelIndex(k)] :
-        xlpanel_t<Ftype>(LidxRecvBufs[offset], LvalRecvBufs[offset],
-            A_gpu.LidxRecvBufs[offset], A_gpu.LvalRecvBufs[offset])
-    );
-}
-#endif
 
 template <typename Ftype>
 Ftype* getBigV(int_t ldt, int_t num_threads)
