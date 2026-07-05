@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "xlupanels.hpp"
-#include "symldl_v2_pcfrag_partner_recv_workspace_impl.hpp"
+#include "symldl_v2_pcfrag_cached_block_impl.hpp"
 
 #ifdef HAVE_CUDA
 
