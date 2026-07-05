@@ -3,6 +3,7 @@
 #include <iostream>
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
+#include "symldl_v2_core.hpp"
 #ifdef HAVE_CUDA
 #include "lupanels_GPU.cuh"
 #include "xlupanels_GPU.cuh"
@@ -659,4 +660,3 @@ struct xLUstruct_t
     int_t dDFactPSolveGPU(int_t k, int_t handle_offset, int buffer_offset, diagFactBufs_type<Ftype>** dFBufs);
 #endif
 };
-

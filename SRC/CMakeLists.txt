@@ -14,6 +14,9 @@ set(headers
     include/superlu_FortranCInterface.h
     include/oneside.h
     CplusplusFactor/lupanels.hpp
+    CplusplusFactor/gpu_mpi_utils.hpp
+    CplusplusFactor/symldl_v2_config.hpp
+    CplusplusFactor/symldl_v2_core.hpp
     CplusplusFactor/commWrapper.hpp
     CplusplusFactor/lupanels_GPU.cuh
     CplusplusFactor/batch_block_copy.h
