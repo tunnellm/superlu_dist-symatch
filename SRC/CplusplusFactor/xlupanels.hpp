@@ -2,6 +2,7 @@
 #include <vector>
 #include <iostream>
 #include <cstddef>
+#include <type_traits>
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
 #include "symldl_v2_core.hpp"
@@ -540,7 +541,8 @@ struct xLUstruct_t
     int_t symV2RowGid(int_t local_index);
     bool useSymV2Solve() const
     {
-        return options != NULL &&
+        return std::is_same<Ftype, double>::value &&
+               options != NULL &&
                options->SymFact == YES &&
                symGPU3DVersion == 2;
     }
@@ -752,6 +754,9 @@ struct xLUstruct_t
 
     //
     int_t dDiagFactorPanelSolve(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
+    int_t dSymDiagFactorPanelSolve(int_t k, int_t handle_offset,
+                                   int_t buffer_offset,
+                                   diagFactBufs_type<Ftype> **dFBufs);
     int_t dPanelBcast(int_t k, int_t offset);
     int_t dsparseTreeFactorBaseline(
         sForest_t *sforest,
@@ -864,51 +869,117 @@ struct xLUstruct_t
 template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2PanelRoot(int_t k)
 {
-    return symldl_v2_panel_root(trf3Dpartition, k, grid);
+    return kcol(k);
 }
 
 template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2DiagRoot(int_t k)
 {
-    return symldl_v2_diag_root(trf3Dpartition, k, grid);
+    return krow(k);
 }
 
 template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2DiagProc(int_t k)
 {
-    return symldl_v2_owner_2d(trf3Dpartition, k, grid);
+    return procIJ(k, k);
 }
 
 template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2PanelIndex(int_t k)
 {
-    return symldl_v2_panel_local_index(trf3Dpartition, k);
+    return g2lCol(k);
 }
 
 template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2RowIndex(int_t k)
 {
-    return symldl_v2_row_local_index(trf3Dpartition, k);
+    return g2lRow(k);
 }
 
 template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2PanelCount()
+{
+    return CEILING(nsupers, Pc);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowCount()
+{
+    return CEILING(nsupers, Pr);
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2PanelGid(int_t local_index)
+{
+    return local_index * Pc + mycol;
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2RowGid(int_t local_index)
+{
+    return local_index * Pr + myrow;
+}
+
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2ScheduleActive() const
+{
+    return false;
+}
+
+template <typename Ftype>
+inline int_t xLUstruct_t<Ftype>::symV2ForestLevelCount() const
+{
+    return grid3d != NULL ? log2i(grid3d->zscp.Np) + 1 : maxLvl;
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelRoot(int_t k)
+{
+    return symldl_v2_panel_root(trf3Dpartition, k, grid);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2DiagRoot(int_t k)
+{
+    return symldl_v2_diag_root(trf3Dpartition, k, grid);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2DiagProc(int_t k)
+{
+    return symldl_v2_owner_2d(trf3Dpartition, k, grid);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelIndex(int_t k)
+{
+    return symldl_v2_panel_local_index(trf3Dpartition, k);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2RowIndex(int_t k)
+{
+    return symldl_v2_row_local_index(trf3Dpartition, k);
+}
+
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelCount()
 {
     return useSymV2Solve() && trf3Dpartition != NULL
                ? trf3Dpartition->symV2LocalPanelCount
                : CEILING(nsupers, Pc);
 }
 
-template <typename Ftype>
-inline int_t xLUstruct_t<Ftype>::symV2RowCount()
+template <>
+inline int_t xLUstruct_t<double>::symV2RowCount()
 {
     return useSymV2Solve() && trf3Dpartition != NULL
                ? trf3Dpartition->symV2LocalRowCount
                : CEILING(nsupers, Pr);
 }
 
-template <typename Ftype>
-inline int_t xLUstruct_t<Ftype>::symV2PanelGid(int_t local_index)
+template <>
+inline int_t xLUstruct_t<double>::symV2PanelGid(int_t local_index)
 {
     return useSymV2Solve() && trf3Dpartition != NULL &&
                    trf3Dpartition->symV2LocalPanelGids != NULL
@@ -916,8 +987,8 @@ inline int_t xLUstruct_t<Ftype>::symV2PanelGid(int_t local_index)
                : local_index * Pc + mycol;
 }
 
-template <typename Ftype>
-inline int_t xLUstruct_t<Ftype>::symV2RowGid(int_t local_index)
+template <>
+inline int_t xLUstruct_t<double>::symV2RowGid(int_t local_index)
 {
     return useSymV2Solve() && trf3Dpartition != NULL &&
                    trf3Dpartition->symV2LocalRowGids != NULL
@@ -925,15 +996,15 @@ inline int_t xLUstruct_t<Ftype>::symV2RowGid(int_t local_index)
                : local_index * Pr + myrow;
 }
 
-template <typename Ftype>
-inline bool xLUstruct_t<Ftype>::symV2ScheduleActive() const
+template <>
+inline bool xLUstruct_t<double>::symV2ScheduleActive() const
 {
     return useSymV2Solve() && trf3Dpartition != NULL &&
            trf3Dpartition->symV2ScheduleEnabled;
 }
 
-template <typename Ftype>
-inline int_t xLUstruct_t<Ftype>::symV2ForestLevelCount() const
+template <>
+inline int_t xLUstruct_t<double>::symV2ForestLevelCount() const
 {
     return symV2ScheduleActive()
                ? trf3Dpartition->maxLvl

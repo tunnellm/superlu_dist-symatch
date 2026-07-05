@@ -1,9 +1,18 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 #include "xlupanels.hpp"
+
+static inline size_t symldl_v2_checked_product(size_t a, size_t b,
+                                               const char *what)
+{
+    if (a != 0 && b > std::numeric_limits<size_t>::max() / a)
+        ABORT(what);
+    return a * b;
+}
 
 template <typename Ftype>
 static int *symldl_v2_make_node_mask(xLUstruct_t<Ftype> *lu)
@@ -29,7 +38,7 @@ static void symldl_v2_initialize_diag_state(xLUstruct_t<Ftype> *lu)
         return;
 
     if (lu->options != NULL && lu->options->batchCount > 0)
-        ABORT("SymFact GPU3DVERSION=2 does not support batchCount>0 until LDL-native batch sizing is implemented.");
+        ABORT("SymFact GPU3DVERSION=2 does not support batchCount>0.");
     if (superlu_sym_v2_pc_fragment_ldl_native() &&
         !superlu_sym_v2_pc_fragment_schur())
         ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE requires GPU3DV2_PC_FRAGMENT_SCHUR=1.");
@@ -39,6 +48,53 @@ static void symldl_v2_initialize_diag_state(xLUstruct_t<Ftype> *lu)
 #ifdef HAVE_CUDA
     lu->symV2DiagBlocksGPU.assign((size_t) lu->nsupers, (Ftype *) NULL);
 #endif
+}
+
+template <typename Ftype>
+static int_t symldl_v2_max_local_diag_dim(xLUstruct_t<Ftype> *lu)
+{
+    int_t dim = 1;
+    if (!lu->useSymV2Solve())
+        return lu->ldt > 0 ? lu->ldt : 1;
+
+    for (int_t k = 0; k < lu->nsupers; ++k)
+    {
+        if (lu->isNodeInMyGrid != NULL && lu->isNodeInMyGrid[k] == 1 &&
+            lu->symV2PanelRoot(k) == lu->mycol)
+            dim = SUPERLU_MAX(dim, lu->xsup[k + 1] - lu->xsup[k]);
+    }
+    return dim;
+}
+
+template <typename Ftype>
+static void symldl_v2_allocate_factor_workspace(xLUstruct_t<Ftype> *lu)
+{
+    if (!lu->useSymV2Solve())
+        return;
+
+    size_t diag_work = symldl_v2_checked_product((size_t) lu->ldt,
+                                                 (size_t) lu->ldt,
+                                                 "SymFact V2 diagonal workspace size overflows.");
+    size_t panel_work = (lu->maxLvalCount > 0) ? (size_t) lu->maxLvalCount : 1;
+    size_t work_count = SUPERLU_MAX(diag_work, panel_work);
+    if (work_count == 0)
+        work_count = 1;
+    if ((int64_t) work_count < 0 || (size_t) (int64_t) work_count != work_count)
+        ABORT("SymFact V2 workspace size overflows int64_t.");
+
+    lu->symFactWorkSize = (int64_t) work_count;
+    lu->symFactWork = (Ftype *) SUPERLU_MALLOC(
+        symldl_v2_checked_product(work_count, sizeof(Ftype),
+                                  "SymFact V2 workspace allocation overflows."));
+    if (lu->symFactWork == NULL)
+        ABORT("Malloc fails for SymFact V2 workspace.");
+
+    size_t ipiv_count = lu->ldt > 0 ? (size_t) lu->ldt : 1;
+    lu->symFactIPIV = (int *) SUPERLU_MALLOC(
+        symldl_v2_checked_product(ipiv_count, sizeof(int),
+                                  "SymFact V2 IPIV allocation overflows."));
+    if (lu->symFactIPIV == NULL)
+        ABORT("Malloc fails for SymFact V2 IPIV.");
 }
 
 template <typename Ftype>

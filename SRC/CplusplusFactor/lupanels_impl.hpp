@@ -11,6 +11,7 @@
 #include "lupanels.hpp"  //unneeded??
 #include "xlupanels.hpp"
 #include "symldl_v2_workspace_impl.hpp"
+#include "symldl_v2_diag_impl.hpp"
 #include "superlu_blas.hpp"
 
 template <typename Ftype>
@@ -23,8 +24,20 @@ diagFactBufs_type<Ftype> **xLUstruct_t<Ftype>::initDiagFactBufsArr(int_t num_buf
     {
         // dFBufs[i] = new diagFactBufs_type<Ftype>; // use SuperLU_MALLOC instead
         dFBufs[i] = (diagFactBufs_type<Ftype> *)SUPERLU_MALLOC(sizeof(diagFactBufs_type<Ftype>));
-        dFBufs[i]->BlockUFactor = (Ftype *)SUPERLU_MALLOC(ldt * ldt * sizeof(Ftype));
-        dFBufs[i]->BlockLFactor = (Ftype *)SUPERLU_MALLOC(ldt * ldt * sizeof(Ftype));
+        dFBufs[i]->BlockUFactor = (Ftype *)SUPERLU_MALLOC(
+            symldl_v2_checked_product(
+                symldl_v2_checked_product((size_t) ldt, (size_t) ldt,
+                                          "diagonal factor buffer allocation overflows."),
+                sizeof(Ftype),
+                "diagonal factor buffer allocation overflows."));
+        dFBufs[i]->BlockLFactor = (Ftype *)SUPERLU_MALLOC(
+            symldl_v2_checked_product(
+                symldl_v2_checked_product((size_t) ldt, (size_t) ldt,
+                                          "diagonal factor buffer allocation overflows."),
+                sizeof(Ftype),
+                "diagonal factor buffer allocation overflows."));
+        if (dFBufs[i]->BlockUFactor == NULL || dFBufs[i]->BlockLFactor == NULL)
+            ABORT("Malloc fails for diagonal factor buffers.");
     }
     return dFBufs;
 }
@@ -258,6 +271,8 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxUidxCount = sym_v2_mode ? 0 : *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
     maxLvalCount = *std::max_element(LvalSendCounts.begin(), LvalSendCounts.end());
     maxLidxCount = *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end());
+    if (sym_v2_mode)
+        symldl_v2_allocate_factor_workspace(this);
 
     // Allocate bigV, indirect
     nThreads = getNumThreads(iam);
@@ -307,9 +322,17 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     // bcastDiagRow.resize(numDiagBufs);
     // bcastDiagCol.resize(numDiagBufs);
 
+    int_t diagBufDim = sym_v2_mode ? symldl_v2_max_local_diag_dim(this) : ldt;
     for (int i = 0; i < numDiagBufs; i++) /* Sherry?? these strcutures not used */
     {
-        diagFactBufs[i] = (Ftype *)SUPERLU_MALLOC(sizeof(Ftype) * ldt * ldt);
+        diagFactBufs[i] = (Ftype *)SUPERLU_MALLOC(
+            symldl_v2_checked_product(
+                symldl_v2_checked_product((size_t) diagBufDim, (size_t) diagBufDim,
+                                          "diagonal factor buffer allocation overflows."),
+                sizeof(Ftype),
+                "diagonal factor buffer allocation overflows."));
+        if (diagFactBufs[i] == NULL)
+            ABORT("Malloc fails for diagonal factor buffer.");
         // bcastStruct bcDiagRow(grid3d->rscp.comm, MPI_DOUBLE, SYNC);
         // bcastDiagRow[i] = bcDiagRow;
         // bcastStruct bcDiagCol(grid3d->cscp.comm, MPI_DOUBLE, SYNC);
@@ -326,7 +349,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
             mxLeafNode = sForests[myTreeIdxs[ilvl]]->topoInfo.eTreeTopLims[1];
     }
     //Yang: how is dFBufs being used in the c++ factorization code? Shall we call dinitDiagFactBufsArrMod instead to save memory? 
-    dFBufs = initDiagFactBufsArr(numDiagBufs, ldt);
+    dFBufs = initDiagFactBufsArr(numDiagBufs, diagBufDim);
     maxLeafNodes = mxLeafNode;
 
     
