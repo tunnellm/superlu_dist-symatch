@@ -277,8 +277,12 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 
     maxUvalCount = sym_v2_mode ? 0 : *std::max_element(UvalSendCounts.begin(), UvalSendCounts.end());
     maxUidxCount = sym_v2_mode ? 0 : *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
-    maxLvalCount = *std::max_element(LvalSendCounts.begin(), LvalSendCounts.end());
-    maxLidxCount = *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end());
+    maxLvalCount = std::max(
+        maxLvalCount,
+        *std::max_element(LvalSendCounts.begin(), LvalSendCounts.end()));
+    maxLidxCount = std::max(
+        maxLidxCount,
+        *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end()));
     maxSymPartnerLvalCount = sym_v2_mode ? 0 : maxLvalCount;
     maxSymPartnerLidxCount = sym_v2_mode ? 0 : maxLidxCount;
     maxSymPartnerLSendStageCount = 0;
