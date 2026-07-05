@@ -41,7 +41,38 @@ at the top-level directory.
 // int_t dgatherAllFactoredLU3d( dtrf3Dpartition_t*  trf3Dpartition,
 // 			   dLUstruct_t* LUstruct, gridinfo3d_t* grid3d, SCT_t* SCT );
 #include <stdbool.h>
+#include <stdlib.h>
 // #define DBG_MATCHING
+
+static int dSymV2SolveEnabled(superlu_dist_options_t *options, int gpu3dVersion)
+{
+	return options != NULL && options->SymFact == YES &&
+	       gpu3dVersion == 2;
+}
+
+static int_t *dSymV2CreateIdentityIpermSupno(int_t nsupers)
+{
+	int_t *iperm_c_supno = intMalloc_dist(nsupers);
+	if (!iperm_c_supno)
+		ABORT("Malloc fails for SymV2 iperm_c_supno[].");
+
+	for (int_t k = 0; k < nsupers; ++k)
+		iperm_c_supno[k] = k;
+
+	return iperm_c_supno;
+}
+
+static void dSymV2LluBufInit(dLUValSubBuf_t *LUvsb)
+{
+	LUvsb->Lsub_buf = intMalloc_dist(1);
+	LUvsb->Lval_buf = doubleMalloc_dist(1);
+	LUvsb->Usub_buf = intMalloc_dist(1);
+	LUvsb->Uval_buf = doubleMalloc_dist(1);
+
+	if (!LUvsb->Lsub_buf || !LUvsb->Lval_buf ||
+	    !LUvsb->Usub_buf || !LUvsb->Uval_buf)
+		ABORT("Malloc fails for SymV2 LU staging sentinels.");
+}
 
 /*! \brief
  *
@@ -1395,20 +1426,37 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 		}
 
 		/* Flatten L metadata into one buffer. */
-		if ( Fact != SamePattern_SameRowPerm ) {
+		if ( Fact != SamePattern_SameRowPerm &&
+		     !dSymV2SolveEnabled(options, gpu3dVersion) ) {
 			pdflatten_LDATA(options, n, LUstruct, grid, stat);
 		}
 
 		if(Fact != SamePattern_SameRowPerm){
 			// checkDist3DLUStruct(LUstruct, grid3d);
 			// zeros out the Supernodes that are not owned by the grid
-			dinit3DLUstructForest(trf3Dpartition->myTreeIdxs, trf3Dpartition->myZeroTrIdxs,
-									trf3Dpartition->sForests, LUstruct, grid3d);
+			if (!dSymV2SolveEnabled(options, gpu3dVersion))
+				dinit3DLUstructForest(trf3Dpartition->myTreeIdxs,
+						      trf3Dpartition->myZeroTrIdxs,
+						      trf3Dpartition->sForests,
+						      LUstruct, grid3d);
 
 			dLUValSubBuf_t *LUvsb = SUPERLU_MALLOC(sizeof(dLUValSubBuf_t));
-			dLluBufInit(LUvsb, LUstruct);
+			if (dSymV2SolveEnabled(options, gpu3dVersion))
+				dSymV2LluBufInit(LUvsb);
+			else
+				dLluBufInit(LUvsb, LUstruct);
 			trf3Dpartition->LUvsb = LUvsb;
-			trf3Dpartition->iperm_c_supno = create_iperm_c_supno(nsupers, options, LUstruct->Glu_persist, LUstruct->etree, LUstruct->Llu->Lrowind_bc_ptr, LUstruct->Llu->Ufstnz_br_ptr, grid3d);
+			if (dSymV2SolveEnabled(options, gpu3dVersion))
+				trf3Dpartition->iperm_c_supno =
+					dSymV2CreateIdentityIpermSupno(nsupers);
+			else
+				trf3Dpartition->iperm_c_supno =
+					create_iperm_c_supno(nsupers, options,
+							     LUstruct->Glu_persist,
+							     LUstruct->etree,
+							     LUstruct->Llu->Lrowind_bc_ptr,
+							     LUstruct->Llu->Ufstnz_br_ptr,
+							     grid3d);
 		}
 
 
