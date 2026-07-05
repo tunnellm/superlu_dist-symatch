@@ -17,6 +17,7 @@ set(headers
     CplusplusFactor/gpu_mpi_utils.hpp
     CplusplusFactor/symldl_v2_config.hpp
     CplusplusFactor/symldl_v2_core.hpp
+    CplusplusFactor/symldl_v2_accessors_impl.hpp
     CplusplusFactor/symldl_v2_diag_impl.hpp
     CplusplusFactor/symldl_v2_factor_impl.hpp
     CplusplusFactor/symldl_v2_workspace_impl.hpp
