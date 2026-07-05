@@ -409,8 +409,7 @@ struct xLUstruct_t
     std::vector<int_t> LidxSendCounts;
     std::vector<int_t> UidxSendCounts;
 
-#include "symldl_v2_xlustruct_members.hpp"
-#include "symldl_v2_xlustruct_methods.hpp"
+#include "symldl_v2_xlustruct_decls.hpp"
 
     //
     #pragma warning disabling bcastStruct

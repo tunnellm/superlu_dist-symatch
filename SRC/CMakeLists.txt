@@ -11,6 +11,7 @@ set(headers
     include/gpu_wrapper.h
     include/superlu_upacked.h
     include/dsymldl_v2_partition.h
+    include/dsymldl_v2_driver.h
     include/superlu_FortranCInterface.h
     include/oneside.h
     CplusplusFactor/lupanels.hpp
@@ -150,6 +151,7 @@ if(enable_double)
     double/d3DPartition.c
     double/dsymldl_v2_partition.c
     double/dsymldl_v2_distribution.c
+    double/dsymldl_v2_driver.c
     double/distCheckArray.c
     double/pddistribute-aux3d.c
     double/pdgstrf.c
