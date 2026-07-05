@@ -6,28 +6,9 @@
 #include "xlupanels.hpp"
 #include "gpuCommon.hpp"
 #include "symldl_v2_config.hpp"
+#include "symldl_v2_gpu_arena_utils.cuh"
 
 #ifdef HAVE_CUDA
-
-static inline void symldl_v2_cuda_malloc_or_abort(void **ptr, size_t bytes,
-                                                 const char *what)
-{
-    cudaError_t err = cudaMalloc(ptr, bytes);
-    if (err == cudaSuccess)
-        return;
-
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    cudaError_t mem_err = cudaMemGetInfo(&free_bytes, &total_bytes);
-    if (mem_err == cudaSuccess)
-        fprintf(stderr,
-                "%s: requested %zu bytes, free %zu bytes, total %zu bytes.\n",
-                what, bytes, free_bytes, total_bytes);
-    else
-        fprintf(stderr, "%s: requested %zu bytes.\n", what, bytes);
-    fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(err));
-    ABORT("SymFact V2 GPU allocation failed.");
-}
 
 template <typename Ftype>
 static void symldl_v2_materialize_pcfrag_metadata(xLUstruct_t<Ftype> *lu)
