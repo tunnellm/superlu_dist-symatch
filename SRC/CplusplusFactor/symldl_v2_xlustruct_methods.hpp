@@ -14,6 +14,14 @@ bool useSymV2Solve() const;
 bool needsUPanelStorage() const;
 bool symV2ScheduleActive() const;
 int_t symV2ForestLevelCount() const;
+void symV2RouteProfileReset();
+void symV2RouteProfileNote(SymV2RouteProfileCounter counter);
+void symV2RouteProfileNotePanelBcast(bool pc_fragment);
+void symV2RouteProfileNoteLFragmentExchange();
+void symV2RouteProfileNotePcFragmentExchange();
+void symV2RouteProfileNoteDualFragmentLookahead();
+void symV2RouteProfileNoteDualFragmentExclude();
+void symV2RouteProfilePrint(const char *phase) const;
 void symV2FreeDiagBlocks();
 void symV2FreeStreamHostBuffers(int stream);
 

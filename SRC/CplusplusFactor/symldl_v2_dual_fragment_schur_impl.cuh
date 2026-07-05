@@ -481,6 +481,7 @@ static int_t symldl_v2_dual_fragment_lookahead(
         ABORT("SymFact V2 Pc-fragment metadata is missing.");
     if (static_cast<size_t>(k) >= lu->symV2RowFragRecvIndex.size())
         ABORT("SymFact V2 Pc-fragment row metadata is missing.");
+    lu->symV2RouteProfileNoteDualFragmentLookahead();
 
     const std::vector<int_t> &row_frag = lu->symV2RowFragRecvIndex[k];
     const std::vector<int_t> &col_frag = lu->symV2PartnerLRecvIndex[k];
@@ -562,6 +563,7 @@ static int_t symldl_v2_dual_fragment_exclude(
         ABORT("SymFact V2 Pc-fragment metadata is missing.");
     if (static_cast<size_t>(k) >= lu->symV2RowFragRecvIndex.size())
         ABORT("SymFact V2 Pc-fragment row metadata is missing.");
+    lu->symV2RouteProfileNoteDualFragmentExclude();
 
     const std::vector<int_t> &row_frag = lu->symV2RowFragRecvIndex[k];
     const std::vector<int_t> &col_frag = lu->symV2PartnerLRecvIndex[k];

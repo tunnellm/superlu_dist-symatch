@@ -324,9 +324,13 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
     if (k < 0 || k >= nsupers)
         return 0;
     if (!symV2UsePcFragmentSchurPanel(k))
+    {
+        symV2RouteProfileNoteLFragmentExchange();
         return symldl_v2_l_fragment_exchange(this, k, stream_offset);
+    }
     if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
         stream_offset = 0;
+    symV2RouteProfileNotePcFragmentExchange();
 
     const bool cuda_aware = superlu_cuda_aware_mpi();
     const bool async_factor = superlu_sym_v2_async_factor();
@@ -948,6 +952,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
     double t0 = SuperLU_timer_();
     int_t sym_panel_root = symV2PanelRoot(k);
     bool pc_fragment_schur = symV2UsePcFragmentSchurPanel(k);
+    symV2RouteProfileNotePanelBcast(pc_fragment_schur);
     xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
 
     if (Pr > 1)

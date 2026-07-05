@@ -4,3 +4,5 @@
 int symGPU3DVersion = 0;
 
 std::vector<Ftype *> symV2DiagBlocks;
+
+SymV2RouteProfile symV2RouteProfile;

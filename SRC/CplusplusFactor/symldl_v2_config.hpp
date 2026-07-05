@@ -109,6 +109,19 @@ static inline bool superlu_sym_v2_trace_pcfrag()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_TRACE_PCFRAG", 0);
 }
 
+static inline bool superlu_sym_v2_route_profile()
+{
+    if (superlu_sym_v2_env_bool_flag("SYMLDL_V2_ROUTE_PROFILE", 0))
+        return true;
+
+    const char *profile = std::getenv("SYMLDL_V2_PROFILE");
+    if (profile == NULL || profile[0] == '\0')
+        return false;
+    return !std::strcmp(profile, "route") ||
+           !std::strcmp(profile, "factor") ||
+           !std::strcmp(profile, "all");
+}
+
 static inline bool superlu_sym_v2_pc_fragment_schur()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PC_FRAGMENT_SCHUR", 1);

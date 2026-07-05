@@ -20,6 +20,7 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
         ABORT("SymFact GPU3DVERSION=2 requires an LDL forest.");
 
     symGPU3DVersion = 2;
+    symV2RouteProfileReset();
 
     int tag_ub = set_tag_ub();
     gEtreeInfo_t gEtreeInfo = trf3Dpartition->gEtreeInfo;
@@ -64,6 +65,7 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
 
     MPI_Barrier(grid3d->comm);
     SCT->pdgstrfTimer = SuperLU_timer_() - SCT->pdgstrfTimer;
+    symV2RouteProfilePrint("factor");
 
     return 0;
 }
