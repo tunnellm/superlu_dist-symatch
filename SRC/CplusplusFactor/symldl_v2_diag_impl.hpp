@@ -6,24 +6,6 @@
 #include "xlupanels.hpp"
 #include "symldl_v2_workspace_impl.hpp"
 
-static inline int symldl_v2_count_sytrf_2x2(const int *ipiv, int n)
-{
-    int count = 0;
-    for (int i = 0; i < n;)
-    {
-        if (ipiv[i] < 0)
-        {
-            ++count;
-            i += 2;
-        }
-        else
-        {
-            ++i;
-        }
-    }
-    return count;
-}
-
 template <typename Ftype>
 static void symldl_v2_ensure_factor_work(xLUstruct_t<Ftype> *lu,
                                          int64_t requested)
@@ -179,8 +161,6 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
         {
             dsytrf_(&uplo, &n_i, diag, &ldd_i, symFactIPIV,
                     symFactWork, &lwork, &lapack_info);
-            n2x2 = symldl_v2_count_sytrf_2x2(symFactIPIV, n_i);
-            stat->sytrf_2x2 += n2x2;
         }
 
         if (lapack_info != 0)
