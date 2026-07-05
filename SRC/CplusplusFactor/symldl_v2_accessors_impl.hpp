@@ -16,6 +16,24 @@ inline bool xLUstruct_t<Ftype>::needsUPanelStorage() const
 }
 
 template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2IsCollapsedGrid() const
+{
+    return symldl_v2_is_collapsed_grid(grid3d);
+}
+
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2IsPc1Fastpath() const
+{
+    return symldl_v2_is_pc1_fastpath(grid3d);
+}
+
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2IsPr1Fastpath() const
+{
+    return symldl_v2_is_pr1_fastpath(grid3d);
+}
+
+template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2PanelRoot(int_t k)
 {
     return kcol(k);

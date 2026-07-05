@@ -285,7 +285,7 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
                 static_cast<size_t>(k) < symPanelReadyEventIds.size())
                 symPanelReadyEventIds[k] = stream_id;
             bool local_singleton_panel =
-                Pr == 1 && Pc == 1 &&
+                symV2IsCollapsedGrid() &&
                 grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1;
             bool async_v2_panel = superlu_sym_v2_async_factor();
             if (!local_singleton_panel && !async_v2_panel)

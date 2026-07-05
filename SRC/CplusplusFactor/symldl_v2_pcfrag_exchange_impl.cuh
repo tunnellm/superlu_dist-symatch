@@ -959,7 +959,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
         dSymV2LFragmentExchangeGPU(k, offset);
 
     bool local_singleton_panel =
-        Pr == 1 && Pc == 1 &&
+        symV2IsCollapsedGrid() &&
         grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1;
 
     const bool pcfrag_async_exchange_panel_ready =
@@ -1024,7 +1024,8 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
         }
     }
 
-    if (Pr == 1 && Pc > 1 && LidxSendCounts[k] > 0)
+    if (symV2IsPr1Fastpath() && !symV2IsPc1Fastpath() &&
+        LidxSendCounts[k] > 0)
     {
         int_t ksupc = SuperSize(k);
         if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers) ||

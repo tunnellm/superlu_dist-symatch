@@ -628,7 +628,7 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2LookAheadUpdateGPU(
     int streamId, int_t k, int_t laIdx, xlpanel_t<Ftype> &lpanel)
 {
-    if (Pr == 1)
+    if (symV2IsPr1Fastpath())
         return symldl_v2_ll_lookahead(this, streamId, k, laIdx, lpanel);
     if (symV2UsePcFragmentSchurPanel(k))
         return symldl_v2_dual_fragment_lookahead(
@@ -641,7 +641,7 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2SchurCompUpdateExcludeOneGPU(
     int streamId, int_t k, int_t ex, xlpanel_t<Ftype> &lpanel)
 {
-    if (Pr == 1)
+    if (symV2IsPr1Fastpath())
         return symldl_v2_ll_exclude(this, streamId, k, ex, lpanel);
     if (symV2UsePcFragmentSchurPanel(k))
         return symldl_v2_dual_fragment_exclude(
