@@ -521,12 +521,19 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         {
             int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
-            xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
             int_t k_parent = gEtreeInfo->setree[k];
             /* L o o k   A h e a d   P a n e l   U p d a t e */
-            if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            if (useSymV2Solve())
+            {
+                if (LidxSendCounts[k] > 0)
+                    dSymV2LookAheadUpdateGPU(offset, k, k_parent, k_lpanel);
+            }
+            else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            {
+                xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
                 lookAheadUpdateGPU(offset, k, k_parent, k_lpanel, k_upanel);
+            }
         }
 
         for (int_t k0 = k1; k0 < SUPERLU_MIN(nnodes, k1 + winSize); ++k0)
@@ -540,7 +547,6 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
         {
             int_t k = perm_c_supno[k0];
             int_t offset = getBufferOffset(k0, k1, winSize, winParity, halfWin);
-            xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
             xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
             int_t k_parent = gEtreeInfo->setree[k];
             /* Look Ahead Panel Solve */
@@ -564,8 +570,16 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             }
 
             /*proceed with remaining SchurComplement update */
-            if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            if (useSymV2Solve())
+            {
+                if (LidxSendCounts[k] > 0)
+                    dSymV2SchurCompUpdateExcludeOneGPU(offset, k, k_parent, k_lpanel);
+            }
+            else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            {
+                xupanel_t<Ftype> k_upanel = getKUpanel(k, offset);
                 dSchurCompUpdateExcludeOneGPU(offset, k, k_parent, k_lpanel, k_upanel);
+            }
         }
 
         int_t k1_next = k1 + winSize;
@@ -599,8 +613,15 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPU(
             //     offset+= halfWin;
             int_t offset = getBufferOffset(k0, k1, oldWinSize, winParity, halfWin);
             // printf("Syncing stream %d on offset %d\n", k0, offset);
-            if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            if (useSymV2Solve())
+            {
+                if (LidxSendCounts[k] > 0)
+                    gpuErrchk(cudaStreamSynchronize(A_gpu.cuStreams[offset]));
+            }
+            else if (UidxSendCounts[k] > 0 && LidxSendCounts[k] > 0)
+            {
                 gpuErrchk(cudaStreamSynchronize(A_gpu.cuStreams[offset]));
+            }
         }
 
         k1 = k1_next;

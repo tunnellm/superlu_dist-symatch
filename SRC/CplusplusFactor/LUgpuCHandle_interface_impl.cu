@@ -5,6 +5,7 @@
 #include "lupanels_impl.hpp"
 #include "symldl_v2_factor_impl.hpp"
 #include "symldl_v2_pcfrag_exchange_impl.cuh"
+#include "symldl_v2_dual_fragment_schur_impl.cuh"
 #include "pdgstrf3d_upacked_impl.hpp" //unneeded?
 
 

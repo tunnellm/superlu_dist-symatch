@@ -835,6 +835,10 @@ struct xLUstruct_t
     int_t pdgstrf3dSymV2();
     int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
+    int_t dSymV2LookAheadUpdateGPU(int streamId, int_t k, int_t laIdx,
+                                   xlpanel_t<Ftype> &lpanel);
+    int_t dSymV2SchurCompUpdateExcludeOneGPU(int streamId, int_t k, int_t ex,
+                                             xlpanel_t<Ftype> &lpanel);
     bool symV2UsePcFragmentSchurPanel(int_t k) const;
 
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
