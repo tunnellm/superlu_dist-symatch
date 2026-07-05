@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <limits>
 
 #include "superlu_ddefs.h"
@@ -189,6 +190,39 @@ static inline bool superlu_sym_v2_row_l_lazy_sendmap()
     return superlu_sym_v2_env_bool_flag(
         "GPU3DV2_ROW_L_LAZY_SENDMAP",
         superlu_sym_v2_pc_fragment_ldl_native() ? 1 : 0);
+}
+
+static inline bool superlu_sym_v2_lower_envelope_enabled()
+{
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_LOWER_ENVELOPE", 1);
+}
+
+static inline int superlu_sym_v2_batch_schur_col_limit(
+    int nrows, int64_t gemm_capacity)
+{
+    const char *env = std::getenv("GPU3DV2_BATCH_SCHUR_COLS");
+    if (env != NULL && env[0] != '\0')
+    {
+        char *end = NULL;
+        long value = std::strtol(env, &end, 10);
+        if (end == env || *end != '\0' || value <= 0 ||
+            value > 2147483647L)
+            ABORT("Invalid GPU3DV2_BATCH_SCHUR_COLS value.");
+        return static_cast<int>(value);
+    }
+
+    int limit = static_cast<int>(std::sqrt(static_cast<double>(
+        SUPERLU_MAX(static_cast<int64_t>(1), gemm_capacity))));
+    if (limit < 1)
+        limit = 1;
+    if (nrows > 0 && nrows < limit)
+    {
+        int64_t wide_limit = gemm_capacity / static_cast<int64_t>(nrows);
+        if (wide_limit > limit)
+            limit = static_cast<int>(SUPERLU_MIN(
+                wide_limit, static_cast<int64_t>(2147483647L)));
+    }
+    return limit;
 }
 
 static inline bool superlu_sym_v2_pcfrag_async_exchange()
