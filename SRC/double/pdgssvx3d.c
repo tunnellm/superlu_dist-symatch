@@ -560,10 +560,10 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     double *C, *R, *C1, *R1, amax, anorm, colcnd, rowcnd;
     double *X, *b_col, *b_work, *x_col;
     double   t, t1, t2, t3;
-    float GA_mem_use;	/* memory usage by global A */
-    float dist_mem_use; /* memory usage during distribution */
-    superlu_dist_mem_usage_t num_mem_usage, symb_mem_usage;
-    float flinfo; /* track memory usage of parallel symbolic factorization */
+    float GA_mem_use = 0.0;	/* memory usage by global A */
+    float dist_mem_use = 0.0; /* memory usage during distribution */
+    superlu_dist_mem_usage_t num_mem_usage = {0}, symb_mem_usage = {0};
+    float flinfo = 0.0; /* track memory usage of parallel symbolic factorization */
     bool Solve3D = true;
     int_t nsupers;
 #if (PRNTlevel >= 1)

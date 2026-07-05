@@ -414,6 +414,8 @@ static void dSymV2UpdateLDLDiagOwners(int_t nsupers,
     gridinfo_t *grid = &(grid3d->grid2d);
     int global_rank;
     int *local_owner;
+    int *local_owner_count;
+    int *owner_count;
 
     if (trf3Dpart->symV2DiagOwner == NULL ||
         trf3Dpart->symV2PanelRoot == NULL ||
@@ -422,7 +424,10 @@ static void dSymV2UpdateLDLDiagOwners(int_t nsupers,
         ABORT("SymFact V2 LDL owner metadata is not initialized.");
 
     local_owner = (int *) SUPERLU_MALLOC((size_t) nsupers * sizeof(int));
-    if (local_owner == NULL)
+    local_owner_count = int32Calloc_dist((int) nsupers);
+    owner_count = int32Calloc_dist((int) nsupers);
+    if (local_owner == NULL || local_owner_count == NULL ||
+        owner_count == NULL)
         ABORT("Malloc fails for SymFact V2 diagonal owner workspace.");
 
     MPI_Comm_rank(grid3d->comm, &global_rank);
@@ -430,20 +435,27 @@ static void dSymV2UpdateLDLDiagOwners(int_t nsupers,
     {
         int owner_2d = PNUM(trf3Dpart->symV2DiagRoot[k],
                             trf3Dpart->symV2PanelRoot[k], grid);
-        local_owner[k] =
-            (trf3Dpart->superGridMap[k] == IN_GRID_AIJ &&
-             grid->iam == owner_2d)
-                ? global_rank
-                : INT_MAX;
+        int owns_diag = trf3Dpart->superGridMap[k] == IN_GRID_AIJ &&
+                        grid->iam == owner_2d;
+        local_owner[k] = owns_diag ? global_rank : INT_MAX;
+        local_owner_count[k] = owns_diag ? 1 : 0;
     }
 
     MPI_Allreduce(local_owner, trf3Dpart->symV2DiagOwner, (int) nsupers,
                   MPI_INT, MPI_MIN, grid3d->comm);
+    MPI_Allreduce(local_owner_count, owner_count, (int) nsupers,
+                  MPI_INT, MPI_SUM, grid3d->comm);
     for (int_t k = 0; k < nsupers; ++k)
+    {
         if (trf3Dpart->symV2DiagOwner[k] == INT_MAX)
             ABORT("SymFact V2 LDL owner metadata is missing a diagonal owner.");
+        if (owner_count[k] != 1)
+            ABORT("SymFact V2 LDL owner metadata has an invalid diagonal owner count.");
+    }
 
     SUPERLU_FREE(local_owner);
+    SUPERLU_FREE(local_owner_count);
+    SUPERLU_FREE(owner_count);
 }
 
 static void dSymV2ComputeForestDiagDims(int_t nsupers,
