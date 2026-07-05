@@ -46,6 +46,7 @@
     }
 
 #include "symldl_v2_solve_gpu_helpers.cuh"
+#include "symldl_v2_solve_gpu_lifecycle_impl.cuh"
 #include "symldl_v2_solve_gpu_setup_impl.cuh"
 #include "symldl_v2_solve_gpu_runtime_impl.cuh"
 
