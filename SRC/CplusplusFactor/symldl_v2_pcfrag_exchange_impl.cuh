@@ -39,6 +39,77 @@ static inline size_t symldl_v2_square_bytes(int_t n, size_t elem_size,
     return count * elem_size;
 }
 
+static __global__ void symldl_v2_lfrag_pack_kernel(const double *lpanel,
+                                                   double *sendbuf,
+                                                   const int_t *sendmap,
+                                                   int count)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count)
+        return;
+
+    int_t src = sendmap[idx];
+    sendbuf[idx] = (src < 0) ? (double) (-src - 1) : lpanel[src];
+}
+
+static __global__ void symldl_v2_row_down_pack_segments_kernel(
+    const double *lpanel,
+    double *sendbuf,
+    const int_t *base_sendmap,
+    const SymV2RowDownSendSegmentGPU *segments,
+    int nsegments,
+    int_t ksupc,
+    int_t dst_lda)
+{
+    int seg_id = blockIdx.x;
+    if (seg_id >= nsegments)
+        return;
+
+    SymV2RowDownSendSegmentGPU seg = segments[seg_id];
+    int_t nrows = seg.nrows;
+    if (nrows <= 0 || ksupc <= 0 || dst_lda <= 0)
+        return;
+
+    int_t count = nrows * ksupc;
+    for (int_t idx = threadIdx.x; idx < count; idx += blockDim.x)
+    {
+        int_t row = idx % nrows;
+        int_t col = idx / nrows;
+        size_t map_pos = seg.map_offset +
+                         static_cast<size_t>(row) +
+                         static_cast<size_t>(col) *
+                             static_cast<size_t>(nrows);
+        int_t src = base_sendmap[map_pos];
+        sendbuf[seg.dst_row_offset + row + col * dst_lda] =
+            (src < 0) ? (double) (-src - 1) : lpanel[src];
+    }
+}
+
+static __global__ void symldl_v2_lfrag_assemble_kernel(
+    const double *stage,
+    double *frag,
+    const int_t *recv_map,
+    int pieces,
+    int_t ksupc,
+    int_t frag_lda)
+{
+    int piece = blockIdx.x;
+    if (piece >= pieces)
+        return;
+
+    int_t dst_offset = recv_map[3 * piece];
+    int_t nrows = recv_map[3 * piece + 1];
+    int_t src_offset = recv_map[3 * piece + 2];
+    int_t count = nrows * ksupc;
+    for (int_t idx = threadIdx.x; idx < count; idx += blockDim.x)
+    {
+        int_t row = idx % nrows;
+        int_t col = idx / nrows;
+        frag[dst_offset + row + col * frag_lda] =
+            stage[src_offset + row + col * nrows];
+    }
+}
+
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymV2PrepackLFragmentsGPU(int_t, int_t)
 {
