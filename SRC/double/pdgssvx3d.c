@@ -1358,8 +1358,14 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				distribution routine. */
 			t = SuperLU_timer_();
 
-			dist_mem_use = pddistribute3d_Yang(options, n, A, ScalePermstruct,
-											Glu_freeable, LUstruct, grid3d);
+			if (options->SymFact == YES && gpu3dVersion == 2)
+				dist_mem_use = dSymV2Distribute3d(options, n, A,
+								 ScalePermstruct, Glu_freeable,
+								 LUstruct, grid3d);
+			else
+				dist_mem_use = pddistribute3d_Yang(options, n, A,
+								  ScalePermstruct, Glu_freeable,
+								  LUstruct, grid3d);
 			stat->utime[DIST] = SuperLU_timer_() - t;
 
 			/* Deallocate storage used in symbolic factorization. */

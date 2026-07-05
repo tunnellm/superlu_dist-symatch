@@ -48,6 +48,12 @@ void dSymV2TrfPartitionInit(int_t nsupers, dLUstruct_t *LUstruct,
 
 
 int compareInt_t(void *a, void *b);
+
+float dSymV2Distribute3d(superlu_dist_options_t *options, int_t n,
+                         SuperMatrix *A,
+                         dScalePermstruct_t *ScalePermstruct,
+                         Glu_freeable_t *Glu_freeable, dLUstruct_t *LUstruct,
+                         gridinfo3d_t *grid3d);
 int compareInt(void *a, void *b);
 int compareDouble(void *a, void *b);
 int dist_checkArrayEq(void *arr, int length, MPI_Datatype datatype, int src_rank, int dest_rank, MPI_Comm communicator, int (*compare)(void *, void *));

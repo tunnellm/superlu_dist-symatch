@@ -139,6 +139,7 @@ if(enable_double)
     double/pddistribute3d.c
     double/d3DPartition.c
     double/dsymldl_v2_partition.c
+    double/dsymldl_v2_distribution.c
     double/distCheckArray.c
     double/pddistribute-aux3d.c
     double/pdgstrf.c
