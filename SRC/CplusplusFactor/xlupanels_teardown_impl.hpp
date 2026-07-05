@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef HAVE_CUDA
+#include "gpu_setup_utils.hpp"
+#endif
+
 template <typename Ftype>
 xLUstruct_t<Ftype>::~xLUstruct_t()
 {
@@ -79,7 +83,7 @@ xLUstruct_t<Ftype>::~xLUstruct_t()
 
         for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
         {
-            cusolverDnDestroy(A_gpu.cuSolveHandles[stream]);
+            superlu_gpu_destroy_cusolver_handle(A_gpu.cuSolveHandles[stream]);
             cublasDestroy(A_gpu.cuHandles[stream]);
             cublasDestroy(A_gpu.lookAheadLHandle[stream]);
             cublasDestroy(A_gpu.lookAheadUHandle[stream]);

@@ -11,11 +11,8 @@
 #include "lupanels.hpp"
 #include "gpuCommon.hpp"
 #include "cublas_cusolver_wrappers.hpp"
+#include "gpu_setup_utils.hpp"
 #include "symldl_v2_gpu_workspace_impl.cuh"
-
-#define USABLE_GPU_MEM_FRACTION 0.9
-
-size_t getGPUMemPerProcs(MPI_Comm baseCommunicator);
 
 template <typename Ftype>
 __global__ void indirectCopy(Ftype *dest, Ftype *src, int_t *idx, int n)
@@ -647,42 +644,6 @@ int_t xLUstruct_t<Ftype>::dSchurCompUpLimitedMem(
     return 0;
 }
 
-int getMPIProcsPerGPU()
-{
-    if (!(getenv("MPI_PROCESS_PER_GPU")))
-    {
-        return 1;
-    } else {
-        int devCount;
-        cudaGetDeviceCount(&devCount);
-        int envCount = atoi(getenv("MPI_PROCESS_PER_GPU"));
-        envCount = SUPERLU_MAX(envCount, 1);
-        printf("MPI_PROCESS_PER_GPU=%d, devCount=%d\n", envCount, devCount);
-        return SUPERLU_MIN(envCount, devCount);
-    }
-}
-
-// #define USABLE_GPU_MEM_FRACTION 0.9
-
-size_t getGPUMemPerProcs(MPI_Comm baseCommunicator)
-{
-    size_t mfree, mtotal;
-    // TODO: shared memory communicator should be part of
-    //  LU struct
-    //  MPI_Comm sharedComm;
-    //  MPI_Comm_split_type(baseCommunicator, MPI_COMM_TYPE_SHARED,
-    //                      0, MPI_INFO_NULL, &sharedComm);
-    //  MPI_Barrier(sharedComm);
-    cudaMemGetInfo(&mfree, &mtotal);
-    // MPI_Barrier(sharedComm);
-    // MPI_Comm_free(&sharedComm);
-#if 0
-    printf("Total memory %zu & free memory %zu\n", mtotal, mfree);
-#endif
-    //return (size_t)(USABLE_GPU_MEM_FRACTION * (Ftype)mfree) / getMPIProcsPerGPU();
-    return (size_t)(USABLE_GPU_MEM_FRACTION * (double)mfree) / getMPIProcsPerGPU();
-}
-
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
 {
@@ -715,7 +676,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     cudaSetDevice(device_id);
 
     double tRegion[5];
-    size_t useableGPUMem = getGPUMemPerProcs(grid3d->comm);
+    size_t useableGPUMem = superlu_gpu_memory_per_process(grid3d->comm);
     /**
      *  Memory is divided into two parts data memory and buffer memory
      *  data memory is used for useful data
@@ -807,6 +768,11 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                          maxSymV2RowFragValSendCount) +
         A_gpu.gemmBufferSize * sizeof(Ftype) +
         ldt * ldt * sizeof(Ftype);
+    if (sym_v2_mode && superlu_sym_v2_workspace_arena_enabled())
+    {
+        dataPerStream = symldl_v2_stream_workspace_estimate<Ftype>(
+            this, ldt, static_cast<size_t>(A_gpu.gemmBufferSize));
+    }
     if (memReqData + 2 * dataPerStream > useableGPUMem)
     {
         printf("Not enough memory on GPU: available = %zu, required for 2 streams =%zu, exiting\n", useableGPUMem, memReqData + 2 * dataPerStream);
@@ -979,14 +945,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     delete [] lPanelVec_GPU;
 
     tRegion[2] = SuperLU_timer_();
-    int dfactBufSize = 0;
-    // TODO: does it work with NULL pointer?
-    cusolverDnHandle_t cusolverH = NULL;
-    cusolverDnCreate(&cusolverH);
-    
-    cusolverDnDgetrf_bufferSize(cusolverH, ldt, ldt, NULL, ldt, &dfactBufSize);
-    
-    cusolverDnDestroy(cusolverH);
+    int dfactBufSize = superlu_gpu_getrf_workspace_size(
+        ldt, !sym_v2_mode);
 #if ( PRNTlevel >= 1 )    
     printf("Size of dfactBuf is %d\n", dfactBufSize);
 #endif    
@@ -1014,22 +974,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         gpuErrchk(cudaEventRecord(
             A_gpu.symV2PartnerLPackReadyEvents[stream],
             A_gpu.cuStreams[stream]));
-        symldl_v2_cuda_malloc_optional(
-            (void **) &A_gpu.LvalRecvBufs[stream], maxLvalCount,
-            sizeof(Ftype), "L value receive buffer allocation overflows.");
-        symldl_v2_cuda_malloc_optional(
-            (void **) &A_gpu.UvalRecvBufs[stream],
-            need_u_panel_storage ? maxUvalCount : 0, sizeof(Ftype),
-            "U value receive buffer allocation overflows.");
-        symldl_v2_cuda_malloc_optional(
-            (void **) &A_gpu.LidxRecvBufs[stream], maxLidxCount,
-            sizeof(int_t), "L index receive buffer allocation overflows.");
-        symldl_v2_cuda_malloc_optional(
-            (void **) &A_gpu.UidxRecvBufs[stream],
-            need_u_panel_storage ? maxUidxCount : 0, sizeof(int_t),
-            "U index receive buffer allocation overflows.");
         SymV2GpuStreamWorkspaceSpec<Ftype> stream_spec =
-            symldl_v2_make_stream_workspace_spec(this, dfactBufSize, true);
+            symldl_v2_make_stream_workspace_spec(this, dfactBufSize,
+                                                 !sym_v2_mode);
         symldl_v2_setup_gpu_stream_workspace(this, stream, stream_spec);
     }
     
@@ -1131,7 +1078,8 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     for (stream = 0; stream < A_gpu.numCudaStreams; stream++)
     {
         // cublasCreate(&A_gpu.cuHandles[stream]);
-        cusolverDnCreate(&A_gpu.cuSolveHandles[stream]);
+        superlu_gpu_create_cusolver_handle(&A_gpu.cuSolveHandles[stream],
+                                           !sym_v2_mode);
     }
     tcuStream = SuperLU_timer_() - tcuStream;
 
