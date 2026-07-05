@@ -410,6 +410,7 @@ struct xLUstruct_t
     std::vector<int_t> UidxSendCounts;
 
 #include "symldl_v2_xlustruct_members.hpp"
+#include "symldl_v2_xlustruct_methods.hpp"
 
     //
     #pragma warning disabling bcastStruct
@@ -428,25 +429,6 @@ struct xLUstruct_t
     int_t supersize(int_t k) { return xsup[k + 1] - xsup[k]; }
     int_t g2lRow(int_t k) { return k / Pr; }
     int_t g2lCol(int_t k) { return k / Pc; }
-    int_t symV2PanelRoot(int_t k);
-    int_t symV2DiagRoot(int_t k);
-    int_t symV2DiagProc(int_t k);
-    int_t symV2PanelIndex(int_t k);
-    int_t symV2RowIndex(int_t k);
-    int_t symV2PanelCount();
-    int_t symV2RowCount();
-    int_t symV2PanelGid(int_t local_index);
-    int_t symV2RowGid(int_t local_index);
-    bool useSymV2Solve() const;
-    bool needsUPanelStorage() const;
-    bool symV2ScheduleActive() const;
-    int_t symV2ForestLevelCount() const;
-    void symV2FreeDiagBlocks();
-    void symV2FreeStreamHostBuffers(int stream);
-#ifdef HAVE_CUDA
-    void symV2FreeGpuStorage();
-#endif
-
     anc25d_t anc25d;
     // For GPU acceleration
     xLUstructGPU_t<Ftype> *dA_gpu; // pointing to memory on GPU
@@ -607,16 +589,6 @@ struct xLUstruct_t
 
     int_t dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
     int_t dPanelBcastGPU(int_t k, int_t offset);
-    int_t dSymV2PanelBcastGPU(int_t k, int_t offset);
-    int_t pdgstrf3dSymV2();
-    int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
-    int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
-    int_t dSymV2LookAheadUpdateGPU(int streamId, int_t k, int_t laIdx,
-                                   xlpanel_t<Ftype> &lpanel);
-    int_t dSymV2SchurCompUpdateExcludeOneGPU(int streamId, int_t k, int_t ex,
-                                             xlpanel_t<Ftype> &lpanel);
-    bool symV2UsePcFragmentSchurPanel(int_t k) const;
-
     int_t ancestorReduction3dGPU(int_t ilvl, int_t *myNodeCount,
                                  int_t **treePerm);
     int_t zSendLPanelGPU(int_t k0, int_t receiverGrid);
