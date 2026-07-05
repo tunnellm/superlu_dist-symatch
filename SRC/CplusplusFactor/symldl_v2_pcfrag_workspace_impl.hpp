@@ -697,7 +697,7 @@ static void symldl_v2_build_partner_l_send_maps(xLUstruct_t<Ftype> *lu)
     lu->symV2PartnerLPackedMaps.assign(total_partner_send, 0);
     lu->symL2LSendMapPoolCount = total_partner_send;
     lu->symV2PartnerLSendBufPoolCount =
-        symldl_v2_use_pc_fragment_schur(lu->grid3d) ? 0 : total_partner_send;
+        superlu_sym_v2_pc_fragment_ldl_native() ? 0 : total_partner_send;
     if (superlu_sym_v2_pinned_staging() &&
         superlu_sym_v2_pinned_staging_pool() &&
         !superlu_cuda_aware_mpi() && max_panel_scratch > 0)

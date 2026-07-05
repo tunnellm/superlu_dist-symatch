@@ -212,8 +212,11 @@ symldl_v2_make_stream_workspace_spec(xLUstruct_t<Ftype> *lu,
             : 0;
     spec.pc_fragment_schur = symldl_v2_use_pc_fragment_schur(lu->grid3d);
     spec.need_partner_send_stage =
-        spec.pc_fragment_schur &&
-        superlu_sym_v2_row_l_separate_send_staging();
+        (spec.pc_fragment_schur &&
+         superlu_sym_v2_row_l_separate_send_staging()) ||
+        (lu->useSymV2Solve() && lu->Pr > 1 &&
+         lu->symL2LSendMapPoolCount > 0 &&
+         lu->symV2PartnerLSendBufPoolCount == 0);
     spec.row_stage_count =
         spec.pc_fragment_schur ? lu->maxSymV2RowFragStageCount : 0;
     if (spec.pc_fragment_schur &&

@@ -41,6 +41,9 @@ static int_t symldl_v2_l_fragment_exchange(
     int_t lk = lu->symV2PanelIndex(k);
     int tag_ub = lu->symFactTagUb;
     const bool pc_fragment_schur = lu->symV2UsePcFragmentSchurPanel(k);
+    const bool stream_staged_partner_sends =
+        lu->symV2PartnerLSendBufPoolCount == 0 &&
+        lu->symL2LSendMapPoolCount > 0;
     if (kcol < 0 || kcol >= lu->Pc || ksupc <= 0)
         ABORT("SymFact V2 L-fragment panel metadata is invalid.");
 
@@ -74,7 +77,7 @@ static int_t symldl_v2_l_fragment_exchange(
             ABORT("SymFact V2 L-fragment send size is invalid.");
         if (count <= 0)
             return NULL;
-        if (pc_fragment_schur)
+        if (pc_fragment_schur || stream_staged_partner_sends)
         {
             if (lu->A_gpu.symPartnerLSendStageBufs[stream_offset] == NULL)
                 ABORT("SymFact V2 L-fragment send staging is missing.");

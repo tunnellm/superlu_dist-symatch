@@ -218,7 +218,8 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
         ABORT("SymFact V2 raw L-fragment prepack has an invalid local panel.");
 
     symV2PartnerLPrepacked[static_cast<size_t>(lk)] = 0;
-    if (symV2UsePcFragmentSchurPanel(k))
+    if (symV2UsePcFragmentSchurPanel(k) ||
+        symV2PartnerLSendBufPoolCount == 0)
         return 0;
 
     if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
