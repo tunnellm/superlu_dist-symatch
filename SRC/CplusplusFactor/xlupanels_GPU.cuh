@@ -452,14 +452,6 @@ struct xLUstructGPU_t
     int_t g2lRow(int_t k) { return k / Pr; }
     __device__
     int_t g2lCol(int_t k) { return k / Pc; }
-    __device__
-    int_t lPanelIndex(int_t k)
-    {
-        return (useSymV2PanelIndex && symV2PanelLocalIndex != NULL)
-                   ? symV2PanelLocalIndex[k]
-                   : g2lCol(k);
-    }
-    
 };/* xLUstructGPU_t{} */
 
 template <typename Ftype>

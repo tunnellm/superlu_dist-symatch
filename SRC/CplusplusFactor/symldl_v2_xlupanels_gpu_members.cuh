@@ -16,3 +16,11 @@ int_t* symPartnerLidxRecvBufs[MAX_CUDA_STREAMS];
 
 int useSymV2PanelIndex;
 int_t *symV2PanelLocalIndex;
+
+__device__
+int_t lPanelIndex(int_t k)
+{
+    return (useSymV2PanelIndex && symV2PanelLocalIndex != NULL)
+               ? symV2PanelLocalIndex[k]
+               : g2lCol(k);
+}
