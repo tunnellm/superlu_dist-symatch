@@ -1,6 +1,21 @@
 #pragma once
 
 template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::useSymV2Solve() const
+{
+    return std::is_same<Ftype, double>::value &&
+           options != NULL &&
+           options->SymFact == YES &&
+           symGPU3DVersion == 2;
+}
+
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::needsUPanelStorage() const
+{
+    return !useSymV2Solve();
+}
+
+template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2PanelRoot(int_t k)
 {
     return kcol(k);
