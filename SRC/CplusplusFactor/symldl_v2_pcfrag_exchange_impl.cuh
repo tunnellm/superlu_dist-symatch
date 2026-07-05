@@ -187,7 +187,7 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
         if (lk < 0)
             return 0;
         xlpanel_t<double> &lpanel = lPanelVec[lk];
-        if (!lpanel.isEmpty() && superlu_sym_v2_wpanel_cache())
+        if (!lpanel.isEmpty() && symldl_v2_use_wpanel_cache(grid3d))
         {
             if (stream_offset < 0 || stream_offset >= A_gpu.numCudaStreams)
                 stream_offset = 0;
@@ -238,7 +238,7 @@ inline int_t xLUstruct_t<double>::dSymV2PrepackLFragmentsGPU(
         return 0;
     }
 
-    if (superlu_sym_v2_wpanel_cache())
+    if (symldl_v2_use_wpanel_cache(grid3d))
     {
         if (static_cast<size_t>(stream_offset) >=
                 symV2RawPanelNodes.size() ||

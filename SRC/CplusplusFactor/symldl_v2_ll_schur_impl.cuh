@@ -239,7 +239,7 @@ static int_t symldl_v2_ll_part_update(
 
     Ftype *raw_rhs = NULL;
     int raw_ld = gemm_n;
-    if (superlu_sym_v2_wpanel_cache())
+    if (symldl_v2_use_wpanel_cache(lu->grid3d))
     {
         for (size_t slot = 0; slot < lu->symV2RawPanelNodes.size(); ++slot)
         {

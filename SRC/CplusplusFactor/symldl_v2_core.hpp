@@ -28,6 +28,14 @@ static inline bool symldl_v2_use_pc_fragment_schur(
            superlu_sym_v2_pc_fragment_ldl_native();
 }
 
+static inline bool symldl_v2_use_wpanel_cache(const gridinfo3d_t *grid3d)
+{
+    return superlu_sym_v2_wpanel_cache() &&
+           grid3d != NULL &&
+           grid3d->nprow <= 1 &&
+           grid3d->npcol <= 1;
+}
+
 static inline int symldl_v2_panel_root(
     const dtrf3Dpartition_t *partition, int_t k, const gridinfo_t *grid)
 {

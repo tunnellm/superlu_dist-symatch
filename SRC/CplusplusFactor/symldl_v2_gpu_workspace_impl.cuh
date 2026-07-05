@@ -55,7 +55,8 @@ static void symldl_v2_setup_raw_panel_ring(xLUstruct_t<Ftype> *lu,
                                            int nstreams)
 {
     lu->symV2RawPanelNodes.clear();
-    if (lu->useSymV2Solve() && superlu_sym_v2_wpanel_cache())
+    if (lu->useSymV2Solve() &&
+        symldl_v2_use_wpanel_cache(lu->grid3d))
         lu->symV2RawPanelNodes.assign(static_cast<size_t>(nstreams),
                                       (int_t) -1);
 }
@@ -207,7 +208,8 @@ symldl_v2_make_stream_workspace_spec(xLUstruct_t<Ftype> *lu,
         spec.partner_stage_count =
             SUPERLU_MAX(spec.partner_stage_count, lu->maxLvalCount);
     spec.raw_panel_count =
-        (lu->useSymV2Solve() && superlu_sym_v2_wpanel_cache())
+        (lu->useSymV2Solve() &&
+         symldl_v2_use_wpanel_cache(lu->grid3d))
             ? lu->maxLvalCount
             : 0;
     spec.pc_fragment_schur = symldl_v2_use_pc_fragment_schur(lu->grid3d);
@@ -631,7 +633,7 @@ static void symldl_v2_setup_gpu_fragment_stream_buffers(
         "SymFact V2 row send-map staging allocation overflows.");
     symldl_v2_cuda_malloc_optional(
         (void **) &lu->A_gpu.symV2RawPanelBufs[stream],
-        superlu_sym_v2_wpanel_cache() ? lu->maxLvalCount : 0,
+        symldl_v2_use_wpanel_cache(lu->grid3d) ? lu->maxLvalCount : 0,
         sizeof(Ftype),
         "SymFact V2 W-panel cache allocation overflows.");
 }

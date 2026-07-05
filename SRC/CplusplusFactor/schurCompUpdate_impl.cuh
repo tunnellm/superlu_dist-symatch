@@ -784,7 +784,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         sym_v2_partner_stage_count =
             SUPERLU_MAX(sym_v2_partner_stage_count, maxLvalCount);
     int_t sym_v2_raw_panel_count =
-        (sym_v2_mode && superlu_sym_v2_wpanel_cache()) ? maxLvalCount : 0;
+        (sym_v2_mode && symldl_v2_use_wpanel_cache(grid3d))
+            ? maxLvalCount
+            : 0;
     int_t lookahead_u_count = maxUvalCount;
     if (sym_v2_mode && Pr <= 1)
         lookahead_u_count = SUPERLU_MAX(lookahead_u_count, maxLvalCount);
@@ -884,7 +886,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         cudaStreamCreate(&A_gpu.cuStreams[stream]);
         gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
                                            cudaEventDisableTiming));
-        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+        if (sym_v2_mode && symldl_v2_use_wpanel_cache(grid3d))
             gpuErrchk(cudaEventCreateWithFlags(
                 &A_gpu.symV2RawPanelReadyEvents[stream],
                 cudaEventDisableTiming));
@@ -1000,7 +1002,7 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
         cudaStreamCreate(&A_gpu.cuStreams[stream]);
         gpuErrchk(cudaEventCreateWithFlags(&A_gpu.panelReadyEvents[stream],
                                            cudaEventDisableTiming));
-        if (sym_v2_mode && superlu_sym_v2_wpanel_cache())
+        if (sym_v2_mode && symldl_v2_use_wpanel_cache(grid3d))
             gpuErrchk(cudaEventCreateWithFlags(
                 &A_gpu.symV2RawPanelReadyEvents[stream],
                 cudaEventDisableTiming));
