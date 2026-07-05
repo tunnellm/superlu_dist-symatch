@@ -440,6 +440,7 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload)
         return;
 
+    const bool pc_fragment = symldl_v2_use_pc_fragment_schur(lu->grid3d);
     int_t local_cols = lu->symV2PanelCount();
     size_t l2l_slots = symldl_v2_checked_product(
         static_cast<size_t>(local_cols), static_cast<size_t>(lu->Pc),
@@ -456,23 +457,27 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
     lu->symPanelReadyEventIds.assign(static_cast<size_t>(lu->nsupers), -1);
     lu->symV2UsePcFragmentSchur.assign(
         static_cast<size_t>(lu->nsupers),
-        symldl_v2_use_pc_fragment_schur(lu->grid3d) ? 1 : 0);
+        pc_fragment ? 1 : 0);
 
     size_t partner_active = symldl_v2_checked_product(
         l2l_slots, static_cast<size_t>(lu->Pr),
         "SymFact V2 partner-L active table overflows.");
-    size_t row_active = symldl_v2_checked_product(
-        l2l_slots, static_cast<size_t>(lu->Pc),
-        "SymFact V2 row-fragment active table overflows.");
     lu->symV2PartnerLSendRowActive.assign(partner_active, 0);
-    lu->symV2RowFragSendActive.assign(row_active, 0);
+    if (pc_fragment)
+    {
+        size_t row_active = symldl_v2_checked_product(
+            l2l_slots, static_cast<size_t>(lu->Pc),
+            "SymFact V2 row-fragment active table overflows.");
+        lu->symV2RowFragSendActive.assign(row_active, 0);
+    }
+    else
+    {
+        lu->symV2RowFragSendActive.clear();
+    }
 
     size_t partner_recv_slots = symldl_v2_checked_product(
         static_cast<size_t>(lu->nsupers), static_cast<size_t>(lu->Pr),
         "SymFact V2 partner receive table overflows.");
-    size_t row_recv_slots = symldl_v2_checked_product(
-        static_cast<size_t>(lu->nsupers), static_cast<size_t>(lu->Pc),
-        "SymFact V2 row receive table overflows.");
     lu->symV2PartnerLRecvSizes.assign(partner_recv_slots, 0);
     lu->symV2PartnerLRecvIndex.assign(static_cast<size_t>(lu->nsupers),
                                       std::vector<int_t>());
@@ -482,21 +487,43 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
                                     std::vector<int_t>());
     lu->symV2PartnerLRecvMapOffsets.assign(partner_recv_slots, 0);
     lu->symV2PartnerLRecvMapsGPU.assign(partner_recv_slots, NULL);
-    lu->symV2RowFragRecvSizes.assign(row_recv_slots, 0);
-    lu->symV2RowFragRecvIndex.assign(static_cast<size_t>(lu->nsupers),
-                                     std::vector<int_t>());
-    lu->symV2RowFragRecvMap.assign(row_recv_slots, std::vector<int_t>());
-    lu->symV2RowFragRecvMapOffsets.assign(row_recv_slots, 0);
-    lu->symV2RowFragRecvMapsGPU.assign(row_recv_slots, NULL);
+    if (pc_fragment)
+    {
+        size_t row_recv_slots = symldl_v2_checked_product(
+            static_cast<size_t>(lu->nsupers), static_cast<size_t>(lu->Pc),
+            "SymFact V2 row receive table overflows.");
+        lu->symV2RowFragRecvSizes.assign(row_recv_slots, 0);
+        lu->symV2RowFragRecvIndex.assign(static_cast<size_t>(lu->nsupers),
+                                         std::vector<int_t>());
+        lu->symV2RowFragRecvMap.assign(row_recv_slots, std::vector<int_t>());
+        lu->symV2RowFragRecvMapOffsets.assign(row_recv_slots, 0);
+        lu->symV2RowFragRecvMapsGPU.assign(row_recv_slots, NULL);
 
-    lu->symV2RowDownSendSizes.assign(l2l_slots, 0);
-    lu->symV2RowDownSendSegOffsets.assign(l2l_slots, 0);
-    lu->symV2RowDownSendSegCounts.assign(l2l_slots, 0);
-    lu->symV2RowDownSendSegsGPU.assign(l2l_slots, NULL);
-    lu->symV2RowDownSegOffsets.assign(l2l_slots + 1, 0);
+        lu->symV2RowDownSendSizes.assign(l2l_slots, 0);
+        lu->symV2RowDownSendSegOffsets.assign(l2l_slots, 0);
+        lu->symV2RowDownSendSegCounts.assign(l2l_slots, 0);
+        lu->symV2RowDownSendSegsGPU.assign(l2l_slots, NULL);
+        lu->symV2RowDownSegOffsets.assign(l2l_slots + 1, 0);
+        lu->symV2RowDownRecvSizes.assign(row_recv_slots, 0);
+        lu->symV2RowDownPlanReady.assign(static_cast<size_t>(lu->nsupers), 0);
+    }
+    else
+    {
+        lu->symV2RowFragRecvSizes.clear();
+        lu->symV2RowFragRecvIndex.clear();
+        lu->symV2RowFragRecvMap.clear();
+        lu->symV2RowFragRecvMapOffsets.clear();
+        lu->symV2RowFragRecvMapsGPU.clear();
+
+        lu->symV2RowDownSendSizes.clear();
+        lu->symV2RowDownSendSegOffsets.clear();
+        lu->symV2RowDownSendSegCounts.clear();
+        lu->symV2RowDownSendSegsGPU.clear();
+        lu->symV2RowDownSegOffsets.clear();
+        lu->symV2RowDownRecvSizes.clear();
+        lu->symV2RowDownPlanReady.clear();
+    }
     lu->symV2RowDownSegs.clear();
-    lu->symV2RowDownRecvSizes.assign(row_recv_slots, 0);
-    lu->symV2RowDownPlanReady.assign(static_cast<size_t>(lu->nsupers), 0);
 
     lu->symV2ExchangeSendSizesScratch.assign(static_cast<size_t>(lu->Pc), 0);
     lu->symV2ExchangeRecvSizesScratch.assign(static_cast<size_t>(lu->Pr), 0);
@@ -512,8 +539,16 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
     lu->symV2ExchangeRecvPeersScratch.reserve(static_cast<size_t>(lu->Pr));
     lu->symV2ExchangeWaitIndicesScratch.assign(static_cast<size_t>(lu->Pr), 0);
     lu->symV2ExchangeWaitStatusesScratch.resize(static_cast<size_t>(lu->Pr));
-    lu->symV2RowFragSendCountsScratch.assign(static_cast<size_t>(lu->Pc), 0);
-    lu->symV2RowFragSendOffsetsScratch.assign(static_cast<size_t>(lu->Pc), 0);
+    if (pc_fragment)
+    {
+        lu->symV2RowFragSendCountsScratch.assign(static_cast<size_t>(lu->Pc), 0);
+        lu->symV2RowFragSendOffsetsScratch.assign(static_cast<size_t>(lu->Pc), 0);
+    }
+    else
+    {
+        lu->symV2RowFragSendCountsScratch.clear();
+        lu->symV2RowFragSendOffsetsScratch.clear();
+    }
     lu->symV2RowFragSendReqsScratch.clear();
 #else
     (void) lu;
