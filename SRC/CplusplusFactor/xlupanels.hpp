@@ -831,6 +831,7 @@ struct xLUstruct_t
 
     int_t dDiagFactorPanelSolveGPU(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);
     int_t dPanelBcastGPU(int_t k, int_t offset);
+    int_t dSymV2PanelBcastGPU(int_t k, int_t offset);
     int_t pdgstrf3dSymV2();
     int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
     int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);

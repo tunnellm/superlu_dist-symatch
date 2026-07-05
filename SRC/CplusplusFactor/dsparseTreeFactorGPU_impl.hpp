@@ -385,7 +385,7 @@ template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
 {
     if (useSymV2Solve())
-        ABORT("SymFact GPU3DVERSION=2 panel broadcast is not implemented.");
+        return dSymV2PanelBcastGPU(k, offset);
 
     double t0 = SuperLU_timer_();
     /*=======   Panel Broadcast             ======*/
