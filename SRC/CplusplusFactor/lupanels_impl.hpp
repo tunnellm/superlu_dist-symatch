@@ -329,6 +329,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         symldl_v2_initialize_pcfrag_tables(this);
 #ifdef HAVE_CUDA
         symldl_v2_build_partner_l_send_maps(this);
+        symldl_v2_build_partner_l_recv_maps(this);
 #endif
         symldl_v2_allocate_fragment_host_buffers(this);
     }
