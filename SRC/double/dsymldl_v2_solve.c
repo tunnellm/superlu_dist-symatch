@@ -2366,7 +2366,11 @@ pdgstrs3d_symldl_sync_factor_gpu(pdgstrs3d_symldl_solve_meta_t *meta)
     if (meta == NULL || meta->factor_gpu_handle == NULL ||
         meta->factor_gpu_synchronized)
         return;
+#if defined(GPU_ACC)
     dSymLDLFactorGPUSynchronize((dLUgpu_Handle) meta->factor_gpu_handle);
+#else
+    ABORT("SymLDL V2 solve received GPU factor state in a non-CUDA build.");
+#endif
     meta->factor_gpu_synchronized = 1;
 }
 
@@ -2400,9 +2404,13 @@ pdgstrs3d_symldl_prepare_host_factor_panels(
         if (!pdgstrs3d_symldl_panel_needs_host_values(
                 meta, kmeta, ksupc, nrhs))
             continue;
+#if defined(GPU_ACC)
         if (dSymLDLFactorGPUCopyPanelToHost(
                 (dLUgpu_Handle) meta->factor_gpu_handle, k) != 0)
             ABORT("Failed to copy CPU-scheduled SymLDL panel from factor GPU state.");
+#else
+        ABORT("SymLDL V2 solve cannot copy factor GPU panels in a non-CUDA build.");
+#endif
     }
     meta->host_panel_copy_time += SuperLU_timer_() - t;
 }
@@ -2518,8 +2526,13 @@ pdgstrs3d_symldl_solve_meta_destroy(pdgstrs3d_symldl_solve_meta_t *meta)
     if (meta->gpu_state)
         dSymLDLSolveGPUDestroy((dSymLDLSolveGPU_Handle) meta->gpu_state);
 #endif
+#if defined(GPU_ACC)
     if (meta->factor_gpu_handle)
         dDestroyLUgpuHandle((dLUgpu_Handle) meta->factor_gpu_handle);
+#else
+    if (meta->factor_gpu_handle)
+        ABORT("SymLDL V2 solve cannot destroy GPU factor state in a non-CUDA build.");
+#endif
     pdgstrs3d_symldl_workspace_free(&meta->work);
     pdgstrs3d_symldl_level_schedule_free(&meta->solve_schedule);
     pdgstrs3d_symldl_x_cache_free(meta->x_cache, meta->nsupers);
@@ -2538,8 +2551,12 @@ pdgstrs3d_symldl_finalize(dSOLVEstruct_t *SOLVEstruct)
     if (SOLVEstruct == NULL || SOLVEstruct->symldl_v2_solve_meta == NULL)
     {
         if (SOLVEstruct != NULL && SOLVEstruct->symldl_v2_factor_handle != NULL) {
+#if defined(GPU_ACC)
             dDestroyLUgpuHandle(
                 (dLUgpu_Handle) SOLVEstruct->symldl_v2_factor_handle);
+#else
+            ABORT("SymLDL V2 solve cannot destroy GPU factor state in a non-CUDA build.");
+#endif
             SOLVEstruct->symldl_v2_factor_handle = NULL;
         }
         return;
