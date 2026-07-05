@@ -3,6 +3,8 @@
 #include <cstring>
 #include <vector>
 
+#include "gpu_sparse_copy_impl.cuh"
+
 // GPU panel copy helpers for xLUstruct_t.
 
 template <typename Ftype>
