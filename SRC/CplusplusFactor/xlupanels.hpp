@@ -5,8 +5,7 @@
 #include <type_traits>
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
-#include "symldl_v2_core.hpp"
-#include "symldl_v2_types.hpp"
+#include "symldl_v2_xlustruct_deps.hpp"
 #ifdef HAVE_CUDA
 #include "lupanels_GPU.cuh"
 #include "xlupanels_GPU.cuh"
@@ -618,6 +617,5 @@ struct xLUstruct_t
 #endif
 };
 
-#include "symldl_v2_accessors_impl.hpp"
-#include "symldl_v2_teardown_impl.hpp"
+#include "symldl_v2_xlustruct_impl.hpp"
 #include "xlupanels_teardown_impl.hpp"
