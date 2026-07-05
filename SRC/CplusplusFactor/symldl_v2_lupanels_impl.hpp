@@ -6,3 +6,4 @@
 #include "symldl_v2_pcfrag_workspace_impl.hpp"
 #include "symldl_v2_pcfrag_exchange_impl.cuh"
 #include "symldl_v2_diag_impl.hpp"
+#include "symldl_v2_constructor_impl.hpp"

@@ -1,0 +1,74 @@
+#pragma once
+
+#include <vector>
+
+#include "xlupanels.hpp"
+
+// Keep SymLDL V2 constructor orchestration out of the legacy LU panel setup.
+
+template <typename Ftype>
+static void symldl_v2_constructor_build_l_panels(
+    xLUstruct_t<Ftype> *lu,
+    LUStruct_type<Ftype> *LUstruct,
+    std::vector<int_t> &localLvalSendCounts,
+    std::vector<int_t> &localLidxSendCounts)
+{
+    if (!lu->useSymV2Solve())
+        return;
+
+    symldl_v2_build_l_panels(lu, LUstruct,
+                             localLvalSendCounts,
+                             localLidxSendCounts);
+}
+
+template <typename Ftype>
+static void symldl_v2_constructor_exchange_l_counts(
+    xLUstruct_t<Ftype> *lu,
+    const std::vector<int_t> &localLvalSendCounts,
+    const std::vector<int_t> &localLidxSendCounts)
+{
+    if (!lu->useSymV2Solve())
+        return;
+
+    symldl_v2_exchange_l_panel_counts(lu,
+                                      localLvalSendCounts,
+                                      localLidxSendCounts);
+}
+
+template <typename Ftype>
+static void symldl_v2_constructor_setup_factor_workspace(
+    xLUstruct_t<Ftype> *lu,
+    LUStruct_type<Ftype> *LUstruct)
+{
+    symldl_v2_compute_pcfrag_scratch(lu, LUstruct);
+    if (lu->useSymV2Solve())
+        symldl_v2_allocate_factor_workspace(lu);
+}
+
+template <typename Ftype>
+static void symldl_v2_constructor_setup_fragment_metadata(
+    xLUstruct_t<Ftype> *lu)
+{
+    if (!lu->useSymV2Solve())
+        return;
+
+    symldl_v2_initialize_pcfrag_tables(lu);
+#ifdef HAVE_CUDA
+    symldl_v2_build_partner_l_send_maps(lu);
+    symldl_v2_build_partner_l_recv_maps(lu);
+    symldl_v2_build_row_down_maps(lu);
+#endif
+    symldl_v2_allocate_fragment_host_buffers(lu);
+}
+
+template <typename Ftype>
+static void symldl_v2_constructor_materialize_gpu_metadata(
+    xLUstruct_t<Ftype> *lu)
+{
+#ifdef HAVE_CUDA
+    if (lu->useSymV2Solve())
+        symldl_v2_materialize_pcfrag_metadata(lu);
+#else
+    (void) lu;
+#endif
+}

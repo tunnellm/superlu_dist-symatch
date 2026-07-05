@@ -167,9 +167,9 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 
     if (sym_v2_mode)
     {
-        symldl_v2_build_l_panels(this, LUstruct,
-                                 localLvalSendCounts,
-                                 localLidxSendCounts);
+        symldl_v2_constructor_build_l_panels(this, LUstruct,
+                                             localLvalSendCounts,
+                                             localLidxSendCounts);
     }
     else
     {
@@ -245,9 +245,9 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 
     if (sym_v2_mode)
     {
-        symldl_v2_exchange_l_panel_counts(this,
-                                          localLvalSendCounts,
-                                          localLidxSendCounts);
+        symldl_v2_constructor_exchange_l_counts(this,
+                                                localLvalSendCounts,
+                                                localLidxSendCounts);
     }
     else
     {
@@ -283,9 +283,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxSymPartnerLvalCount = sym_v2_mode ? 0 : maxLvalCount;
     maxSymPartnerLidxCount = sym_v2_mode ? 0 : maxLidxCount;
     maxSymPartnerLSendStageCount = 0;
-    symldl_v2_compute_pcfrag_scratch(this, LUstruct);
-    if (sym_v2_mode)
-        symldl_v2_allocate_factor_workspace(this);
+    symldl_v2_constructor_setup_factor_workspace(this, LUstruct);
 
     // Allocate bigV, indirect
     nThreads = getNumThreads(iam);
@@ -330,15 +328,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         #endif
     }
     if (sym_v2_mode)
-    {
-        symldl_v2_initialize_pcfrag_tables(this);
-#ifdef HAVE_CUDA
-        symldl_v2_build_partner_l_send_maps(this);
-        symldl_v2_build_partner_l_recv_maps(this);
-        symldl_v2_build_row_down_maps(this);
-#endif
-        symldl_v2_allocate_fragment_host_buffers(this);
-    }
+        symldl_v2_constructor_setup_fragment_metadata(this);
 
     numDiagBufs = 2*options->num_lookaheads;
     diagFactBufs.resize(numDiagBufs);  /* Sherry?? numDiagBufs == 32 hard-coded */
@@ -381,8 +371,7 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     {
     #ifdef HAVE_CUDA
         setLUstruct_GPU();  /* Set up LU structure and buffers on GPU */
-        if (sym_v2_mode)
-            symldl_v2_materialize_pcfrag_metadata(this);
+        symldl_v2_constructor_materialize_gpu_metadata(this);
 	
         // TODO: remove it, checking is very slow 
         if(0)
