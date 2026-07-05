@@ -8,6 +8,7 @@
 #include "xlupanels.hpp"
 #include "gpu_mpi_utils.hpp"
 #include "symldl_v2_config.hpp"
+#include "symldl_v2_l_fragment_map_impl.cuh"
 
 #ifdef HAVE_CUDA
 
@@ -522,7 +523,8 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
             if (lpanel.isEmpty())
                 ABORT("SymFact V2 partner source L panel is missing.");
             double *sendbuf = partner_send_buffer(flat, count);
-            int_t *sendmap = symL2LSendMapsGPU[flat];
+            int_t *sendmap = symldl_v2_partner_send_map_gpu(
+                this, flat, count, stream_offset, stream);
             if (sendbuf == NULL || sendmap == NULL)
                 ABORT("SymFact V2 partner send map is missing.");
             int threads = 256;

@@ -231,6 +231,12 @@ symldl_v2_make_stream_workspace_spec(xLUstruct_t<Ftype> *lu,
         spec.pc_fragment_schur ? lu->maxSymV2RowFragIdxRecvCount : 0;
     spec.row_send_map_count =
         spec.pc_fragment_schur ? spec.row_stage_count : 0;
+    if (lu->useSymV2Solve() && lu->Pr > 1 &&
+        lu->symL2LSendMapPoolCount > 0 &&
+        lu->symL2LSendMapPoolGPU == NULL)
+        spec.row_send_map_count =
+            SUPERLU_MAX(spec.row_send_map_count,
+                        lu->maxSymPartnerLSendStageCount);
     spec.lookahead_u_count = lu->maxUvalCount;
     if (lu->useSymV2Solve() && lu->Pr <= 1)
         spec.lookahead_u_count =
@@ -299,10 +305,13 @@ static size_t symldl_v2_stream_workspace_bytes(
             offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                     spec.row_recv_idx_count)),
             sizeof(int_t), "SymFact V2 stream row fragment indices");
+    }
+    if (spec.row_send_map_count > 0)
+    {
         offset = symldl_v2_arena_advance(
             offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
                                                     spec.row_send_map_count)),
-            sizeof(int_t), "SymFact V2 stream row fragment send maps");
+            sizeof(int_t), "SymFact V2 stream L-fragment send maps");
     }
     if (spec.need_diag_work)
     {
@@ -446,12 +455,15 @@ static void symldl_v2_setup_gpu_stream_workspace(
                         (int_t)1, spec.row_recv_idx_count)),
                     sizeof(int_t),
                     "SymFact V2 stream row fragment indices"));
+        }
+        if (spec.row_send_map_count > 0)
+        {
             lu->A_gpu.symV2RowFragSendMapStageBufs[stream] =
                 static_cast<int_t *>(take(
                     static_cast<size_t>(SUPERLU_MAX(
                         (int_t)1, spec.row_send_map_count)),
                     sizeof(int_t),
-                    "SymFact V2 stream row fragment send maps"));
+                    "SymFact V2 stream L-fragment send maps"));
         }
         if (spec.need_diag_work)
         {

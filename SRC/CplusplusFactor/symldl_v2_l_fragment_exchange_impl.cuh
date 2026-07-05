@@ -5,6 +5,7 @@
 
 #include "xlupanels.hpp"
 #include "symldl_v2_config.hpp"
+#include "symldl_v2_l_fragment_map_impl.cuh"
 
 #ifdef HAVE_CUDA
 
@@ -200,7 +201,8 @@ static int_t symldl_v2_l_fragment_exchange(
                 ABORT("SymFact V2 L-fragment source panel is missing.");
 
             double *sendbuf = partner_send_buffer(flat, count);
-            int_t *sendmap = lu->symL2LSendMapsGPU[flat];
+            int_t *sendmap = symldl_v2_partner_send_map_gpu(
+                lu, flat, count, stream_offset, stream);
             if (sendbuf == NULL || sendmap == NULL)
                 ABORT("SymFact V2 L-fragment send map is missing.");
 
