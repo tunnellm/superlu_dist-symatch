@@ -10,6 +10,7 @@
 #endif
 #include "lupanels.hpp"  //unneeded??
 #include "xlupanels.hpp"
+#include "symldl_v2_workspace_impl.hpp"
 #include "superlu_blas.hpp"
 
 template <typename Ftype>
@@ -93,10 +94,6 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
 			     options(options_), stat(stat_),
 			     thresh(thresh_), info(info_), anc25d(grid3d_in)
 {
-    maxLvl = log2i(grid3d->zscp.Np) + 1;
-    isNodeInMyGrid = getIsNodeInMyGrid(nsupers, maxLvl, trf3Dpartition->myNodeCount, trf3Dpartition->treePerm);
-    superlu_acc_offload = sp_ienv_dist(10, options); // get_acc_offload();
-
 #if (DEBUGlevel >= 1)
     CHECK_MALLOC(grid3d_in->iam, "Enter xLUstruct_t constructor");
 #endif
@@ -110,55 +107,89 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
         (options != NULL && options->SymFact == YES)
             ? superlu_sym_v2_gpu3d_version()
             : 0;
+    maxLvl = symV2ForestLevelCount();
+    isNodeInMyGrid = symV2ScheduleActive()
+                         ? symldl_v2_make_node_mask(this)
+                         : getIsNodeInMyGrid(nsupers, maxLvl,
+                                             trf3Dpartition->myNodeCount,
+                                             trf3Dpartition->treePerm);
+    superlu_acc_offload = sp_ienv_dist(10, options); // get_acc_offload();
+    if (options != NULL && options->SymFact == YES)
+    {
+        symFactTagUb = set_tag_ub();
+        if (symFactTagUb <= 0)
+            ABORT("Invalid MPI tag upper bound for SymFact communication.");
+        symldl_v2_initialize_diag_state(this);
+    }
     xsup = LUstruct->Glu_persist->xsup;
     int_t **Lrowind_bc_ptr = LUstruct->Llu->Lrowind_bc_ptr;
     int_t **Ufstnz_br_ptr = LUstruct->Llu->Ufstnz_br_ptr;
     Ftype **Lnzval_bc_ptr = LUstruct->Llu->Lnzval_bc_ptr;
     Ftype **Unzval_br_ptr = LUstruct->Llu->Unzval_br_ptr;
 
-    lPanelVec = new xlpanel_t<Ftype>[CEILING(nsupers, Pc)];
-    uPanelVec = new xupanel_t<Ftype>[CEILING(nsupers, Pr)];
+    const bool sym_v2_mode = useSymV2Solve();
+    const bool need_u_panel_storage = needsUPanelStorage();
+    const int_t localPanelCount = symV2PanelCount();
+    const int_t localRowCount = symV2RowCount();
+    const int_t panelVecCount = SUPERLU_MAX((int_t)1, localPanelCount);
+    const int_t rowVecCount = SUPERLU_MAX((int_t)1, localRowCount);
+
+    lPanelVec = new xlpanel_t<Ftype>[panelVecCount];
+    uPanelVec = need_u_panel_storage ? new xupanel_t<Ftype>[rowVecCount] : NULL;
     // create the lvectors
     maxLvalCount = 0;
     maxLidxCount = 0;
     maxUvalCount = 0;
     maxUidxCount = 0;
 
-    std::vector<int_t> localLvalSendCounts(CEILING(nsupers, Pc), 0);
-    std::vector<int_t> localUvalSendCounts(CEILING(nsupers, Pr), 0);
-    std::vector<int_t> localLidxSendCounts(CEILING(nsupers, Pc), 0);
-    std::vector<int_t> localUidxSendCounts(CEILING(nsupers, Pr), 0);
+    std::vector<int_t> localLvalSendCounts(panelVecCount, 0);
+    std::vector<int_t> localUvalSendCounts(rowVecCount, 0);
+    std::vector<int_t> localLidxSendCounts(panelVecCount, 0);
+    std::vector<int_t> localUidxSendCounts(rowVecCount, 0);
 
-    for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
+    if (sym_v2_mode)
     {
-        int_t k0 = i * Pc + mycol;
-        if (Lrowind_bc_ptr[i] != NULL && isNodeInMyGrid[k0] == 1)
+        symldl_v2_build_l_panels(this, LUstruct,
+                                 localLvalSendCounts,
+                                 localLidxSendCounts);
+    }
+    else
+    {
+        for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
         {
-            int_t isDiagIncluded = 0;
+            int_t k0 = i * Pc + mycol;
+            if (Lrowind_bc_ptr[i] != NULL && isNodeInMyGrid[k0] == 1)
+            {
+                int_t isDiagIncluded = 0;
 
-            if (myrow == krow(k0))
-                isDiagIncluded = 1;
-            xlpanel_t<Ftype> lpanel(k0, Lrowind_bc_ptr[i], Lnzval_bc_ptr[i], xsup, isDiagIncluded);
-            lPanelVec[i] = lpanel;
-            maxLvalCount = std::max(lPanelVec[i].nzvalSize(), maxLvalCount);
-            maxLidxCount = std::max(lPanelVec[i].indexSize(), maxLidxCount);
-            localLvalSendCounts[i] = lPanelVec[i].nzvalSize();
-            localLidxSendCounts[i] = lPanelVec[i].indexSize();
+                if (myrow == krow(k0))
+                    isDiagIncluded = 1;
+                xlpanel_t<Ftype> lpanel(k0, Lrowind_bc_ptr[i], Lnzval_bc_ptr[i], xsup, isDiagIncluded);
+                lPanelVec[i] = lpanel;
+                maxLvalCount = std::max(lPanelVec[i].nzvalSize(), maxLvalCount);
+                maxLidxCount = std::max(lPanelVec[i].indexSize(), maxLidxCount);
+                localLvalSendCounts[i] = lPanelVec[i].nzvalSize();
+                localLidxSendCounts[i] = lPanelVec[i].indexSize();
+            }
         }
     }
 
     // create the vectors
-    for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
+    if (need_u_panel_storage)
     {
-        if (Ufstnz_br_ptr[i] != NULL && isNodeInMyGrid[i * Pr + myrow] == 1)
+        for (int_t i = 0; i < localRowCount; ++i)
         {
-            int_t globalId = i * Pr + myrow;
-            xupanel_t<Ftype> upanel(globalId, Ufstnz_br_ptr[i], Unzval_br_ptr[i], xsup);
-            uPanelVec[i] = upanel;
-            maxUvalCount = std::max(uPanelVec[i].nzvalSize(), maxUvalCount);
-            maxUidxCount = std::max(uPanelVec[i].indexSize(), maxUidxCount);
-            localUvalSendCounts[i] = uPanelVec[i].nzvalSize();
-            localUidxSendCounts[i] = uPanelVec[i].indexSize();
+            int_t globalId = sym_v2_mode ? symV2RowGid(i) : i * Pr + myrow;
+            if (Ufstnz_br_ptr != NULL && Unzval_br_ptr != NULL &&
+                Ufstnz_br_ptr[i] != NULL && isNodeInMyGrid[globalId] == 1)
+            {
+                xupanel_t<Ftype> upanel(globalId, Ufstnz_br_ptr[i], Unzval_br_ptr[i], xsup);
+                uPanelVec[i] = upanel;
+                maxUvalCount = std::max(uPanelVec[i].nzvalSize(), maxUvalCount);
+                maxUidxCount = std::max(uPanelVec[i].indexSize(), maxUidxCount);
+                localUvalSendCounts[i] = uPanelVec[i].nzvalSize();
+                localUidxSendCounts[i] = uPanelVec[i].indexSize();
+            }
         }
     }
 
@@ -169,50 +200,62 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     LidxSendCounts.resize(nsupers);
     UidxSendCounts.resize(nsupers);
 
-    std::vector<int_t> recvBuf(std::max(CEILING(nsupers, Pr), CEILING(nsupers, Pc)), 0);
+    std::vector<int_t> recvBuf(std::max(rowVecCount, panelVecCount), 0);
 
-    for (int pr = 0; pr < Pr; pr++)
+    if (!sym_v2_mode)
     {
-        int npr = CEILING(nsupers, Pr);
-        std::copy(localUvalSendCounts.begin(), localUvalSendCounts.end(), recvBuf.begin());
-        // Send the value counts ;
-        MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
-        for (int i = 0; i * Pr + pr < nsupers; i++)
+        for (int pr = 0; pr < Pr; pr++)
         {
-            UvalSendCounts[i * Pr + pr] = recvBuf[i];
-        }
+            int npr = CEILING(nsupers, Pr);
+            std::copy(localUvalSendCounts.begin(), localUvalSendCounts.end(), recvBuf.begin());
+            // Send the value counts ;
+            MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
+            for (int i = 0; i * Pr + pr < nsupers; i++)
+            {
+                UvalSendCounts[i * Pr + pr] = recvBuf[i];
+            }
 
-        std::copy(localUidxSendCounts.begin(), localUidxSendCounts.end(), recvBuf.begin());
-        // send the index count
-        MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
-        for (int i = 0; i * Pr + pr < nsupers; i++)
-        {
-            UidxSendCounts[i * Pr + pr] = recvBuf[i];
+            std::copy(localUidxSendCounts.begin(), localUidxSendCounts.end(), recvBuf.begin());
+            // send the index count
+            MPI_Bcast((void *)recvBuf.data(), npr, mpi_int_t, pr, grid3d->cscp.comm);
+            for (int i = 0; i * Pr + pr < nsupers; i++)
+            {
+                UidxSendCounts[i * Pr + pr] = recvBuf[i];
+            }
         }
     }
 
-    for (int pc = 0; pc < Pc; pc++)
+    if (sym_v2_mode)
     {
-        int npc = CEILING(nsupers, Pc);
-        std::copy(localLvalSendCounts.begin(), localLvalSendCounts.end(), recvBuf.begin());
-        // Send the value counts ;
-        MPI_Bcast((void *)recvBuf.data(), npc, mpi_int_t, pc, grid3d->rscp.comm);
-        for (int i = 0; i * Pc + pc < nsupers; i++)
+        symldl_v2_exchange_l_panel_counts(this,
+                                          localLvalSendCounts,
+                                          localLidxSendCounts);
+    }
+    else
+    {
+        for (int pc = 0; pc < Pc; pc++)
         {
-            LvalSendCounts[i * Pc + pc] = recvBuf[i];
-        }
+            int npc = CEILING(nsupers, Pc);
+            std::copy(localLvalSendCounts.begin(), localLvalSendCounts.end(), recvBuf.begin());
+            // Send the value counts ;
+            MPI_Bcast((void *)recvBuf.data(), npc, mpi_int_t, pc, grid3d->rscp.comm);
+            for (int i = 0; i * Pc + pc < nsupers; i++)
+            {
+                LvalSendCounts[i * Pc + pc] = recvBuf[i];
+            }
 
-        std::copy(localLidxSendCounts.begin(), localLidxSendCounts.end(), recvBuf.begin());
-        // send the index count
-        MPI_Bcast((void *)recvBuf.data(), npc, mpi_int_t, pc, grid3d->rscp.comm);
-        for (int i = 0; i * Pc + pc < nsupers; i++)
-        {
-            LidxSendCounts[i * Pc + pc] = recvBuf[i];
+            std::copy(localLidxSendCounts.begin(), localLidxSendCounts.end(), recvBuf.begin());
+            // send the index count
+            MPI_Bcast((void *)recvBuf.data(), npc, mpi_int_t, pc, grid3d->rscp.comm);
+            for (int i = 0; i * Pc + pc < nsupers; i++)
+            {
+                LidxSendCounts[i * Pc + pc] = recvBuf[i];
+            }
         }
     }
 
-    maxUvalCount = *std::max_element(UvalSendCounts.begin(), UvalSendCounts.end());
-    maxUidxCount = *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
+    maxUvalCount = sym_v2_mode ? 0 : *std::max_element(UvalSendCounts.begin(), UvalSendCounts.end());
+    maxUidxCount = sym_v2_mode ? 0 : *std::max_element(UidxSendCounts.begin(), UidxSendCounts.end());
     maxLvalCount = *std::max_element(LvalSendCounts.begin(), LvalSendCounts.end());
     maxLidxCount = *std::max_element(LidxSendCounts.begin(), LidxSendCounts.end());
 
@@ -237,9 +280,13 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     for (int i = 0; i < options->num_lookaheads; i++)
     {
         LvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(sizeof(Ftype) * maxLvalCount);
-        UvalRecvBufs[i] = (Ftype *)SUPERLU_MALLOC(sizeof(Ftype) * maxUvalCount);
+        UvalRecvBufs[i] = need_u_panel_storage
+            ? (Ftype *)SUPERLU_MALLOC(sizeof(Ftype) * maxUvalCount)
+            : NULL;
         LidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(sizeof(int_t) * maxLidxCount);
-        UidxRecvBufs[i] = (int_t *)SUPERLU_MALLOC(sizeof(int_t) * maxUidxCount);
+        UidxRecvBufs[i] = need_u_panel_storage
+            ? (int_t *)SUPERLU_MALLOC(sizeof(int_t) * maxUidxCount)
+            : NULL;
 
         //TODO: check if setup correctly
         #pragma warning disabling bcaststruct 

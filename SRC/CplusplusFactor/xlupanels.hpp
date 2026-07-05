@@ -590,25 +590,47 @@ struct xLUstruct_t
         /* Yang: Deallocate the lPanelVec[i] and uPanelVec[i] here instead of using destructors ~lpanel_t or ~upanel_t,
         as xlpanel_t/upanel_t is used for holding temporary communication buffers as well. Note that lPanelVec[i].val is not deallocated here as it's pointing to the L data in the C code*/
 
-        for (int_t i = 0; i < CEILING(nsupers, Pc); ++i)
-            if (i * Pc + mycol < nsupers && isNodeInMyGrid[i * Pc + mycol] == 1)
+        int_t localPanelCount = symV2PanelCount();
+        for (int_t i = 0; i < localPanelCount; ++i)
+        {
+            int_t gid = symV2PanelGid(i);
+            if (gid < nsupers && isNodeInMyGrid != NULL &&
+                isNodeInMyGrid[gid] == 1)
             {
                 if (lPanelVec[i].index)
                     SUPERLU_FREE(lPanelVec[i].index);
                 // SUPERLU_FREE(lPanelVec[i].val);
             }
+        }
 
-        for (int_t i = 0; i < CEILING(nsupers, Pr); ++i)
-            if (i * Pr + myrow < nsupers && isNodeInMyGrid[i * Pr + myrow] == 1)
+        if (uPanelVec != NULL)
+        {
+            int_t localRowCount = symV2RowCount();
+            for (int_t i = 0; i < localRowCount; ++i)
             {
-                if (uPanelVec[i].index)
-                    SUPERLU_FREE(uPanelVec[i].index);
-                if (uPanelVec[i].val)
-                    SUPERLU_FREE(uPanelVec[i].val);
+                int_t gid = symV2RowGid(i);
+                if (gid < nsupers && isNodeInMyGrid != NULL &&
+                    isNodeInMyGrid[gid] == 1)
+                {
+                    if (uPanelVec[i].index)
+                        SUPERLU_FREE(uPanelVec[i].index);
+                    if (uPanelVec[i].val)
+                        SUPERLU_FREE(uPanelVec[i].val);
+                }
             }
+        }
 
         delete[] lPanelVec;
-        delete[] uPanelVec;
+        if (uPanelVec != NULL)
+            delete[] uPanelVec;
+
+        if (symFactWork != NULL)
+            SUPERLU_FREE(symFactWork);
+        if (symFactIPIV != NULL)
+            SUPERLU_FREE(symFactIPIV);
+        for (size_t i = 0; i < symV2DiagBlocks.size(); ++i)
+            if (symV2DiagBlocks[i] != NULL)
+                SUPERLU_FREE(symV2DiagBlocks[i]);
 
         /* free diagonal L and U blocks */
         // dfreeDiagFactBufsArr(maxLeafNodes, dFBufs);
@@ -638,6 +660,36 @@ struct xLUstruct_t
             // printf(".. free batch buffers\n");  fflush(stdout);
             SUPERLU_FREE(A_gpu.dFBufs);
             SUPERLU_FREE(A_gpu.gpuGemmBuffs);
+
+#ifdef HAVE_CUDA
+            if (symV2PartnerLSendBufPoolGPU != NULL)
+                cudaFree(symV2PartnerLSendBufPoolGPU);
+            if (symL2LSendMapPoolGPU != NULL)
+                cudaFree(symL2LSendMapPoolGPU);
+            if (symV2PartnerLRecvMapPoolGPU != NULL)
+                cudaFree(symV2PartnerLRecvMapPoolGPU);
+            if (symV2RowFragRecvMapPoolGPU != NULL)
+                cudaFree(symV2RowFragRecvMapPoolGPU);
+            if (symV2RowDownSendSegPoolGPU != NULL)
+                cudaFree(symV2RowDownSendSegPoolGPU);
+            if (symV2LPanelArenaGPU != NULL)
+                cudaFree(symV2LPanelArenaGPU);
+            if (symV2StreamArenaGPU != NULL)
+                cudaFree(symV2StreamArenaGPU);
+            if (symV2GemmArenaGPU != NULL)
+                cudaFree(symV2GemmArenaGPU);
+            if (symV2PartnerLHostSendPoolPinned != NULL)
+                cudaFreeHost(symV2PartnerLHostSendPoolPinned);
+            if (symV2PartnerLHostRecvPoolPinned != NULL)
+                cudaFreeHost(symV2PartnerLHostRecvPoolPinned);
+            if (symV2RowFragHostRecvPoolPinned != NULL)
+                cudaFreeHost(symV2RowFragHostRecvPoolPinned);
+            if (symV2RowFragHostSendPoolPinned != NULL)
+                cudaFreeHost(symV2RowFragHostSendPoolPinned);
+            for (size_t i = 0; i < symV2DiagBlocksGPU.size(); ++i)
+                if (symV2DiagBlocksGPU[i] != NULL)
+                    cudaFree(symV2DiagBlocksGPU[i]);
+#endif
 
             for (int stream = 0; stream < A_gpu.numCudaStreams; stream++)
             {
@@ -883,5 +935,7 @@ inline bool xLUstruct_t<Ftype>::symV2ScheduleActive() const
 template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2ForestLevelCount() const
 {
-    return symV2ScheduleActive() ? trf3Dpartition->maxLvl : maxLvl;
+    return symV2ScheduleActive()
+               ? trf3Dpartition->maxLvl
+               : (grid3d != NULL ? log2i(grid3d->zscp.Np) + 1 : maxLvl);
 }
