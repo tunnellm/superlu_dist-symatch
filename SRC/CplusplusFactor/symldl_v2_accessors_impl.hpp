@@ -108,31 +108,36 @@ inline bool xLUstruct_t<Ftype>::symV2UsePcFragmentSchurPanel(int_t) const
 template <>
 inline int_t xLUstruct_t<double>::symV2PanelRoot(int_t k)
 {
-    return symldl_v2_panel_root(trf3Dpartition, k, grid);
+    return useSymV2Solve() ? symldl_v2_panel_root(trf3Dpartition, k, grid)
+                           : kcol(k);
 }
 
 template <>
 inline int_t xLUstruct_t<double>::symV2DiagRoot(int_t k)
 {
-    return symldl_v2_diag_root(trf3Dpartition, k, grid);
+    return useSymV2Solve() ? symldl_v2_diag_root(trf3Dpartition, k, grid)
+                           : krow(k);
 }
 
 template <>
 inline int_t xLUstruct_t<double>::symV2DiagProc(int_t k)
 {
-    return symldl_v2_owner_2d(trf3Dpartition, k, grid);
+    return useSymV2Solve() ? symldl_v2_owner_2d(trf3Dpartition, k, grid)
+                           : procIJ(k, k);
 }
 
 template <>
 inline int_t xLUstruct_t<double>::symV2PanelIndex(int_t k)
 {
-    return symldl_v2_panel_local_index(trf3Dpartition, k);
+    return useSymV2Solve() ? symldl_v2_panel_local_index(trf3Dpartition, k)
+                           : g2lCol(k);
 }
 
 template <>
 inline int_t xLUstruct_t<double>::symV2RowIndex(int_t k)
 {
-    return symldl_v2_row_local_index(trf3Dpartition, k);
+    return useSymV2Solve() ? symldl_v2_row_local_index(trf3Dpartition, k)
+                           : g2lRow(k);
 }
 
 template <>

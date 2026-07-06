@@ -41,6 +41,26 @@ void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct, gridinfo3d_t *g
     sForest_t **sForests = getForests(maxLvl, nsupers, setree, treeList);
 
     dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
+    trf3Dpart->iperm_c_supno = NULL;
+    trf3Dpart->LUvsb = NULL;
+    trf3Dpart->superGridMap = NULL;
+    trf3Dpart->symV2DiagOwner = NULL;
+    trf3Dpart->symV2PanelRoot = NULL;
+    trf3Dpart->symV2DiagRoot = NULL;
+    trf3Dpart->symV2PanelLocalIndex = NULL;
+    trf3Dpart->symV2RowLocalIndex = NULL;
+    trf3Dpart->symV2LocalPanelGids = NULL;
+    trf3Dpart->symV2LocalRowGids = NULL;
+    trf3Dpart->symV2LocalPanelCount = 0;
+    trf3Dpart->symV2LocalRowCount = 0;
+    trf3Dpart->symV2ScheduleEnabled = 0;
+    trf3Dpart->symV2FactorLevelCount = 0;
+    trf3Dpart->symV2FactorLevelPtr = NULL;
+    trf3Dpart->symV2FactorNodes = NULL;
+    trf3Dpart->symV2NodeLevel = NULL;
+    trf3Dpart->symV2NodeOrder = NULL;
+    trf3Dpart->symV2NodeIperm = NULL;
+    trf3Dpart->gemmCsizes = NULL;
     trf3Dpart->sForests = sForests;
     trf3Dpart->nsupers = nsupers;
       int_t *myTreeIdxs = getGridTrees(grid3d);
@@ -329,5 +349,4 @@ void dbcastPermutedSparseA(SuperMatrix *A,
 #endif
 
 }
-
 
