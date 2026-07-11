@@ -1,4 +1,5 @@
 #include "dsymldl_v2_driver.h"
+#include "dsymldl_v2_grid_report.h"
 
 int dSymV2SolveEnabled(superlu_dist_options_t *options, int gpu3dVersion)
 {
@@ -88,6 +89,23 @@ void dSymV2PrintFactorStats(int_t n, dLUstruct_t *LUstruct,
     float mem_stage[3] = {0.0, 0.0, 0.0};
     struct { float val; int rank; } local_struct, global_struct;
     int nprocs3d = grid3d->nprow * grid3d->npcol * grid3d->npdep;
+    dSymLDLV2MemoryEstimate predicted_memory;
+    int prediction_valid =
+        dSymLDLV2GetCurrentGridPrediction(&predicted_memory);
+    uint64_t local_gpu_usage = 0;
+    uint64_t maximum_gpu_usage = 0;
+    int local_gpu_usage_valid = 0;
+    int all_gpu_usage_valid = 0;
+
+    if (prediction_valid)
+    {
+        local_gpu_usage_valid =
+            dSymLDLV2GetCurrentGridGPUUsage(&local_gpu_usage);
+        MPI_Allreduce(&local_gpu_usage_valid, &all_gpu_usage_valid, 1,
+                      MPI_INT, MPI_MIN, grid3d->comm);
+        MPI_Reduce(&local_gpu_usage, &maximum_gpu_usage, 1, MPI_UINT64_T,
+                   MPI_MAX, 0, grid3d->comm);
+    }
 
     MPI_Allreduce(&tiny_pivots_local, &stat->TinyPivots, 1,
                   mpi_int_t, MPI_SUM, grid3d->comm);
@@ -168,6 +186,30 @@ void dSymV2PrintFactorStats(int_t n, dLUstruct_t *LUstruct,
                "\t. max at rank %d, peak buffer (MB):    %8.2f\n",
                lu_max_rank, lu_max_mem,
                buffer_peak_rank, buffer_peak);
+        if (prediction_valid)
+        {
+            int predicted_streams = dSymLDLV2GetCurrentGridGPUStreamCap();
+            int actual_streams = dSymLDLV2GetCurrentGridGPUStreamsUsed();
+            double predicted_host_mb =
+                (double) predicted_memory.host_high_water_per_rank * 1e-6;
+            double predicted_gpu_mb =
+                (double) predicted_memory.gpu_high_water_per_rank * 1e-6;
+            printf("** SymLDL grid memory calibration (MB):\n"
+                   "    predicted host/rank : %8.2f | tracked actual max : %8.2f\n",
+                   predicted_host_mb, all_highmark_mem);
+            if (all_gpu_usage_valid)
+                printf("    predicted GPU/rank  : %8.2f | sampled actual max : %8.2f\n",
+                       predicted_gpu_mb,
+                       (double) maximum_gpu_usage * 1e-6);
+            else
+                printf("    predicted GPU/rank  : %8.2f\n",
+                       predicted_gpu_mb);
+            if (predicted_streams > 0 && actual_streams > 0)
+                printf("    GPU streams auto cap/used: %8d | %8d\n",
+                       predicted_streams, actual_streams);
+            else if (actual_streams > 0)
+                printf("    GPU streams used    : %8d\n", actual_streams);
+        }
         printf("**************************************************\n\n");
         printf("** number of Tiny Pivots: %8d\n\n", stat->TinyPivots);
         printf("** number of 2x2 Pivots by sytrf: %8d\n\n", stat->sytrf_2x2);
@@ -176,4 +218,5 @@ void dSymV2PrintFactorStats(int_t n, dLUstruct_t *LUstruct,
         printf("info %10d\n", *info);
         fflush(stdout);
     }
+    dSymLDLV2SetCurrentGridPrediction(NULL);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <cstring>
 
 #include "superlu_ddefs.h"
 #include "gpuCommon.hpp"
@@ -48,6 +49,71 @@ static inline size_t superlu_gpu_memory_per_process(MPI_Comm baseCommunicator)
     cudaMemGetInfo(&mfree, &mtotal);
     return (size_t)(SUPERLU_GPU_USABLE_MEM_FRACTION * (double)mfree) /
         superlu_gpu_processes_per_device(baseCommunicator);
+}
+
+static inline size_t superlu_gpu_memory_per_process_detected(
+    MPI_Comm baseCommunicator)
+{
+    constexpr int deviceIdentitySize = 64;
+    int device_id = 0;
+    if (cudaGetDevice(&device_id) != cudaSuccess)
+        return 0;
+
+    MPI_Comm sharedComm = MPI_COMM_NULL;
+    if (MPI_Comm_split_type(baseCommunicator, MPI_COMM_TYPE_SHARED,
+                            0, MPI_INFO_NULL, &sharedComm) != MPI_SUCCESS)
+        return 0;
+
+    int localRanks = 1;
+    MPI_Comm_size(sharedComm, &localRanks);
+    char deviceIdentity[deviceIdentitySize] = {0};
+    int identityReady =
+        cudaDeviceGetPCIBusId(deviceIdentity, deviceIdentitySize,
+                              device_id) == cudaSuccess;
+    int allIdentitiesReady = 0;
+    MPI_Allreduce(&identityReady, &allIdentitiesReady, 1, MPI_INT, MPI_MIN,
+                  sharedComm);
+    if (!allIdentitiesReady ||
+        static_cast<size_t>(localRanks) >
+            static_cast<size_t>(-1) / deviceIdentitySize)
+    {
+        MPI_Comm_free(&sharedComm);
+        return 0;
+    }
+
+    char *nodeDeviceIdentities = static_cast<char *>(std::malloc(
+        static_cast<size_t>(localRanks) * deviceIdentitySize));
+    int allocationReady = nodeDeviceIdentities != nullptr;
+    int allAllocationsReady = 0;
+    MPI_Allreduce(&allocationReady, &allAllocationsReady, 1, MPI_INT, MPI_MIN,
+                  sharedComm);
+    if (!allAllocationsReady)
+    {
+        std::free(nodeDeviceIdentities);
+        MPI_Comm_free(&sharedComm);
+        return 0;
+    }
+
+    MPI_Allgather(deviceIdentity, deviceIdentitySize, MPI_CHAR,
+                  nodeDeviceIdentities, deviceIdentitySize, MPI_CHAR,
+                  sharedComm);
+    int procsPerGpu = 0;
+    for (int rank = 0; rank < localRanks; ++rank)
+    {
+        const char *identity = nodeDeviceIdentities +
+            static_cast<size_t>(rank) * deviceIdentitySize;
+        if (std::memcmp(deviceIdentity, identity, deviceIdentitySize) == 0)
+            ++procsPerGpu;
+    }
+    std::free(nodeDeviceIdentities);
+    MPI_Comm_free(&sharedComm);
+
+    size_t mfree = 0;
+    size_t mtotal = 0;
+    if (cudaMemGetInfo(&mfree, &mtotal) != cudaSuccess)
+        return 0;
+    return (size_t)(SUPERLU_GPU_USABLE_MEM_FRACTION * (double)mfree) /
+        SUPERLU_MAX(procsPerGpu, 1);
 }
 
 static inline int superlu_gpu_getrf_workspace_size(int ldt, int enabled)

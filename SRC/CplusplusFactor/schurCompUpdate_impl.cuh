@@ -672,11 +672,18 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     /*Mapping to device*/
     int deviceCount;
     cudaGetDeviceCount(&deviceCount); // How many GPUs?
-    int device_id = grid3d->iam % deviceCount;
-    cudaSetDevice(device_id);
+    if (!(sym_v2_mode && dSymLDLV2GetCurrentGridGPUStreamCap() > 0))
+    {
+        int device_id = grid3d->iam % deviceCount;
+        cudaSetDevice(device_id);
+    }
+    /* Automatic sizing retains the device selected and measured by grid setup. */
 
     double tRegion[5];
-    size_t useableGPUMem = superlu_gpu_memory_per_process(grid3d->comm);
+    size_t useableGPUMem =
+        sym_v2_mode && dSymLDLV2GetCurrentGridGPUStreamCap() > 0
+            ? superlu_gpu_memory_per_process_detected(grid3d->comm)
+            : superlu_gpu_memory_per_process(grid3d->comm);
     /**
      *  Memory is divided into two parts data memory and buffer memory
      *  data memory is used for useful data
@@ -768,7 +775,9 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
                          maxSymV2RowFragValSendCount) +
         A_gpu.gemmBufferSize * sizeof(Ftype) +
         ldt * ldt * sizeof(Ftype);
-    if (sym_v2_mode && superlu_sym_v2_workspace_arena_enabled())
+    if (sym_v2_mode &&
+        (superlu_sym_v2_workspace_arena_enabled() ||
+         dSymLDLV2GetCurrentGridGPUStreamCap() > 0))
     {
         dataPerStream = symldl_v2_stream_workspace_estimate<Ftype>(
             this, ldt, static_cast<size_t>(A_gpu.gemmBufferSize));
@@ -796,11 +805,15 @@ int_t xLUstruct_t<Ftype>::setLUstruct_GPU()
     int_t maxNumberOfStream = (useableGPUMem - memReqData) / dataPerStream;
 
     int numberOfStreams = SUPERLU_MIN(getNumLookAhead(options), maxNumberOfStream);
+    if (sym_v2_mode)
+        numberOfStreams = symldl_v2_limit_gpu_streams(numberOfStreams);
     numberOfStreams = SUPERLU_MIN(numberOfStreams, MAX_CUDA_STREAMS);
     int rNumberOfStreams;
     MPI_Allreduce(&numberOfStreams, &rNumberOfStreams, 1,
                   MPI_INT, MPI_MIN, grid3d->comm);
     A_gpu.numCudaStreams = rNumberOfStreams;
+    if (sym_v2_mode)
+        dSymLDLV2SetCurrentGridGPUStreamsUsed(rNumberOfStreams);
     symldl_v2_setup_raw_panel_ring(this, rNumberOfStreams);
 
 #if ( PRNTlevel>=1 )

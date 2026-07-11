@@ -71,6 +71,13 @@ function(add_superlu_dist_tests target input)
 endfunction(add_superlu_dist_tests)
 
 if(enable_double)
+  add_executable(dsymldl_v2_grid_selector_test
+                 dsymldl_v2_grid_selector_test.c)
+  target_link_libraries(dsymldl_v2_grid_selector_test ${all_link_libs})
+  target_compile_features(dsymldl_v2_grid_selector_test PUBLIC c_std_99)
+  add_test(NAME dsymldl_v2_grid_selector
+           COMMAND dsymldl_v2_grid_selector_test)
+
   set(DTEST pdtest.c dcreate_matrix.c pdcompute_resid.c)
   add_executable(pdtest ${DTEST})
   target_link_libraries(pdtest ${all_link_libs})

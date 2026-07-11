@@ -1,12 +1,13 @@
 #pragma once
 
 #include "xlupanels.hpp"
+#include "dsymldl_v2_workspace_size.h"
 
 #ifdef HAVE_CUDA
 
 static inline size_t symldl_v2_arena_align(size_t value)
 {
-    const size_t alignment = 256;
+    const size_t alignment = DSYMLDL_V2_GPU_ARENA_ALIGNMENT;
     const size_t mask = alignment - 1;
     if (value > static_cast<size_t>(-1) - mask)
         ABORT("SymFact V2 GPU arena alignment overflows.");

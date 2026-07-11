@@ -35,6 +35,7 @@ at the top-level directory.
 //#include "TRF3dV100/superlu_summit.h"
 #include "superlu_upacked.h"
 #include "dsymldl_v2_driver.h"
+#include "dsymldl_v2_pregrid.h"
 // #include "pddistribute3d.h"
 
 // #include "dssvx3dAux.c"
@@ -519,11 +520,39 @@ at the top-level directory.
  * </pre>
  */
 
+typedef struct {
+    const dSymLDLV2GridRequest *request;
+    uint64_t input_nnz;
+    const dSymLDLV2GridRuntimeConfig *runtime;
+    dSymLDLV2GridSelection *selection;
+    char *error;
+    size_t error_size;
+    int success;
+} dSymLDLV2PreGridContext;
+
+static void pdgssvx3dImpl(
+    superlu_dist_options_t *options, SuperMatrix *A,
+    dScalePermstruct_t *ScalePermstruct, double B[], int ldb, int nrhs,
+    gridinfo3d_t *grid3d, dLUstruct_t *LUstruct,
+    dSOLVEstruct_t *SOLVEstruct, double *berr, SuperLUStat_t *stat,
+    int *info, dSymLDLV2PreGridContext *pregrid_context);
+
 void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
-			   dScalePermstruct_t *ScalePermstruct,
-			   double B[], int ldb, int nrhs, gridinfo3d_t *grid3d,
-			   dLUstruct_t *LUstruct, dSOLVEstruct_t *SOLVEstruct,
-			   double *berr, SuperLUStat_t *stat, int *info)
+               dScalePermstruct_t *ScalePermstruct,
+               double B[], int ldb, int nrhs, gridinfo3d_t *grid3d,
+               dLUstruct_t *LUstruct, dSOLVEstruct_t *SOLVEstruct,
+               double *berr, SuperLUStat_t *stat, int *info)
+{
+    pdgssvx3dImpl(options, A, ScalePermstruct, B, ldb, nrhs, grid3d,
+                  LUstruct, SOLVEstruct, berr, stat, info, NULL);
+}
+
+static void pdgssvx3dImpl(
+    superlu_dist_options_t *options, SuperMatrix *A,
+    dScalePermstruct_t *ScalePermstruct, double B[], int ldb, int nrhs,
+    gridinfo3d_t *grid3d, dLUstruct_t *LUstruct,
+    dSOLVEstruct_t *SOLVEstruct, double *berr, SuperLUStat_t *stat,
+    int *info, dSymLDLV2PreGridContext *pregrid_context)
 {
     NRformat_loc *Astore = A->Store;
     SuperMatrix GA; /* Global A in NC format */
@@ -571,7 +600,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 #endif
 
     crs_info_t crs_info;
-    crs_info.crs_vrts  = NULL;    // Sherry: not free'd ?
+    crs_info.crs_vrts = NULL;
+    crs_info.ftoc = NULL;
 
 
     dtrf3Dpartition_t *trf3Dpartition=LUstruct->trf3Dpart;
@@ -627,8 +657,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     dGatherNRformat_loc3d_allgrid(options, Fact, (NRformat_loc *)A->Store,
 				     B, ldb, nrhs, grid3d, &A3d);
 
-    B = (double *)A3d->B2d; /* B is now pointing to B2d,
-			   allocated in dGatherNRformat_loc3d.  */
+    B = nrhs > 0 ? (double *) A3d->B2d : NULL;
     // PrintDouble5("after gather B=B2d", ldb, B);
 
     SOLVEstruct->A3d = A3d; /* This structure need to be persistent across
@@ -1319,6 +1348,38 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	rowptr = Astore->rowptr;
 	colind = Astore->colind;
 	Glu_persist = LUstruct->Glu_persist;
+
+    if (pregrid_context != NULL)
+    {
+        pregrid_context->success = dSymLDLV2SelectGridFromSymbolic(
+            nsupers, Glu_persist, Glu_freeable, etree,
+            pregrid_context->input_nnz, grid3d->comm,
+            pregrid_context->request, pregrid_context->runtime,
+            pregrid_context->selection, pregrid_context->error,
+            pregrid_context->error_size);
+        if (grid3d->iam == 0 &&
+            pregrid_context->selection->candidates != NULL)
+            dSymLDLV2PrintGridSelection(pregrid_context->selection,
+                                        0, 0, 0, 0);
+
+        if (Glu_freeable != NULL)
+        {
+            symbfact_SubFree(Glu_freeable);
+            SUPERLU_FREE(Glu_freeable);
+            Glu_freeable = NULL;
+        }
+        SUPERLU_FREE(crs_info.crs_vrts);
+        SUPERLU_FREE(crs_info.ftoc);
+        crs_info.crs_vrts = NULL;
+        crs_info.ftoc = NULL;
+        if (options->indicator_2x2 != NULL)
+        {
+            SUPERLU_FREE(options->indicator_2x2);
+            options->indicator_2x2 = NULL;
+        }
+        A->Store = Astore3d;
+        return;
+    }
 
 	// perform the  3D distribution
 	if (!factored)
@@ -2455,4 +2516,265 @@ if (grid3d->zscp.Iam == 0)  /* on 2D grid-0 */
 #if (DEBUGlevel >= 1)
 	CHECK_MALLOC(iam, "Exit pdgssvx3d()");
 #endif
+}
+
+static void dSymLDLV2DestroyAnalysisGather(dSOLVEstruct_t *solve)
+{
+    if (solve == NULL || solve->A3d == NULL)
+        return;
+
+    /* Analysis returns before solve scatter schedules are initialized. */
+    NRformat_loc3d *gather = solve->A3d;
+    NRformat_loc *matrix = gather->A_nfmt;
+    if (matrix != NULL)
+    {
+        SUPERLU_FREE(matrix->rowptr);
+        SUPERLU_FREE(matrix->colind);
+        SUPERLU_FREE(matrix->nzval);
+        SUPERLU_FREE(matrix);
+    }
+    SUPERLU_FREE(gather->row_counts_int);
+    SUPERLU_FREE(gather->row_disp);
+    SUPERLU_FREE(gather->nnz_counts_int);
+    SUPERLU_FREE(gather->nnz_disp);
+    SUPERLU_FREE(gather->b_counts_int);
+    SUPERLU_FREE(gather->b_disp);
+    SUPERLU_FREE(gather);
+    solve->A3d = NULL;
+}
+
+int dSymLDLV2AnalyzeDistributedMatrix(
+    superlu_dist_options_t *options, SuperMatrix *A,
+    gridinfo3d_t *analysis_grid, const dSymLDLV2GridRequest *request,
+    const dSymLDLV2GridRuntimeConfig *runtime,
+    dSymLDLV2GridSelection *selection,
+    char *error, size_t error_size)
+{
+    dScalePermstruct_t scale_permutation;
+    dLUstruct_t lu;
+    dSOLVEstruct_t solve;
+    SuperLUStat_t stat;
+    dSymLDLV2GridRequest effective_request;
+    dSymLDLV2AvailableMemory pregrid_available;
+    dSymLDLV2PreGridContext context;
+    NRformat_loc *store;
+    void *original_store;
+    uint64_t local_nnz;
+    uint64_t input_nnz;
+    uint64_t local_matrix_bytes;
+    uint64_t node_matrix_bytes;
+    uint64_t minimum_node_matrix_bytes;
+    MPI_Comm node_communicator = MPI_COMM_NULL;
+    int node_ranks;
+    int communicator_size;
+    int local_valid;
+    int all_valid;
+    int info = 0;
+
+    if (error != NULL && error_size > 0)
+        error[0] = '\0';
+    if (options == NULL || A == NULL || A->Store == NULL ||
+        analysis_grid == NULL || request == NULL || runtime == NULL ||
+        selection == NULL)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid analysis input is incomplete.");
+        return 0;
+    }
+    if (options->SymFact != YES || options->Fact != DOFACT ||
+        options->ParSymbFact != NO)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid analysis requires SymFact, DOFACT, and serial symbolic factorization.");
+        return 0;
+    }
+    if (A->Stype != SLU_NR_loc || A->Dtype != SLU_D ||
+        A->Mtype != SLU_GE || A->nrow != A->ncol)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid analysis requires a square distributed double matrix.");
+        return 0;
+    }
+
+    effective_request = *request;
+    local_valid = dSymLDLV2ApplyGridEnvironment(
+        &effective_request, error, error_size);
+    MPI_Allreduce(&local_valid, &all_valid, 1, MPI_INT, MPI_MIN,
+                  analysis_grid->comm);
+    if (!all_valid)
+    {
+        if (local_valid && error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL grid configuration is invalid on another MPI rank.");
+        return 0;
+    }
+    if (!dSymLDLV2DetectAvailableMemory(
+            analysis_grid->comm, &pregrid_available, error, error_size))
+        return 0;
+    if (runtime->gpu_offload &&
+        effective_request.gpu_memory_budget_bytes == 0 &&
+        !pregrid_available.gpu_memory_known)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL automatic grid selection could not determine available GPU memory; set SYMLDL_V2_GRID_GPU_BUDGET_BYTES to provide a budget.");
+        return 0;
+    }
+    if (effective_request.host_memory_budget_bytes == 0 &&
+        !pregrid_available.host_memory_known)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL automatic grid selection could not determine available host memory; set SYMLDL_V2_GRID_HOST_BUDGET_BYTES to provide a budget.");
+        return 0;
+    }
+    store = (NRformat_loc *) A->Store;
+    local_valid = store->nnz_loc >= 0 && store->m_loc >= 0 &&
+                  (uint64_t) store->nnz_loc <=
+                      UINT64_MAX / (sizeof(double) + sizeof(int_t));
+    MPI_Allreduce(&local_valid, &all_valid, 1, MPI_INT, MPI_MIN,
+                  analysis_grid->comm);
+    if (!all_valid)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid matrix storage is invalid on an MPI rank.");
+        return 0;
+    }
+    local_matrix_bytes = (uint64_t) store->nnz_loc *
+                         (sizeof(double) + sizeof(int_t));
+    local_valid = (uint64_t) store->m_loc + 1 <=
+                  (UINT64_MAX - local_matrix_bytes) / sizeof(int_t);
+    MPI_Allreduce(&local_valid, &all_valid, 1, MPI_INT, MPI_MIN,
+                  analysis_grid->comm);
+    if (!all_valid)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid matrix memory size overflows.");
+        return 0;
+    }
+    local_matrix_bytes += ((uint64_t) store->m_loc + 1) * sizeof(int_t);
+    if (MPI_Comm_split_type(analysis_grid->comm, MPI_COMM_TYPE_SHARED, 0,
+                            MPI_INFO_NULL,
+                            &node_communicator) != MPI_SUCCESS)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid node communicator creation failed.");
+        return 0;
+    }
+    MPI_Comm_size(node_communicator, &node_ranks);
+    local_valid = node_ranks >= 1 &&
+                  local_matrix_bytes <= UINT64_MAX / (uint64_t) node_ranks;
+    MPI_Allreduce(&local_valid, &all_valid, 1, MPI_INT, MPI_MIN,
+                  node_communicator);
+    if (!all_valid)
+    {
+        MPI_Comm_free(&node_communicator);
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid node matrix memory size overflows.");
+        return 0;
+    }
+    MPI_Allreduce(&local_matrix_bytes, &node_matrix_bytes, 1,
+                  MPI_UINT64_T, MPI_SUM, node_communicator);
+    MPI_Comm_free(&node_communicator);
+    MPI_Allreduce(&node_matrix_bytes, &minimum_node_matrix_bytes, 1,
+                  MPI_UINT64_T, MPI_MIN, analysis_grid->comm);
+    if (pregrid_available.host_memory_known)
+    {
+        if (UINT64_MAX - pregrid_available.available_host_bytes_per_node <
+            minimum_node_matrix_bytes)
+        {
+            if (error != NULL && error_size > 0)
+                snprintf(error, error_size,
+                         "SymLDL pre-grid host memory capacity overflows.");
+            return 0;
+        }
+        pregrid_available.available_host_bytes_per_node +=
+            minimum_node_matrix_bytes;
+    }
+    if (effective_request.gpu_memory_budget_bytes == 0 &&
+        pregrid_available.gpu_memory_known)
+        effective_request.gpu_memory_budget_bytes =
+            pregrid_available.available_gpu_bytes;
+    if (effective_request.host_memory_budget_bytes == 0 &&
+        pregrid_available.host_memory_known)
+        effective_request.host_memory_budget_bytes =
+            pregrid_available.available_host_bytes_per_node;
+
+    memset(&solve, 0, sizeof(solve));
+    memset(&context, 0, sizeof(context));
+    store = (NRformat_loc *) A->Store;
+    original_store = A->Store;
+    local_nnz = (uint64_t) store->nnz_loc;
+    MPI_Comm_size(analysis_grid->comm, &communicator_size);
+    local_valid = communicator_size > 0 &&
+                  local_nnz <= UINT64_MAX / (uint64_t) communicator_size;
+    MPI_Allreduce(&local_valid, &all_valid, 1, MPI_INT, MPI_MIN,
+                  analysis_grid->comm);
+    if (!all_valid)
+    {
+        if (error != NULL && error_size > 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid global nonzero count overflows.");
+        return 0;
+    }
+    MPI_Allreduce(&local_nnz, &input_nnz, 1, MPI_UINT64_T,
+                  MPI_SUM, analysis_grid->comm);
+    dSymLDLV2SetCurrentGridPrediction(NULL);
+
+    dScalePermstructInit(A->nrow, A->ncol, &scale_permutation);
+    dLUstructInit(A->ncol, &lu);
+    lu.Glu_persist->xsup = NULL;
+    lu.Glu_persist->supno = NULL;
+    PStatInit(&stat);
+
+    context.request = &effective_request;
+    context.input_nnz = input_nnz;
+    context.runtime = runtime;
+    context.selection = selection;
+    context.error = error;
+    context.error_size = error_size;
+    pdgssvx3dImpl(options, A, &scale_permutation, NULL, store->m_loc, 0,
+                  analysis_grid, &lu, &solve, NULL, &stat, &info, &context);
+    A->Store = original_store;
+
+    if (context.success)
+    {
+        const dSymLDLV2GridCandidate *selected =
+            &selection->candidates[selection->selected_index];
+        dSymLDLV2SetCurrentGridPrediction(&selected->memory);
+        dSymLDLV2SetCurrentGridGPUStreamCap(
+            selected->performance.estimated_gpu_streams);
+    }
+
+    dSymLDLV2DestroyAnalysisGather(&solve);
+    if (lu.Glu_persist != NULL)
+    {
+        SUPERLU_FREE(lu.Glu_persist->xsup);
+        SUPERLU_FREE(lu.Glu_persist->supno);
+        lu.Glu_persist->xsup = NULL;
+        lu.Glu_persist->supno = NULL;
+    }
+    dScalePermstructFree(&scale_permutation);
+    dLUstructFree(&lu);
+    PStatFree(&stat);
+
+    if (!context.success && error != NULL && error_size > 0 &&
+        error[0] == '\0')
+    {
+        if (info != 0)
+            snprintf(error, error_size,
+                     "SymLDL pre-grid preprocessing failed with info=%d.",
+                     info);
+        else
+            snprintf(error, error_size,
+                     "No feasible SymLDL process grid was found.");
+    }
+    return context.success;
 }

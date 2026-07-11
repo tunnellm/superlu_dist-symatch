@@ -21,6 +21,7 @@ at the top-level directory.
  *
  */
 #include "superlu_ddefs.h"
+#include "dsymldl_v2_pregrid.h"
 
 /*! \brief The driver program PDDRIVE3D.
  *
@@ -113,10 +114,10 @@ int main (int argc, char *argv[])
     int nprow, npcol, npdep;
     int equil, colperm, rowperm, ir, lookahead, tinyp;
     int iam, info, ldb, ldx, nrhs;
-    char **cpp, c, *suffix;
+    char **cpp, c, *suffix = NULL, *input_file = NULL;
     FILE *fp, *fopen ();
     extern int cpp_defs ();
-    int ii, omp_mpi_level, batchCount = 0;
+    int omp_mpi_level, batchCount = 0;
     int*    usermap;     /* The following variables are used for batch solves */
     float result_min[2];
     result_min[0]=1e10;
@@ -126,6 +127,10 @@ int main (int argc, char *argv[])
     result_max[1]=0.0;
     MPI_Comm SubComm;
     int myrank, p;
+    int automatic_grid;
+    char grid_error[256] = {0};
+    dSymLDLV2GridRequest grid_request;
+    dSymLDLV2GridRuntimeConfig grid_runtime;
 
     nprow = 1;            /* Default process rows.      */
     npcol = 1;            /* Default process columns.   */
@@ -145,6 +150,8 @@ int main (int argc, char *argv[])
     int required = MPI_THREAD_MULTIPLE;
     int provided;
     MPI_Init_thread(&argc, &argv, required, &provided);
+    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+    MPI_Comm_size(MPI_COMM_WORLD, &p);
     if (provided < required)
     {
         int rank;
@@ -166,19 +173,34 @@ int main (int argc, char *argv[])
             {
             case 'h':
                 printf ("Options:\n");
-                printf ("\t-r <int>: process rows    (default %d)\n", nprow);
-                printf ("\t-c <int>: process columns (default %d)\n", npcol);
-                printf ("\t-d <int>: process Z-dimension (default %d)\n", npdep);
+                printf ("\t-r <int|auto>: process rows    (default %d)\n", nprow);
+                printf ("\t-c <int|auto>: process columns (default %d)\n", npcol);
+                printf ("\t-d <int|auto>: process Z-dimension (default %d)\n", npdep);
                 exit (0);
                 break;
             case 'r':
-                nprow = atoi (*cpp);
+                if (!dSymLDLV2ParseGridDimension(
+                        *cpp, &nprow, grid_error, sizeof(grid_error)))
+                {
+                    if (!myrank) fprintf(stderr, "%s\n", grid_error);
+                    ABORT("Invalid process-row dimension.");
+                }
                 break;
             case 'c':
-                npcol = atoi (*cpp);
+                if (!dSymLDLV2ParseGridDimension(
+                        *cpp, &npcol, grid_error, sizeof(grid_error)))
+                {
+                    if (!myrank) fprintf(stderr, "%s\n", grid_error);
+                    ABORT("Invalid process-column dimension.");
+                }
                 break;
             case 'd':
-                npdep = atoi (*cpp);
+                if (!dSymLDLV2ParseGridDimension(
+                        *cpp, &npdep, grid_error, sizeof(grid_error)))
+                {
+                    if (!myrank) fprintf(stderr, "%s\n", grid_error);
+                    ABORT("Invalid process-depth dimension.");
+                }
                 break;
             case 'b': batchCount = atoi(*cpp);
                       break;
@@ -204,6 +226,7 @@ int main (int argc, char *argv[])
             {
                 ABORT ("File does not exist");
             }
+            input_file = *cpp;
             break;
         }
     }
@@ -254,7 +277,7 @@ int main (int argc, char *argv[])
 
     //////* this test SolveOnly*/
     // options.SolveOnly = YES;
-	
+
     //////* this test everything in SolveOnly except ILU_level = 0*/
     // options.Equil = NO;
 	// options.RowPerm = NOROWPERM;
@@ -270,8 +293,95 @@ int main (int argc, char *argv[])
 	options.SymFact = YES;       /* perform symmetric factorization */
     }
 
+    if (input_file == NULL)
+        ABORT("Input matrix file is missing.");
+    suffix = strrchr(input_file, '.');
+    if (suffix == NULL || suffix[1] == '\0')
+        ABORT("Input matrix file format is missing.");
+    ++suffix;
 
-    
+    dSymLDLV2GridRequestInit(&grid_request);
+    dSymLDLV2GridRuntimeConfigInit(&options, &grid_runtime);
+    grid_runtime.solve_nrhs = SUPERLU_MAX(1, nrhs);
+    grid_request.pr = nprow;
+    grid_request.pc = npcol;
+    grid_request.pz = npdep;
+    automatic_grid = nprow == SUPERLU_GRID_AUTO ||
+                     npcol == SUPERLU_GRID_AUTO ||
+                     npdep == SUPERLU_GRID_AUTO;
+
+    if (!automatic_grid)
+    {
+        uint64_t requested_ranks = (uint64_t) nprow;
+        if ((npdep & (npdep - 1)) != 0)
+            ABORT("The explicit process Z dimension must be a power of two.");
+        if (requested_ranks > UINT64_MAX / (uint64_t) npcol)
+            ABORT("The explicit process-grid product overflows.");
+        requested_ranks *= (uint64_t) npcol;
+        if (requested_ranks > UINT64_MAX / (uint64_t) npdep)
+            ABORT("The explicit process-grid product overflows.");
+        requested_ranks *= (uint64_t) npdep;
+        if (requested_ranks != (uint64_t) p)
+            ABORT("The explicit process grid must use every MPI rank.");
+    }
+    else
+    {
+        int gpu3d_version = getenv("GPU3DVERSION")
+                                ? atoi(getenv("GPU3DVERSION"))
+                                : 1;
+        if (options.SymFact != YES || gpu3d_version != 2)
+            ABORT("Automatic process-grid selection requires SymFact with GPU3DVERSION=2.");
+        if (batchCount > 0)
+            ABORT("Automatic process-grid selection is not available for batch mode.");
+
+        gridinfo3d_t analysis_grid;
+        SuperMatrix analysis_matrix;
+        double *analysis_b = NULL;
+        double *analysis_x = NULL;
+        int analysis_ldb = 0;
+        int analysis_ldx = 0;
+        dSymLDLV2GridSelection selection;
+        dSymLDLV2GridSelectionInit(&selection);
+
+        superlu_gridinit3d(MPI_COMM_WORLD, p, 1, 1, &analysis_grid);
+        if (analysis_grid.iam == -1)
+            ABORT("SymLDL pre-grid analysis could not include every MPI rank.");
+        if (!myrank)
+        {
+            printf("Running SymLDL pre-grid symbolic analysis.\n");
+            fflush(stdout);
+        }
+        dcreate_matrix_postfix3d(
+            &analysis_matrix, 1, &analysis_b, &analysis_ldb,
+            &analysis_x, &analysis_ldx, fp, suffix, &analysis_grid);
+        if (!dSymLDLV2AnalyzeDistributedMatrix(
+                &options, &analysis_matrix, &analysis_grid, &grid_request,
+                &grid_runtime, &selection, grid_error,
+                sizeof(grid_error)))
+        {
+            if (!myrank && grid_error[0] != '\0')
+                fprintf(stderr, "%s\n", grid_error);
+            dSymLDLV2GridSelectionDestroy(&selection);
+            ABORT("SymLDL automatic process-grid selection failed.");
+        }
+
+        const dSymLDLV2GridCandidate *selected =
+            &selection.candidates[selection.selected_index];
+        nprow = selected->pr;
+        npcol = selected->pc;
+        npdep = selected->pz;
+
+        Destroy_CompRowLoc_Matrix_dist(&analysis_matrix);
+        SUPERLU_FREE(analysis_b);
+        SUPERLU_FREE(analysis_x);
+        dSymLDLV2GridSelectionDestroy(&selection);
+        superlu_gridexit3d(&analysis_grid);
+        rewind(fp);
+        clearerr(fp);
+    }
+
+
+
     /* ------------------------------------------------------------
        INITIALIZE THE SUPERLU PROCESS GRID.
        ------------------------------------------------------------ */
@@ -343,7 +453,7 @@ int main (int argc, char *argv[])
 	superlu_dist_GetVersionNumber(&v_major, &v_minor, &v_bugfix);
 	printf("Library version:\t%d.%d.%d\n", v_major, v_minor, v_bugfix);
 
-	printf("Input matrix file:\t%s\n", *cpp);
+	printf("Input matrix file:\t%s\n", input_file);
 	printf("3D process grid: %d X %d X %d\n", nprow, npcol, npdep);
 	//printf("2D Process grid: %d X %d\n", (int)grid.nprow, (int)grid.npcol);
 	fflush(stdout);
@@ -352,13 +462,6 @@ int main (int argc, char *argv[])
     /* ------------------------------------------------------------
        GET THE MATRIX FROM FILE AND SETUP THE RIGHT HAND SIDE.
        ------------------------------------------------------------ */
-    for (ii = 0; ii<strlen(*cpp); ii++) {
-	if((*cpp)[ii]=='.'){
-	    suffix = &((*cpp)[ii+1]);
-	    // printf("%s\n", suffix);
-	}
-    }
-
     if ( batchCount > 0 ) {
 	/* ------------------------------------------------------------
 	   SOLVE THE BATCH LINEAR SYSTEM.

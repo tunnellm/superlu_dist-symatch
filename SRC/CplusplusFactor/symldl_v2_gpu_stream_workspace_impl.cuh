@@ -71,7 +71,7 @@ static void symldl_v2_setup_gpu_stream_workspace(
         if (spec.u_val_count > 0)
             lu->A_gpu.UvalRecvBufs[stream] = static_cast<Ftype *>(take(
                 static_cast<size_t>(spec.u_val_count), sizeof(Ftype),
-                "SymFact V2 stream U receive values"));
+                "SymFact V2 stream row-side receive values"));
         lu->A_gpu.symPartnerLvalRecvBufs[stream] =
             static_cast<Ftype *>(take(
                 static_cast<size_t>(SUPERLU_MAX(
@@ -116,7 +116,7 @@ static void symldl_v2_setup_gpu_stream_workspace(
         if (spec.u_idx_count > 0)
             lu->A_gpu.UidxRecvBufs[stream] = static_cast<int_t *>(take(
                 static_cast<size_t>(spec.u_idx_count), sizeof(int_t),
-                "SymFact V2 stream U receive indices"));
+                "SymFact V2 stream row-side receive indices"));
         lu->A_gpu.symPartnerLidxRecvBufs[stream] =
             static_cast<int_t *>(take(
                 static_cast<size_t>(SUPERLU_MAX(
@@ -153,11 +153,13 @@ static void symldl_v2_setup_gpu_stream_workspace(
                 static_cast<size_t>(SUPERLU_MAX(
                     (int_t)1, lu->maxLvalCount)),
                 sizeof(Ftype), "SymFact V2 stream lookahead L"));
+        /* The inherited U-named members hold row-side scratch for L^T
+           updates; they do not represent a materialized U factor. */
         lu->A_gpu.lookAheadUGemmBuffer[stream] =
             static_cast<Ftype *>(take(
                 static_cast<size_t>(SUPERLU_MAX(
                     (int_t)1, spec.lookahead_u_count)),
-                sizeof(Ftype), "SymFact V2 stream lookahead U"));
+                sizeof(Ftype), "SymFact V2 stream row-side lookahead"));
         return;
     }
 
@@ -166,13 +168,15 @@ static void symldl_v2_setup_gpu_stream_workspace(
         sizeof(Ftype), "L value receive buffer allocation overflows.");
     symldl_v2_cuda_malloc_optional(
         (void **) &lu->A_gpu.UvalRecvBufs[stream], spec.u_val_count,
-        sizeof(Ftype), "U value receive buffer allocation overflows.");
+        sizeof(Ftype),
+        "SymFact V2 row-side value receive buffer allocation overflows.");
     symldl_v2_cuda_malloc_optional(
         (void **) &lu->A_gpu.LidxRecvBufs[stream], lu->maxLidxCount,
         sizeof(int_t), "L index receive buffer allocation overflows.");
     symldl_v2_cuda_malloc_optional(
         (void **) &lu->A_gpu.UidxRecvBufs[stream], spec.u_idx_count,
-        sizeof(int_t), "U index receive buffer allocation overflows.");
+        sizeof(int_t),
+        "SymFact V2 row-side index receive buffer allocation overflows.");
     symldl_v2_setup_gpu_fragment_stream_buffers(lu, stream);
     if (spec.need_diag_work)
     {
@@ -189,7 +193,7 @@ static void symldl_v2_setup_gpu_stream_workspace(
     symldl_v2_cuda_malloc_optional(
         (void **) &lu->A_gpu.lookAheadUGemmBuffer[stream],
         spec.lookahead_u_count, sizeof(Ftype),
-        "Lookahead U buffer allocation overflows.");
+        "SymFact V2 row-side lookahead buffer allocation overflows.");
 }
 
 #endif

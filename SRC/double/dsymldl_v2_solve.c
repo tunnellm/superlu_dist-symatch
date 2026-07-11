@@ -8,6 +8,9 @@
 #include "superlu_ddefs.h"
 #include "superlu_upacked.h"
 
+static int pdgstrs3d_symldl_global_rank(gridinfo3d_t *grid3d,
+                                        int rank2d, int z);
+
 static size_t
 pdgstrs3d_checked_product(size_t a, size_t b, const char *what)
 {
@@ -230,7 +233,8 @@ pdReDistribute3d_X_to_B_symv2(int_t n, double *B, int_t m_loc, int_t ldb,
         irow = FstBlockC(k);
         l = X_BLK(lk);
         for (i = 0; i < knsupc; ++i) {
-            q = row_to_proc[irow];
+            q = pdgstrs3d_symldl_global_rank(
+                grid3d, (int) row_to_proc[irow], 0);
             jj = ptr_to_ibuf[q];
             send_ibuf[jj] = irow;
             jj = ptr_to_dbuf[q];
@@ -2808,7 +2812,8 @@ pdgstrs3d_symldl_init_comm(int_t n, int_t m_loc, int_t nrhs,
         knsupc = SuperSize(k);
         irow = FstBlockC(k);
         for (i = 0; i < knsupc; ++i) {
-            q = row_to_proc[irow++];
+            q = pdgstrs3d_symldl_global_rank(
+                grid3d, (int) row_to_proc[irow++], 0);
             ++SendCnt[q];
         }
     }
@@ -2873,10 +2878,8 @@ dSymV2SolveInit(superlu_dist_options_t *options, SuperMatrix *A,
                   grid->comm);
     itemp[procs2d] = A->nrow;
     for (p = 0; p < procs2d; ++p) {
-        int global_layer0_rank =
-            pdgstrs3d_symldl_global_rank(grid3d, (int) p, 0);
         for (i = itemp[p]; i < itemp[p + 1]; ++i)
-            row_to_proc[i] = global_layer0_rank;
+            row_to_proc[i] = p;
     }
     SUPERLU_FREE(itemp);
 

@@ -11,13 +11,10 @@ static inline size_t symldl_v2_gemm_workspace_stride(size_t dfbuf_elems,
                                                      size_t gemm_elems)
 {
     size_t stride = 0;
-    stride = symldl_v2_arena_advance(
-        stride, dfbuf_elems, sizeof(Ftype),
-        "SymFact V2 diagonal buffer arena overflows.");
-    stride = symldl_v2_arena_advance(
-        stride, gemm_elems, sizeof(Ftype),
-        "SymFact V2 GEMM buffer arena overflows.");
-    return symldl_v2_arena_align(stride);
+    if (!dSymLDLV2GemmWorkspaceBytes(
+            dfbuf_elems, gemm_elems, sizeof(Ftype), &stride))
+        ABORT("SymFact V2 GEMM workspace arena size overflows.");
+    return stride;
 }
 
 template <typename Ftype>
@@ -26,9 +23,17 @@ static inline size_t symldl_v2_stream_workspace_estimate(
 {
     SymV2GpuStreamWorkspaceSpec<Ftype> estimate_spec =
         symldl_v2_make_stream_workspace_spec(lu, 0, false);
-    size_t dfbuf_elems = static_cast<size_t>(ldt) * static_cast<size_t>(ldt);
-    return symldl_v2_stream_workspace_bytes(lu, estimate_spec) +
+    size_t ldt_size = static_cast<size_t>(ldt);
+    if (ldt_size != 0 && ldt_size > static_cast<size_t>(-1) / ldt_size)
+        ABORT("SymFact V2 diagonal workspace size overflows.");
+    size_t dfbuf_elems = ldt_size * ldt_size;
+    size_t stream_bytes =
+        symldl_v2_stream_workspace_bytes(lu, estimate_spec);
+    size_t gemm_bytes =
         symldl_v2_gemm_workspace_stride<Ftype>(dfbuf_elems, gemm_elems);
+    if (stream_bytes > static_cast<size_t>(-1) - gemm_bytes)
+        ABORT("SymFact V2 total stream workspace size overflows.");
+    return stream_bytes + gemm_bytes;
 }
 
 template <typename Ftype>

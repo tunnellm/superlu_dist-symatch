@@ -1,10 +1,16 @@
 #pragma once
 
 #include "xlupanels.hpp"
+#include "dsymldl_v2_workspace_size.h"
 #include "symldl_v2_config.hpp"
 #include "symldl_v2_gpu_arena_utils.cuh"
 
 #ifdef HAVE_CUDA
+
+static_assert(MAX_CUDA_STREAMS == DSYMLDL_V2_MAX_GPU_STREAMS,
+              "SymLDL GPU stream limits are inconsistent.");
+static_assert(LPANEL_HEADER_SIZE == DSYMLDL_V2_PANEL_HEADER_ENTRIES,
+              "SymLDL panel header sizes are inconsistent.");
 
 template <typename Ftype>
 struct SymV2GpuStreamWorkspaceSpec
@@ -83,84 +89,49 @@ static size_t symldl_v2_stream_workspace_bytes(
     xLUstruct_t<Ftype> *lu,
     const SymV2GpuStreamWorkspaceSpec<Ftype> &spec)
 {
-    size_t offset = 0;
-    offset = symldl_v2_arena_advance(
-        offset, static_cast<size_t>(SUPERLU_MAX((int_t)1, lu->maxLvalCount)),
-        sizeof(Ftype), "SymFact V2 stream L receive values");
-    if (spec.u_val_count > 0)
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(spec.u_val_count), sizeof(Ftype),
-            "SymFact V2 stream U receive values");
-    offset = symldl_v2_arena_advance(
-        offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                lu->maxSymPartnerLvalCount)),
-        sizeof(Ftype), "SymFact V2 stream partner values");
-    offset = symldl_v2_arena_advance(
-        offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                spec.partner_stage_count)),
-        sizeof(Ftype), "SymFact V2 stream partner staging");
-    if (spec.need_partner_send_stage)
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(SUPERLU_MAX(
-                        (int_t)1, lu->maxSymPartnerLSendStageCount)),
-            sizeof(Ftype), "SymFact V2 stream partner send staging");
-    if (spec.pc_fragment_schur)
-    {
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                    spec.row_stage_count)),
-            sizeof(Ftype), "SymFact V2 stream row fragment staging");
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                    spec.row_recv_val_count)),
-            sizeof(Ftype), "SymFact V2 stream row fragment values");
-    }
-    if (spec.raw_panel_count > 0)
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                    spec.raw_panel_count)),
-            sizeof(Ftype), "SymFact V2 stream W panel");
-    offset = symldl_v2_arena_advance(
-        offset, static_cast<size_t>(SUPERLU_MAX((int_t)1, lu->maxLidxCount)),
-        sizeof(int_t), "SymFact V2 stream L receive indices");
-    if (spec.u_idx_count > 0)
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(spec.u_idx_count), sizeof(int_t),
-            "SymFact V2 stream U receive indices");
-    offset = symldl_v2_arena_advance(
-        offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                lu->maxSymPartnerLidxCount)),
-        sizeof(int_t), "SymFact V2 stream partner indices");
-    if (spec.pc_fragment_schur)
-    {
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                    spec.row_recv_idx_count)),
-            sizeof(int_t), "SymFact V2 stream row fragment indices");
-    }
-    if (spec.row_send_map_count > 0)
-    {
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                    spec.row_send_map_count)),
-            sizeof(int_t), "SymFact V2 stream L-fragment send maps");
-    }
-    if (spec.need_diag_work)
-    {
-        offset = symldl_v2_arena_advance(
-            offset, static_cast<size_t>(SUPERLU_MAX(1, spec.diag_work_count)),
-            sizeof(Ftype), "SymFact V2 stream diagonal work");
-        offset = symldl_v2_arena_advance(
-            offset, 1, sizeof(int), "SymFact V2 stream diagonal info");
-    }
-    offset = symldl_v2_arena_advance(
-        offset, static_cast<size_t>(SUPERLU_MAX((int_t)1, lu->maxLvalCount)),
-        sizeof(Ftype), "SymFact V2 stream lookahead L");
-    offset = symldl_v2_arena_advance(
-        offset, static_cast<size_t>(SUPERLU_MAX((int_t)1,
-                                                spec.lookahead_u_count)),
-        sizeof(Ftype), "SymFact V2 stream lookahead U");
-    return symldl_v2_arena_align(offset);
+    dSymLDLV2StreamWorkspaceCounts counts = {};
+    counts.l_value_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, lu->maxLvalCount));
+    counts.u_value_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.u_val_count));
+    counts.partner_value_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, lu->maxSymPartnerLvalCount));
+    counts.partner_stage_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.partner_stage_count));
+    counts.partner_send_stage_count = spec.need_partner_send_stage
+        ? static_cast<size_t>(SUPERLU_MAX(
+              (int_t) 1, lu->maxSymPartnerLSendStageCount))
+        : 0;
+    counts.row_stage_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.row_stage_count));
+    counts.row_receive_value_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.row_recv_val_count));
+    counts.raw_panel_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.raw_panel_count));
+    counts.l_index_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, lu->maxLidxCount));
+    counts.u_index_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.u_idx_count));
+    counts.partner_index_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, lu->maxSymPartnerLidxCount));
+    counts.row_receive_index_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.row_recv_idx_count));
+    counts.row_send_map_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.row_send_map_count));
+    counts.diagonal_work_count = static_cast<size_t>(
+        SUPERLU_MAX(0, spec.diag_work_count));
+    counts.lookahead_l_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, lu->maxLvalCount));
+    counts.lookahead_row_count = static_cast<size_t>(
+        SUPERLU_MAX((int_t) 0, spec.lookahead_u_count));
+    counts.pc_fragment_schur = spec.pc_fragment_schur;
+    counts.need_diagonal_work = spec.need_diag_work;
+
+    size_t bytes = 0;
+    if (!dSymLDLV2StreamWorkspaceBytes(
+            &counts, sizeof(Ftype), sizeof(int_t), sizeof(int), &bytes))
+        ABORT("SymFact V2 stream workspace size overflows.");
+    return bytes;
 }
 
 #endif

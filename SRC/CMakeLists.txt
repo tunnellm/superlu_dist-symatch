@@ -10,6 +10,14 @@ set(headers
     include/gpu_api_utils.h
     include/gpu_wrapper.h
     include/superlu_upacked.h
+    include/symldl_v2_grid_runtime.h
+    include/dsymldl_v2_grid_selector.h
+    include/dsymldl_v2_grid_model.h
+    include/dsymldl_v2_runtime_model.h
+    include/dsymldl_v2_grid_report.h
+    include/dsymldl_v2_pregrid.h
+    include/dsymldl_v2_partition_plan.h
+    include/dsymldl_v2_workspace_size.h
     include/dsymldl_v2_partition.h
     include/dsymldl_v2_driver.h
     include/superlu_FortranCInterface.h
@@ -93,6 +101,7 @@ set(sources
   prec-independent/treeFactorization.c
   prec-independent/sec_structs.c  
   prec-independent/get_perm_c_batch.c
+  prec-independent/symldl_v2_grid_runtime.c
 )
 
 # Add all the BLAS routines: CplusplusFactor/supelu_blas.hpp needs all
@@ -149,6 +158,13 @@ if(enable_double)
     double/pddistribute.c
     double/pddistribute3d.c
     double/d3DPartition.c
+    double/dsymldl_v2_grid_selector.c
+    double/dsymldl_v2_grid_model.c
+    double/dsymldl_v2_runtime_model.c
+    double/dsymldl_v2_grid_report.c
+    double/dsymldl_v2_pregrid.c
+    double/dsymldl_v2_partition_plan.c
+    double/dsymldl_v2_workspace_size.c
     double/dsymldl_v2_partition.c
     double/dsymldl_v2_distribution.c
     double/dsymldl_v2_driver.c
