@@ -144,6 +144,13 @@ static void dSymLDLV2RuntimeAddComm(
     *dSymLDLV2RuntimeRankValue(acc, byte_metric, destination) += bytes;
     acc->performance->metric[message_metric].total += 1.0;
     acc->performance->metric[byte_metric].total += bytes;
+    uint64_t payload = bytes >= (double) UINT64_MAX
+                           ? UINT64_MAX : (uint64_t) ceil(bytes);
+    int payload_bin = 0;
+    while (payload_bin + 1 < DSYMLDL_V2_COMM_SIZE_HISTOGRAM_BINS &&
+           payload > (UINT64_C(1) << payload_bin))
+        ++payload_bin;
+    ++acc->performance->communication_size_histogram[payload_bin];
 
     if (source_node >= 0)
     {
@@ -162,9 +169,9 @@ static void dSymLDLV2RuntimeAddComm(
         !acc->input->runtime.cuda_aware_mpi)
     {
         dSymLDLV2RuntimeAddLocal(
-            acc, DSYMLDL_V2_RUNTIME_HOST_STAGING_BYTES, source, bytes);
+            acc, DSYMLDL_V2_RUNTIME_DEVICE_TO_HOST_BYTES, source, bytes);
         dSymLDLV2RuntimeAddLocal(
-            acc, DSYMLDL_V2_RUNTIME_HOST_STAGING_BYTES, destination, bytes);
+            acc, DSYMLDL_V2_RUNTIME_HOST_TO_DEVICE_BYTES, destination, bytes);
     }
 }
 
@@ -231,6 +238,10 @@ static int dSymLDLV2RuntimeAddPanel(
     dSymLDLV2RuntimeMetricKind compute_metric =
         input->runtime.gpu_offload ? DSYMLDL_V2_RUNTIME_GPU_FLOPS
                                    : DSYMLDL_V2_RUNTIME_CPU_FLOPS;
+    dSymLDLV2RuntimeMetricKind compute_byte_metric =
+        input->runtime.gpu_offload
+            ? DSYMLDL_V2_RUNTIME_GPU_LOCAL_BYTES
+            : DSYMLDL_V2_RUNTIME_CPU_LOCAL_BYTES;
 
     if (columns <= 0 || begin < 0 || end < begin ||
         end > structure->block_count || diagonal_rank < 0)
@@ -242,7 +253,7 @@ static int dSymLDLV2RuntimeAddPanel(
 
     dSymLDLV2RuntimeAddLocal(acc, DSYMLDL_V2_RUNTIME_CPU_FLOPS,
                             diagonal_rank, diagonal_flops);
-    dSymLDLV2RuntimeAddLocal(acc, DSYMLDL_V2_RUNTIME_LOCAL_BYTES,
+    dSymLDLV2RuntimeAddLocal(acc, DSYMLDL_V2_RUNTIME_CPU_LOCAL_BYTES,
                             diagonal_rank, 2.0 * diagonal_values * value_bytes);
     dSymLDLV2RuntimeAddLocal(acc, DSYMLDL_V2_RUNTIME_TASK_LAUNCHES,
                             diagonal_rank, input->runtime.gpu_offload ? 0.0 : 1.0);
@@ -293,7 +304,7 @@ static int dSymLDLV2RuntimeAddPanel(
         dSymLDLV2RuntimeAddLocal(acc, compute_metric, owner,
                                 transform_flops);
         dSymLDLV2RuntimeAddLocal(
-            acc, DSYMLDL_V2_RUNTIME_LOCAL_BYTES, owner,
+            acc, compute_byte_metric, owner,
             (2.0 * values + diagonal_values) * value_bytes);
         dSymLDLV2RuntimeAddLocal(acc, DSYMLDL_V2_RUNTIME_TASK_LAUNCHES,
                                 owner, input->runtime.gpu_offload ? 1.0 : 0.0);
@@ -321,7 +332,7 @@ static int dSymLDLV2RuntimeAddPanel(
             if (values <= 0.0)
                 continue;
             dSymLDLV2RuntimeAddLocal(
-                acc, DSYMLDL_V2_RUNTIME_LOCAL_BYTES, source,
+                acc, compute_byte_metric, source,
                 2.0 * values * value_bytes);
             dSymLDLV2RuntimeAddLocal(
                 acc, DSYMLDL_V2_RUNTIME_TASK_LAUNCHES, source,
@@ -355,7 +366,7 @@ static int dSymLDLV2RuntimeAddPanel(
                     continue;
                 int destination = dSymLDLV2RuntimeRank(input, plan, pr, pc, z);
                 dSymLDLV2RuntimeAddLocal(
-                    acc, DSYMLDL_V2_RUNTIME_LOCAL_BYTES, source,
+                    acc, compute_byte_metric, source,
                     2.0 * values * value_bytes);
                 dSymLDLV2RuntimeAddLocal(
                     acc, DSYMLDL_V2_RUNTIME_TASK_LAUNCHES, source,
@@ -393,7 +404,7 @@ static int dSymLDLV2RuntimeAddPanel(
                  (double) rows * (double) columns * suffix_blocks[output_pr] +
                  2.0 * (double) rows * suffix_rows[output_pr]);
             dSymLDLV2RuntimeAddLocal(acc, compute_metric, owner, flops);
-            dSymLDLV2RuntimeAddLocal(acc, DSYMLDL_V2_RUNTIME_LOCAL_BYTES,
+            dSymLDLV2RuntimeAddLocal(acc, compute_byte_metric,
                                     owner, bytes);
             dSymLDLV2RuntimeAddLocal(
                 acc, DSYMLDL_V2_RUNTIME_TASK_LAUNCHES, owner,
@@ -404,11 +415,13 @@ static int dSymLDLV2RuntimeAddPanel(
 
     if (plan->pr * plan->pc > 1)
         dSymLDLV2RuntimeAddLocal(
-            acc, DSYMLDL_V2_RUNTIME_SYNCHRONIZATIONS,
+            acc, input->runtime.gpu_offload
+                     ? DSYMLDL_V2_RUNTIME_GPU_SYNCHRONIZATIONS
+                     : DSYMLDL_V2_RUNTIME_PROCESS_SYNCHRONIZATIONS,
             diagonal_rank, 1.0);
     if (plan->pr > 1 || plan->pc > 1)
         dSymLDLV2RuntimeAddLocal(
-            acc, DSYMLDL_V2_RUNTIME_SYNCHRONIZATIONS,
+            acc, DSYMLDL_V2_RUNTIME_PROCESS_SYNCHRONIZATIONS,
             diagonal_rank, 1.0);
     return 1;
 }
@@ -426,6 +439,10 @@ static int dSymLDLV2RuntimeAddAncestorReduction(
     dSymLDLV2RuntimeMetricKind compute_metric =
         input->runtime.gpu_offload ? DSYMLDL_V2_RUNTIME_GPU_FLOPS
                                    : DSYMLDL_V2_RUNTIME_CPU_FLOPS;
+    dSymLDLV2RuntimeMetricKind compute_byte_metric =
+        input->runtime.gpu_offload
+            ? DSYMLDL_V2_RUNTIME_GPU_LOCAL_BYTES
+            : DSYMLDL_V2_RUNTIME_CPU_LOCAL_BYTES;
 
     if (participating_layers <= 1)
         return 1;
@@ -470,7 +487,7 @@ static int dSymLDLV2RuntimeAddAncestorReduction(
                 dSymLDLV2RuntimeAddLocal(
                     acc, compute_metric, destination, 2.0 * values);
                 dSymLDLV2RuntimeAddLocal(
-                    acc, DSYMLDL_V2_RUNTIME_LOCAL_BYTES, destination,
+                    acc, compute_byte_metric, destination,
                     3.0 * values * value_bytes);
                 dSymLDLV2RuntimeAddLocal(
                     acc, DSYMLDL_V2_RUNTIME_TASK_LAUNCHES, destination,
@@ -511,8 +528,9 @@ int dSymLDLV2EvaluateRuntimeModel(
     performance->estimated_gpu_streams = estimated_streams;
     performance->pareto_dominator = -1;
     performance->metric[DSYMLDL_V2_RUNTIME_CPU_FLOPS].active = 1;
-    performance->metric[DSYMLDL_V2_RUNTIME_LOCAL_BYTES].active = 1;
-    performance->metric[DSYMLDL_V2_RUNTIME_SYNCHRONIZATIONS].active = 1;
+    performance->metric[DSYMLDL_V2_RUNTIME_CPU_LOCAL_BYTES].active = 1;
+    performance->metric[
+        DSYMLDL_V2_RUNTIME_PROCESS_SYNCHRONIZATIONS].active = 1;
     performance->metric[DSYMLDL_V2_RUNTIME_INTRA_NODE_MESSAGES].active = 1;
     performance->metric[DSYMLDL_V2_RUNTIME_INTRA_NODE_BYTES].active = 1;
     performance->metric[DSYMLDL_V2_RUNTIME_INTER_NODE_MESSAGES].active = 1;
@@ -520,9 +538,17 @@ int dSymLDLV2EvaluateRuntimeModel(
     if (input->runtime.gpu_offload)
     {
         performance->metric[DSYMLDL_V2_RUNTIME_GPU_FLOPS].active = 1;
+        performance->metric[DSYMLDL_V2_RUNTIME_GPU_LOCAL_BYTES].active = 1;
         performance->metric[DSYMLDL_V2_RUNTIME_TASK_LAUNCHES].active = 1;
+        performance->metric[
+            DSYMLDL_V2_RUNTIME_GPU_SYNCHRONIZATIONS].active = 1;
         if (!input->runtime.cuda_aware_mpi)
-            performance->metric[DSYMLDL_V2_RUNTIME_HOST_STAGING_BYTES].active = 1;
+        {
+            performance->metric[
+                DSYMLDL_V2_RUNTIME_HOST_TO_DEVICE_BYTES].active = 1;
+            performance->metric[
+                DSYMLDL_V2_RUNTIME_DEVICE_TO_HOST_BYTES].active = 1;
+        }
     }
 
     memset(&acc, 0, sizeof(acc));

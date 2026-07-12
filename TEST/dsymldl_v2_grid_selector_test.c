@@ -1,4 +1,5 @@
 #include "dsymldl_v2_grid_selector.h"
+#include "dsymldl_v2_grid_calibration.h"
 #include "dsymldl_v2_grid_model.h"
 #include "dsymldl_v2_grid_report.h"
 #include "dsymldl_v2_partition_plan.h"
@@ -231,6 +232,80 @@ static void test_selection(void)
     assert(selection.pareto_count == 1);
     assert(selection.confidence == DSYMLDL_V2_GRID_CONFIDENCE_DOMINANT);
     dSymLDLV2GridSelectionDestroy(&selection);
+}
+
+static void set_coefficient(dSymLDLV2CalibrationProfile *profile,
+                            dSymLDLV2RuntimeMetricKind metric,
+                            double point, double lower, double upper)
+{
+    dSymLDLV2CalibrationCoefficient *coefficient =
+        &profile->coefficient[metric];
+    coefficient->seconds_per_unit = point;
+    coefficient->lower_seconds_per_unit = lower;
+    coefficient->upper_seconds_per_unit = upper;
+    coefficient->samples = 9;
+    coefficient->source = DSYMLDL_V2_CALIBRATION_MEASURED;
+}
+
+static void test_calibrated_selection(void)
+{
+    char error[256];
+    dSymLDLV2GridRequest request;
+    dSymLDLV2GridRequestInit(&request);
+    request.pz = 4;
+    dSymLDLV2GridSelection selection = enumerate(request, 16);
+    dSymLDLV2CalibrationProfile profile;
+    memset(&profile, 0, sizeof(profile));
+    profile.complete = 1;
+
+    set_metric(&selection.candidates[0], DSYMLDL_V2_RUNTIME_GPU_FLOPS,
+               10.0, 10.0);
+    set_metric(&selection.candidates[0],
+               DSYMLDL_V2_RUNTIME_INTER_NODE_BYTES, 100.0, 100.0);
+    set_metric(&selection.candidates[1], DSYMLDL_V2_RUNTIME_GPU_FLOPS,
+               100.0, 100.0);
+    set_metric(&selection.candidates[1],
+               DSYMLDL_V2_RUNTIME_INTER_NODE_BYTES, 10.0, 10.0);
+    set_metric(&selection.candidates[2], DSYMLDL_V2_RUNTIME_GPU_FLOPS,
+               40.0, 40.0);
+    set_metric(&selection.candidates[2],
+               DSYMLDL_V2_RUNTIME_INTER_NODE_BYTES, 40.0, 40.0);
+    set_coefficient(&profile, DSYMLDL_V2_RUNTIME_GPU_FLOPS,
+                    0.01, 0.009, 0.011);
+    set_coefficient(&profile, DSYMLDL_V2_RUNTIME_INTER_NODE_BYTES,
+                    0.001, 0.0009, 0.0011);
+
+    assert(dSymLDLV2SelectGridCalibrated(
+        &selection, &profile, error, sizeof(error)));
+    assert(selection.selected_index == 0);
+    assert(selection.candidates[0].performance.robust_winner);
+    assert(selection.confidence ==
+           DSYMLDL_V2_GRID_CONFIDENCE_CALIBRATED_ROBUST);
+    assert(selection.candidates[0].performance.calibrated_rank == 1);
+    assert(selection.candidates[1].performance.calibrated_rank == 3);
+    assert(!selection.candidates[2].performance.plausible_alternative);
+
+    set_coefficient(&profile, DSYMLDL_V2_RUNTIME_GPU_FLOPS,
+                    0.01, 0.001, 0.02);
+    set_coefficient(&profile, DSYMLDL_V2_RUNTIME_INTER_NODE_BYTES,
+                    0.001, 0.0001, 0.01);
+    assert(dSymLDLV2SelectGridCalibrated(
+        &selection, &profile, error, sizeof(error)));
+    assert(selection.selected_index == 0);
+    assert(!selection.candidates[0].performance.robust_winner);
+    assert(selection.confidence ==
+           DSYMLDL_V2_GRID_CONFIDENCE_CALIBRATED_ESTIMATE);
+    assert(selection.candidates[2].performance.plausible_alternative);
+    dSymLDLV2GridSelectionDestroy(&selection);
+}
+
+static void test_calibration_budget(void)
+{
+    assert(fabs(dSymLDLV2CalibrationBudgetSeconds(1) - 2.0) < 1.0e-12);
+    assert(fabs(dSymLDLV2CalibrationBudgetSeconds(4) - 3.0) < 1.0e-12);
+    assert(fabs(dSymLDLV2CalibrationBudgetSeconds(16) - 4.0) < 1.0e-12);
+    assert(fabs(dSymLDLV2CalibrationBudgetSeconds(64) - 5.0) < 1.0e-12);
+    assert(fabs(dSymLDLV2CalibrationBudgetSeconds(1024) - 5.0) < 1.0e-12);
 }
 
 static void test_partition_plan(void)
@@ -479,7 +554,9 @@ static void test_grid_model(void)
     assert(!candidate.performance.metric[DSYMLDL_V2_RUNTIME_TASK_LAUNCHES]
                 .active);
     assert(!candidate.performance.metric[
-                DSYMLDL_V2_RUNTIME_HOST_STAGING_BYTES].active);
+                DSYMLDL_V2_RUNTIME_HOST_TO_DEVICE_BYTES].active);
+    assert(!candidate.performance.metric[
+                DSYMLDL_V2_RUNTIME_DEVICE_TO_HOST_BYTES].active);
     assert(candidate.performance.metric[DSYMLDL_V2_RUNTIME_CPU_FLOPS]
                .active);
     model.runtime.gpu_offload = 1;
@@ -779,6 +856,8 @@ int main(void)
     test_partial_auto();
     test_invalid_requests();
     test_selection();
+    test_calibrated_selection();
+    test_calibration_budget();
     test_partition_plan();
     test_invalid_structure();
     test_grid_model();

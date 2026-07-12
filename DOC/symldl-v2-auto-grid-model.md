@@ -1,11 +1,10 @@
 # SymLDL Automatic Process-Grid Model
 
 The SymLDL process-grid selector chooses `(Pr, Pc, Pz)` after symbolic
-factorization and before numerical distribution. It does not benchmark the
-machine and does not require users to provide latency, bandwidth, or compute
-rates. The selector first rejects grids that exceed the modeled host or GPU
-memory budget, then compares feasible grids using structural work and
-communication bounds.
+factorization and before numerical distribution. The selector first rejects
+grids that exceed the modeled host or GPU memory budget, then calibrates a
+small set of machine resource rates on the current MPI allocation. Users do
+not provide latency, bandwidth, or compute rates.
 
 ## Structural model
 
@@ -66,9 +65,33 @@ T_comm >= alpha_intra * critical_intra_messages
         + beta_inter  * critical_inter_bytes
 ```
 
-Compute, local-memory traffic, launches, synchronization, and host staging
-have analogous positive coefficients. The automatic selector deliberately
-does not guess those coefficients.
+Compute, CPU/GPU-local traffic, launches, synchronization, and directional
+host staging have analogous positive coefficients. Automatic selection
+measures these coefficients once for the allocation and caches the profile in
+the process.
+
+## Allocation calibration
+
+Calibration runs after matching and symbolic factorization, before numerical
+distribution. It uses a duplicated communicator and a lightweight CUDA
+context rather than factorization workspace. Its budget is
+
+```text
+clamp(2 + 0.5 * log2(node_count), 2, 5) seconds.
+```
+
+All ranks participate concurrently. Intra-node traffic uses shared-memory
+communicators; inter-node traffic groups corresponding local ranks across
+nodes. Several message sizes are fit to `alpha + beta * bytes`, so the
+coefficients include allocation-scale endpoint and injection pressure. CPU
+dense compute, CPU memory traffic, communicator synchronization, CUDA DGEMM,
+device traffic, launches, stream synchronization, and pinned H2D/D2H traffic
+are measured separately.
+
+Each measurement reports a median coefficient and a dispersion-derived
+interval. CUDA and CPU-only configurations are supported. A build without a
+supported device calibration backend falls back to structural selection and
+reports that calibration was incomplete.
 
 ## Grid selection
 
@@ -76,27 +99,43 @@ A feasible candidate dominates another candidate only when it is no worse in
 both total and critical exposure for every active resource and is strictly
 better in at least one. Dominated candidates are removed.
 
-If one candidate remains, it is selected with `dominant` confidence. For a
-multi-candidate Pareto frontier, each total and critical resource exposure is
-range-normalized over that frontier. The selector minimizes the largest
-normalized regret (Chebyshev minimax), then summed regret. Memory pressure and
-grid dimensions are deterministic tie breakers. This produces a defensible
-best guess without fitting machine constants. The default report also shows
-up to two nearby Pareto alternatives; detailed reporting prints the complete
-frontier and every raw metric.
+The calibrated prediction for grid `g` is
+
+```text
+T_g = sum_r coefficient_r * critical_exposure_g,r.
+```
+
+The minimum point prediction is selected. Because this model is linear,
+pairwise minimum and maximum time differences over the independent
+coefficient intervals are exact: each coefficient endpoint is chosen from the
+sign of the corresponding exposure difference. A selection is `calibrated
+robust` only if it cannot lose to another candidate anywhere in that box.
+Otherwise it is a `calibrated estimate`, and every candidate that can overlap
+or beat it is retained as plausible.
+
+Memory pressure and grid dimensions are deterministic tie breakers. Normal
+output shows up to five plausible alternatives; detailed output prints every
+candidate, raw exposure, coefficient, and prediction interval. If calibration
+fails or is disabled with `SYMLDL_V2_GRID_CALIBRATION=0`, the previous
+structural minimax rule remains available as a disclosed fallback.
+
+Explicit grids do not calibrate. The optional post-symbolic grid report also
+remains structural by default; set `SYMLDL_V2_GRID_REPORT_CALIBRATE=1` when a
+calibrated report is explicitly desired. `SYMLDL_V2_GRID_REPORT_DETAIL=1`
+prints every coefficient and candidate exposure.
 
 ## Scope and limitations
 
 - The objective covers factorization, not the current SymLDL solve.
 - The schedule model aggregates levels and lookahead windows; it is not a
   cycle-accurate task simulation.
-- Physical node placement is modeled, but NIC topology, routing congestion,
-  GPU interconnect topology, and asynchronous progress rates are not.
+- Physical node placement and allocation-scale contention are measured, but
+  the model is not a detailed NIC-routing or asynchronous-progress simulator.
 - GPU and CPU paths activate different metric subsets. CPU selection is
   structurally supported, but initial performance validation focuses on GPU
   factorization.
-- Historical timings are validation data only. They are not used to fit or
-  tune the selector.
+- Historical factor timings remain validation data only; calibration measures
+  primitive resource rates rather than candidate-grid factorization times.
 
 The validation target is that the selected grid is within 10 percent of the
 fastest numerically valid historical `nlpkkt120` grid at each tested node
@@ -146,8 +185,9 @@ The missed `2x1x8` candidate remained on the Pareto frontier but ranked fourth
 by summed regret, behind the two alternatives shown by the default report.
 This is a reporting and decision-rule limitation, not a memory-filter or
 numerical failure: every run completed with `info=0`, inertia
-`(185321,318,0)`, and no-refinement solution error of order `1e-6`. Future
-selection work should replace the summed-regret tie break with symbolic
-coefficient-region analysis and, when desired, a short allocation-level
-calibration of compute, launch, synchronization, and alpha-beta communication
-costs.
+`(185321,318,0)`, and no-refinement solution error of order `1e-6`.
+
+This miss motivated the calibrated coefficient-region selector described
+above. The holdout remains the primary acceptance case: calibrated 4-node
+selection must choose `2x1x8` or retain it as a plausible alternative, and the
+selected grid should be within 10 percent of the fastest measured candidate.

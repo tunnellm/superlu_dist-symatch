@@ -30,6 +30,7 @@ int dSymLDLV2SelectGridForStructure(
     const dSymLDLV2StructuralSummary *structure, MPI_Comm communicator,
     const dSymLDLV2GridRequest *request,
     const dSymLDLV2GridRuntimeConfig *runtime,
+    int calibrate,
     dSymLDLV2GridSelection *selection, char *error, size_t error_size);
 
 void dSymLDLV2PrintGridSelection(

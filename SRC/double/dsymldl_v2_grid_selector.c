@@ -352,6 +352,12 @@ int dSymLDLV2SelectGrid(dSymLDLV2GridSelection *selection,
         candidate->performance.pareto_dominator = -1;
         candidate->performance.worst_case_regret = 0.0;
         candidate->performance.summed_regret = 0.0;
+        candidate->performance.predicted_seconds = 0.0;
+        candidate->performance.predicted_seconds_lower = 0.0;
+        candidate->performance.predicted_seconds_upper = 0.0;
+        candidate->performance.calibrated_rank = 0;
+        candidate->performance.plausible_alternative = 0;
+        candidate->performance.robust_winner = 0;
         for (int metric = 0; metric < DSYMLDL_V2_RUNTIME_METRIC_COUNT;
              ++metric)
             candidate->performance.metric[metric].normalized_regret = 0.0;
@@ -537,12 +543,182 @@ no_candidate:
     return 0;
 }
 
+static double dSymLDLV2CalibratedTime(
+    const dSymLDLV2GridCandidate *candidate,
+    const dSymLDLV2CalibrationProfile *profile, int bound)
+{
+    double result = 0.0;
+    for (int metric = 0; metric < DSYMLDL_V2_RUNTIME_METRIC_COUNT;
+         ++metric)
+    {
+        const dSymLDLV2RuntimeMetric *exposure =
+            &candidate->performance.metric[metric];
+        const dSymLDLV2CalibrationCoefficient *coefficient =
+            &profile->coefficient[metric];
+        if (!exposure->active)
+            continue;
+        double seconds = bound < 0 ? coefficient->lower_seconds_per_unit
+                         : bound > 0 ? coefficient->upper_seconds_per_unit
+                                     : coefficient->seconds_per_unit;
+        result += exposure->critical * seconds;
+    }
+    return result;
+}
+
+static void dSymLDLV2PairDifferenceBounds(
+    const dSymLDLV2GridCandidate *left,
+    const dSymLDLV2GridCandidate *right,
+    const dSymLDLV2CalibrationProfile *profile,
+    double *minimum, double *maximum)
+{
+    *minimum = 0.0;
+    *maximum = 0.0;
+    for (int metric = 0; metric < DSYMLDL_V2_RUNTIME_METRIC_COUNT;
+         ++metric)
+    {
+        double delta = left->performance.metric[metric].critical -
+                       right->performance.metric[metric].critical;
+        const dSymLDLV2CalibrationCoefficient *coefficient =
+            &profile->coefficient[metric];
+        if (delta >= 0.0)
+        {
+            *minimum += delta * coefficient->lower_seconds_per_unit;
+            *maximum += delta * coefficient->upper_seconds_per_unit;
+        }
+        else
+        {
+            *minimum += delta * coefficient->upper_seconds_per_unit;
+            *maximum += delta * coefficient->lower_seconds_per_unit;
+        }
+    }
+}
+
+int dSymLDLV2SelectGridCalibrated(
+    dSymLDLV2GridSelection *selection,
+    const dSymLDLV2CalibrationProfile *profile,
+    char *error, size_t error_size)
+{
+    if (selection == NULL || profile == NULL || !profile->complete)
+    {
+        dSymLDLV2SetGridError(error, error_size,
+                              "SymLDL calibration profile is incomplete.");
+        return 0;
+    }
+    if (!dSymLDLV2SelectGrid(selection, error, error_size))
+        return 0;
+    for (size_t i = 0; i < selection->candidate_count; ++i)
+    {
+        dSymLDLV2GridCandidate *candidate = &selection->candidates[i];
+        if (candidate->status != DSYMLDL_V2_GRID_FEASIBLE ||
+            candidate->performance.pareto_dominated)
+            continue;
+        for (int metric = 0; metric < DSYMLDL_V2_RUNTIME_METRIC_COUNT;
+             ++metric)
+            if (candidate->performance.metric[metric].active &&
+                profile->coefficient[metric].source ==
+                    DSYMLDL_V2_CALIBRATION_UNAVAILABLE)
+            {
+                dSymLDLV2SetGridError(
+                    error, error_size,
+                    "SymLDL calibration is missing an active runtime metric.");
+                return 0;
+            }
+        candidate->performance.predicted_seconds =
+            dSymLDLV2CalibratedTime(candidate, profile, 0);
+        candidate->performance.predicted_seconds_lower =
+            dSymLDLV2CalibratedTime(candidate, profile, -1);
+        candidate->performance.predicted_seconds_upper =
+            dSymLDLV2CalibratedTime(candidate, profile, 1);
+    }
+
+    size_t best = DSYMLDL_V2_GRID_NO_SELECTION;
+    for (size_t i = 0; i < selection->candidate_count; ++i)
+    {
+        dSymLDLV2GridCandidate *candidate = &selection->candidates[i];
+        if (candidate->status != DSYMLDL_V2_GRID_FEASIBLE ||
+            candidate->performance.pareto_dominated)
+            continue;
+        if (best == DSYMLDL_V2_GRID_NO_SELECTION ||
+            dSymLDLV2RuntimeValueLess(
+                candidate->performance.predicted_seconds,
+                selection->candidates[best].performance.predicted_seconds))
+            best = i;
+        else if (dSymLDLV2RuntimeValueEqual(
+                     candidate->performance.predicted_seconds,
+                     selection->candidates[best]
+                         .performance.predicted_seconds))
+        {
+            double candidate_pressure =
+                dSymLDLV2CandidateMemoryPressure(selection, candidate);
+            double best_pressure = dSymLDLV2CandidateMemoryPressure(
+                selection, &selection->candidates[best]);
+            if (dSymLDLV2RuntimeValueLess(candidate_pressure,
+                                          best_pressure) ||
+                (dSymLDLV2RuntimeValueEqual(candidate_pressure,
+                                             best_pressure) &&
+                 dSymLDLV2GridDimensionsLess(
+                     candidate, &selection->candidates[best])))
+                best = i;
+        }
+    }
+    if (best == DSYMLDL_V2_GRID_NO_SELECTION)
+    {
+        dSymLDLV2SetGridError(error, error_size,
+                              "No calibrated process grid remains.");
+        return 0;
+    }
+
+    int robust = 1;
+    selection->selected_index = best;
+    for (size_t i = 0; i < selection->candidate_count; ++i)
+    {
+        dSymLDLV2GridCandidate *candidate = &selection->candidates[i];
+        if (candidate->status != DSYMLDL_V2_GRID_FEASIBLE ||
+            candidate->performance.pareto_dominated)
+            continue;
+        int rank = 1;
+        for (size_t j = 0; j < selection->candidate_count; ++j)
+            if (selection->candidates[j].status ==
+                    DSYMLDL_V2_GRID_FEASIBLE &&
+                !selection->candidates[j].performance.pareto_dominated &&
+                dSymLDLV2RuntimeValueLess(
+                    selection->candidates[j].performance.predicted_seconds,
+                    candidate->performance.predicted_seconds))
+                ++rank;
+        candidate->performance.calibrated_rank = rank;
+
+        double minimum = 0.0;
+        double maximum = 0.0;
+        dSymLDLV2PairDifferenceBounds(
+            candidate, &selection->candidates[best], profile,
+            &minimum, &maximum);
+        candidate->performance.plausible_alternative =
+            i == best || !dSymLDLV2RuntimeValueLess(0.0, minimum);
+        if (i != best)
+        {
+            dSymLDLV2PairDifferenceBounds(
+                &selection->candidates[best], candidate, profile,
+                &minimum, &maximum);
+            if (dSymLDLV2RuntimeValueLess(0.0, maximum))
+                robust = 0;
+        }
+    }
+    selection->candidates[best].performance.robust_winner = robust;
+    selection->confidence = robust
+                                ? DSYMLDL_V2_GRID_CONFIDENCE_CALIBRATED_ROBUST
+                                : DSYMLDL_V2_GRID_CONFIDENCE_CALIBRATED_ESTIMATE;
+    selection->calibration = *profile;
+    return 1;
+}
+
 const char *dSymLDLV2RuntimeMetricName(dSymLDLV2RuntimeMetricKind kind)
 {
     static const char *names[DSYMLDL_V2_RUNTIME_METRIC_COUNT] = {
-        "GPU FLOPs", "CPU FLOPs", "local bytes", "task launches",
-        "synchronizations", "intra-node messages", "intra-node bytes",
-        "inter-node messages", "inter-node bytes", "host staging bytes"
+        "GPU FLOPs", "CPU FLOPs", "GPU-local bytes", "CPU-local bytes",
+        "GPU task launches", "GPU synchronizations",
+        "process synchronizations", "intra-node messages",
+        "intra-node bytes", "inter-node messages", "inter-node bytes",
+        "host-to-device bytes", "device-to-host bytes"
     };
     return kind >= 0 && kind < DSYMLDL_V2_RUNTIME_METRIC_COUNT
                ? names[kind]
@@ -560,6 +736,12 @@ const char *dSymLDLV2GridConfidenceString(
         return "robust compromise";
     case DSYMLDL_V2_GRID_CONFIDENCE_AMBIGUOUS_TIE:
         return "ambiguous tie";
+    case DSYMLDL_V2_GRID_CONFIDENCE_CALIBRATED_ROBUST:
+        return "calibrated robust";
+    case DSYMLDL_V2_GRID_CONFIDENCE_CALIBRATED_ESTIMATE:
+        return "calibrated estimate";
+    case DSYMLDL_V2_GRID_CONFIDENCE_UNCALIBRATED_FALLBACK:
+        return "uncalibrated fallback";
     default:
         return "unavailable";
     }

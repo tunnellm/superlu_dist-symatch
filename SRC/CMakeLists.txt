@@ -12,6 +12,8 @@ set(headers
     include/superlu_upacked.h
     include/symldl_v2_grid_runtime.h
     include/dsymldl_v2_grid_selector.h
+    include/dsymldl_v2_grid_calibration.h
+    include/dsymldl_v2_grid_calibration_gpu.h
     include/dsymldl_v2_grid_model.h
     include/dsymldl_v2_runtime_model.h
     include/dsymldl_v2_grid_report.h
@@ -159,6 +161,7 @@ if(enable_double)
     double/pddistribute3d.c
     double/d3DPartition.c
     double/dsymldl_v2_grid_selector.c
+    double/dsymldl_v2_grid_calibration.c
     double/dsymldl_v2_grid_model.c
     double/dsymldl_v2_runtime_model.c
     double/dsymldl_v2_grid_report.c
@@ -216,6 +219,7 @@ endif()
 if (TPL_ENABLE_CUDALIB)
   list(APPEND sources
        cuda/pdgstrs_lsum_cuda.cu cuda/superlu_gpu_utils.cu cuda/dsuperlu_gpu.cu
+       cuda/dsymldl_v2_grid_calibration.cu
 ##       CplusplusFactor/schurCompUpdate.cu 
 #       CplusplusFactor/pdgstrf3d_upacked.cpp
 #       CplusplusFactor/dsparseTreeFactor_upacked.cpp

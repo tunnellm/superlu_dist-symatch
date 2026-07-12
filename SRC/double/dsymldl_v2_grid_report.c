@@ -1,4 +1,5 @@
 #include "dsymldl_v2_grid_report.h"
+#include "dsymldl_v2_grid_calibration.h"
 #include "dsymldl_v2_workspace_size.h"
 
 #ifdef GPU_ACC
@@ -509,6 +510,7 @@ int dSymLDLV2SelectGridForStructure(
     const dSymLDLV2StructuralSummary *structure, MPI_Comm communicator,
     const dSymLDLV2GridRequest *request,
     const dSymLDLV2GridRuntimeConfig *runtime,
+    int calibrate,
     dSymLDLV2GridSelection *selection, char *error, size_t error_size)
 {
     int communicator_size;
@@ -655,6 +657,50 @@ int dSymLDLV2SelectGridForStructure(
     }
 
     int selected = dSymLDLV2SelectGrid(selection, error, error_size);
+    if (selected && calibrate && dSymLDLV2GridCalibrationEnabled())
+    {
+        dSymLDLV2CalibrationProfile profile;
+        dSymLDLV2CalibrationProfileInit(&profile);
+        char calibration_error[256] = {0};
+        double budget = dSymLDLV2CalibrationBudgetSeconds(
+            topology.node_count);
+        if (dSymLDLV2CalibrateGridModel(
+                communicator, &topology, runtime, partition_input,
+                selection, budget,
+                &profile, calibration_error, sizeof(calibration_error)))
+        {
+            if (!dSymLDLV2SelectGridCalibrated(
+                    selection, &profile, error, error_size))
+            {
+                selected = dSymLDLV2SelectGrid(
+                    selection, error, error_size);
+                profile.complete = 0;
+                snprintf(profile.diagnostic, sizeof(profile.diagnostic),
+                         "calibrated ranking failed; using structural selection");
+                selection->calibration = profile;
+                selection->confidence =
+                    DSYMLDL_V2_GRID_CONFIDENCE_UNCALIBRATED_FALLBACK;
+                if (selected && error != NULL && error_size > 0)
+                    error[0] = '\0';
+            }
+        }
+        else
+        {
+            selection->calibration = profile;
+            selection->confidence =
+                DSYMLDL_V2_GRID_CONFIDENCE_UNCALIBRATED_FALLBACK;
+            if (error != NULL && error_size > 0)
+                error[0] = '\0';
+        }
+    }
+    else if (selected && calibrate)
+    {
+        selection->confidence =
+            DSYMLDL_V2_GRID_CONFIDENCE_UNCALIBRATED_FALLBACK;
+        snprintf(selection->calibration.diagnostic,
+                 sizeof(selection->calibration.diagnostic),
+                 "calibration disabled by SYMLDL_V2_GRID_CALIBRATION");
+    }
     int selected_configuration[4] = {-1, -1, -1, -1};
     if (selected)
     {
@@ -692,6 +738,14 @@ static int dSymLDLV2ReportCandidateBetter(
 {
     if (right == NULL)
         return 1;
+    if (left->performance.predicted_seconds > 0.0 ||
+        right->performance.predicted_seconds > 0.0)
+    {
+        if (left->performance.predicted_seconds !=
+            right->performance.predicted_seconds)
+            return left->performance.predicted_seconds <
+                   right->performance.predicted_seconds;
+    }
     if (left->performance.worst_case_regret !=
         right->performance.worst_case_regret)
         return left->performance.worst_case_regret <
@@ -705,6 +759,20 @@ static int dSymLDLV2ReportCandidateBetter(
     if (left->pr != right->pr)
         return left->pr < right->pr;
     return left->pc < right->pc;
+}
+
+static const char *dSymLDLV2CalibrationSourceName(
+    dSymLDLV2CalibrationSource source)
+{
+    switch (source)
+    {
+    case DSYMLDL_V2_CALIBRATION_MEASURED:
+        return "measured";
+    case DSYMLDL_V2_CALIBRATION_DERIVED:
+        return "derived";
+    default:
+        return "unavailable";
+    }
 }
 
 void dSymLDLV2PrintGridSelection(
@@ -729,50 +797,72 @@ void dSymLDLV2PrintGridSelection(
                choice->pr, choice->pc, choice->pz,
                dSymLDLV2GridConfidenceString(selection->confidence),
                selection->pareto_count, selection->candidate_count);
+        if (selection->calibration.complete)
+            printf("  predicted_factor=%.4f s [%.4f, %.4f] calibration=%.3f s%s\n",
+                   choice->performance.predicted_seconds,
+                   choice->performance.predicted_seconds_lower,
+                   choice->performance.predicted_seconds_upper,
+                   selection->calibration.elapsed_seconds,
+                   selection->calibration.cache_hit ? " (cached)" : "");
+        else if (selection->calibration.diagnostic[0] != '\0')
+            printf("  calibration=%s\n",
+                   selection->calibration.diagnostic);
         printf("  predicted_peak: GPU/rank=%.2f GiB host/node=%.2f GiB streams=%d/%d\n",
                dSymLDLV2GiB(choice->memory.gpu_high_water_per_rank),
                dSymLDLV2GiB(choice->memory.host_high_water_per_node),
                choice->performance.estimated_gpu_streams,
                choice->performance.requested_gpu_streams);
 
-        size_t alternatives[2] = {
-            DSYMLDL_V2_GRID_NO_SELECTION,
-            DSYMLDL_V2_GRID_NO_SELECTION
-        };
+        size_t alternatives[5];
+        for (int position = 0; position < 5; ++position)
+            alternatives[position] = DSYMLDL_V2_GRID_NO_SELECTION;
         for (size_t i = 0; i < selection->candidate_count; ++i)
         {
             const dSymLDLV2GridCandidate *candidate =
                 &selection->candidates[i];
             if (i == selection->selected_index ||
                 candidate->status != DSYMLDL_V2_GRID_FEASIBLE ||
-                candidate->performance.pareto_dominated)
+                candidate->performance.pareto_dominated ||
+                (selection->calibration.complete &&
+                 !candidate->performance.plausible_alternative))
                 continue;
-            if (alternatives[0] == DSYMLDL_V2_GRID_NO_SELECTION ||
-                dSymLDLV2ReportCandidateBetter(
-                    candidate, &selection->candidates[alternatives[0]]))
+            for (int position = 0; position < 5; ++position)
             {
-                alternatives[1] = alternatives[0];
-                alternatives[0] = i;
+                if (alternatives[position] ==
+                        DSYMLDL_V2_GRID_NO_SELECTION ||
+                    dSymLDLV2ReportCandidateBetter(
+                        candidate,
+                        &selection->candidates[alternatives[position]]))
+                {
+                    for (int shift = 4; shift > position; --shift)
+                        alternatives[shift] = alternatives[shift - 1];
+                    alternatives[position] = i;
+                    break;
+                }
             }
-            else if (alternatives[1] == DSYMLDL_V2_GRID_NO_SELECTION ||
-                     dSymLDLV2ReportCandidateBetter(
-                         candidate,
-                         &selection->candidates[alternatives[1]]))
-                alternatives[1] = i;
         }
         if (alternatives[0] != DSYMLDL_V2_GRID_NO_SELECTION)
         {
             printf("  alternatives:");
-            for (int position = 0; position < 2; ++position)
+            for (int position = 0; position < 5; ++position)
             {
                 if (alternatives[position] ==
                     DSYMLDL_V2_GRID_NO_SELECTION)
                     continue;
                 const dSymLDLV2GridCandidate *alternative =
                     &selection->candidates[alternatives[position]];
-                printf(" %dx%dx%d(regret=%.3f)",
-                       alternative->pr, alternative->pc, alternative->pz,
-                       alternative->performance.worst_case_regret);
+                if (selection->calibration.complete)
+                    printf(" %dx%dx%d(%.4f s [%.4f, %.4f])",
+                           alternative->pr, alternative->pc,
+                           alternative->pz,
+                           alternative->performance.predicted_seconds,
+                           alternative->performance.predicted_seconds_lower,
+                           alternative->performance.predicted_seconds_upper);
+                else
+                    printf(" %dx%dx%d(regret=%.3f)",
+                           alternative->pr, alternative->pc,
+                           alternative->pz,
+                           alternative->performance.worst_case_regret);
             }
             printf("\n");
         }
@@ -801,7 +891,40 @@ void dSymLDLV2PrintGridSelection(
         printf(" topology=%s\n",
                selection->topology_known ? "discovered" : "unknown");
 
-        printf("\n  grid      regret  sum-regret pareto GPU/rank host/node streams status\n");
+        if (selection->calibration.complete)
+        {
+            printf("\n  calibration: backend=%s budget=%.2f s elapsed=%.3f s OMP=%d ranks/GPU=%d device=%s\n",
+                   selection->calibration.backend_cuda ? "CUDA" : "CPU",
+                   selection->calibration.budget_seconds,
+                   selection->calibration.elapsed_seconds,
+                   selection->calibration.omp_threads,
+                   selection->calibration.ranks_per_gpu,
+                   selection->calibration.device_identity[0] != '\0'
+                       ? selection->calibration.device_identity : "none");
+            for (int metric = 0;
+                 metric < DSYMLDL_V2_RUNTIME_METRIC_COUNT; ++metric)
+            {
+                const dSymLDLV2CalibrationCoefficient *coefficient =
+                    &selection->calibration.coefficient[metric];
+                if (coefficient->source ==
+                    DSYMLDL_V2_CALIBRATION_UNAVAILABLE)
+                    continue;
+                printf("    %-24s %12.5e [%12.5e,%12.5e] samples=%d dispersion=%.3f source=%s\n",
+                       dSymLDLV2RuntimeMetricName(
+                           (dSymLDLV2RuntimeMetricKind) metric),
+                       coefficient->seconds_per_unit,
+                       coefficient->lower_seconds_per_unit,
+                       coefficient->upper_seconds_per_unit,
+                       coefficient->samples,
+                       coefficient->relative_dispersion,
+                       dSymLDLV2CalibrationSourceName(coefficient->source));
+            }
+        }
+
+        if (selection->calibration.complete)
+            printf("\n  grid      predicted interval             rank plausible pareto GPU/rank host/node streams status\n");
+        else
+            printf("\n  grid      regret  sum-regret pareto GPU/rank host/node streams status\n");
         for (size_t i = 0; i < selection->candidate_count; ++i)
         {
             const dSymLDLV2GridCandidate *candidate =
@@ -816,29 +939,66 @@ void dSymLDLV2PrintGridSelection(
                                ? '*'
                                : ' ';
             if (candidate->status == DSYMLDL_V2_GRID_FEASIBLE)
-                printf(" %c%dx%dx%-3d %7.3f %10.3f %6s %7.2f %9.2f %3d/%-3d %s\n",
-                       current, candidate->pr, candidate->pc, candidate->pz,
-                       candidate->performance.worst_case_regret,
-                       candidate->performance.summed_regret,
-                       candidate->performance.pareto_dominated ? "no" : "yes",
-                       dSymLDLV2GiB(
-                           candidate->memory.gpu_high_water_per_rank),
-                       dSymLDLV2GiB(
-                           candidate->memory.host_high_water_per_node),
-                       candidate->performance.estimated_gpu_streams,
-                       candidate->performance.requested_gpu_streams, status);
+            {
+                if (selection->calibration.complete)
+                    printf(" %c%dx%dx%-3d %9.4f [%9.4f,%9.4f] %4d %9s %6s %7.2f %9.2f %3d/%-3d %s\n",
+                           current, candidate->pr, candidate->pc,
+                           candidate->pz,
+                           candidate->performance.predicted_seconds,
+                           candidate->performance.predicted_seconds_lower,
+                           candidate->performance.predicted_seconds_upper,
+                           candidate->performance.calibrated_rank,
+                           candidate->performance.plausible_alternative
+                               ? "yes" : "no",
+                           candidate->performance.pareto_dominated
+                               ? "no" : "yes",
+                           dSymLDLV2GiB(
+                               candidate->memory.gpu_high_water_per_rank),
+                           dSymLDLV2GiB(
+                               candidate->memory.host_high_water_per_node),
+                           candidate->performance.estimated_gpu_streams,
+                           candidate->performance.requested_gpu_streams,
+                           status);
+                else
+                    printf(" %c%dx%dx%-3d %7.3f %10.3f %6s %7.2f %9.2f %3d/%-3d %s\n",
+                           current, candidate->pr, candidate->pc,
+                           candidate->pz,
+                           candidate->performance.worst_case_regret,
+                           candidate->performance.summed_regret,
+                           candidate->performance.pareto_dominated
+                               ? "no" : "yes",
+                           dSymLDLV2GiB(
+                               candidate->memory.gpu_high_water_per_rank),
+                           dSymLDLV2GiB(
+                               candidate->memory.host_high_water_per_node),
+                           candidate->performance.estimated_gpu_streams,
+                           candidate->performance.requested_gpu_streams,
+                           status);
+            }
             else
-                printf(" %c%dx%dx%-3d %7s %10s %6s %7.2f %9.2f %7s %s\n",
-                       current, candidate->pr, candidate->pc, candidate->pz,
-                       "-", "-", "-",
-                       dSymLDLV2GiB(
-                           candidate->memory.gpu_high_water_per_rank),
-                       dSymLDLV2GiB(
-                           candidate->memory.host_high_water_per_node),
-                       "-", status);
+            {
+                if (selection->calibration.complete)
+                    printf(" %c%dx%dx%-3d %9s %21s %4s %9s %6s %7.2f %9.2f %7s %s\n",
+                           current, candidate->pr, candidate->pc,
+                           candidate->pz, "-", "-", "-", "-", "-",
+                           dSymLDLV2GiB(
+                               candidate->memory.gpu_high_water_per_rank),
+                           dSymLDLV2GiB(
+                               candidate->memory.host_high_water_per_node),
+                           "-", status);
+                else
+                    printf(" %c%dx%dx%-3d %7s %10s %6s %7.2f %9.2f %7s %s\n",
+                           current, candidate->pr, candidate->pc,
+                           candidate->pz, "-", "-", "-",
+                           dSymLDLV2GiB(
+                               candidate->memory.gpu_high_water_per_rank),
+                           dSymLDLV2GiB(
+                               candidate->memory.host_high_water_per_node),
+                           "-", status);
+            }
         }
 
-        printf("\n  Structural runtime bounds (raw units; no machine coefficients):\n");
+        printf("\n  Structural runtime exposures (raw units):\n");
         for (size_t i = 0; i < selection->candidate_count; ++i)
         {
             const dSymLDLV2GridCandidate *candidate =
@@ -855,11 +1015,13 @@ void dSymLDLV2PrintGridSelection(
                     &candidate->performance.metric[metric];
                 if (!value->active)
                     continue;
-                printf("    %-20s total=%12.5e critical=%12.5e waiting=%12.5e regret=%.3f\n",
+                printf("    %-24s total=%12.5e critical=%12.5e waiting=%12.5e",
                        dSymLDLV2RuntimeMetricName(
                            (dSymLDLV2RuntimeMetricKind) metric),
-                       value->total, value->critical, value->waiting,
-                       value->normalized_regret);
+                       value->total, value->critical, value->waiting);
+                if (!selection->calibration.complete)
+                    printf(" regret=%.3f", value->normalized_regret);
+                printf("\n");
             }
         }
 
@@ -963,6 +1125,8 @@ int dSymLDLV2ReportGridCandidates(
 
     int selected = dSymLDLV2SelectGridForStructure(
         partition_input, structure, communicator, &request, runtime,
+        dSymLDLV2BooleanEnvironment(
+            "SYMLDL_V2_GRID_REPORT_CALIBRATE", 0),
         &selection, error, error_size);
     int report_available = selection.candidates != NULL &&
                            selection.candidate_count > 0;

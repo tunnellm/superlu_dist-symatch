@@ -128,7 +128,7 @@ synchronize:
     }
     success = dSymLDLV2SelectGridForStructure(
         &partition_input, &structure, communicator, request, runtime,
-        selection, error, error_size);
+        1, selection, error, error_size);
 
 cleanup:
     dSymLDLV2StructuralSummaryDestroy(&structure);
