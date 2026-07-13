@@ -3,6 +3,7 @@
  */
 #include <math.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "superlu_ddefs.h"
@@ -271,6 +272,150 @@ static int
 pdgstrs3d_symldl_env_is_set(const char *name)
 {
     return getenv(name) != NULL;
+}
+
+typedef struct {
+    double sum;
+    double l1;
+    double l2_sq;
+    double weighted;
+    double max_abs;
+    long long count;
+    long long nonfinite;
+    unsigned long long key_hash;
+    unsigned long long value_hash;
+} pdgstrs3d_symldl_trace_stats_t;
+
+static uint64_t
+pdgstrs3d_symldl_trace_mix(uint64_t value)
+{
+    value += UINT64_C(0x9e3779b97f4a7c15);
+    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+}
+
+static void
+pdgstrs3d_symldl_trace_add(pdgstrs3d_symldl_trace_stats_t *stats,
+                           uint64_t key, double value, double weight)
+{
+    uint64_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    stats->key_hash +=
+        (unsigned long long) pdgstrs3d_symldl_trace_mix(key);
+    stats->value_hash += (unsigned long long) pdgstrs3d_symldl_trace_mix(
+        key ^ pdgstrs3d_symldl_trace_mix(bits));
+    ++stats->count;
+    if (!isfinite(value)) {
+        ++stats->nonfinite;
+        return;
+    }
+    stats->sum += value;
+    stats->l1 += fabs(value);
+    stats->l2_sq += value * value;
+    stats->weighted += weight * value;
+    stats->max_abs = SUPERLU_MAX(stats->max_abs, fabs(value));
+}
+
+static void
+pdgstrs3d_symldl_trace_print(const char *phase,
+                             pdgstrs3d_symldl_trace_stats_t *local,
+                             gridinfo3d_t *grid3d)
+{
+    double local_sum[4] = {local->sum, local->l1, local->l2_sq,
+                           local->weighted};
+    double global_sum[4];
+    double global_max;
+    long long local_counts[2] = {local->count, local->nonfinite};
+    long long global_counts[2];
+    unsigned long long local_hashes[2] = {local->key_hash,
+                                          local->value_hash};
+    unsigned long long global_hashes[2];
+    int global_rank;
+
+    MPI_Allreduce(local_sum, global_sum, 4, MPI_DOUBLE, MPI_SUM,
+                  grid3d->comm);
+    MPI_Allreduce(&local->max_abs, &global_max, 1, MPI_DOUBLE, MPI_MAX,
+                  grid3d->comm);
+    MPI_Allreduce(local_counts, global_counts, 2, MPI_LONG_LONG, MPI_SUM,
+                  grid3d->comm);
+    MPI_Allreduce(local_hashes, global_hashes, 2, MPI_UNSIGNED_LONG_LONG,
+                  MPI_SUM, grid3d->comm);
+    MPI_Comm_rank(grid3d->comm, &global_rank);
+    if (global_rank == 0) {
+        printf("SymLDL solve trace %-18s count=%lld nonfinite=%lld "
+               "sum=%.17e l1=%.17e l2_sq=%.17e max=%.17e "
+               "weighted=%.17e key_hash=%016llx value_hash=%016llx\n",
+               phase, global_counts[0], global_counts[1], global_sum[0],
+               global_sum[1], global_sum[2], global_max, global_sum[3],
+               global_hashes[0], global_hashes[1]);
+        fflush(stdout);
+    }
+}
+
+static void
+pdgstrs3d_symldl_trace_x(const char *phase, int_t n, int_t nsupers,
+                         int nrhs, int_t *xsup, int_t *ilsum, double *x,
+                         int *diag_owner,
+                         dtrf3Dpartition_t *trf3Dpartition,
+                         gridinfo3d_t *grid3d)
+{
+    pdgstrs3d_symldl_trace_stats_t stats;
+    int global_rank;
+
+    if (!pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TRACE"))
+        return;
+
+    memset(&stats, 0, sizeof(stats));
+    MPI_Comm_rank(grid3d->comm, &global_rank);
+    for (int_t k = 0; k < nsupers; ++k) {
+        if (global_rank != diag_owner[k])
+            continue;
+        int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, k);
+        int_t ksupc = xsup[k + 1] - xsup[k];
+        int_t xbase = ilsum[lk] * nrhs + (lk + 1) * XK_H;
+        for (int rhs = 0; rhs < nrhs; ++rhs) {
+            for (int_t i = 0; i < ksupc; ++i) {
+                int_t grow = xsup[k] + i;
+                uint64_t key = (uint64_t) rhs * (uint64_t) n +
+                               (uint64_t) grow;
+                double weight = (double) (rhs + 1) +
+                                (double) (grow + 1) / (double) (n + 1);
+                pdgstrs3d_symldl_trace_add(
+                    &stats, key, x[xbase + i + (int_t) rhs * ksupc],
+                    weight);
+            }
+        }
+    }
+    pdgstrs3d_symldl_trace_print(phase, &stats, grid3d);
+}
+
+static void
+pdgstrs3d_symldl_trace_b(const char *phase, int_t n, double *B,
+                         int_t m_loc, int_t fst_row, int_t ldb, int nrhs,
+                         gridinfo3d_t *grid3d)
+{
+    pdgstrs3d_symldl_trace_stats_t stats;
+
+    if (!pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TRACE"))
+        return;
+
+    memset(&stats, 0, sizeof(stats));
+    if (grid3d->zscp.Iam == 0) {
+        for (int rhs = 0; rhs < nrhs; ++rhs) {
+            for (int_t i = 0; i < m_loc; ++i) {
+                int_t grow = fst_row + i;
+                uint64_t key = (uint64_t) rhs * (uint64_t) n +
+                               (uint64_t) grow;
+                double weight = (double) (rhs + 1) +
+                                (double) (grow + 1) / (double) (n + 1);
+                pdgstrs3d_symldl_trace_add(&stats, key, B[i + rhs * ldb],
+                                           weight);
+            }
+        }
+    }
+    pdgstrs3d_symldl_trace_print(phase, &stats, grid3d);
 }
 
 static int
@@ -2416,6 +2561,75 @@ pdgstrs3d_symldl_prepare_host_factor_panels(
 }
 
 static void
+pdgstrs3d_symldl_trace_factor(pdgstrs3d_symldl_solve_meta_t *meta,
+                              int_t *xsup, gridinfo3d_t *grid3d)
+{
+    pdgstrs3d_symldl_trace_stats_t stats;
+
+    if (!pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TRACE"))
+        return;
+
+    if (meta->factor_gpu_handle != NULL) {
+        pdgstrs3d_symldl_sync_factor_gpu(meta);
+#if defined(GPU_ACC)
+        for (int_t k = 0; k < meta->nsupers; ++k) {
+            if (!meta->panel_meta[k].has_panel)
+                continue;
+            if (dSymLDLFactorGPUCopyPanelToHost(
+                    (dLUgpu_Handle) meta->factor_gpu_handle, k) != 0)
+                ABORT("Failed to copy a SymLDL panel for solve tracing.");
+        }
+#else
+        ABORT("SymLDL solve tracing cannot copy GPU factors in a non-CUDA build.");
+#endif
+    }
+
+    memset(&stats, 0, sizeof(stats));
+    for (int_t k = 0; k < meta->nsupers; ++k) {
+        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
+        int_t ksupc = xsup[k + 1] - xsup[k];
+        if (!kmeta->has_panel || kmeta->lusup == NULL)
+            continue;
+
+        if (kmeta->has_diag) {
+            for (int_t c = 0; c < ksupc; ++c) {
+                for (int_t r = 0; r < ksupc; ++r) {
+                    int_t grow = xsup[k] + r;
+                    uint64_t key = pdgstrs3d_symldl_trace_mix((uint64_t) k) ^
+                                   pdgstrs3d_symldl_trace_mix(
+                                       (uint64_t) grow + UINT64_C(0x100000000)) ^
+                                   pdgstrs3d_symldl_trace_mix(
+                                       (uint64_t) c + UINT64_C(0x200000000));
+                    double value = kmeta->lusup[kmeta->diag_luptr + r +
+                                                c * kmeta->nsupr];
+                    pdgstrs3d_symldl_trace_add(&stats, key, value, 1.0);
+                }
+            }
+        }
+
+        for (int_t block = 0; block < kmeta->nblocks; ++block) {
+            int_t nbrow = kmeta->block_nbrow[block];
+            int_t row_start = kmeta->block_row_start[block];
+            int_t luptr = kmeta->block_luptr[block];
+            for (int_t c = 0; c < ksupc; ++c) {
+                for (int_t r = 0; r < nbrow; ++r) {
+                    int_t grow = kmeta->rows[row_start + r];
+                    uint64_t key = pdgstrs3d_symldl_trace_mix((uint64_t) k) ^
+                                   pdgstrs3d_symldl_trace_mix(
+                                       (uint64_t) grow + UINT64_C(0x100000000)) ^
+                                   pdgstrs3d_symldl_trace_mix(
+                                       (uint64_t) c + UINT64_C(0x200000000));
+                    double value = kmeta->lusup[luptr + r +
+                                                c * kmeta->nsupr];
+                    pdgstrs3d_symldl_trace_add(&stats, key, value, 1.0);
+                }
+            }
+        }
+    }
+    pdgstrs3d_symldl_trace_print("factor", &stats, grid3d);
+}
+
+static void
 pdgstrs3d_symldl_gpu_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
                              int_t maxsup, int nrhs, gridinfo3d_t *grid3d)
 {
@@ -3244,6 +3458,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     pdgstrs3d_symldl_workspace_prepare(solve_meta, x_count, maxsup, nrhs,
                                        global_nprocs);
     pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta, nrhs);
+    pdgstrs3d_symldl_trace_factor(solve_meta, xsup, grid3d);
     pdgstrs3d_symldl_gpu_prepare(solve_meta, maxsup, nrhs, grid3d);
     workspace = &solve_meta->work;
     x = workspace->x;
@@ -3263,12 +3478,16 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     xtrsTimer_t xtrsTimer;
     initTRStimer(&xtrsTimer, grid);
 
+    pdgstrs3d_symldl_trace_b("input_B", n, B, m_loc, fst_row, ldb, nrhs,
+                             grid3d);
     tx = SuperLU_timer_();
     pdReDistribute3d_B_to_X_symv2(B, m_loc, nrhs, ldb, fst_row, ilsum, x,
                                   ScalePermstruct, Glu_persist,
                                   trf3Dpartition, grid3d, SOLVEstruct);
     xtrsTimer.t_pxReDistribute_B_to_X = SuperLU_timer_() - tx;
     symldl_timer.b_to_x = xtrsTimer.t_pxReDistribute_B_to_X;
+    pdgstrs3d_symldl_trace_x("B_to_X", n, nsupers, nrhs, xsup, ilsum, x,
+                             diag_owner, trf3Dpartition, grid3d);
 
     MPI_Barrier(grid3d->comm);
     tx_st = SuperLU_timer_();
@@ -3503,8 +3722,19 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         }
         symldl_timer.forward_apply += SuperLU_timer_() - ttmp;
 
+        if (pdgstrs3d_symldl_env_enabled(
+                "GPU3DV2_SYM_SOLVE_TRACE_LEVELS")) {
+            char phase[64];
+            snprintf(phase, sizeof(phase), "forward_level_%lld",
+                     (long long) level);
+            pdgstrs3d_symldl_trace_x(phase, n, nsupers, nrhs, xsup, ilsum,
+                                     x, diag_owner, trf3Dpartition, grid3d);
+        }
+
     }
     xtrsTimer.t_forwardSolve = SuperLU_timer_() - tx_st;
+    pdgstrs3d_symldl_trace_x("forward", n, nsupers, nrhs, xsup, ilsum, x,
+                             diag_owner, trf3Dpartition, grid3d);
     xk_buf = workspace->xk_buf;
 
     /* Dense diagonal apply z = D^{-1} y on the canonical diagonal owner. */
@@ -3556,6 +3786,8 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     }
     }
     (void) tx;
+    pdgstrs3d_symldl_trace_x("diagonal", n, nsupers, nrhs, xsup, ilsum, x,
+                             diag_owner, trf3Dpartition, grid3d);
 
     /* Backward solve with L^T using per-tree replicated row values. */
     tx = SuperLU_timer_();
@@ -3767,8 +3999,19 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                         ctx->delta_buf[c + (int_t) rhs * ctx->ksupc];
         }
 
+        if (pdgstrs3d_symldl_env_enabled(
+                "GPU3DV2_SYM_SOLVE_TRACE_LEVELS")) {
+            char phase[64];
+            snprintf(phase, sizeof(phase), "backward_level_%lld",
+                     (long long) (level - 1));
+            pdgstrs3d_symldl_trace_x(phase, n, nsupers, nrhs, xsup, ilsum,
+                                     x, diag_owner, trf3Dpartition, grid3d);
+        }
+
     }
     xtrsTimer.t_backwardSolve = SuperLU_timer_() - tx;
+    pdgstrs3d_symldl_trace_x("backward", n, nsupers, nrhs, xsup, ilsum, x,
+                             diag_owner, trf3Dpartition, grid3d);
 
     MPI_Barrier(grid3d->comm);
     stat->utime[SOLVE] = SuperLU_timer_() - tx_st;
@@ -3779,6 +4022,8 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                                   trf3Dpartition, grid3d, SOLVEstruct);
     xtrsTimer.t_pxReDistribute_X_to_B = SuperLU_timer_() - tx;
     symldl_timer.x_to_b = xtrsTimer.t_pxReDistribute_X_to_B;
+    pdgstrs3d_symldl_trace_b("output_B", n, B, m_loc, fst_row, ldb, nrhs,
+                             grid3d);
 
     reduceStat(SOLVE, stat, grid3d);
     pdgstrs3d_symldl_gpu_take_timers(solve_meta, &symldl_timer);

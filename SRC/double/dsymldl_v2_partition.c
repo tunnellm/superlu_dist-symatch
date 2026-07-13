@@ -1,6 +1,9 @@
 
 
 #include "superlu_ddefs.h"
+#include <errno.h>
+#include <math.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -15,6 +18,115 @@ typedef struct {
     double tree_weight;
 } dSymV2LDLCost_t;
 
+static double dSymV2RankSchurFraction(int nprow)
+{
+    static int initialized = 0;
+    static int has_override = 0;
+    static double override = 0.0;
+
+    if (!initialized)
+    {
+        const char *env = getenv("GPU3DV2_OWNER_RANK_SCHUR_FRACTION");
+        initialized = 1;
+        if (env != NULL && env[0] != '\0')
+        {
+            char *end = NULL;
+            errno = 0;
+            override = strtod(env, &end);
+            if (errno != 0 || end == env || *end != '\0' ||
+                !isfinite(override) || override < 0.0)
+                ABORT("GPU3DV2_OWNER_RANK_SCHUR_FRACTION must be a finite nonnegative number.");
+            has_override = 1;
+        }
+    }
+
+    return has_override
+               ? override
+               : 1.0 / (double) SUPERLU_MAX(1, nprow);
+}
+
+static int dSymV2OwnerTraceEnabled(void)
+{
+    const char *env = getenv("GPU3DV2_OWNER_TRACE");
+    return env != NULL && atoi(env) != 0;
+}
+
+static uint64_t dSymV2OwnerHashValue(uint64_t hash, uint64_t value)
+{
+    hash ^= value;
+    return hash * UINT64_C(1099511628211);
+}
+
+static void dSymV2TraceLDLOwners(int_t nsupers,
+                                 dtrf3Dpartition_t *trf3Dpart,
+                                 gridinfo3d_t *grid3d)
+{
+    gridinfo_t *grid = &(grid3d->grid2d);
+    int global_rank;
+    int global_nprocs;
+
+    if (!dSymV2OwnerTraceEnabled())
+        return;
+
+    MPI_Comm_rank(grid3d->comm, &global_rank);
+    MPI_Comm_size(grid3d->comm, &global_nprocs);
+    if (global_rank == 0)
+    {
+        int *diag_root_counts = int32Calloc_dist(grid->nprow);
+        int *panel_root_counts = int32Calloc_dist(grid->npcol);
+        int *owner_counts = int32Calloc_dist(global_nprocs);
+        uint64_t root_hash = UINT64_C(1469598103934665603);
+        uint64_t owner_hash = UINT64_C(1469598103934665603);
+
+        if (diag_root_counts == NULL || panel_root_counts == NULL ||
+            owner_counts == NULL)
+            ABORT("Malloc fails for SymLDL owner trace counts.");
+
+        for (int_t k = 0; k < nsupers; ++k)
+        {
+            const int diag_root = trf3Dpart->symV2DiagRoot[k];
+            const int panel_root = trf3Dpart->symV2PanelRoot[k];
+            const int owner = trf3Dpart->symV2DiagOwner[k];
+            if (diag_root >= 0 && diag_root < grid->nprow)
+                ++diag_root_counts[diag_root];
+            if (panel_root >= 0 && panel_root < grid->npcol)
+                ++panel_root_counts[panel_root];
+            if (owner >= 0 && owner < global_nprocs)
+                ++owner_counts[owner];
+            root_hash = dSymV2OwnerHashValue(root_hash,
+                                             (uint64_t) diag_root + 1);
+            root_hash = dSymV2OwnerHashValue(root_hash,
+                                             (uint64_t) panel_root + 1);
+            owner_hash = dSymV2OwnerHashValue(owner_hash,
+                                              (uint64_t) owner + 1);
+        }
+
+        printf("SymLDL owner trace: Pr=%d Pc=%d Pz=%d nsupers=%lld "
+               "rank_schur_fraction=%.17g root_hash=%016llx "
+               "owner_hash=%016llx\n",
+               grid->nprow, grid->npcol, grid3d->zscp.Np,
+               (long long) nsupers, dSymV2RankSchurFraction(grid->nprow),
+               (unsigned long long) root_hash,
+               (unsigned long long) owner_hash);
+        printf("SymLDL owner trace diag roots:");
+        for (int pr = 0; pr < grid->nprow; ++pr)
+            printf(" %d:%d", pr, diag_root_counts[pr]);
+        printf("\nSymLDL owner trace panel roots:");
+        for (int pc = 0; pc < grid->npcol; ++pc)
+            printf(" %d:%d", pc, panel_root_counts[pc]);
+        printf("\nSymLDL owner trace ranks:");
+        for (int p = 0; p < global_nprocs; ++p)
+            if (owner_counts[p] != 0)
+                printf(" %d:%d", p, owner_counts[p]);
+        printf("\n");
+        fflush(stdout);
+
+        SUPERLU_FREE(diag_root_counts);
+        SUPERLU_FREE(panel_root_counts);
+        SUPERLU_FREE(owner_counts);
+    }
+}
+
 static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
                                dSymV2LDLCost_t *cost)
 {
@@ -27,8 +139,7 @@ static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
     double ll_schur_cost = 0.5 * below * below * ksupc;
     double partner_comm_cost = (nprow > 1) ? below * ksupc : 0.0;
     double solve_cost = ksupc * ksupc + 2.0 * below * ksupc;
-    double rank_schur_fraction =
-        1.0 / (double) SUPERLU_MAX(1, nprow);
+    double rank_schur_fraction = dSymV2RankSchurFraction(nprow);
 
     cost->panel_work =
         SUPERLU_MAX(1.0, panel_factor_cost + ll_schur_cost +
@@ -455,6 +566,8 @@ static void dSymV2UpdateLDLDiagOwners(int_t nsupers,
         if (owner_count[k] != 1)
             ABORT("SymFact V2 LDL owner metadata has an invalid diagonal owner count.");
     }
+
+    dSymV2TraceLDLOwners(nsupers, trf3Dpart, grid3d);
 
     SUPERLU_FREE(local_owner);
     SUPERLU_FREE(local_owner_count);
