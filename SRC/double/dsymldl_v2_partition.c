@@ -15,6 +15,14 @@ typedef struct {
     double tree_weight;
 } dSymV2LDLCost_t;
 
+static size_t dSymV2CheckedProduct(size_t left, size_t right,
+                                   const char *message)
+{
+    if (left != 0 && right > ((size_t)-1) / left)
+        ABORT(message);
+    return left * right;
+}
+
 static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
                                dSymV2LDLCost_t *cost)
 {
@@ -222,42 +230,60 @@ static void dSymV2InitLDLOwners(int_t nsupers,
                                 int_t *setree,
                                 int_t *xsup,
                                 Glu_freeable_t *Glu_freeable,
+                                const int *active_z,
                                 gridinfo3d_t *grid3d)
 {
     gridinfo_t *grid = &(grid3d->grid2d);
-    int global_rank;
-    int *local_owner;
-    size_t owner_bytes = (size_t) nsupers * sizeof(int);
-    double *panel_load = (double *) SUPERLU_MALLOC(grid->npcol * sizeof(double));
-    double *row_load = (double *) SUPERLU_MALLOC(grid->nprow * sizeof(double));
-    double *rank_load =
-        (double *) SUPERLU_MALLOC(grid->nprow * grid->npcol * sizeof(double));
+    const int pz = grid3d->zscp.Np;
+    const size_t ranks_2d = dSymV2CheckedProduct(
+        (size_t) grid->nprow, (size_t) grid->npcol,
+        "SymFact V2 LDL 2D owner count overflows.");
+    const size_t panel_count = dSymV2CheckedProduct(
+        (size_t) pz, (size_t) grid->npcol,
+        "SymFact V2 LDL panel load count overflows.");
+    const size_t row_count = dSymV2CheckedProduct(
+        (size_t) pz, (size_t) grid->nprow,
+        "SymFact V2 LDL row load count overflows.");
+    const size_t rank_count = dSymV2CheckedProduct(
+        (size_t) pz, ranks_2d,
+        "SymFact V2 LDL rank load count overflows.");
+    const size_t owner_bytes = dSymV2CheckedProduct(
+        (size_t) nsupers, sizeof(int),
+        "SymFact V2 LDL owner metadata size overflows.");
+    const size_t panel_bytes = dSymV2CheckedProduct(
+        panel_count, sizeof(double),
+        "SymFact V2 LDL panel load size overflows.");
+    const size_t row_bytes = dSymV2CheckedProduct(
+        row_count, sizeof(double),
+        "SymFact V2 LDL row load size overflows.");
+    const size_t rank_bytes = dSymV2CheckedProduct(
+        rank_count, sizeof(double),
+        "SymFact V2 LDL rank load size overflows.");
+    double *panel_load = (double *) SUPERLU_MALLOC(panel_bytes);
+    double *row_load = (double *) SUPERLU_MALLOC(row_bytes);
+    double *rank_load = (double *) SUPERLU_MALLOC(rank_bytes);
 
-    if (panel_load == NULL || row_load == NULL || rank_load == NULL)
+    if (active_z == NULL || panel_load == NULL || row_load == NULL ||
+        rank_load == NULL)
         ABORT("Malloc fails for SymFact V2 LDL load metadata.");
-    for (int pc = 0; pc < grid->npcol; ++pc)
-        panel_load[pc] = 0.0;
-    for (int pr = 0; pr < grid->nprow; ++pr)
-        row_load[pr] = 0.0;
-    for (int p = 0; p < grid->nprow * grid->npcol; ++p)
-        rank_load[p] = 0.0;
-
-    dSymV2ResetLDLMetadata(trf3Dpart);
+    memset(panel_load, 0, panel_bytes);
+    memset(row_load, 0, row_bytes);
+    memset(rank_load, 0, rank_bytes);
 
     if (!(trf3Dpart->symV2DiagOwner = (int *) SUPERLU_MALLOC(owner_bytes)) ||
         !(trf3Dpart->symV2PanelRoot = (int *) SUPERLU_MALLOC(owner_bytes)) ||
         !(trf3Dpart->symV2DiagRoot = (int *) SUPERLU_MALLOC(owner_bytes)) ||
         !(trf3Dpart->symV2PanelLocalIndex = INT_T_ALLOC(nsupers)) ||
-        !(trf3Dpart->symV2RowLocalIndex = INT_T_ALLOC(nsupers)) ||
-        !(local_owner = (int *) SUPERLU_MALLOC(owner_bytes)))
+        !(trf3Dpart->symV2RowLocalIndex = INT_T_ALLOC(nsupers)))
         ABORT("Malloc fails for SymFact V2 LDL owner metadata.");
 
-    MPI_Comm_rank(grid3d->comm, &global_rank);
     const double affinity_weight = dSymV2OwnerAffinityWeight();
     for (int_t k = 0; k < nsupers; ++k)
     {
         trf3Dpart->symV2PanelRoot[k] = -1;
         trf3Dpart->symV2DiagRoot[k] = -1;
+        trf3Dpart->symV2PanelLocalIndex[k] = -1;
+        trf3Dpart->symV2RowLocalIndex[k] = -1;
     }
     for (int_t order = 0; order < nsupers; ++order)
     {
@@ -268,75 +294,58 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         int panel_root;
         int diag_root;
         int owner_rank;
+        const int z = active_z[k];
+        if (z < 0 || z >= pz)
+            ABORT("SymFact V2 LDL owner has an invalid active Z layer.");
         const int_t parent = setree != NULL ? setree[k] : nsupers;
         const int parent_pr =
-            (parent >= 0 && parent < nsupers)
+            (parent >= 0 && parent < nsupers && active_z[parent] == z)
                 ? trf3Dpart->symV2DiagRoot[parent]
                 : -1;
         const int parent_pc =
-            (parent >= 0 && parent < nsupers)
+            (parent >= 0 && parent < nsupers && active_z[parent] == z)
                 ? trf3Dpart->symV2PanelRoot[parent]
                 : -1;
+        const size_t panel_offset = (size_t) z * (size_t) grid->npcol;
+        const size_t row_offset = (size_t) z * (size_t) grid->nprow;
+        const size_t rank_offset = (size_t) z * ranks_2d;
         dSymV2EstimateSupernodeWork(k, xsup, Glu_freeable, grid, &cost);
-        dSymV2ChooseOwnerPair(panel_load, row_load, rank_load, grid, &cost,
+        dSymV2ChooseOwnerPair(panel_load + panel_offset,
+                              row_load + row_offset,
+                              rank_load + rank_offset, grid, &cost,
                               parent_pr, parent_pc, affinity_weight,
                               &diag_root, &panel_root);
         owner_rank = PNUM(diag_root, panel_root, grid);
-        panel_load[panel_root] += cost.panel_work;
-        row_load[diag_root] += cost.row_work;
-        rank_load[owner_rank] += cost.rank_work;
+        panel_load[panel_offset + (size_t) panel_root] += cost.panel_work;
+        row_load[row_offset + (size_t) diag_root] += cost.row_work;
+        rank_load[rank_offset + (size_t) owner_rank] += cost.rank_work;
         trf3Dpart->symV2PanelRoot[k] = panel_root;
         trf3Dpart->symV2DiagRoot[k] = diag_root;
-        trf3Dpart->symV2PanelLocalIndex[k] = -1;
-        trf3Dpart->symV2RowLocalIndex[k] = -1;
-        local_owner[k] =
-            (grid3d->zscp.Iam == 0 &&
-             grid->iam == PNUM(diag_root, panel_root, grid))
-                ? global_rank
-                : INT_MAX;
     }
 
-    MPI_Allreduce(local_owner, trf3Dpart->symV2DiagOwner, (int) nsupers,
-                  MPI_INT, MPI_MIN, grid3d->comm);
-    for (int_t k = 0; k < nsupers; ++k)
-        if (trf3Dpart->symV2DiagOwner[k] == INT_MAX)
-            ABORT("SymFact V2 LDL owner metadata is missing a diagonal owner.");
-
-    int myrow = MYROW(grid->iam, grid);
-    int mycol = MYCOL(grid->iam, grid);
-    for (int_t k = 0; k < nsupers; ++k)
+    const char *trace = getenv("GPU3DV2_TRACE");
+    if (grid3d->iam == 0 && trace != NULL && trace[0] != '\0' &&
+        trace[0] != '0')
     {
-        if (trf3Dpart->symV2PanelRoot[k] == mycol)
-            ++trf3Dpart->symV2LocalPanelCount;
-        if (trf3Dpart->symV2DiagRoot[k] == myrow)
-            ++trf3Dpart->symV2LocalRowCount;
-    }
-    if (trf3Dpart->symV2LocalPanelCount > 0 &&
-        !(trf3Dpart->symV2LocalPanelGids =
-              INT_T_ALLOC(trf3Dpart->symV2LocalPanelCount)))
-        ABORT("Malloc fails for SymFact V2 local panel gids.");
-    if (trf3Dpart->symV2LocalRowCount > 0 &&
-        !(trf3Dpart->symV2LocalRowGids =
-              INT_T_ALLOC(trf3Dpart->symV2LocalRowCount)))
-        ABORT("Malloc fails for SymFact V2 local row gids.");
-
-    int_t local_panel = 0;
-    int_t local_row = 0;
-    for (int_t k = 0; k < nsupers; ++k)
-    {
-        if (trf3Dpart->symV2PanelRoot[k] == mycol)
+        double total = 0.0;
+        double maximum = 0.0;
+        for (size_t rank = 0; rank < rank_count; ++rank)
         {
-            trf3Dpart->symV2PanelLocalIndex[k] = local_panel;
-            trf3Dpart->symV2LocalPanelGids[local_panel++] = k;
+            total += rank_load[rank];
+            maximum = SUPERLU_MAX(maximum, rank_load[rank]);
         }
-        if (trf3Dpart->symV2DiagRoot[k] == myrow)
-        {
-            trf3Dpart->symV2RowLocalIndex[k] = local_row;
-            trf3Dpart->symV2LocalRowGids[local_row++] = k;
-        }
+        const double average = rank_count > 0
+                                   ? total / (double) rank_count
+                                   : 0.0;
+        const double imbalance = average > 0.0 ? maximum / average : 0.0;
+        fprintf(stderr,
+                "[sym-v2-trace] LDL physical owner load ranks=%llu "
+                "total=%.6e average=%.6e maximum=%.6e imbalance=%.6f\n",
+                (unsigned long long) rank_count, total, average, maximum,
+                imbalance);
+        fflush(stderr);
     }
 
-    SUPERLU_FREE(local_owner);
     SUPERLU_FREE(panel_load);
     SUPERLU_FREE(row_load);
     SUPERLU_FREE(rank_load);
@@ -542,6 +551,88 @@ static void dSymV2ValidateLDLForests(int_t nsupers,
     SUPERLU_FREE(seen);
 }
 
+static int *dSymV2BuildActiveZMap(int_t nsupers, int_t maxLvl,
+                                  int_t *gNodeCount, int_t **gNodeLists,
+                                  gridinfo3d_t *grid3d)
+{
+    const int pz = grid3d->zscp.Np;
+    const int_t numForests = (((int_t) 1) << maxLvl) - 1;
+    const size_t forest_bytes = dSymV2CheckedProduct(
+        (size_t) numForests, sizeof(int),
+        "SymFact V2 LDL forest owner size overflows.");
+    const size_t active_bytes = dSymV2CheckedProduct(
+        (size_t) nsupers, sizeof(int),
+        "SymFact V2 LDL active Z map size overflows.");
+    int *forest_owner_z = (int *) SUPERLU_MALLOC(forest_bytes);
+    int *active_z = (int *) SUPERLU_MALLOC(active_bytes);
+
+    if (forest_owner_z == NULL || active_z == NULL)
+        ABORT("Malloc fails for SymFact V2 LDL active Z metadata.");
+    for (int_t tree = 0; tree < numForests; ++tree)
+        forest_owner_z[tree] = -1;
+    for (int_t k = 0; k < nsupers; ++k)
+        active_z[k] = -1;
+
+    for (int z = 0; z < pz; ++z)
+    {
+        int_t tree = (int_t) pz - 1 + (int_t) z;
+        for (int_t level = 0; level < maxLvl; ++level)
+        {
+            if (tree < 0 || tree >= numForests)
+                ABORT("SymFact V2 LDL forest has an invalid Z mapping.");
+            const int_t stride = ((int_t) 1) << level;
+            if (((int_t) z % stride) == 0)
+            {
+                if (forest_owner_z[tree] >= 0 &&
+                    forest_owner_z[tree] != z)
+                    ABORT("SymFact V2 LDL forest has multiple active Z owners.");
+                forest_owner_z[tree] = z;
+            }
+            tree = (tree - 1) / 2;
+        }
+    }
+
+    for (int_t tree = 0; tree < numForests; ++tree)
+    {
+        const int z = forest_owner_z[tree];
+        if (z < 0 || z >= pz)
+            ABORT("SymFact V2 LDL forest is missing an active Z owner.");
+        for (int_t node = 0; node < gNodeCount[tree]; ++node)
+        {
+            const int_t k = gNodeLists[tree][node];
+            if (k < 0 || k >= nsupers)
+                ABORT("SymFact V2 LDL active Z map has an invalid supernode.");
+            if (active_z[k] >= 0)
+                ABORT("SymFact V2 LDL supernode has multiple active Z owners.");
+            active_z[k] = z;
+        }
+    }
+    for (int_t k = 0; k < nsupers; ++k)
+        if (active_z[k] < 0)
+            ABORT("SymFact V2 LDL supernode is missing an active Z owner.");
+
+    SUPERLU_FREE(forest_owner_z);
+    return active_z;
+}
+
+static void dSymV2ValidateActiveZMap(int_t nsupers, const int *active_z,
+                                     dtrf3Dpartition_t *trf3Dpart,
+                                     gridinfo3d_t *grid3d)
+{
+    if (active_z == NULL || trf3Dpart->superGridMap == NULL)
+        ABORT("SymFact V2 LDL active Z validation metadata is missing.");
+
+    const int my_z = grid3d->zscp.Iam;
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        const int active_here = active_z[k] == my_z;
+        const int initialized_here =
+            trf3Dpart->superGridMap[k] == IN_GRID_AIJ;
+        if (active_here != initialized_here)
+            ABORT("SymFact V2 LDL active Z map disagrees with the forest map.");
+    }
+}
+
 static void dSymV2TraceLDLForests(dtrf3Dpartition_t *trf3Dpart,
                                   int_t *gNodeCount,
                                   gridinfo3d_t *grid3d)
@@ -716,6 +807,7 @@ static void dSymV2InstallLDLForest(int_t nsupers,
                                    int_t *setree,
                                    treeList_t *treeList,
                                    int_t *xsup,
+                                   Glu_freeable_t *Glu_freeable,
                                    gridinfo3d_t *grid3d)
 {
     int_t maxLvl = log2i(grid3d->zscp.Np) + 1;
@@ -764,11 +856,18 @@ static void dSymV2InstallLDLForest(int_t nsupers,
     trf3Dpart->symV2ScheduleEnabled = 1;
 
     dSymV2ValidateLDLForests(nsupers, trf3Dpart, gNodeCount, gNodeLists);
+    int *active_z = dSymV2BuildActiveZMap(
+        nsupers, maxLvl, gNodeCount, gNodeLists, grid3d);
+    dSymV2ValidateActiveZMap(nsupers, active_z, trf3Dpart, grid3d);
+    dSymV2InitLDLOwners(nsupers, trf3Dpart, setree, xsup,
+                        Glu_freeable, active_z, grid3d);
+    dSymV2BuildLDLSchedule(nsupers, setree, trf3Dpart, xsup, grid3d);
     dSymV2BuildLocalLDLIndexes(nsupers, trf3Dpart, grid3d);
     dSymV2UpdateLDLDiagOwners(nsupers, trf3Dpart, grid3d);
     dSymV2ComputeForestDiagDims(nsupers, trf3Dpart, xsup, grid3d);
     dSymV2TraceLDLForests(trf3Dpart, gNodeCount, grid3d);
 
+    SUPERLU_FREE(active_z);
     SUPERLU_FREE(gNodeCount);
     SUPERLU_FREE(gNodeLists);
 }
@@ -809,14 +908,9 @@ void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
                             LUstruct->Glu_persist->xsup,
                             Glu_freeable, NULL, grid3d);
     trf3Dpart->gEtreeInfo = fillEtreeInfo(nsupers, setree, treeList);
-    dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
-                        LUstruct->Glu_persist->xsup,
-                        Glu_freeable, grid3d);
-    dSymV2BuildLDLSchedule(nsupers, setree, trf3Dpart,
-                           LUstruct->Glu_persist->xsup, grid3d);
-
     dSymV2InstallLDLForest(nsupers, trf3Dpart, setree, treeList,
-                           LUstruct->Glu_persist->xsup, grid3d);
+                           LUstruct->Glu_persist->xsup,
+                           Glu_freeable, grid3d);
 
     free_treelist(nsupers, treeList);
 }
