@@ -167,6 +167,16 @@ static int_t symldl_v2_l_fragment_exchange(
     {
         if (lk < 0 || lk >= lu->symV2PanelCount())
             ABORT("SymFact V2 L-fragment source panel is invalid.");
+        if (superlu_sym_v2_async_factor() &&
+            static_cast<size_t>(k) < lu->symPanelReadyEventIds.size() &&
+            lu->symPanelReadyEventIds[static_cast<size_t>(k)] >= 0)
+        {
+            int event_id = lu->symPanelReadyEventIds[static_cast<size_t>(k)];
+            if (event_id >= lu->A_gpu.numCudaStreams)
+                ABORT("SymFact V2 transformed-panel event is invalid.");
+            gpuErrchk(cudaStreamWaitEvent(
+                stream, lu->A_gpu.panelReadyEvents[event_id], 0));
+        }
         if (lu->symV2DiagBlocksGPU.size() !=
                 static_cast<size_t>(lu->nsupers) ||
             lu->symV2DiagBlocksGPU[static_cast<size_t>(k)] == NULL)
