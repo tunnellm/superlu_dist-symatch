@@ -159,7 +159,7 @@ if(enable_double)
     double/pdgstrf2.c
     double/pdgstrs.c
     double/pdgstrs3d.c
-    double/dsymldl_v2_solve.c
+    double/dsymldl_v2_solve3d.c
     double/pdgstrs1.c
     double/pdgstrs_lsum.c
     double/pdgstrs_Bglobal.c
@@ -199,7 +199,8 @@ endif()
   
 if (TPL_ENABLE_CUDALIB)
   list(APPEND sources
-       cuda/pdgstrs_lsum_cuda.cu cuda/superlu_gpu_utils.cu cuda/dsuperlu_gpu.cu
+       cuda/pdgstrs_lsum_cuda.cu cuda/dsymldl_v2_solve3d_nvshmem.cu
+       cuda/superlu_gpu_utils.cu cuda/dsuperlu_gpu.cu
 ##       CplusplusFactor/schurCompUpdate.cu 
 #       CplusplusFactor/pdgstrf3d_upacked.cpp
 #       CplusplusFactor/dsparseTreeFactor_upacked.cpp

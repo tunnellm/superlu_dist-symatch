@@ -7,6 +7,7 @@
 #include <string.h>
 #include "superlu_ddefs.h"
 #include "superlu_upacked.h"
+#include "dsymldl_v2_solve3d.h"
 
 static size_t
 pdgstrs3d_checked_product(size_t a, size_t b, const char *what)
@@ -620,6 +621,9 @@ pdgstrs3d_symldl_gpu_solve_allowed(pdgstrs3d_symldl_solve_meta_t *meta);
 static double
 pdgstrs3d_symldl_gpu_solve_min_ops(pdgstrs3d_symldl_solve_meta_t *meta);
 
+static int_t
+pdgstrs3d_symldl_count_sum(int_t total, int_t add, const char *what);
+
 static void
 pdgstrs3d_symldl_reset_offload_stats(pdgstrs3d_symldl_solve_meta_t *meta)
 {
@@ -700,6 +704,12 @@ pdgstrs3d_symldl_gpu_solve_allowed(pdgstrs3d_symldl_solve_meta_t *meta)
     const char *override_name = "GPU3DV2_SYM_SOLVE_GPU";
     if (meta == NULL || !meta->superlu_acc_offload)
         return 0;
+#if defined(GPU_ACC)
+    if (!dSymLDL3DSolveGPUAvailable())
+        return 0;
+#else
+    return 0;
+#endif
     if (pdgstrs3d_symldl_env_is_set(override_name))
         return pdgstrs3d_symldl_env_enabled(override_name);
     return 1;
@@ -2426,67 +2436,134 @@ pdgstrs3d_symldl_gpu_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
         ABORT("SymLDL GPU solve metadata is missing.");
     if (meta->gpu_state != NULL)
         return;
-    int_t *xsup = meta->Glu_persist->xsup;
-
-    int has_gpu_work = 0;
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
-        int_t ksupc = SuperSize(k);
-        if ((kmeta->has_panel &&
-             pdgstrs3d_symldl_should_gpu_ops(meta,
-                 pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs))) ||
-            pdgstrs3d_symldl_should_gpu_ops(meta,
-                pdgstrs3d_symldl_diag_solve_ops(kmeta, ksupc, nrhs))) {
-            has_gpu_work = 1;
-            break;
-        }
-    }
-    if (!has_gpu_work)
+    if (!dSymLDL3DSolveGPUAvailable())
         return;
     if (meta->factor_gpu_handle == NULL)
         ABORT("SymLDL V2 GPU solve requires retained factor GPU state.");
     pdgstrs3d_symldl_sync_factor_gpu(meta);
 
-    dSymLDLSolveGPU_Handle handle =
-        dSymLDLSolveGPUCreate(meta->nsupers, maxsup,
-                              meta->max_panel_block_rows, nrhs, grid3d);
-    if (handle == NULL)
-        ABORT("Failed to create SymLDL GPU solve state.");
+    int_t nlevels = meta->solve_schedule.nlevels;
+    int_t panel_count = 0;
+    int_t block_count = 0;
+    int_t row_count = 0;
+    int_t *level_panel_ptr = intCalloc_dist(nlevels + 1);
+    int_t *level_block_ptr = intCalloc_dist(nlevels + 1);
+    int_t *xsup = meta->Glu_persist->xsup;
+    int_t *supno = meta->Glu_persist->supno;
+    if (level_panel_ptr == NULL || level_block_ptr == NULL)
+        ABORT("Malloc fails for SymLDL GPU solve level metadata.");
 
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
-        if (!kmeta->has_panel || kmeta->lusup == NULL ||
-            kmeta->lusup_count <= 0)
-            continue;
-        int_t ksupc = SuperSize(k);
-        int use_panel_gpu = pdgstrs3d_symldl_should_gpu_ops(meta,
-            pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs));
-        int use_diag_gpu = pdgstrs3d_symldl_should_gpu_ops(meta,
-            pdgstrs3d_symldl_diag_solve_ops(kmeta, ksupc, nrhs));
-        if (!use_panel_gpu && !use_diag_gpu)
-            continue;
-        double t_panel = SuperLU_timer_();
-        if (dSymLDLSolveGPUAttachFactorPanel(
-                handle, (dLUgpu_Handle) meta->factor_gpu_handle, k) != 0)
-            ABORT("Failed to attach SymLDL factor GPU panel to solve state.");
-        meta->gpu_panel_import_time += SuperLU_timer_() - t_panel;
-        if (use_panel_gpu && kmeta->row_count > 0 && meta->comm_meta != NULL) {
-            pdgstrs3d_symldl_comm_meta_t *cmeta = &meta->comm_meta[k];
-            if (cmeta->row_to_send_pos != NULL) {
-                double t_sched = SuperLU_timer_();
-                if (dSymLDLSolveGPUSetPanelSchedule(handle, k,
-                                                    cmeta->row_to_send_pos,
-                                                    kmeta->row_count,
-                                                    kmeta->nblocks,
-                                                    kmeta->block_luptr,
-                                                    kmeta->block_nbrow,
-                                                    kmeta->block_row_start) != 0)
-                    ABORT("Failed to copy SymLDL solve panel schedule to GPU.");
-                meta->gpu_schedule_upload_time += SuperLU_timer_() - t_sched;
+    for (int_t level = 0; level < nlevels; ++level) {
+        for (int_t pos = meta->solve_schedule.level_ptr[level];
+             pos < meta->solve_schedule.level_ptr[level + 1]; ++pos) {
+            int_t k = meta->solve_schedule.nodes[pos];
+            pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
+            if (!pdgstrs3d_symldl_local_panel_active(meta->trf3Dpartition,
+                                                     kmeta, k))
+                continue;
+            ++panel_count;
+            block_count = pdgstrs3d_symldl_count_sum(
+                block_count, kmeta->nblocks, "SymLDL GPU block metadata");
+            row_count = pdgstrs3d_symldl_count_sum(
+                row_count, kmeta->row_count, "SymLDL GPU row metadata");
+        }
+        level_panel_ptr[level + 1] = panel_count;
+        level_block_ptr[level + 1] = block_count;
+    }
+
+    dSymLDL3DPanelDesc *panels = panel_count > 0
+        ? (dSymLDL3DPanelDesc *) SUPERLU_MALLOC(
+              pdgstrs3d_checked_alloc_bytes(panel_count, sizeof(*panels),
+                                            "SymLDL GPU panels"))
+        : NULL;
+    dSymLDL3DBlockDesc *blocks = block_count > 0
+        ? (dSymLDL3DBlockDesc *) SUPERLU_MALLOC(
+              pdgstrs3d_checked_alloc_bytes(block_count, sizeof(*blocks),
+                                            "SymLDL GPU blocks"))
+        : NULL;
+    int_t *rows = row_count > 0 ? intMalloc_dist(row_count) : NULL;
+    if ((panel_count > 0 && panels == NULL) ||
+        (block_count > 0 && blocks == NULL) ||
+        (row_count > 0 && rows == NULL))
+        ABORT("Malloc fails for SymLDL GPU solve metadata.");
+
+    int_t panel_pos = 0;
+    int_t block_pos = 0;
+    int_t row_pos = 0;
+    int_t pivot_pos = 0;
+    for (int_t level = 0; level < nlevels; ++level) {
+        for (int_t pos = meta->solve_schedule.level_ptr[level];
+             pos < meta->solve_schedule.level_ptr[level + 1]; ++pos) {
+            int_t k = meta->solve_schedule.nodes[pos];
+            pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
+            if (!pdgstrs3d_symldl_local_panel_active(meta->trf3Dpartition,
+                                                     kmeta, k))
+                continue;
+
+            double *device_values = NULL;
+            int_t device_count = 0;
+            if (dSymLDLFactorGPUGetPanel(
+                    (dLUgpu_Handle) meta->factor_gpu_handle, k,
+                    &device_values, &device_count) != 0 ||
+                device_values == NULL || device_count < kmeta->lusup_count)
+                ABORT("SymLDL GPU solve cannot access a factor panel.");
+
+            dSymLDL3DPanelDesc *panel = &panels[panel_pos];
+            panel->gid = k;
+            panel->fst_row = FstBlockC(k);
+            panel->width = SuperSize(k);
+            panel->nsupr = kmeta->nsupr;
+            panel->diag_luptr = kmeta->has_diag ? kmeta->diag_luptr : -1;
+            panel->block_begin = block_pos;
+            panel->block_count = kmeta->nblocks;
+            panel->row_begin = row_pos;
+            panel->row_count = kmeta->row_count;
+            panel->pivot_begin = pivot_pos;
+            panel->value_count = device_count;
+            panel->owner = meta->diag_owner[k];
+            panel->values = device_values;
+            if (panel->owner == grid3d->iam && panel->diag_luptr < 0)
+                ABORT("SymLDL diagonal owner is missing its inverse block.");
+
+            for (int_t b = 0; b < kmeta->nblocks; ++b) {
+                dSymLDL3DBlockDesc *block = &blocks[block_pos++];
+                int_t source_row = kmeta->block_row_start[b];
+                int_t target = BlockNum(kmeta->rows[source_row]);
+                block->panel = panel_pos;
+                block->target_gid = target;
+                block->target_owner = meta->diag_owner[target];
+                block->luptr = kmeta->block_luptr[b];
+                block->nbrow = kmeta->block_nbrow[b];
+                block->row_begin = row_pos + source_row;
             }
+            if (kmeta->row_count > 0)
+                memcpy(rows + row_pos, kmeta->rows,
+                       pdgstrs3d_checked_alloc_bytes(
+                           kmeta->row_count, sizeof(*rows),
+                           "SymLDL GPU row metadata"));
+            row_pos += kmeta->row_count;
+            pivot_pos += panel->width * (int_t) nrhs;
+            ++panel_pos;
         }
     }
-    meta->gpu_state = (void *) handle;
+    if (panel_pos != panel_count || block_pos != block_count ||
+        row_pos != row_count)
+        ABORT("SymLDL GPU solve metadata counts are inconsistent.");
+
+    double t_setup = SuperLU_timer_();
+    meta->gpu_state = dSymLDL3DSolveGPUCreate(
+        meta->n, meta->nsupers, nrhs, maxsup, nlevels,
+        level_panel_ptr, level_block_ptr, panel_count, panels,
+        block_count, blocks, row_count, rows, grid3d->comm);
+    meta->gpu_schedule_upload_time += SuperLU_timer_() - t_setup;
+    if (meta->gpu_state == NULL)
+        ABORT("Failed to create SymLDL 3D GPU solve state.");
+
+    if (rows) SUPERLU_FREE(rows);
+    if (blocks) SUPERLU_FREE(blocks);
+    if (panels) SUPERLU_FREE(panels);
+    SUPERLU_FREE(level_block_ptr);
+    SUPERLU_FREE(level_panel_ptr);
 #else
     (void) meta;
     (void) maxsup;
@@ -2502,14 +2579,19 @@ pdgstrs3d_symldl_gpu_take_timers(pdgstrs3d_symldl_solve_meta_t *meta,
 {
 #if defined(GPU_ACC)
     double h2d = 0.0;
-    double compute = 0.0;
+    double forward = 0.0;
+    double diagonal = 0.0;
+    double backward = 0.0;
     double d2h = 0.0;
     if (meta == NULL || meta->gpu_state == NULL || timer == NULL)
         return;
-    dSymLDLSolveGPUTakeTimers((dSymLDLSolveGPU_Handle) meta->gpu_state,
-                              &h2d, &compute, &d2h);
+    dSymLDL3DSolveGPUTakeTimers(meta->gpu_state, &h2d, &forward,
+                                &diagonal, &backward, &d2h);
     timer->gpu_h2d += h2d;
-    timer->gpu_compute += compute;
+    timer->gpu_compute += forward + diagonal + backward;
+    timer->forward_compute += forward;
+    timer->diag_compute += diagonal;
+    timer->backward_compute += backward;
     timer->gpu_d2h += d2h;
 #else
     (void) meta;
@@ -2524,7 +2606,7 @@ pdgstrs3d_symldl_solve_meta_destroy(pdgstrs3d_symldl_solve_meta_t *meta)
         return;
 #if defined(GPU_ACC)
     if (meta->gpu_state)
-        dSymLDLSolveGPUDestroy((dSymLDLSolveGPU_Handle) meta->gpu_state);
+        dSymLDL3DSolveGPUDestroy(meta->gpu_state);
 #endif
 #if defined(GPU_ACC)
     if (meta->factor_gpu_handle)
@@ -3243,8 +3325,9 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     ttmp = SuperLU_timer_();
     pdgstrs3d_symldl_workspace_prepare(solve_meta, x_count, maxsup, nrhs,
                                        global_nprocs);
-    pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta, nrhs);
     pdgstrs3d_symldl_gpu_prepare(solve_meta, maxsup, nrhs, grid3d);
+    if (solve_meta->gpu_state == NULL)
+        pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta, nrhs);
     workspace = &solve_meta->work;
     x = workspace->x;
     xk_buf = workspace->xk_buf;
@@ -3272,6 +3355,37 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
 
     MPI_Barrier(grid3d->comm);
     tx_st = SuperLU_timer_();
+
+    if (solve_meta->gpu_state != NULL) {
+        int_t local_count = trf3Dpartition->symV2LocalRowCount;
+        int_t alloc_count = SUPERLU_MAX(local_count, (int_t) 1);
+        int_t *local_offsets = intMalloc_dist(alloc_count);
+        int_t *local_first = intMalloc_dist(alloc_count);
+        int_t *local_width = intMalloc_dist(alloc_count);
+        int *local_owner = (int *) SUPERLU_MALLOC(
+            pdgstrs3d_checked_alloc_bytes(alloc_count, sizeof(*local_owner),
+                                          "SymLDL local owner metadata"));
+        if (local_offsets == NULL || local_first == NULL ||
+            local_width == NULL || local_owner == NULL)
+            ABORT("Malloc fails for SymLDL GPU local solution metadata.");
+        for (int_t local = 0; local < local_count; ++local) {
+            int_t gid = trf3Dpartition->symV2LocalRowGids[local];
+            local_offsets[local] = X_BLK(local);
+            local_first[local] = FstBlockC(gid);
+            local_width[local] = SuperSize(gid);
+            local_owner[local] = diag_owner[gid];
+        }
+        if (dSymLDL3DSolveGPURun(
+                solve_meta->gpu_state, x, local_offsets,
+                trf3Dpartition->symV2LocalRowGids, local_first,
+                local_width, local_owner, local_count, global_rank) != 0)
+            ABORT("SymLDL 3D GPU solve failed.");
+        SUPERLU_FREE(local_owner);
+        SUPERLU_FREE(local_width);
+        SUPERLU_FREE(local_first);
+        SUPERLU_FREE(local_offsets);
+        goto symldl_solve_complete;
+    }
 
     /* Forward solve with unit-lower L. X lives only on z=0 diagonal owners. */
     for (int_t level = 0; level < solve_schedule->nlevels; ++level) {
@@ -3770,6 +3884,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     }
     xtrsTimer.t_backwardSolve = SuperLU_timer_() - tx;
 
+symldl_solve_complete:
     MPI_Barrier(grid3d->comm);
     stat->utime[SOLVE] = SuperLU_timer_() - tx_st;
 
