@@ -588,7 +588,7 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
         const dSymLDL3DPanelDesc &panel = panels[p];
         if (panel.gid < 0 || panel.gid >= nsupers || panel.fst_row < 0 ||
             panel.width <= 0 || panel.fst_row > n - panel.width ||
-            panel.nsupr < panel.width || panel.block_begin < 0 ||
+            panel.nsupr <= 0 || panel.block_begin < 0 ||
             panel.block_count < 0 ||
             panel.block_begin > block_count - panel.block_count ||
             panel.row_begin < 0 || panel.row_count < 0 ||
@@ -596,7 +596,24 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
             panel.pivot_begin < 0 || panel.value_count <= 0 ||
             panel.owner < 0 || panel.owner >= comm_size ||
             panel.values == NULL)
+        {
+            fprintf(stderr,
+                    "SymLDL rank %d panel %lld metadata: gid=%lld first=%lld "
+                    "width=%lld nsupr=%lld blocks=%lld+%lld rows=%lld+%lld "
+                    "pivot=%lld values=%lld owner=%d pointer=%p\n",
+                    rank, (long long) p, (long long) panel.gid,
+                    (long long) panel.fst_row, (long long) panel.width,
+                    (long long) panel.nsupr,
+                    (long long) panel.block_begin,
+                    (long long) panel.block_count,
+                    (long long) panel.row_begin,
+                    (long long) panel.row_count,
+                    (long long) panel.pivot_begin,
+                    (long long) panel.value_count, panel.owner,
+                    (void *) panel.values);
+            fflush(stderr);
             ABORT("Invalid SymLDL 3D GPU panel metadata.");
+        }
         state->pivot_count = checked_sum(
             state->pivot_count,
             checked_product(panel.width, (int_t) nrhs,
