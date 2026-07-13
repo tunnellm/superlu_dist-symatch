@@ -31,6 +31,8 @@ typedef struct {
     int_t luptr;
     int_t nbrow;
     int_t row_begin;
+    int_t forward_inbox_offset;
+    int_t backward_inbox_offset;
 } dSymLDL3DBlockDesc;
 
 typedef void *dSymLDL3DSolveGPUHandle;

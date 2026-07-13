@@ -1,6 +1,7 @@
 #include "superlu_ddefs.h"
 #include "dsymldl_v2_solve3d.h"
 
+#include <algorithm>
 #include <cuda_runtime.h>
 #include <limits>
 #include <stdint.h>
@@ -47,9 +48,19 @@ struct dSymLDL3DSolveGPUState {
     double *diag_work;
     double *pivot_work;
     double *row_work;
+    double *forward_inbox;
+    double *backward_inbox;
+    int_t *d_forward_inbox_rows;
+    int_t *d_backward_inbox_rows;
+    int_t forward_inbox_count;
+    int_t backward_inbox_count;
+    int_t forward_inbox_capacity;
+    int_t backward_inbox_capacity;
     cudaStream_t stream;
     std::vector<int_t> level_panel_ptr;
     std::vector<int_t> level_block_ptr;
+    std::vector<int_t> forward_level_ptr;
+    std::vector<int_t> backward_level_ptr;
     double t_h2d;
     double t_forward;
     double t_diagonal;
@@ -106,7 +117,7 @@ __global__ void symldl_fetch_forward_x(
 __global__ void symldl_forward_update(
     const dSymLDL3DPanelDesc *panels,
     const dSymLDL3DBlockDesc *blocks, const int_t *rows,
-    int_t block_begin, int_t block_count, double *x,
+    int_t block_begin, int_t block_count, double *forward_inbox,
     const double *pivot_work, int_t n, int nrhs)
 {
     int_t local = (int_t) blockIdx.x;
@@ -124,10 +135,30 @@ __global__ void symldl_forward_update(
                            (int_t) rhs * panel.width;
         for (int_t col = 0; col < panel.width; ++col)
             sum += values[col * panel.nsupr] * xk[col];
-        int_t grow = rows[block.row_begin + row];
-        nvshmem_double_atomic_add(x + (int_t) rhs * n + grow, -sum,
-                                  (int) block.target_owner);
+        (void) rows;
+        (void) n;
+        nvshmem_double_p(
+            forward_inbox +
+                (block.forward_inbox_offset + row) * (int_t) nrhs + rhs,
+            sum, (int) block.target_owner);
     }
+}
+
+__global__ void symldl_apply_forward_inbox(
+    double *x, const double *forward_inbox,
+    const int_t *forward_inbox_rows, int_t inbox_begin,
+    int_t inbox_count, int_t n, int nrhs)
+{
+    int_t idx = (int_t) blockIdx.x * blockDim.x + threadIdx.x;
+    int_t count = inbox_count * (int_t) nrhs;
+    if (idx >= count)
+        return;
+    int rhs = (int) (idx / inbox_count);
+    int_t local = idx - (int_t) rhs * inbox_count;
+    int_t inbox = inbox_begin + local;
+    int_t grow = forward_inbox_rows[inbox];
+    atomicAdd(x + (int_t) rhs * n + grow,
+              -forward_inbox[inbox * (int_t) nrhs + rhs]);
 }
 
 __global__ void symldl_apply_diagonal(
@@ -197,8 +228,8 @@ __global__ void symldl_fetch_backward_x(
 
 __global__ void symldl_backward_update(
     const dSymLDL3DPanelDesc *panels,
-    const dSymLDL3DBlockDesc *blocks, int_t block_begin,
-    int_t block_count, double *x, const double *row_work,
+    const dSymLDL3DBlockDesc *blocks, int_t block_begin, int_t block_count,
+    double *backward_inbox, const double *row_work,
     int_t n, int nrhs)
 {
     int_t local = (int_t) blockIdx.x;
@@ -216,16 +247,242 @@ __global__ void symldl_backward_update(
         for (int_t row = 0; row < block.nbrow; ++row)
             sum += values[row] *
                    row_work[(block.row_begin + row) * (int_t) nrhs + rhs];
-        nvshmem_double_atomic_add(x + (int_t) rhs * n +
-                                  panel.fst_row + col,
-                                  -sum, panel.owner);
+        (void) n;
+        nvshmem_double_p(
+            backward_inbox +
+                (block.backward_inbox_offset + col) * (int_t) nrhs + rhs,
+            sum, panel.owner);
     }
+}
+
+__global__ void symldl_apply_backward_inbox(
+    double *x, const double *backward_inbox,
+    const int_t *backward_inbox_rows, int_t inbox_begin,
+    int_t inbox_count, int_t n, int nrhs)
+{
+    int_t idx = (int_t) blockIdx.x * blockDim.x + threadIdx.x;
+    int_t count = inbox_count * (int_t) nrhs;
+    if (idx >= count)
+        return;
+    int rhs = (int) (idx / inbox_count);
+    int_t local = idx - (int_t) rhs * inbox_count;
+    int_t inbox = inbox_begin + local;
+    int_t grow = backward_inbox_rows[inbox];
+    atomicAdd(x + (int_t) rhs * n + grow,
+              -backward_inbox[inbox * (int_t) nrhs + rhs]);
 }
 
 static void quiet_and_barrier(cudaStream_t stream)
 {
     nvshmemx_quiet_on_stream(stream);
     nvshmemx_barrier_all_on_stream(stream);
+}
+
+static int checked_mpi_count(int_t count, const char *what)
+{
+    if (count < 0 || count > std::numeric_limits<int>::max())
+        ABORT(what);
+    return (int) count;
+}
+
+static void build_inbox_layout(
+    dSymLDL3DSolveGPUState *state,
+    const dSymLDL3DPanelDesc *panels,
+    std::vector<dSymLDL3DBlockDesc> &blocks, const int_t *rows,
+    const int_t *level_block_ptr, MPI_Comm comm,
+    std::vector<int_t> &forward_rows,
+    std::vector<int_t> &backward_rows)
+{
+    int rank = state->mype;
+    int npes = state->npes;
+    int_t dimensions = checked_product(
+        state->nlevels, (int_t) npes,
+        "SymLDL inbox layout dimensions overflow.");
+    int dimensions_i = checked_mpi_count(
+        dimensions, "SymLDL inbox layout exceeds the MPI count range.");
+    std::vector<int_t> local_forward((size_t) dimensions, 0);
+    std::vector<int_t> local_backward((size_t) dimensions, 0);
+    std::vector<int_t> prefix_forward((size_t) dimensions, 0);
+    std::vector<int_t> prefix_backward((size_t) dimensions, 0);
+    std::vector<int_t> total_forward((size_t) dimensions, 0);
+    std::vector<int_t> total_backward((size_t) dimensions, 0);
+
+    for (int_t level = 0; level < state->nlevels; ++level) {
+        for (int_t b = level_block_ptr[level];
+             b < level_block_ptr[level + 1]; ++b) {
+            dSymLDL3DBlockDesc &block = blocks[(size_t) b];
+            const dSymLDL3DPanelDesc &panel = panels[block.panel];
+            int_t fidx = level * (int_t) npes + block.target_owner;
+            int_t bidx = level * (int_t) npes + panel.owner;
+            local_forward[(size_t) fidx] = checked_sum(
+                local_forward[(size_t) fidx], block.nbrow,
+                "SymLDL forward inbox count overflows.");
+            local_backward[(size_t) bidx] = checked_sum(
+                local_backward[(size_t) bidx], panel.width,
+                "SymLDL backward inbox count overflows.");
+        }
+    }
+
+    if (dimensions_i > 0) {
+        MPI_Exscan(local_forward.data(), prefix_forward.data(), dimensions_i,
+                   mpi_int_t, MPI_SUM, comm);
+        MPI_Exscan(local_backward.data(), prefix_backward.data(), dimensions_i,
+                   mpi_int_t, MPI_SUM, comm);
+        MPI_Allreduce(local_forward.data(), total_forward.data(), dimensions_i,
+                      mpi_int_t, MPI_SUM, comm);
+        MPI_Allreduce(local_backward.data(), total_backward.data(), dimensions_i,
+                      mpi_int_t, MPI_SUM, comm);
+        if (rank == 0) {
+            std::fill(prefix_forward.begin(), prefix_forward.end(), 0);
+            std::fill(prefix_backward.begin(), prefix_backward.end(), 0);
+        }
+    }
+
+    std::vector<int_t> forward_base((size_t) dimensions, 0);
+    std::vector<int_t> backward_base((size_t) dimensions, 0);
+    std::vector<int_t> forward_total((size_t) npes, 0);
+    std::vector<int_t> backward_total((size_t) npes, 0);
+    state->forward_level_ptr.assign((size_t) state->nlevels + 1, 0);
+    state->backward_level_ptr.assign((size_t) state->nlevels + 1, 0);
+    for (int target = 0; target < npes; ++target) {
+        int_t fcursor = 0;
+        int_t bcursor = 0;
+        for (int_t level = 0; level < state->nlevels; ++level) {
+            int_t idx = level * (int_t) npes + target;
+            forward_base[(size_t) idx] = fcursor;
+            backward_base[(size_t) idx] = bcursor;
+            if (target == rank) {
+                state->forward_level_ptr[(size_t) level] = fcursor;
+                state->backward_level_ptr[(size_t) level] = bcursor;
+            }
+            fcursor = checked_sum(
+                fcursor, total_forward[(size_t) idx],
+                "SymLDL forward inbox capacity overflows.");
+            bcursor = checked_sum(
+                bcursor, total_backward[(size_t) idx],
+                "SymLDL backward inbox capacity overflows.");
+        }
+        forward_total[(size_t) target] = fcursor;
+        backward_total[(size_t) target] = bcursor;
+        state->forward_inbox_capacity = SUPERLU_MAX(
+            state->forward_inbox_capacity, fcursor);
+        state->backward_inbox_capacity = SUPERLU_MAX(
+            state->backward_inbox_capacity, bcursor);
+    }
+    state->forward_inbox_count = forward_total[(size_t) rank];
+    state->backward_inbox_count = backward_total[(size_t) rank];
+    state->forward_level_ptr[(size_t) state->nlevels] =
+        state->forward_inbox_count;
+    state->backward_level_ptr[(size_t) state->nlevels] =
+        state->backward_inbox_count;
+
+    std::vector<int_t> forward_running((size_t) dimensions, 0);
+    std::vector<int_t> backward_running((size_t) dimensions, 0);
+    std::vector<std::vector<int_t> > records((size_t) npes);
+    for (int_t level = 0; level < state->nlevels; ++level) {
+        for (int_t b = level_block_ptr[level];
+             b < level_block_ptr[level + 1]; ++b) {
+            dSymLDL3DBlockDesc &block = blocks[(size_t) b];
+            const dSymLDL3DPanelDesc &panel = panels[block.panel];
+            int_t fidx = level * (int_t) npes + block.target_owner;
+            int_t bidx = level * (int_t) npes + panel.owner;
+            block.forward_inbox_offset = checked_sum(
+                forward_base[(size_t) fidx],
+                checked_sum(prefix_forward[(size_t) fidx],
+                            forward_running[(size_t) fidx],
+                            "SymLDL forward inbox offset overflows."),
+                "SymLDL forward inbox offset overflows.");
+            block.backward_inbox_offset = checked_sum(
+                backward_base[(size_t) bidx],
+                checked_sum(prefix_backward[(size_t) bidx],
+                            backward_running[(size_t) bidx],
+                            "SymLDL backward inbox offset overflows."),
+                "SymLDL backward inbox offset overflows.");
+            forward_running[(size_t) fidx] = checked_sum(
+                forward_running[(size_t) fidx], block.nbrow,
+                "SymLDL forward inbox offset overflows.");
+            backward_running[(size_t) bidx] = checked_sum(
+                backward_running[(size_t) bidx], panel.width,
+                "SymLDL backward inbox offset overflows.");
+
+            std::vector<int_t> &forward_record =
+                records[(size_t) block.target_owner];
+            for (int_t row = 0; row < block.nbrow; ++row) {
+                forward_record.push_back(0);
+                forward_record.push_back(block.forward_inbox_offset + row);
+                forward_record.push_back(rows[block.row_begin + row]);
+            }
+            std::vector<int_t> &backward_record =
+                records[(size_t) panel.owner];
+            for (int_t col = 0; col < panel.width; ++col) {
+                backward_record.push_back(1);
+                backward_record.push_back(block.backward_inbox_offset + col);
+                backward_record.push_back(panel.fst_row + col);
+            }
+        }
+    }
+
+    std::vector<int> send_counts((size_t) npes, 0);
+    std::vector<int> recv_counts((size_t) npes, 0);
+    std::vector<int> send_displs((size_t) npes, 0);
+    std::vector<int> recv_displs((size_t) npes, 0);
+    int_t send_total = 0;
+    for (int target = 0; target < npes; ++target) {
+        send_counts[(size_t) target] = checked_mpi_count(
+            (int_t) records[(size_t) target].size(),
+            "SymLDL inbox records exceed the MPI count range.");
+        if (target > 0)
+            send_displs[(size_t) target] = checked_mpi_count(
+                send_total, "SymLDL inbox record displacement overflows.");
+        send_total = checked_sum(
+            send_total, (int_t) send_counts[(size_t) target],
+            "SymLDL inbox record storage overflows.");
+    }
+    std::vector<int_t> send_records((size_t) send_total);
+    for (int target = 0; target < npes; ++target)
+        std::copy(records[(size_t) target].begin(),
+                  records[(size_t) target].end(),
+                  send_records.begin() + send_displs[(size_t) target]);
+    MPI_Alltoall(send_counts.data(), 1, MPI_INT,
+                 recv_counts.data(), 1, MPI_INT, comm);
+    int_t recv_total = 0;
+    for (int source = 0; source < npes; ++source) {
+        if (recv_counts[(size_t) source] < 0)
+            ABORT("Invalid SymLDL inbox receive count.");
+        if (source > 0)
+            recv_displs[(size_t) source] = checked_mpi_count(
+                recv_total, "SymLDL inbox receive displacement overflows.");
+        recv_total = checked_sum(
+            recv_total, (int_t) recv_counts[(size_t) source],
+            "SymLDL inbox receive storage overflows.");
+    }
+    std::vector<int_t> recv_records((size_t) recv_total);
+    MPI_Alltoallv(send_records.data(), send_counts.data(), send_displs.data(),
+                  mpi_int_t, recv_records.data(), recv_counts.data(),
+                  recv_displs.data(), mpi_int_t, comm);
+    if (recv_total % 3 != 0)
+        ABORT("Invalid SymLDL inbox record payload.");
+
+    forward_rows.assign((size_t) state->forward_inbox_count, -1);
+    backward_rows.assign((size_t) state->backward_inbox_count, -1);
+    for (int_t pos = 0; pos < recv_total; pos += 3) {
+        int_t kind = recv_records[(size_t) pos];
+        int_t offset = recv_records[(size_t) pos + 1];
+        int_t grow = recv_records[(size_t) pos + 2];
+        std::vector<int_t> *map = kind == 0 ? &forward_rows
+                                           : kind == 1 ? &backward_rows
+                                                       : NULL;
+        if (map == NULL || offset < 0 || (size_t) offset >= map->size() ||
+            grow < 0 || grow >= state->n || (*map)[(size_t) offset] != -1)
+            ABORT("Invalid SymLDL inbox destination metadata.");
+        (*map)[(size_t) offset] = grow;
+    }
+    for (size_t i = 0; i < forward_rows.size(); ++i)
+        if (forward_rows[i] < 0)
+            ABORT("SymLDL forward inbox metadata is incomplete.");
+    for (size_t i = 0; i < backward_rows.size(); ++i)
+        if (backward_rows[i] < 0)
+            ABORT("SymLDL backward inbox metadata is incomplete.");
 }
 
 #endif
@@ -257,7 +514,10 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
 #else
     if (n < 0 || nsupers < 0 || nrhs <= 0 || maxsup < 0 || nlevels < 0 ||
         panel_count < 0 || block_count < 0 || row_count < 0 ||
-        level_panel_ptr == NULL || level_block_ptr == NULL)
+        level_panel_ptr == NULL || level_block_ptr == NULL ||
+        (panel_count > 0 && panels == NULL) ||
+        (block_count > 0 && blocks == NULL) ||
+        (row_count > 0 && rows == NULL))
         ABORT("Invalid SymLDL 3D GPU solve metadata.");
 
     int device_count = 0;
@@ -294,6 +554,14 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
     state->diag_work = NULL;
     state->pivot_work = NULL;
     state->row_work = NULL;
+    state->forward_inbox = NULL;
+    state->backward_inbox = NULL;
+    state->d_forward_inbox_rows = NULL;
+    state->d_backward_inbox_rows = NULL;
+    state->forward_inbox_count = 0;
+    state->backward_inbox_count = 0;
+    state->forward_inbox_capacity = 0;
+    state->backward_inbox_capacity = 0;
     state->stream = NULL;
     state->t_h2d = state->t_forward = state->t_diagonal = 0.0;
     state->t_backward = state->t_d2h = 0.0;
@@ -335,8 +603,15 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
                             "SymLDL pivot dimensions overflow."),
             "SymLDL pivot workspace size overflows.");
         if (panel.owner == rank) {
-            if (panel.diag_luptr < 0 ||
-                panel.diag_luptr > panel.value_count - panel.width)
+            int_t diag_last_column = checked_product(
+                panel.width - 1, panel.nsupr,
+                "SymLDL inverse-diagonal stride overflows.");
+            int_t diag_end = checked_sum(
+                checked_sum(panel.diag_luptr, diag_last_column,
+                            "SymLDL inverse-diagonal offset overflows."),
+                panel.width,
+                "SymLDL inverse-diagonal extent overflows.");
+            if (panel.diag_luptr < 0 || diag_end > panel.value_count)
                 ABORT("SymLDL diagonal owner is missing its inverse block.");
             ++local_diagonal[(size_t) panel.gid];
         }
@@ -373,6 +648,15 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
         if (global_diagonal[(size_t) k] != 1)
             ABORT("SymLDL 3D solve requires one inverse diagonal owner per supernode.");
 
+    std::vector<dSymLDL3DBlockDesc> inbox_blocks;
+    if (block_count > 0)
+        inbox_blocks.assign(blocks, blocks + block_count);
+    std::vector<int_t> forward_inbox_rows;
+    std::vector<int_t> backward_inbox_rows;
+    build_inbox_layout(state, panels, inbox_blocks, rows,
+                       level_block_ptr, comm, forward_inbox_rows,
+                       backward_inbox_rows);
+
     state->level_panel_ptr.assign(level_panel_ptr,
                                   level_panel_ptr + nlevels + 1);
     state->level_block_ptr.assign(level_block_ptr,
@@ -392,7 +676,7 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
         gpuErrchk(cudaMalloc((void **) &state->d_blocks,
                              checked_bytes(block_count, sizeof(*blocks),
                                            "SymLDL GPU block metadata overflows.")));
-        gpuErrchk(cudaMemcpy(state->d_blocks, blocks,
+        gpuErrchk(cudaMemcpy(state->d_blocks, inbox_blocks.data(),
                              checked_bytes(block_count, sizeof(*blocks),
                                            "SymLDL GPU block metadata overflows."),
                              cudaMemcpyHostToDevice));
@@ -406,12 +690,52 @@ extern "C" dSymLDL3DSolveGPUHandle dSymLDL3DSolveGPUCreate(
                                            "SymLDL GPU row metadata overflows."),
                              cudaMemcpyHostToDevice));
     }
+    if (state->forward_inbox_count > 0) {
+        gpuErrchk(cudaMalloc((void **) &state->d_forward_inbox_rows,
+                             checked_bytes(state->forward_inbox_count,
+                                           sizeof(int_t),
+                                           "SymLDL forward inbox metadata overflows.")));
+        gpuErrchk(cudaMemcpy(state->d_forward_inbox_rows,
+                             forward_inbox_rows.data(),
+                             checked_bytes(state->forward_inbox_count,
+                                           sizeof(int_t),
+                                           "SymLDL forward inbox metadata overflows."),
+                             cudaMemcpyHostToDevice));
+    }
+    if (state->backward_inbox_count > 0) {
+        gpuErrchk(cudaMalloc((void **) &state->d_backward_inbox_rows,
+                             checked_bytes(state->backward_inbox_count,
+                                           sizeof(int_t),
+                                           "SymLDL backward inbox metadata overflows.")));
+        gpuErrchk(cudaMemcpy(state->d_backward_inbox_rows,
+                             backward_inbox_rows.data(),
+                             checked_bytes(state->backward_inbox_count,
+                                           sizeof(int_t),
+                                           "SymLDL backward inbox metadata overflows."),
+                             cudaMemcpyHostToDevice));
+    }
 
     state->x = (double *) nvshmem_malloc(
         checked_bytes(SUPERLU_MAX(state->x_count, (int_t) 1), sizeof(double),
                       "SymLDL symmetric solution allocation overflows."));
     if (state->x == NULL)
         ABORT("NVSHMEM allocation fails for SymLDL solution.");
+    int_t forward_values = checked_product(
+        state->forward_inbox_capacity, (int_t) nrhs,
+        "SymLDL forward inbox dimensions overflow.");
+    int_t backward_values = checked_product(
+        state->backward_inbox_capacity, (int_t) nrhs,
+        "SymLDL backward inbox dimensions overflow.");
+    state->forward_inbox = (double *) nvshmem_malloc(
+        checked_bytes(SUPERLU_MAX(forward_values, (int_t) 1),
+                      sizeof(double),
+                      "SymLDL forward inbox allocation overflows."));
+    state->backward_inbox = (double *) nvshmem_malloc(
+        checked_bytes(SUPERLU_MAX(backward_values, (int_t) 1),
+                      sizeof(double),
+                      "SymLDL backward inbox allocation overflows."));
+    if (state->forward_inbox == NULL || state->backward_inbox == NULL)
+        ABORT("NVSHMEM allocation fails for SymLDL contribution inboxes.");
     gpuErrchk(cudaMalloc((void **) &state->diag_work,
                          checked_bytes(SUPERLU_MAX(state->x_count, (int_t) 1),
                                        sizeof(double),
@@ -514,10 +838,26 @@ extern "C" int dSymLDL3DSolveGPURun(
         if (bc > 0)
             symldl_forward_update<<<bc, threads, 0, state->stream>>>(
                 state->d_panels, state->d_blocks, state->d_rows,
-                bb, bc, state->x, state->pivot_work,
+                bb, bc, state->forward_inbox, state->pivot_work,
                 state->n, state->nrhs);
         gpuErrchk(cudaGetLastError());
         quiet_and_barrier(state->stream);
+        int_t inbox_begin = state->forward_level_ptr[(size_t) level];
+        int_t inbox_count = state->forward_level_ptr[(size_t) level + 1] -
+                            inbox_begin;
+        if (inbox_count > 0) {
+            int_t apply_count = checked_product(
+                inbox_count, (int_t) state->nrhs,
+                "SymLDL forward inbox launch dimensions overflow.");
+            int_t apply_blocks = (apply_count + threads - 1) / threads;
+            symldl_apply_forward_inbox<<<apply_blocks, threads, 0,
+                                           state->stream>>>(
+                state->x, state->forward_inbox,
+                state->d_forward_inbox_rows, inbox_begin, inbox_count,
+                state->n, state->nrhs);
+            gpuErrchk(cudaGetLastError());
+        }
+        nvshmemx_barrier_all_on_stream(state->stream);
     }
     gpuErrchk(cudaStreamSynchronize(state->stream));
     state->t_forward += SuperLU_timer_() - t;
@@ -547,11 +887,28 @@ extern "C" int dSymLDL3DSolveGPURun(
                 state->d_blocks, state->d_rows, bb, bc, state->x,
                 state->row_work, state->n, state->nrhs, state->mype);
             symldl_backward_update<<<bc, threads, 0, state->stream>>>(
-                state->d_panels, state->d_blocks, bb, bc, state->x,
+                state->d_panels, state->d_blocks, bb, bc,
+                state->backward_inbox,
                 state->row_work, state->n, state->nrhs);
             gpuErrchk(cudaGetLastError());
         }
         quiet_and_barrier(state->stream);
+        int_t inbox_begin = state->backward_level_ptr[(size_t) level - 1];
+        int_t inbox_count = state->backward_level_ptr[(size_t) level] -
+                            inbox_begin;
+        if (inbox_count > 0) {
+            int_t apply_count = checked_product(
+                inbox_count, (int_t) state->nrhs,
+                "SymLDL backward inbox launch dimensions overflow.");
+            int_t apply_blocks = (apply_count + threads - 1) / threads;
+            symldl_apply_backward_inbox<<<apply_blocks, threads, 0,
+                                            state->stream>>>(
+                state->x, state->backward_inbox,
+                state->d_backward_inbox_rows, inbox_begin, inbox_count,
+                state->n, state->nrhs);
+            gpuErrchk(cudaGetLastError());
+        }
+        nvshmemx_barrier_all_on_stream(state->stream);
     }
     gpuErrchk(cudaStreamSynchronize(state->stream));
     state->t_backward += SuperLU_timer_() - t;
@@ -601,11 +958,17 @@ extern "C" void dSymLDL3DSolveGPUDestroy(
         return;
 #ifdef HAVE_NVSHMEM
     nvshmem_barrier_all();
+    if (state->backward_inbox) nvshmem_free(state->backward_inbox);
+    if (state->forward_inbox) nvshmem_free(state->forward_inbox);
     if (state->x) nvshmem_free(state->x);
 #endif
     if (state->d_panels) gpuErrchk(cudaFree(state->d_panels));
     if (state->d_blocks) gpuErrchk(cudaFree(state->d_blocks));
     if (state->d_rows) gpuErrchk(cudaFree(state->d_rows));
+    if (state->d_forward_inbox_rows)
+        gpuErrchk(cudaFree(state->d_forward_inbox_rows));
+    if (state->d_backward_inbox_rows)
+        gpuErrchk(cudaFree(state->d_backward_inbox_rows));
     if (state->diag_work) gpuErrchk(cudaFree(state->diag_work));
     if (state->pivot_work) gpuErrchk(cudaFree(state->pivot_work));
     if (state->row_work) gpuErrchk(cudaFree(state->row_work));
