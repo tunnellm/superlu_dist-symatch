@@ -27,6 +27,8 @@ static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
     double ll_schur_cost = 0.5 * below * below * ksupc;
     double partner_comm_cost = (nprow > 1) ? below * ksupc : 0.0;
     double solve_cost = ksupc * ksupc + 2.0 * below * ksupc;
+    double rank_schur_fraction =
+        1.0 / (double) SUPERLU_MAX(1, nprow);
 
     cost->panel_work =
         SUPERLU_MAX(1.0, panel_factor_cost + ll_schur_cost +
@@ -35,7 +37,8 @@ static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
         SUPERLU_MAX(1.0, diag_cost + solve_cost + partner_comm_cost);
     cost->rank_work =
         SUPERLU_MAX(1.0, diag_cost + panel_factor_cost + solve_cost +
-                         0.25 * ll_schur_cost + partner_comm_cost);
+                         rank_schur_fraction * ll_schur_cost +
+                         partner_comm_cost);
     cost->comm_work = partner_comm_cost;
     cost->tree_weight =
         SUPERLU_MAX(1.0, diag_cost + panel_factor_cost + ll_schur_cost +
