@@ -199,7 +199,8 @@ endif()
   
 if (TPL_ENABLE_CUDALIB)
   list(APPEND sources
-       cuda/pdgstrs_lsum_cuda.cu cuda/superlu_gpu_utils.cu cuda/dsuperlu_gpu.cu
+       cuda/pdgstrs_lsum_cuda.cu cuda/dsymldl_v2_nvshmem_solve.cu
+       cuda/superlu_gpu_utils.cu cuda/dsuperlu_gpu.cu
 ##       CplusplusFactor/schurCompUpdate.cu 
 #       CplusplusFactor/pdgstrf3d_upacked.cpp
 #       CplusplusFactor/dsparseTreeFactor_upacked.cpp
@@ -218,6 +219,8 @@ if (TPL_ENABLE_CUDALIB)
        CplusplusFactor/batch_factorize.cu 
        CplusplusFactor/batch_block_copy.cu
   )
+else()
+  list(APPEND sources double/dsymldl_v2_nvshmem_solve_stub.c)
 endif()
 
 if (HAVE_COMBBLAS)

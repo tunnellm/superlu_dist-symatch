@@ -45,6 +45,8 @@ extern "C"
     void dPrintLUgpuFactorProfile(dLUgpu_Handle LuH);
     void dSymLDLFactorGPUSynchronize(dLUgpu_Handle LuH);
     int dSymLDLFactorGPUCopyPanelToHost(dLUgpu_Handle LuH, int_t k);
+    int dSymLDLFactorGPUGetPanel(dLUgpu_Handle LuH, int_t k,
+                                 double **values, int_t *count);
 
     int pdgstrf3d_LUv1(dLUgpu_Handle LUHand);
     int pdgstrf3d_LUv2(dLUgpu_Handle LUHand);
