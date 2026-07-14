@@ -73,26 +73,3 @@
         return -1;
 #endif
     }
-
-#include "symldl_v2_solve_gpu_helpers.cuh"
-#include "symldl_v2_solve_gpu_lifecycle_impl.cuh"
-#include "symldl_v2_solve_gpu_setup_impl.cuh"
-#include "symldl_v2_solve_gpu_runtime_impl.cuh"
-
-    void dSymLDLSolveGPUTakeTimers(dSymLDLSolveGPU_Handle handle,
-                                   double *h2d, double *compute, double *d2h)
-    {
-        dSymLDLSolveGPUState *state =
-            reinterpret_cast<dSymLDLSolveGPUState *>(handle);
-        if (h2d) *h2d = 0.0;
-        if (compute) *compute = 0.0;
-        if (d2h) *d2h = 0.0;
-        if (state == NULL)
-            return;
-        if (h2d) *h2d = state->t_h2d;
-        if (compute) *compute = state->t_compute;
-        if (d2h) *d2h = state->t_d2h;
-        state->t_h2d = 0.0;
-        state->t_compute = 0.0;
-        state->t_d2h = 0.0;
-    }

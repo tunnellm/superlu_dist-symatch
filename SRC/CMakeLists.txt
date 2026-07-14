@@ -23,7 +23,7 @@ set(headers
     CplusplusFactor/symldl_v2_factor_impl.hpp
     CplusplusFactor/symldl_v2_pcfrag_exchange_impl.cuh
     CplusplusFactor/symldl_v2_dual_fragment_schur_impl.cuh
-    CplusplusFactor/symldl_v2_solve_gpu_impl.cuh
+    CplusplusFactor/symldl_v2_factor_gpu_access_impl.cuh
     CplusplusFactor/symldl_v2_workspace_impl.hpp
     CplusplusFactor/commWrapper.hpp
     CplusplusFactor/lupanels_GPU.cuh

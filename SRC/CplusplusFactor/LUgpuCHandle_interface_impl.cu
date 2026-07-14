@@ -80,7 +80,7 @@ extern "C"
         return LU_v2->pdgstrf3dSymV2();
     }
 
-#include "symldl_v2_solve_gpu_impl.cuh"
+#include "symldl_v2_factor_gpu_access_impl.cuh"
 
     // Single precision:
     sLUgpu_Handle sCreateLUgpuHandle(int_t nsupers, int_t ldt_, strf3Dpartition_t *trf3Dpartition,

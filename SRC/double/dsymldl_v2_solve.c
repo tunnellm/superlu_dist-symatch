@@ -269,12 +269,6 @@ pdgstrs3d_symldl_env_enabled(const char *name)
 }
 
 static int
-pdgstrs3d_symldl_env_is_set(const char *name)
-{
-    return getenv(name) != NULL;
-}
-
-static int
 pdgstrs3d_symldl_count_to_int(int_t count, const char *what)
 {
     int out = (int) count;
@@ -550,20 +544,11 @@ typedef struct {
     pdgstrs3d_symldl_comm_meta_t *comm_meta;
     pdgstrs3d_symldl_x_cache_t *x_cache;
     pdgstrs3d_symldl_workspace_t work;
-    void *gpu_state;
     void *nvshmem_state;
     void *factor_gpu_handle;
     double cpu_blas_ops;
-    double gpu_blas_ops;
-    double gpu_panel_ops;
-    double below_threshold_ops;
     double cpu_blas_calls;
-    double gpu_blas_calls;
-    double gpu_panel_calls;
-    double below_threshold_calls;
     double host_panel_copy_time;
-    double gpu_panel_import_time;
-    double gpu_schedule_upload_time;
     double x_cache_fill_time;
     double x_cache_replicated_bytes;
     double x_cache_avoided_request_bytes;
@@ -616,28 +601,14 @@ typedef struct pdgstrs3d_symldl_node_ctx_s {
     double *delta_recv_buf;
 } pdgstrs3d_symldl_node_ctx_t;
 
-static int
-pdgstrs3d_symldl_gpu_solve_allowed(pdgstrs3d_symldl_solve_meta_t *meta);
-
-static double
-pdgstrs3d_symldl_gpu_solve_min_ops(pdgstrs3d_symldl_solve_meta_t *meta);
-
 static void
-pdgstrs3d_symldl_reset_offload_stats(pdgstrs3d_symldl_solve_meta_t *meta)
+pdgstrs3d_symldl_reset_solve_stats(pdgstrs3d_symldl_solve_meta_t *meta)
 {
     if (meta == NULL)
         return;
     meta->cpu_blas_ops = 0.0;
-    meta->gpu_blas_ops = 0.0;
-    meta->gpu_panel_ops = 0.0;
-    meta->below_threshold_ops = 0.0;
     meta->cpu_blas_calls = 0.0;
-    meta->gpu_blas_calls = 0.0;
-    meta->gpu_panel_calls = 0.0;
-    meta->below_threshold_calls = 0.0;
     meta->host_panel_copy_time = 0.0;
-    meta->gpu_panel_import_time = 0.0;
-    meta->gpu_schedule_upload_time = 0.0;
     meta->x_cache_fill_time = 0.0;
     meta->x_cache_replicated_bytes = 0.0;
     meta->x_cache_avoided_request_bytes = 0.0;
@@ -655,31 +626,6 @@ pdgstrs3d_symldl_note_cpu_blas(pdgstrs3d_symldl_solve_meta_t *meta,
         return;
     meta->cpu_blas_ops += ops;
     meta->cpu_blas_calls += 1.0;
-    if (pdgstrs3d_symldl_gpu_solve_allowed(meta) &&
-        ops < pdgstrs3d_symldl_gpu_solve_min_ops(meta)) {
-        meta->below_threshold_ops += ops;
-        meta->below_threshold_calls += 1.0;
-    }
-}
-
-static void
-pdgstrs3d_symldl_note_gpu_blas(pdgstrs3d_symldl_solve_meta_t *meta,
-                               double ops)
-{
-    if (meta == NULL)
-        return;
-    meta->gpu_blas_ops += ops;
-    meta->gpu_blas_calls += 1.0;
-}
-
-static void
-pdgstrs3d_symldl_note_gpu_panel(pdgstrs3d_symldl_solve_meta_t *meta,
-                                double ops)
-{
-    if (meta == NULL)
-        return;
-    meta->gpu_panel_ops += ops;
-    meta->gpu_panel_calls += 1.0;
 }
 
 static void
@@ -690,162 +636,32 @@ pdgstrs3d_symldl_note_cpu_direct_panel(pdgstrs3d_symldl_solve_meta_t *meta,
         return;
     meta->cpu_blas_ops += ops;
     meta->cpu_blas_calls += calls;
-    if (pdgstrs3d_symldl_gpu_solve_allowed(meta)) {
-        meta->below_threshold_ops += ops;
-        meta->below_threshold_calls += calls;
-    }
-}
-
-static int
-pdgstrs3d_symldl_gpu_solve_allowed(pdgstrs3d_symldl_solve_meta_t *meta)
-{
-    const char *override_name = "GPU3DV2_SYM_SOLVE_GPU";
-    if (meta == NULL || !meta->superlu_acc_offload)
-        return 0;
-    if (pdgstrs3d_symldl_env_is_set(override_name))
-        return pdgstrs3d_symldl_env_enabled(override_name);
-    return 1;
 }
 
 static double
-pdgstrs3d_symldl_gpu_solve_min_ops(pdgstrs3d_symldl_solve_meta_t *meta)
+pdgstrs3d_symldl_cpu_panel_min_ops(pdgstrs3d_symldl_solve_meta_t *meta)
 {
     return meta != NULL && meta->superlu_n_gemm >= 0
                ? (double) meta->superlu_n_gemm
                : 0.0;
 }
 
-static int
-pdgstrs3d_symldl_should_gpu_ops(pdgstrs3d_symldl_solve_meta_t *meta,
-                                double ops)
-{
-    return pdgstrs3d_symldl_gpu_solve_allowed(meta) &&
-           ops >= pdgstrs3d_symldl_gpu_solve_min_ops(meta);
-}
-
 static double
 pdgstrs3d_symldl_panel_solve_ops(pdgstrs3d_symldl_panel_meta_t *kmeta,
                                  int_t ksupc, int nrhs);
 
-static double
-pdgstrs3d_symldl_diag_solve_ops(pdgstrs3d_symldl_panel_meta_t *kmeta,
-                                int_t ksupc, int nrhs);
-
 static void
-pdgstrs3d_symldl_dispatch_gemm(pdgstrs3d_symldl_solve_meta_t *meta,
-                               int_t panel, int_t a_offset,
-                               const char *transa, const char *transb,
-                               int_t m, int_t n, int_t kdim,
-                               double alpha, double *a, int_t lda,
-                               double *b, int_t ldb,
-                               double beta, double *c, int_t ldc)
+pdgstrs3d_symldl_cpu_gemm(pdgstrs3d_symldl_solve_meta_t *meta,
+                          const char *transa, const char *transb,
+                          int_t m, int_t n, int_t kdim,
+                          double alpha, double *a, int_t lda,
+                          double *b, int_t ldb,
+                          double beta, double *c, int_t ldc)
 {
     double ops = 2.0 * (double) m * (double) n * (double) kdim;
-    if (pdgstrs3d_symldl_should_gpu_ops(meta, ops)) {
-#if defined(GPU_ACC)
-        if (meta == NULL || meta->gpu_state == NULL)
-            ABORT("SymLDL GPU solve state is missing for eligible GPU work.");
-        int ierr = dSymLDLSolveGPUGemm((dSymLDLSolveGPU_Handle) meta->gpu_state,
-                                       panel, a_offset, transa[0], transb[0],
-                                       m, n, kdim, alpha, lda, b, ldb,
-                                       beta, c, ldc);
-        if (ierr != 0)
-            ABORT("SymLDL GPU solve GEMM failed.");
-        pdgstrs3d_symldl_note_gpu_blas(meta, ops);
-        (void) a;
-        return;
-#else
-        ABORT("SymLDL GPU solve requires a CUDA build.");
-#endif
-    }
-
     pdgstrs3d_symldl_note_cpu_blas(meta, ops);
     pdgstrs3d_symldl_dgemm(transa, transb, m, n, kdim, alpha, a, lda,
                            b, ldb, beta, c, ldc);
-}
-
-static int
-pdgstrs3d_symldl_try_gpu_forward_panel(pdgstrs3d_symldl_solve_meta_t *meta,
-                                       int_t panel,
-                                       pdgstrs3d_symldl_panel_meta_t *kmeta,
-                                       int_t ksupc, int nrhs,
-                                       const double *xk, int total_send,
-                                       double *send_vals)
-{
-    if (!pdgstrs3d_symldl_gpu_solve_allowed(meta))
-        return 0;
-    if (!pdgstrs3d_symldl_should_gpu_ops(meta,
-            pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs)))
-        return 0;
-#if defined(GPU_ACC)
-    if (meta == NULL || meta->gpu_state == NULL)
-        ABORT("SymLDL GPU solve state is missing for eligible forward panel work.");
-    if (kmeta == NULL || !kmeta->has_panel || kmeta->nblocks <= 0 ||
-        total_send <= 0)
-        return 1;
-    int ierr = dSymLDLSolveGPUForwardPanel(
-        (dSymLDLSolveGPU_Handle) meta->gpu_state, panel, ksupc, nrhs,
-        kmeta->nsupr, kmeta->nblocks, kmeta->block_luptr,
-        kmeta->block_nbrow, kmeta->block_row_start, xk, total_send,
-        send_vals);
-    if (ierr != 0)
-        ABORT("SymLDL GPU solve forward panel failed.");
-    pdgstrs3d_symldl_note_gpu_panel(
-        meta, pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs));
-    return 1;
-#else
-    (void) meta;
-    (void) panel;
-    (void) kmeta;
-    (void) ksupc;
-    (void) nrhs;
-    (void) xk;
-    (void) total_send;
-    (void) send_vals;
-    ABORT("SymLDL GPU solve requires a CUDA build.");
-    return 0;
-#endif
-}
-
-static int
-pdgstrs3d_symldl_try_gpu_backward_panel(pdgstrs3d_symldl_solve_meta_t *meta,
-                                        int_t panel,
-                                        pdgstrs3d_symldl_panel_meta_t *kmeta,
-                                        int_t ksupc, int nrhs,
-                                        const double *row_values,
-                                        double *delta_send)
-{
-    if (!pdgstrs3d_symldl_gpu_solve_allowed(meta))
-        return 0;
-    if (!pdgstrs3d_symldl_should_gpu_ops(meta,
-            pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs)))
-        return 0;
-#if defined(GPU_ACC)
-    if (meta == NULL || meta->gpu_state == NULL)
-        ABORT("SymLDL GPU solve state is missing for eligible backward panel work.");
-    if (kmeta == NULL || !kmeta->has_panel || kmeta->nblocks <= 0 ||
-        kmeta->row_count <= 0)
-        return 1;
-    int ierr = dSymLDLSolveGPUBackwardPanel(
-        (dSymLDLSolveGPU_Handle) meta->gpu_state, panel, ksupc, nrhs,
-        kmeta->nsupr, kmeta->nblocks, kmeta->block_luptr,
-        kmeta->block_nbrow, kmeta->row_count, row_values, delta_send);
-    if (ierr != 0)
-        ABORT("SymLDL GPU solve backward panel failed.");
-    pdgstrs3d_symldl_note_gpu_panel(
-        meta, pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs));
-    return 1;
-#else
-    (void) meta;
-    (void) panel;
-    (void) kmeta;
-    (void) ksupc;
-    (void) nrhs;
-    (void) row_values;
-    (void) delta_send;
-    ABORT("SymLDL GPU solve requires a CUDA build.");
-    return 0;
-#endif
 }
 
 static int
@@ -853,7 +669,7 @@ pdgstrs3d_symldl_use_direct_cpu_panel(pdgstrs3d_symldl_solve_meta_t *meta,
                                       double ops, int nrhs)
 {
     (void) nrhs;
-    return ops < pdgstrs3d_symldl_gpu_solve_min_ops(meta);
+    return ops < pdgstrs3d_symldl_cpu_panel_min_ops(meta);
 }
 
 static void
@@ -952,15 +768,6 @@ pdgstrs3d_symldl_panel_solve_ops(pdgstrs3d_symldl_panel_meta_t *kmeta,
         ops += 2.0 * (double) kmeta->block_nbrow[block] *
                (double) nrhs * (double) ksupc;
     return ops;
-}
-
-static double
-pdgstrs3d_symldl_diag_solve_ops(pdgstrs3d_symldl_panel_meta_t *kmeta,
-                                int_t ksupc, int nrhs)
-{
-    if (kmeta == NULL || !kmeta->has_diag)
-        return 0.0;
-    return 2.0 * (double) ksupc * (double) ksupc * (double) nrhs;
 }
 
 static int
@@ -2341,35 +2148,6 @@ pdgstrs3d_symldl_workspace_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
                                          "Malloc fails for SymLDL communication requests.");
 }
 
-static int
-pdgstrs3d_symldl_panel_needs_host_values(
-    pdgstrs3d_symldl_solve_meta_t *meta,
-    pdgstrs3d_symldl_panel_meta_t *kmeta, int_t ksupc, int nrhs)
-{
-    if (kmeta == NULL || !kmeta->has_panel)
-        return 0;
-    if (kmeta->has_diag &&
-        !pdgstrs3d_symldl_should_gpu_ops(
-            meta, pdgstrs3d_symldl_diag_solve_ops(kmeta, ksupc, nrhs)))
-        return 1;
-    if (kmeta->row_count > 0 &&
-        !pdgstrs3d_symldl_should_gpu_ops(
-            meta, pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs)))
-        return 1;
-    return 0;
-}
-
-static int_t
-pdgstrs3d_symldl_super_size_from_meta(
-    pdgstrs3d_symldl_solve_meta_t *meta, int_t k)
-{
-    int_t *meta_xsup = (meta != NULL && meta->Glu_persist != NULL)
-                           ? meta->Glu_persist->xsup : NULL;
-    if (meta_xsup == NULL || k < 0 || k >= meta->nsupers)
-        ABORT("SymLDL solve missing supernode size metadata.");
-    return meta_xsup[k + 1] - meta_xsup[k];
-}
-
 static void
 pdgstrs3d_symldl_sync_factor_gpu(pdgstrs3d_symldl_solve_meta_t *meta)
 {
@@ -2386,145 +2164,27 @@ pdgstrs3d_symldl_sync_factor_gpu(pdgstrs3d_symldl_solve_meta_t *meta)
 
 static void
 pdgstrs3d_symldl_prepare_host_factor_panels(
-    pdgstrs3d_symldl_solve_meta_t *meta, int nrhs)
+    pdgstrs3d_symldl_solve_meta_t *meta)
 {
-    if (meta == NULL || meta->panel_meta == NULL)
+    if (meta == NULL || meta->panel_meta == NULL ||
+        meta->factor_gpu_handle == NULL)
         return;
-
-    int need_any_host_panel = 0;
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
-        int_t ksupc = pdgstrs3d_symldl_super_size_from_meta(meta, k);
-        if (pdgstrs3d_symldl_panel_needs_host_values(
-                meta, kmeta, ksupc, nrhs)) {
-            need_any_host_panel = 1;
-            break;
-        }
-    }
-    if (!need_any_host_panel)
-        return;
-    if (meta->factor_gpu_handle == NULL)
-        ABORT("SymLDL V2 solve requires retained factor GPU state for CPU-scheduled panel work.");
 
     pdgstrs3d_symldl_sync_factor_gpu(meta);
     double t = SuperLU_timer_();
     for (int_t k = 0; k < meta->nsupers; ++k) {
         pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
-        int_t ksupc = pdgstrs3d_symldl_super_size_from_meta(meta, k);
-        if (!pdgstrs3d_symldl_panel_needs_host_values(
-                meta, kmeta, ksupc, nrhs))
+        if (!kmeta->has_panel)
             continue;
 #if defined(GPU_ACC)
         if (dSymLDLFactorGPUCopyPanelToHost(
                 (dLUgpu_Handle) meta->factor_gpu_handle, k) != 0)
-            ABORT("Failed to copy CPU-scheduled SymLDL panel from factor GPU state.");
+            ABORT("Failed to copy a SymLDL factor panel to host.");
 #else
         ABORT("SymLDL V2 solve cannot copy factor GPU panels in a non-CUDA build.");
 #endif
     }
     meta->host_panel_copy_time += SuperLU_timer_() - t;
-}
-
-static void
-pdgstrs3d_symldl_gpu_prepare(pdgstrs3d_symldl_solve_meta_t *meta,
-                             int_t maxsup, int nrhs, gridinfo3d_t *grid3d)
-{
-    if (!pdgstrs3d_symldl_gpu_solve_allowed(meta))
-        return;
-#if defined(GPU_ACC)
-    if (meta == NULL)
-        ABORT("SymLDL GPU solve metadata is missing.");
-    if (meta->gpu_state != NULL)
-        return;
-    int_t *xsup = meta->Glu_persist->xsup;
-
-    int has_gpu_work = 0;
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
-        int_t ksupc = SuperSize(k);
-        if ((kmeta->has_panel &&
-             pdgstrs3d_symldl_should_gpu_ops(meta,
-                 pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs))) ||
-            pdgstrs3d_symldl_should_gpu_ops(meta,
-                pdgstrs3d_symldl_diag_solve_ops(kmeta, ksupc, nrhs))) {
-            has_gpu_work = 1;
-            break;
-        }
-    }
-    if (!has_gpu_work)
-        return;
-    if (meta->factor_gpu_handle == NULL)
-        ABORT("SymLDL V2 GPU solve requires retained factor GPU state.");
-    pdgstrs3d_symldl_sync_factor_gpu(meta);
-
-    dSymLDLSolveGPU_Handle handle =
-        dSymLDLSolveGPUCreate(meta->nsupers, maxsup,
-                              meta->max_panel_block_rows, nrhs, grid3d);
-    if (handle == NULL)
-        ABORT("Failed to create SymLDL GPU solve state.");
-
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        pdgstrs3d_symldl_panel_meta_t *kmeta = &meta->panel_meta[k];
-        if (!kmeta->has_panel || kmeta->lusup == NULL ||
-            kmeta->lusup_count <= 0)
-            continue;
-        int_t ksupc = SuperSize(k);
-        int use_panel_gpu = pdgstrs3d_symldl_should_gpu_ops(meta,
-            pdgstrs3d_symldl_panel_solve_ops(kmeta, ksupc, nrhs));
-        int use_diag_gpu = pdgstrs3d_symldl_should_gpu_ops(meta,
-            pdgstrs3d_symldl_diag_solve_ops(kmeta, ksupc, nrhs));
-        if (!use_panel_gpu && !use_diag_gpu)
-            continue;
-        double t_panel = SuperLU_timer_();
-        if (dSymLDLSolveGPUAttachFactorPanel(
-                handle, (dLUgpu_Handle) meta->factor_gpu_handle, k) != 0)
-            ABORT("Failed to attach SymLDL factor GPU panel to solve state.");
-        meta->gpu_panel_import_time += SuperLU_timer_() - t_panel;
-        if (use_panel_gpu && kmeta->row_count > 0 && meta->comm_meta != NULL) {
-            pdgstrs3d_symldl_comm_meta_t *cmeta = &meta->comm_meta[k];
-            if (cmeta->row_to_send_pos != NULL) {
-                double t_sched = SuperLU_timer_();
-                if (dSymLDLSolveGPUSetPanelSchedule(handle, k,
-                                                    cmeta->row_to_send_pos,
-                                                    kmeta->row_count,
-                                                    kmeta->nblocks,
-                                                    kmeta->block_luptr,
-                                                    kmeta->block_nbrow,
-                                                    kmeta->block_row_start) != 0)
-                    ABORT("Failed to copy SymLDL solve panel schedule to GPU.");
-                meta->gpu_schedule_upload_time += SuperLU_timer_() - t_sched;
-            }
-        }
-    }
-    meta->gpu_state = (void *) handle;
-#else
-    (void) meta;
-    (void) maxsup;
-    (void) nrhs;
-    (void) grid3d;
-    ABORT("SymLDL GPU solve requires a CUDA build.");
-#endif
-}
-
-static void
-pdgstrs3d_symldl_gpu_take_timers(pdgstrs3d_symldl_solve_meta_t *meta,
-                                 pdgstrs3d_symldl_timer_t *timer)
-{
-#if defined(GPU_ACC)
-    double h2d = 0.0;
-    double compute = 0.0;
-    double d2h = 0.0;
-    if (meta == NULL || meta->gpu_state == NULL || timer == NULL)
-        return;
-    dSymLDLSolveGPUTakeTimers((dSymLDLSolveGPU_Handle) meta->gpu_state,
-                              &h2d, &compute, &d2h);
-    timer->gpu_h2d += h2d;
-    timer->gpu_compute += compute;
-    timer->gpu_d2h += d2h;
-#else
-    (void) meta;
-    (void) timer;
-#endif
 }
 
 static int
@@ -2717,10 +2377,6 @@ pdgstrs3d_symldl_solve_meta_destroy(pdgstrs3d_symldl_solve_meta_t *meta)
 {
     if (meta == NULL)
         return;
-#if defined(GPU_ACC)
-    if (meta->gpu_state)
-        dSymLDLSolveGPUDestroy((dSymLDLSolveGPU_Handle) meta->gpu_state);
-#endif
     if (meta->nvshmem_state)
         dSymLDLNVSHMEMSolveDestroy(meta->nvshmem_state);
 #if defined(GPU_ACC)
@@ -3281,7 +2937,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
                              pdgstrs3d_symldl_solve_meta_t *meta,
                              gridinfo3d_t *grid3d)
 {
-    enum { SYMLDL_TIMER_COUNT = 33 };
+    enum { SYMLDL_TIMER_COUNT = 25 };
     double local[SYMLDL_TIMER_COUNT];
     double maxv[SYMLDL_TIMER_COUNT];
     double sumv[SYMLDL_TIMER_COUNT];
@@ -3307,21 +2963,13 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
     local[15] = timer->gpu_compute;
     local[16] = timer->gpu_d2h;
     local[17] = meta != NULL ? meta->cpu_blas_ops : 0.0;
-    local[18] = meta != NULL ? meta->gpu_blas_ops : 0.0;
-    local[19] = meta != NULL ? meta->gpu_panel_ops : 0.0;
-    local[20] = meta != NULL ? meta->below_threshold_ops : 0.0;
-    local[21] = meta != NULL ? meta->cpu_blas_calls : 0.0;
-    local[22] = meta != NULL ? meta->gpu_blas_calls : 0.0;
-    local[23] = meta != NULL ? meta->gpu_panel_calls : 0.0;
-    local[24] = meta != NULL ? meta->below_threshold_calls : 0.0;
-    local[25] = meta != NULL ? meta->host_panel_copy_time : 0.0;
-    local[26] = meta != NULL ? meta->gpu_panel_import_time : 0.0;
-    local[27] = meta != NULL ? meta->gpu_schedule_upload_time : 0.0;
-    local[28] = meta != NULL ? meta->x_cache_replicated_bytes : 0.0;
-    local[29] = meta != NULL ? meta->x_cache_avoided_request_bytes : 0.0;
-    local[30] = meta != NULL ? meta->x_cache_hits : 0.0;
-    local[31] = meta != NULL ? meta->x_cache_misses : 0.0;
-    local[32] = meta != NULL ? meta->x_cache_panels : 0.0;
+    local[18] = meta != NULL ? meta->cpu_blas_calls : 0.0;
+    local[19] = meta != NULL ? meta->host_panel_copy_time : 0.0;
+    local[20] = meta != NULL ? meta->x_cache_replicated_bytes : 0.0;
+    local[21] = meta != NULL ? meta->x_cache_avoided_request_bytes : 0.0;
+    local[22] = meta != NULL ? meta->x_cache_hits : 0.0;
+    local[23] = meta != NULL ? meta->x_cache_misses : 0.0;
+    local[24] = meta != NULL ? meta->x_cache_panels : 0.0;
 
     MPI_Comm_rank(grid3d->comm, &rank);
     MPI_Comm_size(grid3d->comm, &nprocs);
@@ -3343,10 +2991,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
             "diag_comm", "diag_compute", "x_cache_fill", "backward_values",
             "backward_compute", "backward_delta", "X_to_B",
             "gpu_h2d", "gpu_compute", "gpu_d2h",
-            "cpu_blas_ops", "gpu_blas_ops", "gpu_panel_ops",
-            "below_thresh_ops", "cpu_blas_calls", "gpu_blas_calls",
-            "gpu_panel_calls", "below_thresh_calls",
-            "host_panel_copy", "gpu_panel_attach", "gpu_schedule_h2d",
+            "cpu_blas_ops", "cpu_blas_calls", "host_panel_copy",
             "x_cache_bytes", "x_cache_avoided", "x_cache_hits",
             "x_cache_misses", "x_cache_panels"
         };
@@ -3424,7 +3069,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
             superlu_n_gemm))
         ABORT("SymLDL solve requires prebuilt V2 solve metadata.");
     solve_meta->reused = 1;
-    pdgstrs3d_symldl_reset_offload_stats(solve_meta);
+    pdgstrs3d_symldl_reset_solve_stats(solve_meta);
     diag_owner = solve_meta->diag_owner;
     solve_order = solve_meta->solve_order;
     solve_schedule = &solve_meta->solve_schedule;
@@ -3441,8 +3086,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     } else {
         pdgstrs3d_symldl_workspace_prepare(
             solve_meta, x_count, maxsup, nrhs, global_nprocs);
-        pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta, nrhs);
-        pdgstrs3d_symldl_gpu_prepare(solve_meta, maxsup, nrhs, grid3d);
+        pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta);
     }
     workspace = &solve_meta->work;
     x = workspace->x;
@@ -3613,8 +3257,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                 continue;
             double panel_ops =
                 pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
-            if (pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) ||
-                !pdgstrs3d_symldl_use_direct_cpu_panel(
+            if (!pdgstrs3d_symldl_use_direct_cpu_panel(
                     solve_meta, panel_ops, nrhs))
                 continue;
             pdgstrs3d_symldl_cpu_forward_panel_direct(
@@ -3635,28 +3278,19 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                 continue;
             double panel_ops =
                 pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
-            if (!pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) &&
-                pdgstrs3d_symldl_use_direct_cpu_panel(
+            if (pdgstrs3d_symldl_use_direct_cpu_panel(
                     solve_meta, panel_ops, nrhs))
                 continue;
-            if (pdgstrs3d_symldl_try_gpu_forward_panel(
-                    solve_meta, ctx->k, kmeta, ctx->ksupc, nrhs,
-                    ctx->xk_buf, cmeta->total_send, ctx->send_vals)) {
-                stat->ops[SOLVE] +=
-                    panel_ops;
-                continue;
-            }
             double *lusup = kmeta->lusup;
             int_t nsupr = kmeta->nsupr;
             for (int_t block = 0; block < kmeta->nblocks; ++block) {
                 int_t nbrow = kmeta->block_nbrow[block];
                 int_t row_start = kmeta->block_row_start[block];
                 int_t luptr = kmeta->block_luptr[block];
-                pdgstrs3d_symldl_dispatch_gemm(solve_meta, ctx->k, luptr,
-                                       "N", "N", nbrow, nrhs, ctx->ksupc,
-                                       1.0, &lusup[luptr], nsupr,
-                                       ctx->xk_buf, ctx->ksupc,
-                                       0.0, gemm_buf, nbrow);
+                pdgstrs3d_symldl_cpu_gemm(
+                    solve_meta, "N", "N", nbrow, nrhs, ctx->ksupc,
+                    1.0, &lusup[luptr], nsupr, ctx->xk_buf, ctx->ksupc,
+                    0.0, gemm_buf, nbrow);
                 for (int_t r = 0; r < nbrow; ++r) {
                     int_t row = row_start + r;
                     int pos = cmeta->row_to_send_pos[row];
@@ -3842,11 +3476,10 @@ symldl_diagonal_solve:
                     xk[i + (int_t) rhs * ksupc];
 
         ttmp = SuperLU_timer_();
-        pdgstrs3d_symldl_dispatch_gemm(solve_meta, k, kmeta->diag_luptr,
-                               "N", "N", ksupc, nrhs, ksupc,
-                               1.0, &kmeta->lusup[kmeta->diag_luptr],
-                               kmeta->nsupr, xk_buf, ksupc,
-                               0.0, diag_buf, ksupc);
+        pdgstrs3d_symldl_cpu_gemm(
+            solve_meta, "N", "N", ksupc, nrhs, ksupc,
+            1.0, &kmeta->lusup[kmeta->diag_luptr], kmeta->nsupr,
+            xk_buf, ksupc, 0.0, diag_buf, ksupc);
         symldl_timer.diag_compute += SuperLU_timer_() - ttmp;
         stat->ops[SOLVE] += 2.0 * (double) ksupc * (double) ksupc *
                             (double) nrhs;
@@ -4009,8 +3642,7 @@ symldl_backward_solve:
                 continue;
             double panel_ops =
                 pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
-            if (pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) ||
-                !pdgstrs3d_symldl_use_direct_cpu_panel(
+            if (!pdgstrs3d_symldl_use_direct_cpu_panel(
                     solve_meta, panel_ops, nrhs))
                 continue;
             pdgstrs3d_symldl_cpu_backward_panel_direct(
@@ -4031,17 +3663,9 @@ symldl_backward_solve:
                 continue;
             double panel_ops =
                 pdgstrs3d_symldl_panel_solve_ops(kmeta, ctx->ksupc, nrhs);
-            if (!pdgstrs3d_symldl_should_gpu_ops(solve_meta, panel_ops) &&
-                pdgstrs3d_symldl_use_direct_cpu_panel(
+            if (pdgstrs3d_symldl_use_direct_cpu_panel(
                     solve_meta, panel_ops, nrhs))
                 continue;
-            if (pdgstrs3d_symldl_try_gpu_backward_panel(
-                    solve_meta, ctx->k, kmeta, ctx->ksupc, nrhs,
-                    ctx->row_values, ctx->delta_send_buf)) {
-                stat->ops[SOLVE] +=
-                    panel_ops;
-                continue;
-            }
             double *lusup = kmeta->lusup;
             int_t nsupr = kmeta->nsupr;
             int seq = 0;
@@ -4052,11 +3676,10 @@ symldl_backward_solve:
                     for (int_t r = 0; r < nbrow; ++r)
                         rhs_buf[r + (int_t) rhs * nbrow] =
                             ctx->row_values[(seq + r) * nrhs + rhs];
-                pdgstrs3d_symldl_dispatch_gemm(solve_meta, ctx->k, luptr,
-                                       "T", "N", ctx->ksupc, nrhs, nbrow,
-                                       -1.0, &lusup[luptr], nsupr,
-                                       rhs_buf, nbrow,
-                                       1.0, ctx->delta_send_buf, ctx->ksupc);
+                pdgstrs3d_symldl_cpu_gemm(
+                    solve_meta, "T", "N", ctx->ksupc, nrhs, nbrow,
+                    -1.0, &lusup[luptr], nsupr, rhs_buf, nbrow,
+                    1.0, ctx->delta_send_buf, ctx->ksupc);
                 seq += nbrow;
                 stat->ops[SOLVE] += 2.0 * (double) nbrow *
                                     (double) nrhs * (double) ctx->ksupc;
@@ -4104,7 +3727,6 @@ symldl_backward_done:
     symldl_timer.x_to_b = xtrsTimer.t_pxReDistribute_X_to_B;
 
     reduceStat(SOLVE, stat, grid3d);
-    pdgstrs3d_symldl_gpu_take_timers(solve_meta, &symldl_timer);
     pdgstrs3d_symldl_nvshmem_take_timers(solve_meta, &symldl_timer);
     if (pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TIMING"))
         pdgstrs3d_symldl_timer_print(&symldl_timer, solve_meta, grid3d);
