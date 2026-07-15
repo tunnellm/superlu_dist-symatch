@@ -8,6 +8,7 @@
 #include "superlu_ddefs.h"
 #include "superlu_upacked.h"
 #include "dsymldl_v2_nvshmem_solve.h"
+#include "dsymldl_v2_literature_forward.h"
 
 static size_t
 pdgstrs3d_checked_product(size_t a, size_t b, const char *what)
@@ -545,6 +546,7 @@ typedef struct {
     pdgstrs3d_symldl_x_cache_t *x_cache;
     pdgstrs3d_symldl_workspace_t work;
     void *nvshmem_state;
+    void *literature_forward_state;
     void *factor_gpu_handle;
     double cpu_blas_ops;
     double cpu_blas_calls;
@@ -556,6 +558,7 @@ typedef struct {
     double x_cache_misses;
     double x_cache_panels;
     int factor_gpu_synchronized;
+    int literature_forward_mode;
     int reused;
 } pdgstrs3d_symldl_solve_meta_t;
 
@@ -2188,15 +2191,237 @@ pdgstrs3d_symldl_prepare_host_factor_panels(
 }
 
 static int
+pdgstrs3d_symldl_use_literature_forward(
+    pdgstrs3d_symldl_solve_meta_t *meta)
+{
+#if defined(GPU_ACC)
+    return meta != NULL && meta->literature_forward_mode &&
+           meta->superlu_acc_offload && meta->factor_gpu_handle != NULL &&
+           dSymLDLLiteratureForwardAvailable();
+#else
+    (void) meta;
+    return 0;
+#endif
+}
+
+static int
 pdgstrs3d_symldl_use_nvshmem(pdgstrs3d_symldl_solve_meta_t *meta)
 {
 #if defined(GPU_ACC)
-    return meta != NULL && meta->superlu_acc_offload &&
+    return meta != NULL && !meta->literature_forward_mode &&
+           meta->superlu_acc_offload &&
            meta->factor_gpu_handle != NULL &&
            dSymLDLNVSHMEMSolveAvailable();
 #else
     (void) meta;
     return 0;
+#endif
+}
+
+static void
+pdgstrs3d_symldl_validate_literature_panel_layout(
+    pdgstrs3d_symldl_solve_meta_t *meta, int_t local_panel, int_t k,
+    pdgstrs3d_symldl_panel_meta_t *panel, gridinfo3d_t *grid3d)
+{
+    int_t *lsub;
+    int_t *lloc;
+    int_t update_count;
+    int_t index_offset;
+    int_t value_offset;
+    int_t width;
+    int_t *xsup;
+    gridinfo_t *grid;
+    int myrow;
+    int root;
+
+    if (meta == NULL || panel == NULL || grid3d == NULL ||
+        local_panel < 0 ||
+        local_panel >= meta->trf3Dpartition->symV2LocalPanelCount ||
+        k < 0 || k >= meta->nsupers)
+        ABORT("SymLDL literature forward panel validation is invalid.");
+
+    xsup = meta->Glu_persist->xsup;
+    grid = &grid3d->grid2d;
+    lsub = meta->Llu->Lrowind_bc_ptr[local_panel];
+    lloc = meta->Llu->Lindval_loc_bc_ptr[local_panel];
+    width = SuperSize(k);
+    if (!panel->has_panel) {
+        if (lsub != NULL || lloc != NULL ||
+            meta->Llu->Lnzval_bc_ptr[local_panel] != NULL)
+            ABORT("SymLDL literature forward inactive panel has factor storage.");
+        return;
+    }
+    if (lsub == NULL || lloc == NULL ||
+        meta->Llu->Lnzval_bc_ptr[local_panel] == NULL || lsub[0] <= 0 ||
+        lsub[1] <= 0 || panel->nsupr != lsub[1] ||
+        panel->lusup != meta->Llu->Lnzval_bc_ptr[local_panel] ||
+        panel->lusup_count != lsub[1] * width)
+        ABORT("SymLDL literature forward panel storage differs from the solve metadata.");
+
+    myrow = MYROW(grid->iam, grid);
+    root = meta->trf3Dpartition->symV2DiagRoot[k];
+    if (myrow == root) {
+        if (lsub[BC_HEADER] != k || !panel->has_diag ||
+            panel->diag_luptr != 0)
+            ABORT("SymLDL literature forward diagonal panel layout is inconsistent.");
+        update_count = lsub[0] - 1;
+        index_offset = update_count + 2;
+        value_offset = 2 * update_count + 3;
+    } else {
+        if (panel->has_diag)
+            ABORT("SymLDL literature forward off-diagonal panel contains a diagonal block.");
+        update_count = lsub[0];
+        index_offset = update_count;
+        value_offset = 2 * update_count;
+    }
+    if (update_count < 0 || panel->nblocks != update_count)
+        ABORT("SymLDL literature forward update count differs from the original panel map.");
+
+    for (int_t block = 0; block < update_count; ++block) {
+        int_t lptr = lloc[index_offset + block];
+        int_t luptr = lloc[value_offset + block];
+        int_t target = lsub[lptr];
+        int_t nbrow = lsub[lptr + 1];
+        int_t row_start = panel->block_row_start[block];
+        if (lptr < BC_HEADER || luptr < 0 || target == k || nbrow <= 0 ||
+            panel->block_luptr[block] != luptr ||
+            panel->block_nbrow[block] != nbrow || row_start < 0 ||
+            row_start + nbrow > panel->row_count)
+            ABORT("SymLDL literature forward block descriptor differs from the original panel map.");
+        for (int_t row = 0; row < nbrow; ++row)
+            if (panel->rows[row_start + row] !=
+                lsub[lptr + LB_DESCRIPTOR + row])
+                ABORT("SymLDL literature forward row descriptor differs from the original panel map.");
+    }
+}
+
+static void
+pdgstrs3d_symldl_literature_forward_prepare(
+    pdgstrs3d_symldl_solve_meta_t *meta, int_t n, int_t nlb,
+    int_t ldalsum, int nrhs, gridinfo3d_t *grid3d)
+{
+    if (meta == NULL || !meta->literature_forward_mode)
+        return;
+    if (!pdgstrs3d_symldl_use_literature_forward(meta))
+        ABORT("SymLDL literature forward solve requires GPU offload and NVSHMEM.");
+    if (meta->literature_forward_state != NULL)
+        return;
+#if defined(GPU_ACC)
+    pdgstrs3d_symldl_sync_factor_gpu(meta);
+    int_t *xsup = meta->Glu_persist->xsup;
+    int_t *supno = meta->Glu_persist->supno;
+    int_t panel_count = meta->trf3Dpartition->symV2LocalPanelCount;
+    int_t block_count = 0;
+    int_t row_count = 0;
+    for (int_t lp = 0; lp < panel_count; ++lp) {
+        int_t k = meta->trf3Dpartition->symV2LocalPanelGids[lp];
+        pdgstrs3d_symldl_panel_meta_t *panel = &meta->panel_meta[k];
+        if (!panel->has_panel)
+            continue;
+        block_count = pdgstrs3d_checked_size_to_int_t(
+            (size_t) block_count + (size_t) panel->nblocks,
+            "SymLDL literature forward block descriptors");
+        row_count = pdgstrs3d_checked_size_to_int_t(
+            (size_t) row_count + (size_t) panel->row_count,
+            "SymLDL literature forward row descriptors");
+    }
+    dSymLDLLiteraturePanelDesc *panels = panel_count > 0
+        ? (dSymLDLLiteraturePanelDesc *) SUPERLU_MALLOC(
+              pdgstrs3d_checked_alloc_bytes(
+                  panel_count, sizeof(*panels),
+                  "SymLDL literature forward panel descriptors"))
+        : NULL;
+    dSymLDLLiteratureBlockDesc *blocks = block_count > 0
+        ? (dSymLDLLiteratureBlockDesc *) SUPERLU_MALLOC(
+              pdgstrs3d_checked_alloc_bytes(
+                  block_count, sizeof(*blocks),
+                  "SymLDL literature forward block descriptors"))
+        : NULL;
+    int_t *rows = row_count > 0 ? intMalloc_dist(row_count) : NULL;
+    if ((panel_count > 0 && panels == NULL) ||
+        (block_count > 0 && blocks == NULL) ||
+        (row_count > 0 && rows == NULL))
+        ABORT("Malloc fails for SymLDL literature forward metadata.");
+
+    int_t block_pos = 0;
+    int_t row_pos = 0;
+    for (int_t lp = 0; lp < panel_count; ++lp) {
+        int_t k = meta->trf3Dpartition->symV2LocalPanelGids[lp];
+        pdgstrs3d_symldl_panel_meta_t *source = &meta->panel_meta[k];
+        pdgstrs3d_symldl_validate_literature_panel_layout(
+            meta, lp, k, source, grid3d);
+        panels[lp].gid = k;
+        panels[lp].width = SuperSize(k);
+        panels[lp].nsupr = 0;
+        panels[lp].diag_luptr = 0;
+        panels[lp].has_diag = 0;
+        panels[lp].block_begin = block_pos;
+        panels[lp].block_count = 0;
+        panels[lp].value_count = 0;
+        panels[lp].active = source->has_panel;
+        panels[lp].values = NULL;
+        if (!source->has_panel)
+            continue;
+        panels[lp].nsupr = source->nsupr;
+        panels[lp].diag_luptr = source->diag_luptr;
+        panels[lp].has_diag = source->has_diag;
+        panels[lp].block_count = source->nblocks;
+        panels[lp].value_count = source->lusup_count;
+        int_t device_count = 0;
+        if (dSymLDLFactorGPUGetPanel(
+                (dLUgpu_Handle) meta->factor_gpu_handle, k,
+                &panels[lp].values, &device_count) != 0 ||
+            panels[lp].values == NULL ||
+            device_count < panels[lp].value_count)
+            ABORT("SymLDL literature forward could not access a retained L panel.");
+
+        for (int_t b = 0; b < source->nblocks; ++b) {
+            int_t source_row = source->block_row_start[b];
+            int_t nbrow = source->block_nbrow[b];
+            int_t target_gid = BlockNum(source->rows[source_row]);
+            dSymLDLLiteratureBlockDesc *block = &blocks[block_pos++];
+            block->panel_id = lp;
+            block->target_gid = target_gid;
+            block->luptr = source->block_luptr[b];
+            block->nbrow = nbrow;
+            block->row_begin = row_pos;
+            for (int_t r = 0; r < nbrow; ++r) {
+                int_t grow = source->rows[source_row + r];
+                if (BlockNum(grow) != target_gid)
+                    ABORT("SymLDL literature forward block spans supernodes.");
+                rows[row_pos++] = grow;
+            }
+        }
+    }
+    if (block_pos != block_count || row_pos != row_count)
+        ABORT("SymLDL literature forward metadata size is inconsistent.");
+
+    int_t x_count = pdgstrs3d_checked_workspace_count(
+        ldalsum, nrhs, nlb, XK_H,
+        "SymLDL literature forward X workspace");
+    int_t lsum_count = pdgstrs3d_checked_workspace_count(
+        ldalsum, nrhs, nlb, LSUM_H,
+        "SymLDL literature forward sum workspace");
+    meta->literature_forward_state = dSymLDLLiteratureForwardCreate(
+        n, meta->nsupers, nrhs, x_count, lsum_count, panel_count,
+        panels, block_count, blocks, row_count, rows,
+        meta->Glu_persist->xsup, meta->Llu->ilsum,
+        meta->trf3Dpartition, grid3d);
+    if (rows != NULL)
+        SUPERLU_FREE(rows);
+    if (blocks != NULL)
+        SUPERLU_FREE(blocks);
+    if (panels != NULL)
+        SUPERLU_FREE(panels);
+    if (meta->literature_forward_state == NULL)
+        ABORT("SymLDL literature forward setup failed.");
+#else
+    (void) n;
+    (void) nlb;
+    (void) ldalsum;
+    (void) nrhs;
+    (void) grid3d;
+    ABORT("SymLDL literature forward requires a CUDA build.");
 #endif
 }
 
@@ -2373,10 +2598,38 @@ pdgstrs3d_symldl_nvshmem_take_timers(
 }
 
 static void
+pdgstrs3d_symldl_literature_take_timers(
+    pdgstrs3d_symldl_solve_meta_t *meta,
+    pdgstrs3d_symldl_timer_t *timer)
+{
+    double setup = 0.0;
+    double forward = 0.0;
+    double sparse_reduce = 0.0;
+    double sparse_broadcast = 0.0;
+    double h2d = 0.0;
+    double d2h = 0.0;
+    if (meta == NULL || meta->literature_forward_state == NULL ||
+        timer == NULL)
+        return;
+    dSymLDLLiteratureForwardTakeTimers(
+        meta->literature_forward_state, &setup, &forward,
+        &sparse_reduce, &sparse_broadcast, &h2d, &d2h);
+    timer->workspace += setup;
+    timer->forward_compute += forward;
+    timer->forward_values += sparse_reduce;
+    timer->forward_apply += sparse_broadcast;
+    timer->gpu_h2d += h2d;
+    timer->gpu_compute += forward;
+    timer->gpu_d2h += d2h;
+}
+
+static void
 pdgstrs3d_symldl_solve_meta_destroy(pdgstrs3d_symldl_solve_meta_t *meta)
 {
     if (meta == NULL)
         return;
+    if (meta->literature_forward_state)
+        dSymLDLLiteratureForwardDestroy(meta->literature_forward_state);
     if (meta->nvshmem_state)
         dSymLDLNVSHMEMSolveDestroy(meta->nvshmem_state);
 #if defined(GPU_ACC)
@@ -2440,6 +2693,9 @@ pdgstrs3d_symldl_solve_meta_valid(pdgstrs3d_symldl_solve_meta_t *meta,
            meta->nprow == grid->nprow &&
            meta->npcol == grid->npcol &&
            meta->znp == grid3d->zscp.Np &&
+           meta->literature_forward_mode ==
+               pdgstrs3d_symldl_env_enabled(
+                   "GPU3DV2_SYM_SOLVE_LITERATURE_FORWARD") &&
            meta->superlu_acc_offload == superlu_acc_offload &&
            meta->superlu_n_gemm == superlu_n_gemm &&
            meta->Glu_persist == Glu_persist &&
@@ -2493,6 +2749,8 @@ pdgstrs3d_symldl_solve_meta_get(dSOLVEstruct_t *SOLVEstruct, int_t n,
     meta->nprow = grid->nprow;
     meta->npcol = grid->npcol;
     meta->znp = grid3d->zscp.Np;
+    meta->literature_forward_mode = pdgstrs3d_symldl_env_enabled(
+        "GPU3DV2_SYM_SOLVE_LITERATURE_FORWARD");
     meta->superlu_acc_offload = superlu_acc_offload;
     meta->superlu_n_gemm = superlu_n_gemm;
     if (getenv("GPU3DV2_TRACE")) {
@@ -3086,7 +3344,11 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     } else {
         pdgstrs3d_symldl_workspace_prepare(
             solve_meta, x_count, maxsup, nrhs, global_nprocs);
-        pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta);
+        if (pdgstrs3d_symldl_use_literature_forward(solve_meta))
+            pdgstrs3d_symldl_literature_forward_prepare(
+                solve_meta, n, nlb, ldalsum, nrhs, grid3d);
+        else
+            pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta);
     }
     workspace = &solve_meta->work;
     x = workspace->x;
@@ -3113,8 +3375,24 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     xtrsTimer.t_pxReDistribute_B_to_X = SuperLU_timer_() - tx;
     symldl_timer.b_to_x = xtrsTimer.t_pxReDistribute_B_to_X;
 
+    if (solve_meta->literature_forward_state != NULL &&
+        dSymLDLLiteratureForwardInitializeRHS(
+            solve_meta->literature_forward_state, x, x_count) != 0)
+        ABORT("SymLDL literature forward RHS initialization failed.");
+
     MPI_Barrier(grid3d->comm);
     tx_st = SuperLU_timer_();
+
+    if (solve_meta->literature_forward_state != NULL) {
+        if (dSymLDLLiteratureForwardSolve(
+                solve_meta->literature_forward_state, x, x_count) != 0)
+            ABORT("SymLDL literature forward solve failed.");
+        if (dSymLDLLiteratureForwardSparseAllreduce(
+                solve_meta->literature_forward_state, x, x_count) != 0)
+            ABORT("SymLDL literature sparse Z allreduce failed.");
+        xtrsTimer.t_forwardSolve = SuperLU_timer_() - tx_st;
+        goto symldl_diagonal_solve;
+    }
 
     if (solve_meta->nvshmem_state != NULL) {
         if (dSymLDLNVSHMEMForward(solve_meta->nvshmem_state,
@@ -3430,6 +3708,11 @@ symldl_diagonal_solve:
             fflush(stderr);
         }
     }
+    /* The literature forward solve reads retained device L directly.  Keep
+       this host copy only while the existing D and L^T phases still consume
+       panel_meta[].lusup. */
+    if (solve_meta->literature_forward_state != NULL)
+        pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta);
     if (solve_meta->nvshmem_state != NULL) {
         if (dSymLDLNVSHMEMDiagonal(solve_meta->nvshmem_state,
                                   x, x_count) != 0)
@@ -3728,6 +4011,7 @@ symldl_backward_done:
 
     reduceStat(SOLVE, stat, grid3d);
     pdgstrs3d_symldl_nvshmem_take_timers(solve_meta, &symldl_timer);
+    pdgstrs3d_symldl_literature_take_timers(solve_meta, &symldl_timer);
     if (pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TIMING"))
         pdgstrs3d_symldl_timer_print(&symldl_timer, solve_meta, grid3d);
 
