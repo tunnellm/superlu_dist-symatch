@@ -8,7 +8,6 @@
 #include "superlu_ddefs.h"
 #include "superlu_upacked.h"
 #include "dsymldl_v2_nvshmem_solve.h"
-#include "dsymldl_v2_literature_forward.h"
 
 static size_t
 pdgstrs3d_checked_product(size_t a, size_t b, const char *what)
@@ -267,6 +266,63 @@ pdgstrs3d_symldl_env_enabled(const char *name)
 {
     const char *value = getenv(name);
     return value != NULL && atoi(value) != 0;
+}
+
+static void
+pdgstrs3d_symldl_trace_values_by_gid(
+    const char *phase, int_t nsupers, int nrhs, const double *x,
+    const int_t *ilsum, const int_t *xsup, const int *diag_owner,
+    dtrf3Dpartition_t *trf3Dpartition, int global_rank,
+    MPI_Comm global_comm)
+{
+    if (!pdgstrs3d_symldl_env_enabled(
+            "GPU3DV2_SYM_SOLVE_NVSHMEM_BACKWARD_DIAGNOSTICS"))
+        return;
+
+    int_t value_count = pdgstrs3d_checked_workspace_count(
+        nsupers, 4, 0, 0, "SymLDL per-supernode diagnostics");
+    double *local = doubleCalloc_dist(value_count);
+    double *global = doubleCalloc_dist(value_count);
+    if (local == NULL || global == NULL)
+        ABORT("Malloc fails for SymLDL per-supernode diagnostics.");
+
+    for (int_t k = 0; k < nsupers; ++k) {
+        if (global_rank != diag_owner[k])
+            continue;
+        int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, k);
+        int_t width = xsup[k + 1] - xsup[k];
+        const double *xk = &x[ilsum[lk] * nrhs + (lk + 1) * XK_H];
+        for (int rhs = 0; rhs < nrhs; ++rhs) {
+            for (int_t i = 0; i < width; ++i) {
+                double value = xk[i + (int_t) rhs * width];
+                local[4 * k] += value;
+                local[4 * k + 1] += fabs(value);
+                local[4 * k + 2] += value * value;
+                local[4 * k + 3] = SUPERLU_MAX(
+                    local[4 * k + 3], fabs(value));
+            }
+        }
+    }
+
+    int reduce_count = (int) value_count;
+    if ((int_t) reduce_count != value_count)
+        ABORT("SymLDL per-supernode diagnostics exceed an MPI count.");
+    MPI_Allreduce(local, global, reduce_count, MPI_DOUBLE, MPI_SUM,
+                  global_comm);
+    if (global_rank == 0) {
+        for (int_t k = 0; k < nsupers; ++k) {
+            fprintf(stderr,
+                    "SymLDL backward gid values phase=%s gid=%lld width=%lld "
+                    "sum=%.17e abs=%.17e norm=%.17e max=%.17e\n",
+                    phase, (long long) k,
+                    (long long) (xsup[k + 1] - xsup[k]), global[4 * k],
+                    global[4 * k + 1], sqrt(global[4 * k + 2]),
+                    global[4 * k + 3]);
+        }
+        fflush(stderr);
+    }
+    SUPERLU_FREE(global);
+    SUPERLU_FREE(local);
 }
 
 static int
@@ -546,7 +602,6 @@ typedef struct {
     pdgstrs3d_symldl_x_cache_t *x_cache;
     pdgstrs3d_symldl_workspace_t work;
     void *nvshmem_state;
-    void *literature_forward_state;
     void *factor_gpu_handle;
     double cpu_blas_ops;
     double cpu_blas_calls;
@@ -558,14 +613,13 @@ typedef struct {
     double x_cache_misses;
     double x_cache_panels;
     int factor_gpu_synchronized;
-    int literature_forward_mode;
     int reused;
 } pdgstrs3d_symldl_solve_meta_t;
 
 typedef struct {
     double metadata;
     double workspace;
-    double literature_setup;
+    double nvshmem_setup;
     double b_to_x;
     double forward_xk;
     double forward_compute;
@@ -2192,25 +2246,10 @@ pdgstrs3d_symldl_prepare_host_factor_panels(
 }
 
 static int
-pdgstrs3d_symldl_use_literature_forward(
-    pdgstrs3d_symldl_solve_meta_t *meta)
-{
-#if defined(GPU_ACC)
-    return meta != NULL && meta->literature_forward_mode &&
-           meta->superlu_acc_offload && meta->factor_gpu_handle != NULL &&
-           dSymLDLLiteratureForwardAvailable();
-#else
-    (void) meta;
-    return 0;
-#endif
-}
-
-static int
 pdgstrs3d_symldl_use_nvshmem(pdgstrs3d_symldl_solve_meta_t *meta)
 {
 #if defined(GPU_ACC)
-    return meta != NULL && !meta->literature_forward_mode &&
-           meta->superlu_acc_offload &&
+    return meta != NULL && meta->superlu_acc_offload &&
            meta->factor_gpu_handle != NULL &&
            dSymLDLNVSHMEMSolveAvailable();
 #else
@@ -2220,7 +2259,7 @@ pdgstrs3d_symldl_use_nvshmem(pdgstrs3d_symldl_solve_meta_t *meta)
 }
 
 static void
-pdgstrs3d_symldl_validate_literature_panel_layout(
+pdgstrs3d_symldl_validate_nvshmem_panel_layout(
     pdgstrs3d_symldl_solve_meta_t *meta, int_t local_panel, int_t k,
     pdgstrs3d_symldl_panel_meta_t *panel, gridinfo3d_t *grid3d)
 {
@@ -2239,7 +2278,7 @@ pdgstrs3d_symldl_validate_literature_panel_layout(
         local_panel < 0 ||
         local_panel >= meta->trf3Dpartition->symV2LocalPanelCount ||
         k < 0 || k >= meta->nsupers)
-        ABORT("SymLDL literature forward panel validation is invalid.");
+        ABORT("SymLDL NVSHMEM panel validation is invalid.");
 
     xsup = meta->Glu_persist->xsup;
     grid = &grid3d->grid2d;
@@ -2249,7 +2288,7 @@ pdgstrs3d_symldl_validate_literature_panel_layout(
     if (!panel->has_panel) {
         if (lsub != NULL || lloc != NULL ||
             meta->Llu->Lnzval_bc_ptr[local_panel] != NULL)
-            ABORT("SymLDL literature forward inactive panel has factor storage.");
+            ABORT("SymLDL NVSHMEM inactive panel has factor storage.");
         return;
     }
     if (lsub == NULL || lloc == NULL ||
@@ -2257,26 +2296,26 @@ pdgstrs3d_symldl_validate_literature_panel_layout(
         lsub[1] <= 0 || panel->nsupr != lsub[1] ||
         panel->lusup != meta->Llu->Lnzval_bc_ptr[local_panel] ||
         panel->lusup_count != lsub[1] * width)
-        ABORT("SymLDL literature forward panel storage differs from the solve metadata.");
+        ABORT("SymLDL NVSHMEM panel storage differs from the solve metadata.");
 
     myrow = MYROW(grid->iam, grid);
     root = meta->trf3Dpartition->symV2DiagRoot[k];
     if (myrow == root) {
         if (lsub[BC_HEADER] != k || !panel->has_diag ||
             panel->diag_luptr != 0)
-            ABORT("SymLDL literature forward diagonal panel layout is inconsistent.");
+            ABORT("SymLDL NVSHMEM diagonal panel layout is inconsistent.");
         update_count = lsub[0] - 1;
         index_offset = update_count + 2;
         value_offset = 2 * update_count + 3;
     } else {
         if (panel->has_diag)
-            ABORT("SymLDL literature forward off-diagonal panel contains a diagonal block.");
+            ABORT("SymLDL NVSHMEM off-diagonal panel contains a diagonal block.");
         update_count = lsub[0];
         index_offset = update_count;
         value_offset = 2 * update_count;
     }
     if (update_count < 0 || panel->nblocks != update_count)
-        ABORT("SymLDL literature forward update count differs from the original panel map.");
+        ABORT("SymLDL NVSHMEM update count differs from the original panel map.");
 
     for (int_t block = 0; block < update_count; ++block) {
         int_t lptr = lloc[index_offset + block];
@@ -2288,24 +2327,24 @@ pdgstrs3d_symldl_validate_literature_panel_layout(
             panel->block_luptr[block] != luptr ||
             panel->block_nbrow[block] != nbrow || row_start < 0 ||
             row_start + nbrow > panel->row_count)
-            ABORT("SymLDL literature forward block descriptor differs from the original panel map.");
+            ABORT("SymLDL NVSHMEM block descriptor differs from the original panel map.");
         for (int_t row = 0; row < nbrow; ++row)
             if (panel->rows[row_start + row] !=
                 lsub[lptr + LB_DESCRIPTOR + row])
-                ABORT("SymLDL literature forward row descriptor differs from the original panel map.");
+                ABORT("SymLDL NVSHMEM row descriptor differs from the original panel map.");
     }
 }
 
 static void
-pdgstrs3d_symldl_literature_forward_prepare(
+pdgstrs3d_symldl_nvshmem_prepare(
     pdgstrs3d_symldl_solve_meta_t *meta, int_t n, int_t nlb,
     int_t ldalsum, int nrhs, gridinfo3d_t *grid3d)
 {
-    if (meta == NULL || !meta->literature_forward_mode)
+    if (meta == NULL)
         return;
-    if (!pdgstrs3d_symldl_use_literature_forward(meta))
-        ABORT("SymLDL literature forward solve requires GPU offload and NVSHMEM.");
-    if (meta->literature_forward_state != NULL)
+    if (!pdgstrs3d_symldl_use_nvshmem(meta))
+        ABORT("SymLDL NVSHMEM solve requires GPU offload and NVSHMEM.");
+    if (meta->nvshmem_state != NULL)
         return;
 #if defined(GPU_ACC)
     pdgstrs3d_symldl_sync_factor_gpu(meta);
@@ -2314,42 +2353,84 @@ pdgstrs3d_symldl_literature_forward_prepare(
     int_t panel_count = meta->trf3Dpartition->symV2LocalPanelCount;
     int_t block_count = 0;
     int_t row_count = 0;
+    int_t retained_panel_count = 0;
+    int_t active_panel_count = 0;
+    int_t active_block_count = 0;
+    int_t active_row_count = 0;
+    double retained_transpose_work = 0.0;
+    double active_transpose_work = 0.0;
     for (int_t lp = 0; lp < panel_count; ++lp) {
         int_t k = meta->trf3Dpartition->symV2LocalPanelGids[lp];
         pdgstrs3d_symldl_panel_meta_t *panel = &meta->panel_meta[k];
         if (!panel->has_panel)
             continue;
+        int panel_active = pdgstrs3d_symldl_local_panel_active(
+            meta->trf3Dpartition, panel, k);
+        ++retained_panel_count;
+        if (panel_active) {
+            ++active_panel_count;
+            active_block_count = pdgstrs3d_checked_size_to_int_t(
+                (size_t) active_block_count + (size_t) panel->nblocks,
+                "SymLDL NVSHMEM 3D active block descriptors");
+            active_row_count = pdgstrs3d_checked_size_to_int_t(
+                (size_t) active_row_count + (size_t) panel->row_count,
+                "SymLDL NVSHMEM 3D active row descriptors");
+        }
+        for (int_t block = 0; block < panel->nblocks; ++block) {
+            double work = (double) panel->block_nbrow[block] *
+                          (double) SuperSize(k) * (double) nrhs;
+            retained_transpose_work += work;
+            if (panel_active)
+                active_transpose_work += work;
+        }
         block_count = pdgstrs3d_checked_size_to_int_t(
             (size_t) block_count + (size_t) panel->nblocks,
-            "SymLDL literature forward block descriptors");
+            "SymLDL NVSHMEM solve block descriptors");
         row_count = pdgstrs3d_checked_size_to_int_t(
             (size_t) row_count + (size_t) panel->row_count,
-            "SymLDL literature forward row descriptors");
+            "SymLDL NVSHMEM solve row descriptors");
     }
-    dSymLDLLiteraturePanelDesc *panels = panel_count > 0
-        ? (dSymLDLLiteraturePanelDesc *) SUPERLU_MALLOC(
+    if (pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TIMING")) {
+        fprintf(stderr,
+                "SymLDL NVSHMEM 3D factor-volume profile: rank=%d z=%d "
+                "retained_panels=%lld active_panels=%lld "
+                "retained_blocks=%lld active_blocks=%lld "
+                "retained_rows=%lld active_rows=%lld "
+                "retained_transpose_work=%.0f active_transpose_work=%.0f\n",
+                grid3d->iam, grid3d->zscp.Iam,
+                (long long) retained_panel_count,
+                (long long) active_panel_count,
+                (long long) block_count,
+                (long long) active_block_count,
+                (long long) row_count,
+                (long long) active_row_count,
+                retained_transpose_work, active_transpose_work);
+        fflush(stderr);
+    }
+    dSymLDLNVPanelDesc *panels = panel_count > 0
+        ? (dSymLDLNVPanelDesc *) SUPERLU_MALLOC(
               pdgstrs3d_checked_alloc_bytes(
                   panel_count, sizeof(*panels),
-                  "SymLDL literature forward panel descriptors"))
+                  "SymLDL NVSHMEM solve panel descriptors"))
         : NULL;
-    dSymLDLLiteratureBlockDesc *blocks = block_count > 0
-        ? (dSymLDLLiteratureBlockDesc *) SUPERLU_MALLOC(
+    dSymLDLNVBlockDesc *blocks = block_count > 0
+        ? (dSymLDLNVBlockDesc *) SUPERLU_MALLOC(
               pdgstrs3d_checked_alloc_bytes(
                   block_count, sizeof(*blocks),
-                  "SymLDL literature forward block descriptors"))
+                  "SymLDL NVSHMEM solve block descriptors"))
         : NULL;
     int_t *rows = row_count > 0 ? intMalloc_dist(row_count) : NULL;
     if ((panel_count > 0 && panels == NULL) ||
         (block_count > 0 && blocks == NULL) ||
         (row_count > 0 && rows == NULL))
-        ABORT("Malloc fails for SymLDL literature forward metadata.");
+        ABORT("Malloc fails for SymLDL NVSHMEM solve metadata.");
 
     int_t block_pos = 0;
     int_t row_pos = 0;
     for (int_t lp = 0; lp < panel_count; ++lp) {
         int_t k = meta->trf3Dpartition->symV2LocalPanelGids[lp];
         pdgstrs3d_symldl_panel_meta_t *source = &meta->panel_meta[k];
-        pdgstrs3d_symldl_validate_literature_panel_layout(
+        pdgstrs3d_symldl_validate_nvshmem_panel_layout(
             meta, lp, k, source, grid3d);
         panels[lp].gid = k;
         panels[lp].width = SuperSize(k);
@@ -2374,13 +2455,13 @@ pdgstrs3d_symldl_literature_forward_prepare(
                 &panels[lp].values, &device_count) != 0 ||
             panels[lp].values == NULL ||
             device_count < panels[lp].value_count)
-            ABORT("SymLDL literature forward could not access a retained L panel.");
+            ABORT("SymLDL NVSHMEM solve could not access a retained L panel.");
 
         for (int_t b = 0; b < source->nblocks; ++b) {
             int_t source_row = source->block_row_start[b];
             int_t nbrow = source->block_nbrow[b];
             int_t target_gid = BlockNum(source->rows[source_row]);
-            dSymLDLLiteratureBlockDesc *block = &blocks[block_pos++];
+            dSymLDLNVBlockDesc *block = &blocks[block_pos++];
             block->panel_id = lp;
             block->target_gid = target_gid;
             block->luptr = source->block_luptr[b];
@@ -2389,185 +2470,39 @@ pdgstrs3d_symldl_literature_forward_prepare(
             for (int_t r = 0; r < nbrow; ++r) {
                 int_t grow = source->rows[source_row + r];
                 if (BlockNum(grow) != target_gid)
-                    ABORT("SymLDL literature forward block spans supernodes.");
+                    ABORT("SymLDL NVSHMEM solve block spans supernodes.");
                 rows[row_pos++] = grow;
             }
         }
     }
     if (block_pos != block_count || row_pos != row_count)
-        ABORT("SymLDL literature forward metadata size is inconsistent.");
+        ABORT("SymLDL NVSHMEM solve metadata size is inconsistent.");
 
     int_t x_count = pdgstrs3d_checked_workspace_count(
         ldalsum, nrhs, nlb, XK_H,
-        "SymLDL literature forward X workspace");
+        "SymLDL NVSHMEM solve X workspace");
     int_t lsum_count = pdgstrs3d_checked_workspace_count(
         ldalsum, nrhs, nlb, LSUM_H,
-        "SymLDL literature forward sum workspace");
-    meta->literature_forward_state = dSymLDLLiteratureForwardCreate(
+        "SymLDL NVSHMEM solve sum workspace");
+    meta->nvshmem_state = dSymLDLNVSHMEMSolveCreate(
         n, meta->nsupers, nrhs, x_count, lsum_count, panel_count,
         panels, block_count, blocks, row_count, rows,
         meta->Glu_persist->xsup, meta->Llu->ilsum,
         meta->trf3Dpartition, grid3d);
+    if (meta->nvshmem_state == NULL)
+        ABORT("SymLDL NVSHMEM solve setup failed.");
     if (rows != NULL)
         SUPERLU_FREE(rows);
     if (blocks != NULL)
         SUPERLU_FREE(blocks);
     if (panels != NULL)
         SUPERLU_FREE(panels);
-    if (meta->literature_forward_state == NULL)
-        ABORT("SymLDL literature forward setup failed.");
 #else
     (void) n;
     (void) nlb;
     (void) ldalsum;
     (void) nrhs;
     (void) grid3d;
-    ABORT("SymLDL literature forward requires a CUDA build.");
-#endif
-}
-
-static void
-pdgstrs3d_symldl_nvshmem_prepare(
-    pdgstrs3d_symldl_solve_meta_t *meta, int_t n, int_t nlb,
-    int_t ldalsum, int nrhs, gridinfo3d_t *grid3d)
-{
-    if (!pdgstrs3d_symldl_use_nvshmem(meta))
-        return;
-    if (grid3d == NULL)
-        ABORT("SymLDL NVSHMEM solve metadata is missing.");
-    if (meta->nvshmem_state != NULL)
-        return;
-#if defined(GPU_ACC)
-    pdgstrs3d_symldl_sync_factor_gpu(meta);
-    int rank;
-    MPI_Comm_rank(grid3d->comm, &rank);
-    int_t *xsup = meta->Glu_persist->xsup;
-    int_t *supno = meta->Glu_persist->supno;
-    int_t *ilsum = meta->Llu->ilsum;
-    int_t panel_count = 0;
-    int_t block_count = 0;
-    int_t row_count = 0;
-
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        pdgstrs3d_symldl_panel_meta_t *panel = &meta->panel_meta[k];
-        int panel_active = pdgstrs3d_symldl_local_panel_active(
-            meta->trf3Dpartition, panel, k);
-        if (!panel->has_panel || (!panel_active && meta->diag_owner[k] != rank))
-            continue;
-        ++panel_count;
-        if (panel_active) {
-            block_count = pdgstrs3d_checked_size_to_int_t(
-                (size_t) block_count + (size_t) panel->nblocks,
-                "SymLDL NVSHMEM block metadata");
-            row_count = pdgstrs3d_checked_size_to_int_t(
-                (size_t) row_count + (size_t) panel->row_count,
-                "SymLDL NVSHMEM row metadata");
-        }
-    }
-
-    dSymLDLNVPanelDesc *panels = panel_count > 0
-        ? (dSymLDLNVPanelDesc *) SUPERLU_MALLOC(
-              pdgstrs3d_checked_alloc_bytes(panel_count, sizeof(*panels),
-                                            "SymLDL NVSHMEM panels"))
-        : NULL;
-    dSymLDLNVBlockDesc *blocks = block_count > 0
-        ? (dSymLDLNVBlockDesc *) SUPERLU_MALLOC(
-              pdgstrs3d_checked_alloc_bytes(block_count, sizeof(*blocks),
-                                            "SymLDL NVSHMEM blocks"))
-        : NULL;
-    int_t *rows = row_count > 0 ? intMalloc_dist(row_count) : NULL;
-    int_t *x_offsets = intMalloc_dist(meta->nsupers);
-    int_t *lsum_offsets = intMalloc_dist(meta->nsupers);
-    if ((panel_count > 0 && panels == NULL) ||
-        (block_count > 0 && blocks == NULL) ||
-        (row_count > 0 && rows == NULL) ||
-        x_offsets == NULL || lsum_offsets == NULL)
-        ABORT("Malloc fails for SymLDL NVSHMEM solve metadata.");
-
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        int_t local = meta->trf3Dpartition->symV2RowLocalIndex[k];
-        if (local >= 0) {
-            x_offsets[k] = X_BLK(local);
-            lsum_offsets[k] = LSUM_BLK(local);
-        } else {
-            x_offsets[k] = -1;
-            lsum_offsets[k] = -1;
-        }
-    }
-
-    int_t panel_pos = 0;
-    int_t block_pos = 0;
-    int_t row_pos = 0;
-    for (int_t k = 0; k < meta->nsupers; ++k) {
-        pdgstrs3d_symldl_panel_meta_t *source = &meta->panel_meta[k];
-        int panel_active = pdgstrs3d_symldl_local_panel_active(
-            meta->trf3Dpartition, source, k);
-        if (!source->has_panel || (!panel_active && meta->diag_owner[k] != rank))
-            continue;
-
-        double *device_values = NULL;
-        int_t device_count = 0;
-        if (dSymLDLFactorGPUGetPanel(
-                (dLUgpu_Handle) meta->factor_gpu_handle, k,
-                &device_values, &device_count) != 0 ||
-            device_values == NULL || device_count < source->lusup_count)
-            ABORT("SymLDL NVSHMEM solve could not access a factor panel.");
-
-        dSymLDLNVPanelDesc *target = &panels[panel_pos++];
-        target->gid = k;
-        target->width = SuperSize(k);
-        target->nsupr = source->nsupr;
-        target->diag_luptr = source->diag_luptr;
-        target->block_begin = block_pos;
-        target->block_count = panel_active ? source->nblocks : 0;
-        target->value_count = source->lusup_count;
-        target->owner = meta->diag_owner[k];
-        target->values = device_values;
-
-        for (int_t b = 0; panel_active && b < source->nblocks; ++b) {
-            int_t source_row = source->block_row_start[b];
-            int_t nbrow = source->block_nbrow[b];
-            int_t target_gid = BlockNum(source->rows[source_row]);
-            dSymLDLNVBlockDesc *block = &blocks[block_pos++];
-            block->panel_id = panel_pos - 1;
-            block->target_gid = target_gid;
-            block->luptr = source->block_luptr[b];
-            block->nbrow = nbrow;
-            block->row_begin = row_pos;
-            for (int_t r = 0; r < nbrow; ++r) {
-                int_t grow = source->rows[source_row + r];
-                if (BlockNum(grow) != target_gid)
-                    ABORT("SymLDL NVSHMEM block spans multiple supernodes.");
-                rows[row_pos++] = grow;
-            }
-        }
-    }
-    if (panel_pos != panel_count || block_pos != block_count ||
-        row_pos != row_count)
-        ABORT("SymLDL NVSHMEM solve metadata size is inconsistent.");
-
-    int_t x_count = pdgstrs3d_checked_workspace_count(
-        ldalsum, nrhs, nlb, XK_H, "SymLDL NVSHMEM X workspace");
-    int_t lsum_count = pdgstrs3d_checked_workspace_count(
-        ldalsum, nrhs, nlb, LSUM_H, "SymLDL NVSHMEM sum workspace");
-    meta->nvshmem_state = dSymLDLNVSHMEMSolveCreate(
-        n, meta->nsupers, nrhs, x_count, lsum_count,
-        panel_count, panels, block_count, blocks, row_count, rows,
-        xsup, meta->diag_owner, x_offsets, lsum_offsets,
-        grid3d->zscp.Np, grid3d->comm);
-
-    if (lsum_offsets) SUPERLU_FREE(lsum_offsets);
-    if (x_offsets) SUPERLU_FREE(x_offsets);
-    if (rows) SUPERLU_FREE(rows);
-    if (blocks) SUPERLU_FREE(blocks);
-    if (panels) SUPERLU_FREE(panels);
-    if (meta->nvshmem_state == NULL)
-        ABORT("SymLDL NVSHMEM solve setup failed.");
-#else
-    (void) n;
-    (void) nlb;
-    (void) ldalsum;
-    (void) nrhs;
     ABORT("SymLDL NVSHMEM solve requires a CUDA build.");
 #endif
 }
@@ -2577,50 +2512,27 @@ pdgstrs3d_symldl_nvshmem_take_timers(
     pdgstrs3d_symldl_solve_meta_t *meta,
     pdgstrs3d_symldl_timer_t *timer)
 {
-    double h2d = 0.0;
-    double forward = 0.0;
-    double d2h = 0.0;
-    double forward_phase = 0.0;
-    double diagonal_phase = 0.0;
-    double backward_phase = 0.0;
-    if (meta == NULL || meta->nvshmem_state == NULL || timer == NULL)
-        return;
-    dSymLDLNVSHMEMSolveTakeTimers(meta->nvshmem_state,
-                                  &h2d, &forward, &d2h);
-    dSymLDLNVSHMEMSolveTakePhaseTimers(meta->nvshmem_state,
-                                      &forward_phase, &diagonal_phase,
-                                      &backward_phase);
-    timer->gpu_h2d += h2d;
-    timer->gpu_compute += forward;
-    timer->gpu_d2h += d2h;
-    timer->forward_compute += forward_phase;
-    timer->diag_compute += diagonal_phase;
-    timer->backward_compute += backward_phase;
-}
-
-static void
-pdgstrs3d_symldl_literature_take_timers(
-    pdgstrs3d_symldl_solve_meta_t *meta,
-    pdgstrs3d_symldl_timer_t *timer)
-{
     double setup = 0.0;
+    double h2d = 0.0;
     double forward = 0.0;
     double sparse_reduce = 0.0;
     double sparse_broadcast = 0.0;
-    double h2d = 0.0;
+    double diagonal = 0.0;
+    double backward = 0.0;
     double d2h = 0.0;
-    if (meta == NULL || meta->literature_forward_state == NULL ||
-        timer == NULL)
+    if (meta == NULL || meta->nvshmem_state == NULL || timer == NULL)
         return;
-    dSymLDLLiteratureForwardTakeTimers(
-        meta->literature_forward_state, &setup, &forward,
-        &sparse_reduce, &sparse_broadcast, &h2d, &d2h);
-    timer->literature_setup += setup;
+    dSymLDLNVSHMEMSolveTakeTimers(
+        meta->nvshmem_state, &setup, &forward, &sparse_reduce,
+        &sparse_broadcast, &diagonal, &backward, &h2d, &d2h);
+    timer->nvshmem_setup += setup;
     timer->forward_compute += forward;
     timer->forward_values += sparse_reduce;
     timer->forward_apply += sparse_broadcast;
+    timer->diag_compute += diagonal;
+    timer->backward_compute += backward;
     timer->gpu_h2d += h2d;
-    timer->gpu_compute += forward;
+    timer->gpu_compute += forward + diagonal + backward;
     timer->gpu_d2h += d2h;
 }
 
@@ -2629,8 +2541,6 @@ pdgstrs3d_symldl_solve_meta_destroy(pdgstrs3d_symldl_solve_meta_t *meta)
 {
     if (meta == NULL)
         return;
-    if (meta->literature_forward_state)
-        dSymLDLLiteratureForwardDestroy(meta->literature_forward_state);
     if (meta->nvshmem_state)
         dSymLDLNVSHMEMSolveDestroy(meta->nvshmem_state);
 #if defined(GPU_ACC)
@@ -2694,9 +2604,6 @@ pdgstrs3d_symldl_solve_meta_valid(pdgstrs3d_symldl_solve_meta_t *meta,
            meta->nprow == grid->nprow &&
            meta->npcol == grid->npcol &&
            meta->znp == grid3d->zscp.Np &&
-           meta->literature_forward_mode ==
-               pdgstrs3d_symldl_env_enabled(
-                   "GPU3DV2_SYM_SOLVE_LITERATURE_FORWARD") &&
            meta->superlu_acc_offload == superlu_acc_offload &&
            meta->superlu_n_gemm == superlu_n_gemm &&
            meta->Glu_persist == Glu_persist &&
@@ -2750,8 +2657,6 @@ pdgstrs3d_symldl_solve_meta_get(dSOLVEstruct_t *SOLVEstruct, int_t n,
     meta->nprow = grid->nprow;
     meta->npcol = grid->npcol;
     meta->znp = grid3d->zscp.Np;
-    meta->literature_forward_mode = pdgstrs3d_symldl_env_enabled(
-        "GPU3DV2_SYM_SOLVE_LITERATURE_FORWARD");
     meta->superlu_acc_offload = superlu_acc_offload;
     meta->superlu_n_gemm = superlu_n_gemm;
     if (getenv("GPU3DV2_TRACE")) {
@@ -3229,7 +3134,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
     local[22] = meta != NULL ? meta->x_cache_hits : 0.0;
     local[23] = meta != NULL ? meta->x_cache_misses : 0.0;
     local[24] = meta != NULL ? meta->x_cache_panels : 0.0;
-    local[25] = timer->literature_setup;
+    local[25] = timer->nvshmem_setup;
 
     MPI_Comm_rank(grid3d->comm, &rank);
     MPI_Comm_size(grid3d->comm, &nprocs);
@@ -3253,7 +3158,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
             "gpu_h2d", "gpu_compute", "gpu_d2h",
             "cpu_blas_ops", "cpu_blas_calls", "host_panel_copy",
             "x_cache_bytes", "x_cache_avoided", "x_cache_hits",
-            "x_cache_misses", "x_cache_panels", "literature_setup"
+            "x_cache_misses", "x_cache_panels", "nvshmem_setup"
         };
         printf("SymFact GPU3D V2 solve timing (max_rank / avg_rank / max_rank_id):\n");
         for (int i = 0; i < SYMLDL_TIMER_COUNT; ++i)
@@ -3346,11 +3251,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     } else {
         pdgstrs3d_symldl_workspace_prepare(
             solve_meta, x_count, maxsup, nrhs, global_nprocs);
-        if (pdgstrs3d_symldl_use_literature_forward(solve_meta))
-            pdgstrs3d_symldl_literature_forward_prepare(
-                solve_meta, n, nlb, ldalsum, nrhs, grid3d);
-        else
-            pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta);
+        pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta);
     }
     workspace = &solve_meta->work;
     x = workspace->x;
@@ -3377,24 +3278,8 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     xtrsTimer.t_pxReDistribute_B_to_X = SuperLU_timer_() - tx;
     symldl_timer.b_to_x = xtrsTimer.t_pxReDistribute_B_to_X;
 
-    if (solve_meta->literature_forward_state != NULL &&
-        dSymLDLLiteratureForwardInitializeRHS(
-            solve_meta->literature_forward_state, x, x_count) != 0)
-        ABORT("SymLDL literature forward RHS initialization failed.");
-
     MPI_Barrier(grid3d->comm);
     tx_st = SuperLU_timer_();
-
-    if (solve_meta->literature_forward_state != NULL) {
-        if (dSymLDLLiteratureForwardSolve(
-                solve_meta->literature_forward_state, x, x_count) != 0)
-            ABORT("SymLDL literature forward solve failed.");
-        if (dSymLDLLiteratureForwardSparseAllreduce(
-                solve_meta->literature_forward_state, x, x_count) != 0)
-            ABORT("SymLDL literature sparse Z allreduce failed.");
-        xtrsTimer.t_forwardSolve = SuperLU_timer_() - tx_st;
-        goto symldl_diagonal_solve;
-    }
 
     if (solve_meta->nvshmem_state != NULL) {
         if (dSymLDLNVSHMEMForward(solve_meta->nvshmem_state,
@@ -3710,11 +3595,6 @@ symldl_diagonal_solve:
             fflush(stderr);
         }
     }
-    /* The literature forward solve reads retained device L directly.  Keep
-       this host copy only while the existing D and L^T phases still consume
-       panel_meta[].lusup. */
-    if (solve_meta->literature_forward_state != NULL)
-        pdgstrs3d_symldl_prepare_host_factor_panels(solve_meta);
     if (solve_meta->nvshmem_state != NULL) {
         if (dSymLDLNVSHMEMDiagonal(solve_meta->nvshmem_state,
                                   x, x_count) != 0)
@@ -3779,6 +3659,48 @@ symldl_diagonal_solve:
 
 symldl_backward_solve:
     ;
+    if (solve_meta->nvshmem_state == NULL &&
+        pdgstrs3d_symldl_env_enabled(
+            "GPU3DV2_SYM_SOLVE_NVSHMEM_BACKWARD_DIAGNOSTICS")) {
+        double local_values[4] = {0.0, 0.0, 0.0, 0.0};
+        double global_values[4] = {0.0, 0.0, 0.0, 0.0};
+        int_t local_count = 0;
+        int_t global_count = 0;
+        for (int_t k = 0; k < nsupers; ++k) {
+            if (global_rank != diag_owner[k])
+                continue;
+            int_t lk = pdgstrs3d_symv2_row_index(trf3Dpartition, k);
+            int_t count = SuperSize(k) * nrhs;
+            double *xk = &x[X_BLK(lk)];
+            for (int_t i = 0; i < count; ++i) {
+                double value = xk[i];
+                local_values[0] += value;
+                local_values[1] += fabs(value);
+                local_values[2] += value * value;
+                local_values[3] = SUPERLU_MAX(local_values[3], fabs(value));
+            }
+            local_count += count;
+        }
+        MPI_Allreduce(local_values, global_values, 3, MPI_DOUBLE, MPI_SUM,
+                      global_comm);
+        MPI_Allreduce(local_values + 3, global_values + 3, 1, MPI_DOUBLE,
+                      MPI_MAX, global_comm);
+        MPI_Allreduce(&local_count, &global_count, 1, mpi_int_t, MPI_SUM,
+                      global_comm);
+        if (global_rank == 0) {
+            fprintf(stderr,
+                    "SymLDL backward values phase=post-diagonal "
+                    "count=%lld sum=%.17e abs=%.17e norm=%.17e max=%.17e\n",
+                    (long long) global_count, global_values[0],
+                    global_values[1], sqrt(global_values[2]),
+                    global_values[3]);
+            fflush(stderr);
+        }
+    }
+    if (solve_meta->nvshmem_state == NULL)
+        pdgstrs3d_symldl_trace_values_by_gid(
+            "post-diagonal", nsupers, nrhs, x, ilsum, xsup, diag_owner,
+            trf3Dpartition, global_rank, global_comm);
     if (solve_meta->nvshmem_state != NULL) {
         tx = SuperLU_timer_();
         if (dSymLDLNVSHMEMBackward(solve_meta->nvshmem_state,
@@ -4001,6 +3923,9 @@ symldl_backward_solve:
     xtrsTimer.t_backwardSolve = SuperLU_timer_() - tx;
 
 symldl_backward_done:
+    pdgstrs3d_symldl_trace_values_by_gid(
+        "post-backward", nsupers, nrhs, x, ilsum, xsup, diag_owner,
+        trf3Dpartition, global_rank, global_comm);
     MPI_Barrier(grid3d->comm);
     stat->utime[SOLVE] = SuperLU_timer_() - tx_st;
 
@@ -4013,7 +3938,6 @@ symldl_backward_done:
 
     reduceStat(SOLVE, stat, grid3d);
     pdgstrs3d_symldl_nvshmem_take_timers(solve_meta, &symldl_timer);
-    pdgstrs3d_symldl_literature_take_timers(solve_meta, &symldl_timer);
     if (pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TIMING"))
         pdgstrs3d_symldl_timer_print(&symldl_timer, solve_meta, grid3d);
 
@@ -4026,10 +3950,10 @@ symldl_backward_done:
 
 /*! \brief
  *
- *   Experimental LDL-native solve for the SymFact GPU3D v2 factor path.
- *   This uses the tree-scheduled distributed solve for all process grids,
- *   including the 1x1x1 local case, while keeping the existing B<->X
- *   redistribution contract.
+ *   LDL-native solve for the SymFact GPU3D v2 factor path. This uses the
+ *   tree-scheduled distributed solve for all process grids, including the
+ *   1x1x1 local case, while keeping the existing B<->X redistribution
+ *   contract.
  */
 void
 pdgstrs3d_symldl (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,

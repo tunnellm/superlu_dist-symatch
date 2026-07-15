@@ -16,9 +16,9 @@ dSymLDLNVSHMEMSolveCreate(
     int_t n, int_t nsupers, int nrhs, int_t x_count, int_t lsum_count,
     int_t panel_count, const dSymLDLNVPanelDesc *panels,
     int_t block_count, const dSymLDLNVBlockDesc *blocks,
-    int_t row_count, const int_t *rows, const int_t *xsup,
-    const int *diag_owner, const int_t *x_offsets,
-    const int_t *lsum_offsets, int znp, MPI_Comm comm)
+    int_t row_count, const int_t *rows,
+    const int_t *xsup, const int_t *ilsum,
+    dtrf3Dpartition_t *trf3Dpartition, gridinfo3d_t *grid3d)
 {
     (void) n;
     (void) nsupers;
@@ -32,11 +32,9 @@ dSymLDLNVSHMEMSolveCreate(
     (void) row_count;
     (void) rows;
     (void) xsup;
-    (void) diag_owner;
-    (void) x_offsets;
-    (void) lsum_offsets;
-    (void) znp;
-    (void) comm;
+    (void) ilsum;
+    (void) trf3Dpartition;
+    (void) grid3d;
     return NULL;
 }
 
@@ -72,23 +70,21 @@ dSymLDLNVSHMEMBackward(dSymLDLNVSHMEMSolveHandle handle,
 
 void
 dSymLDLNVSHMEMSolveTakeTimers(dSymLDLNVSHMEMSolveHandle handle,
-                              double *h2d, double *forward, double *d2h)
+                              double *setup, double *forward,
+                              double *sparse_reduce,
+                              double *sparse_broadcast,
+                              double *diagonal, double *backward,
+                              double *h2d, double *d2h)
 {
     (void) handle;
-    if (h2d != NULL) *h2d = 0.0;
+    if (setup != NULL) *setup = 0.0;
     if (forward != NULL) *forward = 0.0;
-    if (d2h != NULL) *d2h = 0.0;
-}
-
-void
-dSymLDLNVSHMEMSolveTakePhaseTimers(
-    dSymLDLNVSHMEMSolveHandle handle, double *forward,
-    double *diagonal, double *backward)
-{
-    (void) handle;
-    if (forward != NULL) *forward = 0.0;
+    if (sparse_reduce != NULL) *sparse_reduce = 0.0;
+    if (sparse_broadcast != NULL) *sparse_broadcast = 0.0;
     if (diagonal != NULL) *diagonal = 0.0;
     if (backward != NULL) *backward = 0.0;
+    if (h2d != NULL) *h2d = 0.0;
+    if (d2h != NULL) *d2h = 0.0;
 }
 
 void
