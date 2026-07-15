@@ -15,6 +15,29 @@ typedef struct {
     double tree_weight;
 } dSymV2LDLCost_t;
 
+static int dSymV2PartitionBoolFlag(const char *name, int default_value)
+{
+    const char *env = getenv(name);
+    if (env == NULL || env[0] == '\0')
+        return default_value;
+    if (strcmp(env, "0") == 0)
+        return 0;
+    if (strcmp(env, "1") == 0)
+        return 1;
+    ABORT("SymFact V2 partition flags must be 0 or 1.");
+    return default_value;
+}
+
+static int dSymV2GreedyMappingEnabled(void)
+{
+    return dSymV2PartitionBoolFlag("GPU3DV2_GREEDY_MAPPING", 1);
+}
+
+static int dSymV2LDLForestWeightsEnabled(void)
+{
+    return dSymV2PartitionBoolFlag("GPU3DV2_LDL_FOREST_WEIGHTS", 1);
+}
+
 static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
                                dSymV2LDLCost_t *cost)
 {
@@ -228,19 +251,28 @@ static void dSymV2InitLDLOwners(int_t nsupers,
     int global_rank;
     int *local_owner;
     size_t owner_bytes = (size_t) nsupers * sizeof(int);
-    double *panel_load = (double *) SUPERLU_MALLOC(grid->npcol * sizeof(double));
-    double *row_load = (double *) SUPERLU_MALLOC(grid->nprow * sizeof(double));
-    double *rank_load =
-        (double *) SUPERLU_MALLOC(grid->nprow * grid->npcol * sizeof(double));
+    const int greedy_mapping = dSymV2GreedyMappingEnabled();
+    double *panel_load = NULL;
+    double *row_load = NULL;
+    double *rank_load = NULL;
 
-    if (panel_load == NULL || row_load == NULL || rank_load == NULL)
-        ABORT("Malloc fails for SymFact V2 LDL load metadata.");
-    for (int pc = 0; pc < grid->npcol; ++pc)
-        panel_load[pc] = 0.0;
-    for (int pr = 0; pr < grid->nprow; ++pr)
-        row_load[pr] = 0.0;
-    for (int p = 0; p < grid->nprow * grid->npcol; ++p)
-        rank_load[p] = 0.0;
+    if (greedy_mapping)
+    {
+        panel_load = (double *) SUPERLU_MALLOC(
+            grid->npcol * sizeof(double));
+        row_load = (double *) SUPERLU_MALLOC(
+            grid->nprow * sizeof(double));
+        rank_load = (double *) SUPERLU_MALLOC(
+            grid->nprow * grid->npcol * sizeof(double));
+        if (panel_load == NULL || row_load == NULL || rank_load == NULL)
+            ABORT("Malloc fails for SymFact V2 LDL load metadata.");
+        for (int pc = 0; pc < grid->npcol; ++pc)
+            panel_load[pc] = 0.0;
+        for (int pr = 0; pr < grid->nprow; ++pr)
+            row_load[pr] = 0.0;
+        for (int p = 0; p < grid->nprow * grid->npcol; ++p)
+            rank_load[p] = 0.0;
+    }
 
     dSymV2ResetLDLMetadata(trf3Dpart);
 
@@ -253,7 +285,12 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         ABORT("Malloc fails for SymFact V2 LDL owner metadata.");
 
     MPI_Comm_rank(grid3d->comm, &global_rank);
-    const double affinity_weight = dSymV2OwnerAffinityWeight();
+    const double affinity_weight = greedy_mapping
+                                       ? dSymV2OwnerAffinityWeight()
+                                       : 0.0;
+    if (grid3d->iam == 0)
+        printf("SymFact V2 LDL owner mapping: %s.\n",
+               greedy_mapping ? "greedy" : "block-cyclic");
     for (int_t k = 0; k < nsupers; ++k)
     {
         trf3Dpart->symV2PanelRoot[k] = -1;
@@ -264,34 +301,43 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         const int_t k = affinity_weight > 0.0
                             ? nsupers - 1 - order
                             : order;
-        dSymV2LDLCost_t cost;
         int panel_root;
         int diag_root;
         int owner_rank;
-        const int_t parent = setree != NULL ? setree[k] : nsupers;
-        const int parent_pr =
-            (parent >= 0 && parent < nsupers)
-                ? trf3Dpart->symV2DiagRoot[parent]
-                : -1;
-        const int parent_pc =
-            (parent >= 0 && parent < nsupers)
-                ? trf3Dpart->symV2PanelRoot[parent]
-                : -1;
-        dSymV2EstimateSupernodeWork(k, xsup, Glu_freeable, grid, &cost);
-        dSymV2ChooseOwnerPair(panel_load, row_load, rank_load, grid, &cost,
-                              parent_pr, parent_pc, affinity_weight,
-                              &diag_root, &panel_root);
-        owner_rank = PNUM(diag_root, panel_root, grid);
-        panel_load[panel_root] += cost.panel_work;
-        row_load[diag_root] += cost.row_work;
-        rank_load[owner_rank] += cost.rank_work;
+        if (greedy_mapping)
+        {
+            dSymV2LDLCost_t cost;
+            const int_t parent = setree != NULL ? setree[k] : nsupers;
+            const int parent_pr =
+                (parent >= 0 && parent < nsupers)
+                    ? trf3Dpart->symV2DiagRoot[parent]
+                    : -1;
+            const int parent_pc =
+                (parent >= 0 && parent < nsupers)
+                    ? trf3Dpart->symV2PanelRoot[parent]
+                    : -1;
+            dSymV2EstimateSupernodeWork(k, xsup, Glu_freeable, grid, &cost);
+            dSymV2ChooseOwnerPair(panel_load, row_load, rank_load, grid,
+                                  &cost, parent_pr, parent_pc,
+                                  affinity_weight, &diag_root, &panel_root);
+            owner_rank = PNUM(diag_root, panel_root, grid);
+            panel_load[panel_root] += cost.panel_work;
+            row_load[diag_root] += cost.row_work;
+            rank_load[owner_rank] += cost.rank_work;
+        }
+        else
+        {
+            diag_root = PROW(k, grid);
+            panel_root = PCOL(k, grid);
+            owner_rank = PNUM(diag_root, panel_root, grid);
+        }
         trf3Dpart->symV2PanelRoot[k] = panel_root;
         trf3Dpart->symV2DiagRoot[k] = diag_root;
         trf3Dpart->symV2PanelLocalIndex[k] = -1;
         trf3Dpart->symV2RowLocalIndex[k] = -1;
         local_owner[k] =
             (grid3d->zscp.Iam == 0 &&
-             grid->iam == PNUM(diag_root, panel_root, grid))
+             grid->iam == owner_rank)
                 ? global_rank
                 : INT_MAX;
     }
@@ -337,9 +383,12 @@ static void dSymV2InitLDLOwners(int_t nsupers,
     }
 
     SUPERLU_FREE(local_owner);
-    SUPERLU_FREE(panel_load);
-    SUPERLU_FREE(row_load);
-    SUPERLU_FREE(rank_load);
+    if (panel_load != NULL)
+        SUPERLU_FREE(panel_load);
+    if (row_load != NULL)
+        SUPERLU_FREE(row_load);
+    if (rank_load != NULL)
+        SUPERLU_FREE(rank_load);
 }
 
 static void dSymV2BuildLocalLDLIndexes(int_t nsupers,
@@ -805,9 +854,17 @@ void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
                               LUstruct->Glu_persist->supno,
                               LUstruct->Glu_persist->xsup);
     treeList = setree2list(nsupers, setree);
-    dSymV2CalcLDLTreeWeight(nsupers, setree, treeList,
-                            LUstruct->Glu_persist->xsup,
-                            Glu_freeable, NULL, grid3d);
+    const int ldl_forest_weights = dSymV2LDLForestWeightsEnabled();
+    if (ldl_forest_weights)
+        dSymV2CalcLDLTreeWeight(nsupers, setree, treeList,
+                                LUstruct->Glu_persist->xsup,
+                                Glu_freeable, NULL, grid3d);
+    else
+        calcTreeWeight(nsupers, setree, treeList,
+                       LUstruct->Glu_persist->xsup);
+    if (grid3d->iam == 0)
+        printf("SymFact V2 forest weights: %s.\n",
+               ldl_forest_weights ? "LDL" : "original");
     trf3Dpart->gEtreeInfo = fillEtreeInfo(nsupers, setree, treeList);
     dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
                         LUstruct->Glu_persist->xsup,
