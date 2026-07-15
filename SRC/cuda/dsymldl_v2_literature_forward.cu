@@ -2323,7 +2323,6 @@ dSymLDLLiteratureForwardSolve(
 #ifndef HAVE_NVSHMEM
     return -1;
 #else
-    double phase_start = SuperLU_timer_();
     double copy_start = SuperLU_timer_();
     CUDA_CHECK(cudaMemcpy(state->d_x, x,
                           (size_t) x_count * sizeof(double),
@@ -2362,6 +2361,7 @@ dSymLDLLiteratureForwardSolve(
     state->h2d_time += SuperLU_timer_() - copy_start;
 
     MPI_Barrier(state->layer_comm);
+    double forward_start = SuperLU_timer_();
     if (symldl_literature_forward_wrap(
             (int) state->panel_count, (int) state->row_count,
             state->d_lsum, state->d_x, state->nrhs, state->maxsup,
@@ -2380,13 +2380,13 @@ dSymLDLLiteratureForwardSolve(
             state->d_mymaskstartmod, state->d_mymasklengthmod,
             state->d_recv_cnt, state->d_msgnum, state->d_flag_mod) != 0)
         return -1;
+    state->forward_time += SuperLU_timer_() - forward_start;
 
     copy_start = SuperLU_timer_();
     CUDA_CHECK(cudaMemcpy(x, state->d_x,
                           (size_t) x_count * sizeof(double),
                           cudaMemcpyDeviceToHost));
     state->d2h_time += SuperLU_timer_() - copy_start;
-    state->forward_time += SuperLU_timer_() - phase_start;
     return symldl_literature_check_forward(state);
 #endif
 }

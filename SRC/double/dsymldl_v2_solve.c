@@ -565,6 +565,7 @@ typedef struct {
 typedef struct {
     double metadata;
     double workspace;
+    double literature_setup;
     double b_to_x;
     double forward_xk;
     double forward_compute;
@@ -2614,7 +2615,7 @@ pdgstrs3d_symldl_literature_take_timers(
     dSymLDLLiteratureForwardTakeTimers(
         meta->literature_forward_state, &setup, &forward,
         &sparse_reduce, &sparse_broadcast, &h2d, &d2h);
-    timer->workspace += setup;
+    timer->literature_setup += setup;
     timer->forward_compute += forward;
     timer->forward_values += sparse_reduce;
     timer->forward_apply += sparse_broadcast;
@@ -3195,7 +3196,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
                              pdgstrs3d_symldl_solve_meta_t *meta,
                              gridinfo3d_t *grid3d)
 {
-    enum { SYMLDL_TIMER_COUNT = 25 };
+    enum { SYMLDL_TIMER_COUNT = 26 };
     double local[SYMLDL_TIMER_COUNT];
     double maxv[SYMLDL_TIMER_COUNT];
     double sumv[SYMLDL_TIMER_COUNT];
@@ -3228,6 +3229,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
     local[22] = meta != NULL ? meta->x_cache_hits : 0.0;
     local[23] = meta != NULL ? meta->x_cache_misses : 0.0;
     local[24] = meta != NULL ? meta->x_cache_panels : 0.0;
+    local[25] = timer->literature_setup;
 
     MPI_Comm_rank(grid3d->comm, &rank);
     MPI_Comm_size(grid3d->comm, &nprocs);
@@ -3251,7 +3253,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
             "gpu_h2d", "gpu_compute", "gpu_d2h",
             "cpu_blas_ops", "cpu_blas_calls", "host_panel_copy",
             "x_cache_bytes", "x_cache_avoided", "x_cache_hits",
-            "x_cache_misses", "x_cache_panels"
+            "x_cache_misses", "x_cache_panels", "literature_setup"
         };
         printf("SymFact GPU3D V2 solve timing (max_rank / avg_rank / max_rank_id):\n");
         for (int i = 0; i < SYMLDL_TIMER_COUNT; ++i)
