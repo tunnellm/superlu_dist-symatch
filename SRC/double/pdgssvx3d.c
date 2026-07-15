@@ -35,6 +35,7 @@ at the top-level directory.
 //#include "TRF3dV100/superlu_summit.h"
 #include "superlu_upacked.h"
 #include "dsymldl_v2_driver.h"
+#include "dsymbolic_cache.h"
 // #include "pddistribute3d.h"
 
 // #include "dssvx3dAux.c"
@@ -590,6 +591,42 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     gridinfo_t *grid = &(grid3d->grid2d);
     iam = grid->iam;
     int use_sym_v2_solve = dSymV2SolveEnabled(options, gpu3dVersion);
+    const char *symbolic_cache_read = getenv("SUPERLU_SYMBOLIC_CACHE_READ");
+    const char *symbolic_cache_write = getenv("SUPERLU_SYMBOLIC_CACHE_WRITE");
+    if (symbolic_cache_read == NULL || symbolic_cache_read[0] == '\0')
+        symbolic_cache_read = getenv("SYMLDL_V2_SYMBOLIC_CACHE_READ");
+    if (symbolic_cache_write == NULL || symbolic_cache_write[0] == '\0')
+        symbolic_cache_write = getenv("SYMLDL_V2_SYMBOLIC_CACHE_WRITE");
+    int symbolic_replay = symbolic_cache_read != NULL &&
+                          symbolic_cache_read[0] != '\0';
+    int symbolic_capture = symbolic_cache_write != NULL &&
+                           symbolic_cache_write[0] != '\0';
+    char symbolic_cache_error[256] = {0};
+
+    if (symbolic_replay && symbolic_capture)
+        ABORT("Symbolic cache read and write cannot be enabled together.");
+    if ((symbolic_replay || symbolic_capture) &&
+        (options->Fact != DOFACT || options->ParSymbFact != NO))
+        ABORT("Symbolic cache requires Fact=DOFACT and serial symbolic factorization.");
+    if (symbolic_replay)
+    {
+        ScalePermstruct->R = NULL;
+        ScalePermstruct->C = NULL;
+        LUstruct->Glu_persist->xsup = NULL;
+        LUstruct->Glu_persist->supno = NULL;
+        if (!dSymbolicCacheRead(
+                symbolic_cache_read, A->ncol, options, ScalePermstruct,
+                LUstruct, &Glu_freeable, grid3d, symbolic_cache_error,
+                sizeof(symbolic_cache_error)))
+        {
+            if (grid3d->iam == 0 && symbolic_cache_error[0] != '\0')
+                fprintf(stderr, "%s\n", symbolic_cache_error);
+            ABORT("Symbolic cache could not be loaded.");
+        }
+        if (grid3d->iam == 0)
+            printf("Reusing ordering and symbolic factorization from %s.\n",
+                   symbolic_cache_read);
+    }
 
     /* Test the options choices. */
     *info = 0;
@@ -686,7 +723,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 	job = 5;
 	/* Extract equilibration status from a previous factorization */
-	if (factored || (Fact == SamePattern_SameRowPerm && Equil)) {
+	if (factored || symbolic_replay ||
+            (Fact == SamePattern_SameRowPerm && Equil)) {
 	   rowequ = (ScalePermstruct->DiagScale == ROW) ||
 			 (ScalePermstruct->DiagScale == BOTH);
 	   colequ = (ScalePermstruct->DiagScale == COL) ||
@@ -696,7 +734,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	}
 
 	/* Not factored & ask for equilibration, then alloc R & C */
-	if (Equil && Fact != SamePattern_SameRowPerm)
+	if (Equil && Fact != SamePattern_SameRowPerm && !symbolic_replay)
 	     dallocScalePermstruct_RC(ScalePermstruct, m, n);
 
 	/* The following arrays are replicated on all processes. */
@@ -710,7 +748,10 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	   Diagonal scaling to equilibrate the matrix.
 	   ------------------------------------------------------------ */
 	if (Equil) {
-	    dscaleMatrixDiagonally(options->SymFact, Fact, ScalePermstruct,
+	    dscaleMatrixDiagonally(
+                  options->SymFact,
+                  symbolic_replay ? SamePattern_SameRowPerm : Fact,
+                  ScalePermstruct,
 				  A, stat, grid, &rowequ, &colequ, &iinfo);
 	    if (iinfo < 0) {
     		*info = -20 - iinfo;
@@ -719,7 +760,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 	} /* end if Equil ... LAPACK style, not involving MC64 */
 
-	if (!factored) { /* Skip this if already factored. */
+	if (!factored && !symbolic_replay) { /* Skip precomputed ordering. */
 	    /*
 	     * Gather A from the distributed compressed row format to
 	     * global A in compressed column format.
@@ -762,7 +803,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	/* ------------------------------------------------------------
 	   Perform ordering and symbolic factorization
 	   ------------------------------------------------------------ */
-	if (!factored) {
+	if (!factored && !symbolic_replay) {
 	    t = SuperLU_timer_();
 		t2 = SuperLU_timer_();
 	    /*
@@ -1319,6 +1360,22 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	rowptr = Astore->rowptr;
 	colind = Astore->colind;
 	Glu_persist = LUstruct->Glu_persist;
+
+    if (symbolic_capture)
+    {
+        if (!dSymbolicCacheWrite(
+                symbolic_cache_write, n, options, ScalePermstruct,
+                LUstruct, Glu_freeable, grid3d, symbolic_cache_error,
+                sizeof(symbolic_cache_error)))
+        {
+            if (grid3d->iam == 0 && symbolic_cache_error[0] != '\0')
+                fprintf(stderr, "%s\n", symbolic_cache_error);
+            ABORT("Symbolic cache could not be written.");
+        }
+        if (grid3d->iam == 0)
+            printf("Saved ordering and symbolic factorization to %s.\n",
+                   symbolic_cache_write);
+    }
 
 	// perform the  3D distribution
 	if (!factored)
