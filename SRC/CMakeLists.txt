@@ -14,6 +14,7 @@ set(headers
     include/dsymldl_v2_solve_graph.h
     include/dsymldl_v2_cpu_solve.h
     include/dsymldl_v2_driver.h
+    include/dsymbolic_cache.h
     include/superlu_FortranCInterface.h
     include/oneside.h
     CplusplusFactor/lupanels.hpp
@@ -154,6 +155,7 @@ if(enable_double)
     double/dsymldl_v2_partition.c
     double/dsymldl_v2_distribution.c
     double/dsymldl_v2_driver.c
+    double/dsymbolic_cache.c
     double/distCheckArray.c
     double/pddistribute-aux3d.c
     double/pdgstrf.c
