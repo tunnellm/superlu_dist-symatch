@@ -9,6 +9,7 @@
 #include "lupanels_GPU.cuh"
 #include "xlupanels_GPU.cuh"
 #include "batch_block_copy.h"
+#include "gpu_mpi_utils.hpp"
 
 
 int getBufferOffset(int k0, int k1, int winSize, int winParity, int halfWin)
@@ -235,14 +236,18 @@ int_t xLUstruct_t<Ftype>::dDFactPSolveGPU(int_t k, int_t offset, diagFactBufs_ty
     // TODO: need to synchronize the cuda stream
     /*======= Diagonal Broadcast ======*/
     if (myrow == krow(k))
-        MPI_Bcast((void *)A_gpu.dFBufs[offset], ksupc * ksupc,
-                  get_mpi_type<Ftype>(), kcol(k), (grid->rscp).comm);
+        superlu_gpu_mpi_bcast(
+            A_gpu.dFBufs[offset], dFBufs[offset]->BlockLFactor,
+            sizeof(Ftype), ksupc * ksupc, get_mpi_type<Ftype>(),
+            kcol(k), (grid->rscp).comm);
 
     // CHECK_MALLOC(iam, "after row Bcast");
 
     if (mycol == kcol(k))
-        MPI_Bcast((void *)A_gpu.dFBufs[offset], ksupc * ksupc,
-                  get_mpi_type<Ftype>(), krow(k), (grid->cscp).comm);
+        superlu_gpu_mpi_bcast(
+            A_gpu.dFBufs[offset], dFBufs[offset]->BlockUFactor,
+            sizeof(Ftype), ksupc * ksupc, get_mpi_type<Ftype>(),
+            krow(k), (grid->cscp).comm);
 
     // do the panels solver
     if (myrow == krow(k))
@@ -297,14 +302,20 @@ int_t xLUstruct_t<Ftype>::dDFactPSolveGPU(int_t k, int_t handle_offset, int buff
     // TODO: need to synchronize the cuda stream
     /*======= Diagonal Broadcast ======*/
     if (myrow == krow(k))
-        MPI_Bcast((void *)A_gpu.dFBufs[buffer_offset], ksupc * ksupc,
-                  get_mpi_type<Ftype>(), kcol(k), (grid->rscp).comm);
+        superlu_gpu_mpi_bcast(
+            A_gpu.dFBufs[buffer_offset],
+            dFBufs[buffer_offset]->BlockLFactor, sizeof(Ftype),
+            ksupc * ksupc, get_mpi_type<Ftype>(), kcol(k),
+            (grid->rscp).comm);
 
     // CHECK_MALLOC(iam, "after row Bcast");
 
     if (mycol == kcol(k))
-        MPI_Bcast((void *)A_gpu.dFBufs[buffer_offset], ksupc * ksupc,
-                  get_mpi_type<Ftype>(), krow(k), (grid->cscp).comm);
+        superlu_gpu_mpi_bcast(
+            A_gpu.dFBufs[buffer_offset],
+            dFBufs[buffer_offset]->BlockUFactor, sizeof(Ftype),
+            ksupc * ksupc, get_mpi_type<Ftype>(), krow(k),
+            (grid->cscp).comm);
 
     // do the panels solver
     if (myrow == krow(k))
@@ -404,9 +415,14 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
 
     if (UidxSendCounts[k] > 0)
     {
-        // assuming GPU direct is available
-        MPI_Bcast(k_upanel.gpuPanel.index, UidxSendCounts[k], mpi_int_t, krow(k), grid3d->cscp.comm);
-        MPI_Bcast(k_upanel.gpuPanel.val, UvalSendCounts[k], get_mpi_type<Ftype>(), krow(k), grid3d->cscp.comm);
+        superlu_gpu_mpi_bcast(
+            k_upanel.gpuPanel.index, k_upanel.index, sizeof(int_t),
+            static_cast<int>(UidxSendCounts[k]), mpi_int_t, krow(k),
+            grid3d->cscp.comm);
+        superlu_gpu_mpi_bcast(
+            k_upanel.gpuPanel.val, k_upanel.val, sizeof(Ftype),
+            static_cast<int>(UvalSendCounts[k]), get_mpi_type<Ftype>(),
+            krow(k), grid3d->cscp.comm);
         // copy the index to cpu
         gpuErrchk(cudaMemcpy(k_upanel.index, k_upanel.gpuPanel.index,
                              sizeof(int_t) * UidxSendCounts[k], cudaMemcpyDeviceToHost));
@@ -414,8 +430,14 @@ int_t xLUstruct_t<Ftype>::dPanelBcastGPU(int_t k, int_t offset)
 
     if (LidxSendCounts[k] > 0)
     {
-        MPI_Bcast(k_lpanel.gpuPanel.index, LidxSendCounts[k], mpi_int_t, kcol(k), grid3d->rscp.comm);
-        MPI_Bcast(k_lpanel.gpuPanel.val, LvalSendCounts[k], get_mpi_type<Ftype>(), kcol(k), grid3d->rscp.comm);
+        superlu_gpu_mpi_bcast(
+            k_lpanel.gpuPanel.index, k_lpanel.index, sizeof(int_t),
+            static_cast<int>(LidxSendCounts[k]), mpi_int_t, kcol(k),
+            grid3d->rscp.comm);
+        superlu_gpu_mpi_bcast(
+            k_lpanel.gpuPanel.val, k_lpanel.val, sizeof(Ftype),
+            static_cast<int>(LvalSendCounts[k]), get_mpi_type<Ftype>(),
+            kcol(k), grid3d->rscp.comm);
         gpuErrchk(cudaMemcpy(k_lpanel.index, k_lpanel.gpuPanel.index,
                              sizeof(int_t) * LidxSendCounts[k], cudaMemcpyDeviceToHost));
     }
@@ -996,9 +1018,14 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPUBaseline(
 
             if (UidxSendCounts[k] > 0)
             {
-                // assuming GPU direct is available
-                MPI_Bcast(k_upanel.gpuPanel.index, UidxSendCounts[k], mpi_int_t, krow(k), grid3d->cscp.comm);
-                MPI_Bcast(k_upanel.gpuPanel.val, UvalSendCounts[k], get_mpi_type<Ftype>(), krow(k), grid3d->cscp.comm);
+                superlu_gpu_mpi_bcast(
+                    k_upanel.gpuPanel.index, k_upanel.index, sizeof(int_t),
+                    static_cast<int>(UidxSendCounts[k]), mpi_int_t, krow(k),
+                    grid3d->cscp.comm);
+                superlu_gpu_mpi_bcast(
+                    k_upanel.gpuPanel.val, k_upanel.val, sizeof(Ftype),
+                    static_cast<int>(UvalSendCounts[k]),
+                    get_mpi_type<Ftype>(), krow(k), grid3d->cscp.comm);
                 // copy the index to cpu
                 cudaMemcpy(k_upanel.index, k_upanel.gpuPanel.index,
                            sizeof(int_t) * UidxSendCounts[k], cudaMemcpyDeviceToHost);
@@ -1011,8 +1038,14 @@ int_t xLUstruct_t<Ftype>::dsparseTreeFactorGPUBaseline(
 
             if (LidxSendCounts[k] > 0)
             {
-                MPI_Bcast(k_lpanel.gpuPanel.index, LidxSendCounts[k], mpi_int_t, kcol(k), grid3d->rscp.comm);
-                MPI_Bcast(k_lpanel.gpuPanel.val, LvalSendCounts[k], get_mpi_type<Ftype>(), kcol(k), grid3d->rscp.comm);
+                superlu_gpu_mpi_bcast(
+                    k_lpanel.gpuPanel.index, k_lpanel.index, sizeof(int_t),
+                    static_cast<int>(LidxSendCounts[k]), mpi_int_t, kcol(k),
+                    grid3d->rscp.comm);
+                superlu_gpu_mpi_bcast(
+                    k_lpanel.gpuPanel.val, k_lpanel.val, sizeof(Ftype),
+                    static_cast<int>(LvalSendCounts[k]),
+                    get_mpi_type<Ftype>(), kcol(k), grid3d->rscp.comm);
                 cudaMemcpy(k_lpanel.index, k_lpanel.gpuPanel.index,
                            sizeof(int_t) * LidxSendCounts[k], cudaMemcpyDeviceToHost);
 
