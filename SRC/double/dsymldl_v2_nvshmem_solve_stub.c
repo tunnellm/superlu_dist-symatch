@@ -13,26 +13,16 @@ dSymLDLNVSHMEMSolveAvailable(void)
 
 dSymLDLNVSHMEMSolveHandle
 dSymLDLNVSHMEMSolveCreate(
-    int_t n, int_t nsupers, int nrhs, int_t x_count, int_t lsum_count,
-    int_t panel_count, const dSymLDLNVPanelDesc *panels,
-    int_t block_count, const dSymLDLNVBlockDesc *blocks,
-    int_t row_count, const int_t *rows,
-    const int_t *xsup, const int_t *ilsum,
+    int nrhs, int_t x_count, int_t lsum_count,
+    const dSymLDLSolveGraph *graph,
+    const dSymLDLNVPanelDesc *device_panels,
     dtrf3Dpartition_t *trf3Dpartition, gridinfo3d_t *grid3d)
 {
-    (void) n;
-    (void) nsupers;
     (void) nrhs;
     (void) x_count;
     (void) lsum_count;
-    (void) panel_count;
-    (void) panels;
-    (void) block_count;
-    (void) blocks;
-    (void) row_count;
-    (void) rows;
-    (void) xsup;
-    (void) ilsum;
+    (void) graph;
+    (void) device_panels;
     (void) trf3Dpartition;
     (void) grid3d;
     return NULL;

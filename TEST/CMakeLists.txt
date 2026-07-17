@@ -76,6 +76,27 @@ if(enable_double)
   target_link_libraries(pdtest ${all_link_libs})
   target_compile_features(pdtest PUBLIC c_std_99)
   add_superlu_dist_tests(pdtest g20.rua)
+
+  add_executable(pd_symldl_v2_cpu_solve_test
+                 pd_symldl_v2_cpu_solve_test.c)
+  target_link_libraries(pd_symldl_v2_cpu_solve_test ${all_link_libs})
+  target_compile_features(pd_symldl_v2_cpu_solve_test PUBLIC c_std_99)
+
+  add_test(NAME pd_symldl_v2_cpu_solve_1x1x1
+           COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1
+                   ${MPIEXEC_PREFLAGS}
+                   $<TARGET_FILE:pd_symldl_v2_cpu_solve_test>
+                   ${MPIEXEC_POSTFLAGS} 1 1 1 3)
+  set_tests_properties(pd_symldl_v2_cpu_solve_1x1x1
+                       PROPERTIES PROCESSORS 1)
+
+  add_test(NAME pd_symldl_v2_cpu_solve_2x1x2
+           COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+                   ${MPIEXEC_PREFLAGS}
+                   $<TARGET_FILE:pd_symldl_v2_cpu_solve_test>
+                   ${MPIEXEC_POSTFLAGS} 2 1 2 3)
+  set_tests_properties(pd_symldl_v2_cpu_solve_2x1x2
+                       PROPERTIES PROCESSORS 4)
 endif()
 
 #if(enable_complex16)

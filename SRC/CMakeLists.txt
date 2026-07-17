@@ -11,6 +11,8 @@ set(headers
     include/gpu_wrapper.h
     include/superlu_upacked.h
     include/dsymldl_v2_partition.h
+    include/dsymldl_v2_solve_graph.h
+    include/dsymldl_v2_cpu_solve.h
     include/dsymldl_v2_driver.h
     include/superlu_FortranCInterface.h
     include/oneside.h
@@ -160,6 +162,9 @@ if(enable_double)
     double/pdgstrs.c
     double/pdgstrs3d.c
     double/dsymldl_v2_solve.c
+    double/dsymldl_v2_solve_graph.c
+    double/dsymldl_v2_cpu_solve.c
+    double/dsymldl_v2_cpu_kernels.c
     double/pdgstrs1.c
     double/pdgstrs_lsum.c
     double/pdgstrs_Bglobal.c

@@ -1665,17 +1665,12 @@ struct dSymLDLNVSHMEMSharedState {
     dtrf3Dpartition_t *trf3Dpartition;
     gridinfo3d_t *grid3d;
     gridinfo_t *grid;
+    const dSymLDLSolveGraph *graph;
     const int_t *host_xsup;
     const int_t *host_ilsum;
 
+    /* Device panel bindings mirror graph topology with GPU value pointers. */
     std::vector<dSymLDLNVPanelDesc> h_panels;
-    std::vector<dSymLDLNVBlockDesc> h_blocks;
-    std::vector<int_t> h_rows;
-    std::vector<int_t> h_panel_gids;
-    std::vector<int_t> h_row_gids;
-    std::vector<int_t> h_source_edge_offsets;
-    std::vector<int_t> h_source_edge_ids;
-    std::vector<int_t> h_target_ilsum;
 
     double *d_x;
     double *d_lsum;
@@ -1749,8 +1744,8 @@ struct dSymLDLNVSHMEMForwardState {
     std::vector<int> h_recv_cnt;
     std::vector<int> h_colnum;
     std::vector<int> h_colnummod;
-    std::vector<int_t> h_panel_gids;
-    std::vector<int_t> h_row_gids;
+    const int_t *h_panel_gids;
+    const int_t *h_row_gids;
     std::vector<int_t> h_rhs_gids;
     std::vector<int_t> h_rhs_offsets;
 
@@ -1953,124 +1948,47 @@ symldl_nvshmem_cuda_free(void *ptr)
         cudaFree(ptr);
 }
 
-static void
-symldl_nvshmem_build_shared_reverse_index(
-    dSymLDLNVSHMEMSharedState *shared)
-{
-    dtrf3Dpartition_t *partition = shared->trf3Dpartition;
-    shared->h_source_edge_offsets.assign(
-        (size_t) shared->row_count + 1, 0);
-    for (int_t edge = 0; edge < shared->block_count; ++edge) {
-        const dSymLDLNVBlockDesc &block =
-            shared->h_blocks[(size_t) edge];
-        if (block.panel_id < 0 || block.panel_id >= shared->panel_count ||
-            block.target_gid <=
-                shared->h_panels[(size_t) block.panel_id].gid ||
-            block.nbrow <= 0)
-            ABORT("SymLDL NVSHMEM 3D backward block is invalid.");
-        int_t source = block.target_gid;
-        int_t slot = source >= 0 && source < shared->nsupers
-                         ? partition->symV2RowLocalIndex[source]
-                         : -1;
-        if (slot < 0 || slot >= shared->row_count)
-            ABORT("SymLDL NVSHMEM 3D backward edge has no local source row.");
-        ++shared->h_source_edge_offsets[(size_t) slot + 1];
-    }
-    for (int_t slot = 0; slot < shared->row_count; ++slot)
-        shared->h_source_edge_offsets[(size_t) slot + 1] +=
-            shared->h_source_edge_offsets[(size_t) slot];
-
-    shared->h_source_edge_ids.resize((size_t) shared->block_count);
-    std::vector<int_t> cursor = shared->h_source_edge_offsets;
-    for (int_t edge = 0; edge < shared->block_count; ++edge) {
-        int_t source = shared->h_blocks[(size_t) edge].target_gid;
-        int_t slot = partition->symV2RowLocalIndex[source];
-        shared->h_source_edge_ids[(size_t) cursor[(size_t) slot]++] = edge;
-    }
-    for (int_t slot = 0; slot < shared->row_count; ++slot) {
-        int_t begin = shared->h_source_edge_offsets[(size_t) slot];
-        int_t end = shared->h_source_edge_offsets[(size_t) slot + 1];
-        std::sort(
-            shared->h_source_edge_ids.begin() + begin,
-            shared->h_source_edge_ids.begin() + end,
-            [shared](int_t a, int_t b) {
-                const dSymLDLNVBlockDesc &ablock =
-                    shared->h_blocks[(size_t) a];
-                const dSymLDLNVBlockDesc &bblock =
-                    shared->h_blocks[(size_t) b];
-                int_t agid = shared->h_panels[(size_t) ablock.panel_id].gid;
-                int_t bgid = shared->h_panels[(size_t) bblock.panel_id].gid;
-                return agid != bgid ? agid > bgid : a < b;
-            });
-    }
-
-    shared->h_target_ilsum.assign((size_t) shared->panel_count + 1, 0);
-    for (int_t slot = 0; slot < shared->panel_count; ++slot) {
-        int_t k = shared->h_panel_gids[(size_t) slot];
-        if (shared->h_panels[(size_t) slot].gid != k)
-            ABORT("SymLDL NVSHMEM 3D backward panels are not in local-index order.");
-        shared->h_target_ilsum[(size_t) slot + 1] =
-            shared->h_target_ilsum[(size_t) slot] +
-            shared->host_xsup[k + 1] - shared->host_xsup[k];
-    }
-    size_t compact_count =
-        (size_t) shared->h_target_ilsum.back() * (size_t) shared->nrhs +
-        ((size_t) shared->panel_count + 1) * (size_t) LSUM_H;
-    if (compact_count > (size_t) std::numeric_limits<int_t>::max())
-        ABORT("SymLDL NVSHMEM 3D backward sum workspace overflows.");
-    shared->backward_lsum_count = (int_t) compact_count;
-    shared->lsum_capacity = std::max(
-        shared->lsum_capacity, shared->backward_lsum_count);
-}
-
 static dSymLDLNVSHMEMSharedState *
 symldl_nvshmem_shared_create(
-    int_t n, int_t nsupers, int nrhs, int_t x_count, int_t lsum_count,
-    int_t panel_count, const dSymLDLNVPanelDesc *panels,
-    int_t block_count, const dSymLDLNVBlockDesc *blocks,
-    int_t factor_row_count, const int_t *rows, const int_t *xsup,
-    const int_t *ilsum, dtrf3Dpartition_t *partition,
+    int nrhs, int_t x_count, int_t lsum_count,
+    const dSymLDLSolveGraph *graph,
+    const dSymLDLNVPanelDesc *device_panels,
+    dtrf3Dpartition_t *partition,
     gridinfo3d_t *grid3d)
 {
     dSymLDLNVSHMEMSharedState *shared =
         new dSymLDLNVSHMEMSharedState();
     shared->references = 1;
-    shared->n = n;
-    shared->nsupers = nsupers;
+    shared->n = graph->n;
+    shared->nsupers = graph->nsupers;
     shared->nrhs = nrhs;
     shared->x_count = x_count;
     shared->lsum_capacity = lsum_count;
-    shared->panel_count = panel_count;
-    shared->block_count = block_count;
-    shared->factor_row_count = factor_row_count;
-    shared->row_count = partition->symV2LocalRowCount;
+    shared->panel_count = graph->panel_count;
+    shared->block_count = graph->block_count;
+    shared->factor_row_count = graph->factor_row_count;
+    shared->row_count = graph->row_count;
     shared->trf3Dpartition = partition;
     shared->grid3d = grid3d;
     shared->grid = &grid3d->grid2d;
-    shared->host_xsup = xsup;
-    shared->host_ilsum = ilsum;
+    shared->graph = graph;
+    shared->host_xsup = graph->xsup;
+    shared->host_ilsum = graph->ilsum;
 
-    if (panel_count > 0)
-        shared->h_panels.assign(panels, panels + panel_count);
-    if (block_count > 0)
-        shared->h_blocks.assign(blocks, blocks + block_count);
-    if (factor_row_count > 0)
-        shared->h_rows.assign(rows, rows + factor_row_count);
-    if (panel_count > 0)
-        shared->h_panel_gids.assign(
-            partition->symV2LocalPanelGids,
-            partition->symV2LocalPanelGids + panel_count);
-    if (shared->row_count > 0)
-        shared->h_row_gids.assign(
-            partition->symV2LocalRowGids,
-            partition->symV2LocalRowGids + shared->row_count);
-    for (int_t slot = 1; slot < shared->row_count; ++slot)
-        if (shared->h_row_gids[(size_t) slot - 1] >=
-            shared->h_row_gids[(size_t) slot])
-            ABORT("SymLDL NVSHMEM 3D backward source order is invalid.");
-    symldl_nvshmem_build_shared_reverse_index(shared);
+    if (graph->panel_count > 0)
+        shared->h_panels.assign(
+            device_panels, device_panels + graph->panel_count);
+    size_t compact_count =
+        (size_t) graph->backward_lsum_rows * (size_t) nrhs +
+        ((size_t) graph->panel_count + 1) * (size_t) LSUM_H;
+    if (compact_count > (size_t) std::numeric_limits<int_t>::max())
+        ABORT("SymLDL NVSHMEM 3D backward sum workspace overflows.");
+    shared->backward_lsum_count = (int_t) compact_count;
+    shared->lsum_capacity = std::max(
+        shared->lsum_capacity, shared->backward_lsum_count);
 
-    int local_counts[2] = {(int) panel_count, (int) shared->row_count};
+    int local_counts[2] = {
+        (int) shared->panel_count, (int) shared->row_count};
     int max_counts[2] = {0, 0};
     MPI_Allreduce(local_counts, max_counts, 2, MPI_INT, MPI_MAX,
                   shared->grid->comm);
@@ -2078,9 +1996,7 @@ symldl_nvshmem_shared_create(
     shared->row_slots = std::max(1, max_counts[1]);
     shared->transport_slots = std::max(
         shared->panel_slots, shared->row_slots);
-    for (int_t k = 0; k < nsupers; ++k)
-        shared->maxsup = std::max(
-            shared->maxsup, (int) (xsup[k + 1] - xsup[k]));
+    shared->maxsup = graph->maxsup;
     shared->maxrecvsz = shared->maxsup * nrhs +
                         std::max((int) XK_H, (int) LSUM_H);
 
@@ -2088,45 +2004,43 @@ symldl_nvshmem_shared_create(
     symldl_nvshmem_cuda_alloc(
         &shared->d_lsum, (size_t) shared->lsum_capacity);
     symldl_nvshmem_cuda_copy(
-        &shared->d_ilsum, ilsum, (size_t) shared->row_count + 1);
+        &shared->d_ilsum, graph->ilsum, (size_t) shared->row_count + 1);
     symldl_nvshmem_cuda_copy(
-        &shared->d_xsup, xsup, (size_t) nsupers + 1);
+        &shared->d_xsup, graph->xsup, (size_t) graph->nsupers + 1);
     symldl_nvshmem_cuda_copy(
         &shared->d_panels, shared->h_panels.data(),
         shared->h_panels.size());
     symldl_nvshmem_cuda_copy(
-        &shared->d_blocks, shared->h_blocks.data(),
-        shared->h_blocks.size());
+        &shared->d_blocks, graph->blocks, (size_t) graph->block_count);
     symldl_nvshmem_cuda_copy(
-        &shared->d_rows, shared->h_rows.data(), shared->h_rows.size());
+        &shared->d_rows, graph->rows, (size_t) graph->factor_row_count);
     symldl_nvshmem_cuda_copy(
-        &shared->d_panel_gids, shared->h_panel_gids.data(),
-        shared->h_panel_gids.size());
+        &shared->d_panel_gids, graph->panel_gids,
+        (size_t) graph->panel_count);
     symldl_nvshmem_cuda_copy(
-        &shared->d_row_gids, shared->h_row_gids.data(),
-        shared->h_row_gids.size());
+        &shared->d_row_gids, graph->row_gids,
+        (size_t) graph->row_count);
     symldl_nvshmem_cuda_copy(
-        &shared->d_source_edge_offsets,
-        shared->h_source_edge_offsets.data(),
-        shared->h_source_edge_offsets.size());
+        &shared->d_source_edge_offsets, graph->source_edge_offsets,
+        (size_t) graph->row_count + 1);
     symldl_nvshmem_cuda_copy(
-        &shared->d_source_edge_ids, shared->h_source_edge_ids.data(),
-        shared->h_source_edge_ids.size());
+        &shared->d_source_edge_ids, graph->source_edge_ids,
+        (size_t) graph->block_count);
     symldl_nvshmem_cuda_copy(
-        &shared->d_target_ilsum, shared->h_target_ilsum.data(),
-        shared->h_target_ilsum.size());
+        &shared->d_target_ilsum, graph->target_ilsum,
+        (size_t) graph->panel_count + 1);
     symldl_nvshmem_cuda_copy(
-        &shared->d_row_local_index, partition->symV2RowLocalIndex,
-        (size_t) nsupers);
+        &shared->d_row_local_index, graph->row_local_index,
+        (size_t) graph->nsupers);
     symldl_nvshmem_cuda_copy(
-        &shared->d_panel_local_index, partition->symV2PanelLocalIndex,
-        (size_t) nsupers);
+        &shared->d_panel_local_index, graph->panel_local_index,
+        (size_t) graph->nsupers);
     symldl_nvshmem_cuda_copy(
-        &shared->d_diag_roots, partition->symV2DiagRoot,
-        (size_t) nsupers);
+        &shared->d_diag_roots, graph->diag_roots,
+        (size_t) graph->nsupers);
     symldl_nvshmem_cuda_copy(
-        &shared->d_panel_roots, partition->symV2PanelRoot,
-        (size_t) nsupers);
+        &shared->d_panel_roots, graph->panel_roots,
+        (size_t) graph->nsupers);
     symldl_nvshmem_cuda_copy(&shared->d_grid, shared->grid, 1);
 
 #ifdef HAVE_NVSHMEM
@@ -2637,15 +2551,15 @@ symldl_nvshmem_build_backward_bcast_trees(
         (size_t) Pc * (size_t) state->source_count, missing);
 
     for (int_t slot = 0; slot < state->source_count; ++slot) {
-        int_t source = state->shared->h_row_gids[(size_t) slot];
+        int_t source = state->shared->graph->row_gids[(size_t) slot];
         int root = state->trf3Dpartition->symV2PanelRoot[source];
         if (mycol == root)
             local_last[(size_t) slot] = source;
-        if (state->shared->h_source_edge_offsets[(size_t) slot + 1] >
-            state->shared->h_source_edge_offsets[(size_t) slot])
+        if (state->shared->graph->source_edge_offsets[(size_t) slot + 1] >
+            state->shared->graph->source_edge_offsets[(size_t) slot])
             local_last[(size_t) slot] = std::max(
                 local_last[(size_t) slot],
-                state->shared->h_row_gids[(size_t) slot]);
+                state->shared->graph->row_gids[(size_t) slot]);
     }
 
     MPI_Allgather(local_last.data(), (int) state->source_count, mpi_int_t,
@@ -2657,7 +2571,7 @@ symldl_nvshmem_build_backward_bcast_trees(
     state->h_source_active.assign((size_t) state->source_count, 0);
     for (int_t slot = 0; slot < state->source_count; ++slot) {
         C_BcTree_Nullify(&trees[(size_t) slot]);
-        int_t source = state->shared->h_row_gids[(size_t) slot];
+        int_t source = state->shared->graph->row_gids[(size_t) slot];
         int root = state->trf3Dpartition->symV2PanelRoot[source];
         std::vector<std::pair<int_t, int> > ordered;
         for (int pc = 0; pc < Pc; ++pc) {
@@ -2728,7 +2642,7 @@ symldl_nvshmem_build_backward_reduce_trees(
     state->h_recv_cnt.assign((size_t) state->target_count, 0);
     for (int_t slot = 0; slot < state->target_count; ++slot) {
         C_RdTree_Nullify(&trees[(size_t) slot]);
-        int_t target = state->shared->h_panel_gids[(size_t) slot];
+        int_t target = state->shared->graph->panel_gids[(size_t) slot];
         int root = state->trf3Dpartition->symV2DiagRoot[target];
         std::vector<std::pair<int_t, int> > ordered;
         for (int pr = 0; pr < Pr; ++pr) {
@@ -2765,6 +2679,145 @@ symldl_nvshmem_build_backward_reduce_trees(
                 state->expected_reduce_recvs += needrecv;
                 state->h_bmod[(size_t) slot] += needrecv;
             }
+        }
+    }
+}
+
+static void
+symldl_nvshmem_tree_from_graph(
+    const dSymLDLTreeNode *node, MPI_Comm comm, int my_rank,
+    int msg_size, int tag, C_Tree *tree)
+{
+    C_BcTree_Nullify(tree);
+    tree->myIdx = -1;
+    if (node == NULL || !node->active ||
+        (node->parent_rank < 0 && node->child_count == 0))
+        return;
+    if (node->rank_index < 0 || node->root_rank < 0 ||
+        node->child_count > 2 || msg_size <= 0)
+        ABORT("SymLDL NVSHMEM solve tree descriptor is invalid.");
+
+    tree->comm_ = comm;
+    tree->myRoot_ = node->parent_rank >= 0 ? node->parent_rank : my_rank;
+    tree->destCnt_ = node->child_count;
+    tree->myDests_[0] = node->children[0];
+    tree->myDests_[1] = node->children[1];
+    tree->myRank_ = my_rank;
+    tree->msgSize_ = msg_size;
+    tree->tag_ = tag;
+    tree->empty_ = NO;
+    tree->type_ = MPI_DOUBLE;
+    tree->myIdx = node->rank_index;
+    tree->sendRequests_[0] = MPI_REQUEST_NULL;
+    tree->sendRequests_[1] = MPI_REQUEST_NULL;
+}
+
+static void
+symldl_nvshmem_build_forward_trees_from_graph(
+    dSymLDLNVSHMEMForwardState *state,
+    std::vector<C_Tree> &bcast_trees,
+    std::vector<C_Tree> &reduce_trees)
+{
+    const dSymLDLSolveGraph *graph = state->shared->graph;
+    bcast_trees.resize((size_t) graph->panel_count);
+    reduce_trees.resize((size_t) graph->row_count);
+    state->h_status.assign((size_t) graph->panel_count, 1);
+    state->h_statusmod.assign((size_t) graph->row_count * 2, 1);
+    state->h_recv_cnt.assign((size_t) graph->row_count, 0);
+    state->h_fmod.assign((size_t) graph->row_count, 0);
+    if (graph->row_count > 0)
+        std::copy(
+            graph->forward_local_dependencies,
+            graph->forward_local_dependencies + graph->row_count,
+            state->h_fmod.begin());
+
+    for (int_t slot = 0; slot < graph->panel_count; ++slot) {
+        int_t gid = graph->panel_gids[slot];
+        const dSymLDLTreeNode *node = &graph->forward_bcast[slot];
+        symldl_nvshmem_tree_from_graph(
+            node, state->layer_comm, state->rank,
+            (int) (graph->xsup[gid + 1] - graph->xsup[gid]), BC_L,
+            &bcast_trees[(size_t) slot]);
+        if (!bcast_trees[(size_t) slot].empty_ &&
+            node->parent_rank >= 0) {
+            state->h_status[(size_t) slot] = 0;
+            state->h_colnum.push_back((int) slot);
+            ++state->expected_bcast_recvs;
+        }
+    }
+
+    for (int_t slot = 0; slot < graph->row_count; ++slot) {
+        int_t gid = graph->row_gids[slot];
+        const dSymLDLTreeNode *node = &graph->forward_reduce[slot];
+        symldl_nvshmem_tree_from_graph(
+            node, state->layer_comm, state->rank,
+            (int) (graph->xsup[gid + 1] - graph->xsup[gid]), RD_L,
+            &reduce_trees[(size_t) slot]);
+        state->expected_reduce_sends += node->parent_rank >= 0;
+        if (!reduce_trees[(size_t) slot].empty_ &&
+            node->child_count > 0) {
+            state->h_statusmod[(size_t) slot * 2] = 0;
+            state->h_statusmod[(size_t) slot * 2 + 1] = 0;
+            state->h_recv_cnt[(size_t) slot] = node->child_count;
+            state->h_colnummod.push_back((int) slot);
+            state->expected_reduce_recvs += node->child_count;
+            state->h_fmod[(size_t) slot] += node->child_count;
+        }
+    }
+}
+
+static void
+symldl_nvshmem_build_backward_trees_from_graph(
+    dSymLDLNVSHMEMBackwardState *state,
+    std::vector<C_Tree> &bcast_trees,
+    std::vector<C_Tree> &reduce_trees)
+{
+    const dSymLDLSolveGraph *graph = state->shared->graph;
+    bcast_trees.resize((size_t) graph->row_count);
+    reduce_trees.resize((size_t) graph->panel_count);
+    state->h_status.assign((size_t) graph->row_count, 1);
+    state->h_source_active.assign((size_t) graph->row_count, 0);
+    state->h_statusmod.assign((size_t) graph->panel_count * 2, 1);
+    state->h_recv_cnt.assign((size_t) graph->panel_count, 0);
+    state->h_bmod.assign((size_t) graph->panel_count, 0);
+    if (graph->panel_count > 0)
+        std::copy(
+            graph->backward_local_dependencies,
+            graph->backward_local_dependencies + graph->panel_count,
+            state->h_bmod.begin());
+
+    for (int_t slot = 0; slot < graph->row_count; ++slot) {
+        int_t gid = graph->row_gids[slot];
+        const dSymLDLTreeNode *node = &graph->backward_bcast[slot];
+        state->h_source_active[(size_t) slot] = node->active;
+        symldl_nvshmem_tree_from_graph(
+            node, state->layer_comm, state->rank,
+            (int) (graph->xsup[gid + 1] - graph->xsup[gid]), BC_U,
+            &bcast_trees[(size_t) slot]);
+        if (!bcast_trees[(size_t) slot].empty_ &&
+            node->parent_rank >= 0) {
+            state->h_status[(size_t) slot] = 0;
+            state->h_colnum.push_back((int) slot);
+            ++state->expected_bcast_recvs;
+        }
+    }
+
+    for (int_t slot = 0; slot < graph->panel_count; ++slot) {
+        int_t gid = graph->panel_gids[slot];
+        const dSymLDLTreeNode *node = &graph->backward_reduce[slot];
+        symldl_nvshmem_tree_from_graph(
+            node, state->layer_comm, state->rank,
+            (int) (graph->xsup[gid + 1] - graph->xsup[gid]), RD_U,
+            &reduce_trees[(size_t) slot]);
+        state->expected_reduce_sends += node->parent_rank >= 0;
+        if (!reduce_trees[(size_t) slot].empty_ &&
+            node->child_count > 0) {
+            state->h_statusmod[(size_t) slot * 2] = 0;
+            state->h_statusmod[(size_t) slot * 2 + 1] = 0;
+            state->h_recv_cnt[(size_t) slot] = node->child_count;
+            state->h_colnummod.push_back((int) slot);
+            state->expected_reduce_recvs += node->child_count;
+            state->h_bmod[(size_t) slot] += node->child_count;
         }
     }
 }
@@ -2824,7 +2877,7 @@ symldl_nvshmem_backward_value_trace(
     double local[4] = {0.0, 0.0, 0.0, 0.0};
     int_t local_count = 0;
     for (int_t slot = 0; slot < state->source_count; ++slot) {
-        int_t gid = state->shared->h_row_gids[(size_t) slot];
+        int_t gid = state->shared->graph->row_gids[(size_t) slot];
         if (mycol != state->trf3Dpartition->symV2PanelRoot[gid])
             continue;
         int_t lr = state->trf3Dpartition->symV2RowLocalIndex[gid];
@@ -3126,28 +3179,34 @@ symldl_nvshmem_replicate_final_panels(
 
 static dSymLDLNVSHMEMForwardState *
 symldl_nvshmem_forward_create(
-    int_t n, int_t nsupers, int nrhs, int_t x_count, int_t lsum_count,
-    int_t panel_count, const dSymLDLNVPanelDesc *panels,
-    int_t block_count, const dSymLDLNVBlockDesc *blocks,
-    int_t factor_row_count, const int_t *rows,
-    const int_t *xsup, const int_t *ilsum,
+    int nrhs, int_t x_count, int_t lsum_count,
+    const dSymLDLSolveGraph *graph,
+    const dSymLDLNVPanelDesc *device_panels,
     dtrf3Dpartition_t *trf3Dpartition, gridinfo3d_t *grid3d)
 {
 #ifndef HAVE_NVSHMEM
-    (void) n; (void) nsupers; (void) nrhs; (void) x_count;
-    (void) lsum_count; (void) panel_count; (void) panels;
-    (void) block_count; (void) blocks; (void) factor_row_count; (void) rows;
-    (void) xsup;
-    (void) ilsum; (void) trf3Dpartition; (void) grid3d;
+    (void) nrhs; (void) x_count; (void) lsum_count; (void) graph;
+    (void) device_panels; (void) trf3Dpartition; (void) grid3d;
     return NULL;
 #else
+    int_t n = graph != NULL ? graph->n : 0;
+    int_t nsupers = graph != NULL ? graph->nsupers : 0;
+    int_t panel_count = graph != NULL ? graph->panel_count : 0;
+    int_t block_count = graph != NULL ? graph->block_count : 0;
+    int_t factor_row_count = graph != NULL ? graph->factor_row_count : 0;
+    const dSymLDLNVPanelDesc *panels = device_panels;
+    const dSymLDLNVBlockDesc *blocks = graph != NULL ? graph->blocks : NULL;
+    const int_t *rows = graph != NULL ? graph->rows : NULL;
+    const int_t *xsup = graph != NULL ? graph->xsup : NULL;
+    const int_t *ilsum = graph != NULL ? graph->ilsum : NULL;
     if (n <= 0 || nsupers <= 0 || nrhs <= 0 || x_count <= 0 ||
         lsum_count <= 0 || panel_count < 0 ||
         (panel_count > 0 && panels == NULL) ||
         block_count < 0 || (block_count > 0 && blocks == NULL) ||
         factor_row_count < 0 ||
         (factor_row_count > 0 && rows == NULL) ||
-        xsup == NULL || ilsum == NULL || trf3Dpartition == NULL ||
+        xsup == NULL || ilsum == NULL || graph == NULL ||
+        trf3Dpartition == NULL ||
         grid3d == NULL || trf3Dpartition->symV2PanelLocalIndex == NULL ||
         trf3Dpartition->symV2RowLocalIndex == NULL ||
         (panel_count > 0 &&
@@ -3185,14 +3244,8 @@ symldl_nvshmem_forward_create(
 
     if (panel_count != trf3Dpartition->symV2LocalPanelCount)
         ABORT("SymLDL NVSHMEM 3D forward panel count is inconsistent.");
-    if (panel_count > 0)
-        state->h_panel_gids.assign(
-            trf3Dpartition->symV2LocalPanelGids,
-            trf3Dpartition->symV2LocalPanelGids + panel_count);
-    if (state->row_count > 0)
-        state->h_row_gids.assign(
-            trf3Dpartition->symV2LocalRowGids,
-            trf3Dpartition->symV2LocalRowGids + state->row_count);
+    state->h_panel_gids = graph->panel_gids;
+    state->h_row_gids = graph->row_gids;
     for (int_t lp = 0; lp < panel_count; ++lp)
         if (panels[lp].gid != state->h_panel_gids[(size_t) lp])
             ABORT("SymLDL NVSHMEM 3D forward panels are not in local-index order.");
@@ -3203,8 +3256,7 @@ symldl_nvshmem_forward_create(
     symldl_nvshmem_replicate_final_panels(
         state, panels, trf3Dpartition, grid3d);
     state->shared = symldl_nvshmem_shared_create(
-        n, nsupers, nrhs, x_count, lsum_count, panel_count, panels,
-        block_count, blocks, factor_row_count, rows, xsup, ilsum,
+        nrhs, x_count, lsum_count, graph, panels,
         trf3Dpartition, grid3d);
     if (state->shared == NULL || state->shared->flag_bc_q == NULL ||
         state->shared->flag_rd_q == NULL ||
@@ -3238,10 +3290,8 @@ symldl_nvshmem_forward_create(
 
     std::vector<C_Tree> bcast_trees;
     std::vector<C_Tree> reduce_trees;
-    symldl_nvshmem_build_bcast_trees(
-        state, panels, blocks, bcast_trees);
-    symldl_nvshmem_build_reduce_trees(
-        state, panels, blocks, reduce_trees);
+    symldl_nvshmem_build_forward_trees_from_graph(
+        state, bcast_trees, reduce_trees);
 
     int panel_diagnostics = symldl_nvshmem_env_enabled(
         "GPU3DV2_SYM_SOLVE_NVSHMEM_PANEL_DIAGNOSTICS");
@@ -3803,8 +3853,8 @@ symldl_nvshmem_backward_create(
     int_t block_count = shared->block_count;
     int_t factor_row_count = shared->factor_row_count;
     const dSymLDLNVPanelDesc *panels = shared->h_panels.data();
-    const dSymLDLNVBlockDesc *blocks = shared->h_blocks.data();
-    const int_t *rows = shared->h_rows.data();
+    const dSymLDLNVBlockDesc *blocks = shared->graph->blocks;
+    const int_t *rows = shared->graph->rows;
     const int_t *xsup = shared->host_xsup;
     const int_t *ilsum = shared->host_ilsum;
     dtrf3Dpartition_t *trf3Dpartition = shared->trf3Dpartition;
@@ -3837,9 +3887,8 @@ symldl_nvshmem_backward_create(
 
     std::vector<C_Tree> bcast_trees;
     std::vector<C_Tree> reduce_trees;
-    symldl_nvshmem_build_backward_bcast_trees(state, bcast_trees);
-    symldl_nvshmem_build_backward_reduce_trees(
-        state, panels, reduce_trees);
+    symldl_nvshmem_build_backward_trees_from_graph(
+        state, bcast_trees, reduce_trees);
 
     const char *trace_gid_text = getenv(
         "GPU3DV2_SYM_SOLVE_NVSHMEM_BACKWARD_TRACE_GID");
@@ -3851,9 +3900,9 @@ symldl_nvshmem_backward_create(
             int_t panel_slot =
                 trf3Dpartition->symV2PanelLocalIndex[trace_gid];
             int_t source_edges = row_slot >= 0
-                                     ? shared->h_source_edge_offsets[
+                                     ? shared->graph->source_edge_offsets[
                                            (size_t) row_slot + 1] -
-                                           shared->h_source_edge_offsets[
+                                           shared->graph->source_edge_offsets[
                                                (size_t) row_slot]
                                      : 0;
             int peer_blocks = 0;
@@ -3874,11 +3923,11 @@ symldl_nvshmem_backward_create(
                 }
             }
             if (row_slot >= 0) {
-                int_t begin = shared->h_source_edge_offsets[(size_t) row_slot];
+                int_t begin = shared->graph->source_edge_offsets[(size_t) row_slot];
                 int_t end =
-                    shared->h_source_edge_offsets[(size_t) row_slot + 1];
+                    shared->graph->source_edge_offsets[(size_t) row_slot + 1];
                 for (int_t pos = begin; pos < end; ++pos) {
-                    int_t edge = shared->h_source_edge_ids[(size_t) pos];
+                    int_t edge = shared->graph->source_edge_ids[(size_t) pos];
                     fprintf(stderr,
                             "SymLDL NVSHMEM 3D backward source edge rank=%d "
                             "z=%d source_gid=%lld panel_gid=%lld rows=%lld\n",
@@ -3951,8 +4000,8 @@ symldl_nvshmem_backward_create(
         int max_bmod = 0;
         for (int_t slot = 0; slot < state->source_count; ++slot) {
             local_edges +=
-                shared->h_source_edge_offsets[(size_t) slot + 1] -
-                shared->h_source_edge_offsets[(size_t) slot];
+                shared->graph->source_edge_offsets[(size_t) slot + 1] -
+                shared->graph->source_edge_offsets[(size_t) slot];
             active_sources += state->h_source_active[(size_t) slot] != 0;
         }
         for (int_t slot = 0; slot < state->target_count; ++slot) {
@@ -4227,24 +4276,19 @@ dSymLDLNVSHMEMSolveAvailable(void)
 
 extern "C" dSymLDLNVSHMEMSolveHandle
 dSymLDLNVSHMEMSolveCreate(
-    int_t n, int_t nsupers, int nrhs, int_t x_count, int_t lsum_count,
-    int_t panel_count, const dSymLDLNVPanelDesc *panels,
-    int_t block_count, const dSymLDLNVBlockDesc *blocks,
-    int_t row_count, const int_t *rows,
-    const int_t *xsup, const int_t *ilsum,
+    int nrhs, int_t x_count, int_t lsum_count,
+    const dSymLDLSolveGraph *graph,
+    const dSymLDLNVPanelDesc *device_panels,
     dtrf3Dpartition_t *trf3Dpartition, gridinfo3d_t *grid3d)
 {
 #ifndef HAVE_NVSHMEM
-    (void) n; (void) nsupers; (void) nrhs; (void) x_count;
-    (void) lsum_count; (void) panel_count; (void) panels;
-    (void) block_count; (void) blocks; (void) row_count; (void) rows;
-    (void) xsup; (void) ilsum; (void) trf3Dpartition; (void) grid3d;
+    (void) nrhs; (void) x_count; (void) lsum_count; (void) graph;
+    (void) device_panels; (void) trf3Dpartition; (void) grid3d;
     return NULL;
 #else
     dSymLDLNVSHMEMSolveState *state = new dSymLDLNVSHMEMSolveState();
     state->forward = symldl_nvshmem_forward_create(
-        n, nsupers, nrhs, x_count, lsum_count, panel_count, panels,
-        block_count, blocks, row_count, rows, xsup, ilsum,
+        nrhs, x_count, lsum_count, graph, device_panels,
         trf3Dpartition, grid3d);
     if (state->forward == NULL) {
         delete state;
