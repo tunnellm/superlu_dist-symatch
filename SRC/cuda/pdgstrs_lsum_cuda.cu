@@ -592,8 +592,14 @@ __global__ void simple_shift(int *target, int mype, int npes) {
 }
 #endif
 
+#ifdef HAVE_NVSHMEM
+static int d_multiGPU_buffers_initialized = 0;
+#endif
+
 void dprepare_multiGPU_buffers(int flag_bc_size,int flag_rd_size,int ready_x_size,int ready_lsum_size,int my_flag_bc_size,int my_flag_rd_size){
 #ifdef HAVE_NVSHMEM
+    if (d_multiGPU_buffers_initialized)
+        ABORT("The double-precision NVSHMEM solve buffers are already initialized.");
     flag_bc_q = (uint64_t *)nvshmem_malloc( flag_bc_size * sizeof(uint64_t)); // for sender
     flag_rd_q = (uint64_t *)nvshmem_malloc( flag_rd_size * sizeof(uint64_t)); // for sender
     dready_x = (double *)nvshmem_malloc( ready_x_size * sizeof(double)); // for receiver
@@ -606,6 +612,7 @@ void dprepare_multiGPU_buffers(int flag_bc_size,int flag_rd_size,int ready_x_siz
     checkGPU(gpuMemset(my_flag_rd, 0, my_flag_rd_size * sizeof(int)));
     checkGPU(gpuMemset(dready_x, 0, ready_x_size * sizeof(double)));
     checkGPU(gpuMemset(dready_lsum, 0, ready_lsum_size * sizeof(double)));
+    d_multiGPU_buffers_initialized = 1;
 
 
 	// int iam;
@@ -624,11 +631,20 @@ void dprepare_multiGPU_buffers(int flag_bc_size,int flag_rd_size,int ready_x_siz
 
 void ddelete_multiGPU_buffers(){
 #ifdef HAVE_NVSHMEM
+    if (!d_multiGPU_buffers_initialized)
+        return;
     nvshmem_free(my_flag_bc);
     nvshmem_free(my_flag_rd);
     nvshmem_free(dready_x);
     nvshmem_free(dready_lsum);
+    my_flag_bc = NULL;
+    my_flag_rd = NULL;
+    dready_x = NULL;
+    dready_lsum = NULL;
+    flag_bc_q = NULL;
+    flag_rd_q = NULL;
     nvshmem_finalize();
+    d_multiGPU_buffers_initialized = 0;
 #endif
 }
 

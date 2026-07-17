@@ -1899,7 +1899,10 @@ symldl_nvshmem_x_block(
            (local_row + 1) * XK_H;
 }
 
+#ifdef HAVE_NVSHMEM
 static int symldl_nvshmem_nvshmem_initialized = 0;
+static int symldl_nvshmem_shared_state_count = 0;
+#endif
 
 static int
 symldl_nvshmem_env_enabled(const char *name)
@@ -2048,6 +2051,7 @@ symldl_nvshmem_shared_create(
         nv_init_wrapper(shared->grid->comm);
         symldl_nvshmem_nvshmem_initialized = 1;
     }
+    ++symldl_nvshmem_shared_state_count;
     int rank = 0;
     int nprocs = 0;
     MPI_Comm_rank(shared->grid->comm, &rank);
@@ -2133,6 +2137,12 @@ symldl_nvshmem_shared_release(dSymLDLNVSHMEMSharedState *shared)
     if (shared->ready_lsum) nvshmem_free(shared->ready_lsum);
     if (shared->my_flag_bc) nvshmem_free(shared->my_flag_bc);
     if (shared->my_flag_rd) nvshmem_free(shared->my_flag_rd);
+    if (symldl_nvshmem_shared_state_count <= 0)
+        ABORT("SymLDL NVSHMEM shared state ownership is invalid.");
+    if (--symldl_nvshmem_shared_state_count == 0) {
+        nvshmem_finalize();
+        symldl_nvshmem_nvshmem_initialized = 0;
+    }
 #endif
     delete shared;
 }
