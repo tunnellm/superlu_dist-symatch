@@ -95,7 +95,7 @@ static uint64_t symldl_v2_cpu_count_outstanding_requests(
 template <typename Ftype>
 static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 {
-    enum { timer_count = 29, counter_count = 31 };
+    enum { timer_count = 34, counter_count = 31 };
     double local_timers[timer_count] = {
         lu->symV2CpuPlanBuildTime,
         lu->symV2CpuWorkspaceInitTime,
@@ -125,7 +125,12 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuSlotBackpressureTime,
         lu->symV2CpuReductionTime,
         lu->symV2CpuPaddedPackTime,
-        lu->SCT->pdgstrfTimer
+        lu->SCT->pdgstrfTimer,
+        lu->symV2CpuPartnerSendPlanTime,
+        lu->symV2CpuMetadataGatherTime,
+        lu->symV2CpuPartnerRecvPlanTime,
+        lu->symV2CpuRowPlanTime,
+        lu->symV2CpuRequestPlanTime
     };
     double max_timers[timer_count] = {0.0};
     MPI_Reduce(local_timers, max_timers, timer_count, MPI_DOUBLE, MPI_MAX, 0,
@@ -238,6 +243,10 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
     std::printf(
         "SymFact V2 CPU setup profile (max-rank): plan_build=%.6f workspace_init=%.6f factor_total=%.6f\n",
         max_timers[0], max_timers[1], max_timers[28]);
+    std::printf(
+        "SymFact V2 CPU plan profile (max-rank): partner_send=%.6f metadata_gather=%.6f partner_recv=%.6f row_plan=%.6f request_workspace=%.6f\n",
+        max_timers[29], max_timers[30], max_timers[31], max_timers[32],
+        max_timers[33]);
     std::printf(
         "SymFact V2 CPU scheduler profile (max-rank): scheduler=%.6f panel_issue=%.6f idle=%.6f slot_backpressure=%.6f active_slots=%llu active_exchanges=%llu\n",
         max_timers[2], max_timers[3], max_timers[24], max_timers[25],

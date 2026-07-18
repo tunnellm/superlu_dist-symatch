@@ -658,11 +658,21 @@ static void symldl_v2_build_cpu_fragment_plan(xLUstruct_t<Ftype> *lu)
     if (!lu->symV2UsesCpuFactor() || (lu->Pr <= 1 && lu->Pc <= 1))
         return;
     double plan_start = SuperLU_timer_();
+    double phase_start = plan_start;
     symldl_v2_build_cpu_partner_send_plan(lu);
+    lu->symV2CpuPartnerSendPlanTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
     SymLDLV2PartnerMetaPayload metadata =
         symldl_v2_collect_partner_l_metadata(lu);
+    lu->symV2CpuMetadataGatherTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
     symldl_v2_build_cpu_partner_receive_plan(lu, metadata);
+    lu->symV2CpuPartnerRecvPlanTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
     symldl_v2_build_cpu_row_receive_plan(lu, metadata);
+    lu->symV2CpuRowPlanTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
     symldl_v2_resize_cpu_request_workspace(lu);
+    lu->symV2CpuRequestPlanTime += SuperLU_timer_() - phase_start;
     lu->symV2CpuPlanBuildTime += SuperLU_timer_() - plan_start;
 }
