@@ -58,6 +58,13 @@ struct SymLDLV2CpuPackSegment
     size_t row_permutation_offset;
 };
 
+struct SymLDLV2CpuRowLookup
+{
+    size_t offset = 0;
+    size_t extent = 0;
+    unsigned char dense = 0;
+};
+
 struct SymLDLV2CpuExchangeState
 {
     int_t k = -1;
@@ -97,6 +104,12 @@ struct SymLDLV2CpuThreadProfile
     uint64_t mapped_destination_full = 0;
     uint64_t mapped_row_contiguous_values = 0;
     uint64_t mapped_rectangular_values = 0;
+    uint64_t row_map_sorted = 0;
+    uint64_t row_map_dense_lookup = 0;
+    uint64_t row_map_sparse_lookup = 0;
+    double row_map_sorted_time = 0.0;
+    double row_map_dense_lookup_time = 0.0;
+    double row_map_sparse_lookup_time = 0.0;
     uint64_t padded_candidate_scatters = 0;
     uint64_t padded_candidate_source_values = 0;
     uint64_t padded_candidate_destination_values = 0;

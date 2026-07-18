@@ -319,7 +319,9 @@ static bool symldl_v2_cpu_build_row_map(
     const int_t *source_row_list, int_t source_rows,
     const int_t *destination_row_list, int_t destination_rows,
     int_t *destination_permutation, int_t *row_map, int_t map_capacity,
-    bool *sorted_rows_out)
+    const SymLDLV2CpuRowLookup *destination_lookup,
+    const int_t *destination_lookup_pool, bool *sorted_rows_out,
+    unsigned char *lookup_kind_out)
 {
     if (source_rows <= 0 || destination_rows <= 0 ||
         source_rows > map_capacity || destination_rows > map_capacity)
@@ -336,6 +338,8 @@ static bool symldl_v2_cpu_build_row_map(
 
     if (sorted_rows)
     {
+        if (lookup_kind_out != NULL)
+            *lookup_kind_out = 0;
         int_t destination_row = 0;
         for (int_t source_row = 0; source_row < source_rows; ++source_row)
         {
@@ -350,8 +354,56 @@ static bool symldl_v2_cpu_build_row_map(
             row_map[source_row] = destination_row;
         }
     }
+    else if (destination_lookup != NULL &&
+             destination_lookup_pool != NULL)
+    {
+        if (lookup_kind_out != NULL)
+            *lookup_kind_out = destination_lookup->dense ? 1 : 2;
+        const int_t *entries =
+            destination_lookup_pool + destination_lookup->offset;
+        if (destination_lookup->dense)
+        {
+            for (int_t source_row = 0; source_row < source_rows;
+                 ++source_row)
+            {
+                int_t gid = source_row_list[source_row];
+                if (gid < 0 ||
+                    static_cast<size_t>(gid) >=
+                        destination_lookup->extent)
+                    ABORT(
+                        "SymFact V2 CPU source row is absent from destination.");
+                int_t position = entries[gid];
+                if (position < 0 || position >= destination_rows ||
+                    destination_row_list[position] != gid)
+                    ABORT(
+                        "SymFact V2 CPU source row is absent from destination.");
+                row_map[source_row] = position;
+            }
+        }
+        else
+        {
+            for (int_t source_row = 0; source_row < source_rows;
+                 ++source_row)
+            {
+                int_t gid = source_row_list[source_row];
+                const int_t *position = std::lower_bound(
+                    entries, entries + destination_lookup->extent, gid,
+                    [destination_row_list](int_t row, int_t value)
+                    {
+                        return destination_row_list[row] < value;
+                    });
+                if (position == entries + destination_lookup->extent ||
+                    destination_row_list[*position] != gid)
+                    ABORT(
+                        "SymFact V2 CPU source row is absent from destination.");
+                row_map[source_row] = *position;
+            }
+        }
+    }
     else
     {
+        if (lookup_kind_out != NULL)
+            *lookup_kind_out = 3;
         bool bounded_ids = true;
         for (int_t row = 0; row < source_rows; ++row)
             bounded_ids = bounded_ids && source_row_list[row] >= 0 &&
@@ -436,6 +488,34 @@ static bool symldl_v2_cpu_build_row_map(
 }
 
 template <typename Ftype>
+static const SymLDLV2CpuRowLookup *symldl_v2_cpu_destination_row_lookup(
+    xLUstruct_t<Ftype> *lu, int_t local_panel, int_t local_block)
+{
+    if (local_panel < 0 || local_panel >= lu->symV2PanelCount())
+        ABORT("SymFact V2 CPU destination row lookup panel is invalid.");
+    size_t panel_index = static_cast<size_t>(local_panel);
+    if (panel_index + 1 >=
+            lu->symV2CpuRowLookupPanelOffsets.size())
+        ABORT("SymFact V2 CPU destination row lookup panel is invalid.");
+    size_t begin = lu->symV2CpuRowLookupPanelOffsets[
+        panel_index];
+    size_t end = lu->symV2CpuRowLookupPanelOffsets[
+        panel_index + 1];
+    if (local_block < 0 ||
+        static_cast<size_t>(local_block) >= end - begin ||
+        begin + static_cast<size_t>(local_block) >=
+            lu->symV2CpuRowLookups.size())
+        ABORT("SymFact V2 CPU destination row lookup block is invalid.");
+    const SymLDLV2CpuRowLookup *lookup = &lu->symV2CpuRowLookups[
+        begin + static_cast<size_t>(local_block)];
+    if (lookup->offset > lu->symV2CpuRowLookupPool.size() ||
+        lookup->extent >
+            lu->symV2CpuRowLookupPool.size() - lookup->offset)
+        ABORT("SymFact V2 CPU destination row lookup range is invalid.");
+    return lookup;
+}
+
+template <typename Ftype>
 static void symldl_v2_cpu_scatter_dual_block(
     xLUstruct_t<Ftype> *lu, xlpanel_t<Ftype> &row_panel,
     int_t source_i, xlpanel_t<Ftype> &column_panel, int_t source_j,
@@ -474,15 +554,19 @@ static void symldl_v2_cpu_scatter_dual_block(
     int_t *destination_row_list = destination_panel.rowList(local_block);
 
     bool sorted_rows = false;
+    unsigned char lookup_kind = 0;
     double row_map_start =
         lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
     bool row_contiguous = symldl_v2_cpu_build_row_map(
         source_row_list, source_rows, destination_row_list,
         destination_rows, destination_index, row_map, lu->ldt,
-        &sorted_rows);
+        symldl_v2_cpu_destination_row_lookup(
+            lu, local_panel, local_block),
+        lu->symV2CpuRowLookupPool.data(), &sorted_rows, &lookup_kind);
+    double row_map_time = 0.0;
     if (lu->symV2CpuProfileEnabled)
     {
-        double row_map_time = SuperLU_timer_() - row_map_start;
+        row_map_time = SuperLU_timer_() - row_map_start;
 #ifdef _OPENMP
 #pragma omp atomic update
 #endif
@@ -537,6 +621,14 @@ static void symldl_v2_cpu_scatter_dual_block(
             row_contiguous ? values : 0;
         profile.mapped_rectangular_values +=
             row_contiguous && column_contiguous ? values : 0;
+        profile.row_map_sorted += lookup_kind == 0 ? 1 : 0;
+        profile.row_map_dense_lookup += lookup_kind == 1 ? 1 : 0;
+        profile.row_map_sparse_lookup += lookup_kind == 2 ? 1 : 0;
+        profile.row_map_sorted_time += lookup_kind == 0 ? row_map_time : 0.0;
+        profile.row_map_dense_lookup_time +=
+            lookup_kind == 1 ? row_map_time : 0.0;
+        profile.row_map_sparse_lookup_time +=
+            lookup_kind == 2 ? row_map_time : 0.0;
         if (column_full)
         {
             uint64_t source_values =
@@ -794,6 +886,7 @@ static bool symldl_v2_cpu_find_group_destination(
 
 template <typename Ftype>
 static void symldl_v2_cpu_pack_padded_group(
+    xLUstruct_t<Ftype> *lu, int_t destination_local_panel,
     xlpanel_t<Ftype> &row_panel, int_t first_row_block,
     int_t last_row_block, xlpanel_t<Ftype> &destination,
     int_t first_destination_block, int_t destination_rows,
@@ -827,7 +920,9 @@ static void symldl_v2_cpu_pack_padded_group(
         symldl_v2_cpu_build_row_map(
             source_row_list, source_rows, destination_row_list,
             destination_block_rows, destination_index, row_map,
-            map_capacity, NULL);
+            map_capacity, symldl_v2_cpu_destination_row_lookup(
+                lu, destination_local_panel, destination_block),
+            lu->symV2CpuRowLookupPool.data(), NULL, NULL);
 
         for (int_t column = 0; column < k; ++column)
         {
@@ -989,8 +1084,8 @@ static long long symldl_v2_cpu_grouped_update_column(
             double pack_start =
                 lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
             symldl_v2_cpu_pack_padded_group(
-                row_panel, source_i, group_last, destination,
-                direct_first_block, direct_destination_rows,
+                lu, direct_local_panel, row_panel, source_i, group_last,
+                destination, direct_first_block, direct_destination_rows,
                 destination_index, row_map, lu->ldt, padded);
             double pack_time = lu->symV2CpuProfileEnabled ?
                 SuperLU_timer_() - pack_start : 0.0;

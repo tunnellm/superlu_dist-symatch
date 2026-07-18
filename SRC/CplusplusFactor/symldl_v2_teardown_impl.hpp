@@ -79,6 +79,9 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuSlotRequestCounts.clear();
     symV2CpuSlotSendBegins.clear();
     symV2CpuThreadProfiles.clear();
+    symV2CpuRowLookupPanelOffsets.clear();
+    symV2CpuRowLookups.clear();
+    symV2CpuRowLookupPool.clear();
     symV2CpuRequestsPerSlot = 0;
 }
 

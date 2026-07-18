@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <limits>
 
 #include "xlupanels.hpp"
@@ -80,6 +81,123 @@ static void symldl_v2_resize_cpu_request_workspace(
         static_cast<size_t>(slots), 0);
     lu->symV2CpuSlotSendBegins.assign(
         static_cast<size_t>(slots), 0);
+}
+
+template <typename Ftype>
+static void symldl_v2_build_cpu_row_lookups(xLUstruct_t<Ftype> *lu)
+{
+    size_t panel_count = static_cast<size_t>(lu->symV2PanelCount());
+    lu->symV2CpuRowLookupPanelOffsets.assign(panel_count + 1, 0);
+
+    size_t block_count = 0;
+    for (size_t local_panel = 0; local_panel < panel_count; ++local_panel)
+    {
+        lu->symV2CpuRowLookupPanelOffsets[local_panel] = block_count;
+        xlpanel_t<Ftype> &panel = lu->lPanelVec[local_panel];
+        if (panel.isEmpty())
+            continue;
+        int_t panel_block_count = panel.nblocks();
+        if (panel_block_count <= 0)
+            ABORT("SymFact V2 CPU row lookup panel has no blocks.");
+        size_t panel_blocks = static_cast<size_t>(panel_block_count);
+        if (block_count > std::numeric_limits<size_t>::max() - panel_blocks)
+            ABORT("SymFact V2 CPU row lookup table overflows.");
+        block_count += panel_blocks;
+    }
+    lu->symV2CpuRowLookupPanelOffsets[panel_count] = block_count;
+    lu->symV2CpuRowLookups.assign(
+        block_count, SymLDLV2CpuRowLookup());
+
+    size_t lookup_entries = 0;
+    for (size_t local_panel = 0; local_panel < panel_count; ++local_panel)
+    {
+        xlpanel_t<Ftype> &panel = lu->lPanelVec[local_panel];
+        if (panel.isEmpty())
+            continue;
+        size_t block_base =
+            lu->symV2CpuRowLookupPanelOffsets[local_panel];
+        for (int_t block = 0; block < panel.nblocks(); ++block)
+        {
+            int_t rows = panel.nbrow(block);
+            if (rows <= 0)
+                ABORT("SymFact V2 CPU row lookup has an empty block.");
+            int_t *row_list = panel.rowList(block);
+            int_t max_row = -1;
+            for (int_t row = 0; row < rows; ++row)
+            {
+                if (row_list[row] < 0)
+                    ABORT("SymFact V2 CPU row lookup has a negative row.");
+                max_row = SUPERLU_MAX(max_row, row_list[row]);
+            }
+            size_t dense_extent = static_cast<size_t>(max_row) + 1;
+            size_t row_count = static_cast<size_t>(rows);
+            bool dense = dense_extent <= row_count ||
+                         dense_extent - row_count <= row_count;
+            size_t extent = dense ? dense_extent : row_count;
+            if (lookup_entries >
+                std::numeric_limits<size_t>::max() - extent)
+                ABORT("SymFact V2 CPU row lookup pool overflows.");
+            SymLDLV2CpuRowLookup &lookup =
+                lu->symV2CpuRowLookups[block_base +
+                                       static_cast<size_t>(block)];
+            lookup.offset = lookup_entries;
+            lookup.extent = extent;
+            lookup.dense = dense ? 1 : 0;
+            lookup_entries += extent;
+        }
+    }
+
+    lu->symV2CpuRowLookupPool.assign(lookup_entries, (int_t) -1);
+    for (size_t local_panel = 0; local_panel < panel_count; ++local_panel)
+    {
+        xlpanel_t<Ftype> &panel = lu->lPanelVec[local_panel];
+        if (panel.isEmpty())
+            continue;
+        size_t block_base =
+            lu->symV2CpuRowLookupPanelOffsets[local_panel];
+        for (int_t block = 0; block < panel.nblocks(); ++block)
+        {
+            int_t rows = panel.nbrow(block);
+            int_t *row_list = panel.rowList(block);
+            SymLDLV2CpuRowLookup &lookup =
+                lu->symV2CpuRowLookups[block_base +
+                                       static_cast<size_t>(block)];
+            if (lookup.offset > lu->symV2CpuRowLookupPool.size() ||
+                lookup.extent >
+                    lu->symV2CpuRowLookupPool.size() - lookup.offset)
+                ABORT("SymFact V2 CPU row lookup range is invalid.");
+            int_t *entries =
+                lu->symV2CpuRowLookupPool.data() + lookup.offset;
+            if (lookup.dense)
+            {
+                for (int_t row = 0; row < rows; ++row)
+                {
+                    size_t gid = static_cast<size_t>(row_list[row]);
+                    if (gid >= lookup.extent || entries[gid] != -1)
+                        ABORT("SymFact V2 CPU destination rows are duplicated.");
+                    entries[gid] = row;
+                }
+            }
+            else
+            {
+                for (int_t row = 0; row < rows; ++row)
+                    entries[row] = row;
+                std::sort(
+                    entries, entries + rows,
+                    [row_list](int_t left, int_t right)
+                    {
+                        int_t left_gid = row_list[left];
+                        int_t right_gid = row_list[right];
+                        return left_gid < right_gid ||
+                               (left_gid == right_gid && left < right);
+                    });
+                for (int_t row = 1; row < rows; ++row)
+                    if (row_list[entries[row - 1]] ==
+                        row_list[entries[row]])
+                        ABORT("SymFact V2 CPU destination rows are duplicated.");
+            }
+        }
+    }
 }
 
 template <typename Ftype>
@@ -174,6 +292,7 @@ static void symldl_v2_allocate_cpu_factor_workspace(
     }
     lu->symV2CpuOutputLockOffsets[
         static_cast<size_t>(lu->symV2PanelCount())] = output_locks;
+    symldl_v2_build_cpu_row_lookups(lu);
 #ifdef _OPENMP
     if (output_locks > 0)
     {
