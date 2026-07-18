@@ -33,6 +33,7 @@ std::vector<int> symV2CpuWaitIndices;
 std::vector<MPI_Status> symV2CpuWaitStatuses;
 std::vector<int> symV2CpuPartnerRecvChunksRemaining;
 std::vector<unsigned char> symV2CpuPartnerUpdateSubmitted;
+std::vector<SymLDLV2CpuExchangeState> symV2CpuExchangeStates;
 std::vector<size_t> symV2CpuSlotRequestCounts;
 std::vector<size_t> symV2CpuSlotSendBegins;
 std::vector<int_t> symV2CpuReductionPanelSlots;
@@ -41,6 +42,7 @@ std::vector<SymLDLV2CpuThreadProfile> symV2CpuThreadProfiles;
 std::vector<size_t> symV2CpuOutputLockOffsets;
 int *symV2CpuPanelPending = NULL;
 int *symV2CpuSlotPending = NULL;
+int symV2CpuDeferredTasksActive = 0;
 // Keep the class layout identical in C++ and nvcc translation units.  nvcc
 // does not define _OPENMP for host code in this build, so expose OpenMP state
 // through an opaque pointer and cast only in OpenMP-compiled CPU code.
@@ -96,6 +98,11 @@ uint64_t symV2CpuSlotBackpressureEvents = 0;
 uint64_t symV2CpuMpiTestsomeCalls = 0;
 uint64_t symV2CpuMpiWaitsomeCalls = 0;
 uint64_t symV2CpuMpiCompletions = 0;
+uint64_t symV2CpuExchangeIssues = 0;
+uint64_t symV2CpuExchangeCompletions = 0;
+uint64_t symV2CpuBlockingProgressCalls = 0;
+uint64_t symV2CpuProgressYieldsWithTasks = 0;
+uint64_t symV2CpuActiveExchangeHighWater = 0;
 uint64_t symV2CpuSendDrainCalls = 0;
 uint64_t symV2CpuOversizedMpiChunks = 0;
 uint64_t symV2CpuInvDiagBytes = 0;

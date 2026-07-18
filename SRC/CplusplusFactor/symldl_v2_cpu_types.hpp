@@ -13,6 +13,15 @@ static inline bool symldl_v2_cpu_padded_direct_enabled()
     return enabled;
 }
 
+static inline bool symldl_v2_cpu_async_exchange_enabled()
+{
+    static const bool enabled = []() {
+        const char *value = std::getenv("GPU3DV2_CPU_ASYNC_EXCHANGE");
+        return value != NULL && std::atoi(value) != 0;
+    }();
+    return enabled;
+}
+
 static inline size_t symldl_v2_cpu_mpi_chunk_count(size_t count)
 {
     const size_t limit =
@@ -29,6 +38,18 @@ struct SymLDLV2CpuPackSegment
     int_t row_count;
     int_t packed_row_offset;
     size_t row_permutation_offset;
+};
+
+struct SymLDLV2CpuExchangeState
+{
+    int_t k = -1;
+    int_t parent = -1;
+    int_t local_panel = -1;
+    int source_pc = -1;
+    int row_chunks_remaining = 0;
+    size_t receive_request_count = 0;
+    size_t pending_receive_chunks = 0;
+    unsigned char active = 0;
 };
 
 struct SymLDLV2CpuThreadProfile

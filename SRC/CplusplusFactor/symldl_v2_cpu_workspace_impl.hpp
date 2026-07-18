@@ -76,10 +76,6 @@ static void symldl_v2_resize_cpu_request_workspace(
     lu->symV2CpuRequestPeers.assign(total_requests, -1);
     lu->symV2CpuWaitIndices.assign(total_requests, -1);
     lu->symV2CpuWaitStatuses.resize(total_requests);
-    lu->symV2CpuPartnerRecvChunksRemaining.assign(
-        static_cast<size_t>(lu->Pr), 0);
-    lu->symV2CpuPartnerUpdateSubmitted.assign(
-        static_cast<size_t>(lu->Pr), 0);
     lu->symV2CpuSlotRequestCounts.assign(
         static_cast<size_t>(slots), 0);
     lu->symV2CpuSlotSendBegins.assign(
@@ -132,9 +128,17 @@ static void symldl_v2_allocate_cpu_factor_workspace(
         "Malloc fails for SymFact V2 CPU row-receive workspace.");
 
     symldl_v2_resize_cpu_request_workspace(lu);
+    size_t exchange_peers = symldl_v2_checked_product(
+        static_cast<size_t>(slots), static_cast<size_t>(lu->Pr),
+        "SymFact V2 CPU exchange state overflows.");
     lu->symV2CpuPartnerRecvOffsets.assign(
-        static_cast<size_t>(lu->Pr),
+        exchange_peers,
         std::numeric_limits<size_t>::max());
+    lu->symV2CpuPartnerRecvChunksRemaining.assign(exchange_peers, 0);
+    lu->symV2CpuPartnerUpdateSubmitted.assign(exchange_peers, 0);
+    lu->symV2CpuExchangeStates.assign(
+        static_cast<size_t>(slots), SymLDLV2CpuExchangeState());
+    lu->symV2CpuDeferredTasksActive = 0;
     lu->symV2CpuReductionPanelSlots.assign(static_cast<size_t>(slots), -1);
     lu->symV2CpuReductionChunksRemaining.assign(
         static_cast<size_t>(slots), 0);

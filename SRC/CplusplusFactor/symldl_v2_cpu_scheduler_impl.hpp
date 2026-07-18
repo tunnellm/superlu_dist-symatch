@@ -7,12 +7,74 @@
 #include "symldl_v2_factor_gpu_bridge.hpp"
 
 template <typename Ftype>
+static int symldl_v2_cpu_deferred_tasks_active(xLUstruct_t<Ftype> *lu)
+{
+    int active = 0;
+#ifdef _OPENMP
+#pragma omp atomic read
+#endif
+    active = lu->symV2CpuDeferredTasksActive;
+    if (active < 0)
+        ABORT("SymFact V2 CPU deferred-task count is invalid.");
+    return active;
+}
+
+template <typename Ftype>
+static bool symldl_v2_cpu_has_active_exchange(xLUstruct_t<Ftype> *lu)
+{
+    for (size_t slot = 0; slot < lu->symV2CpuExchangeStates.size(); ++slot)
+        if (lu->symV2CpuExchangeStates[slot].active)
+            return true;
+    return false;
+}
+
+struct SymLDLV2CpuProgressState
+{
+    int last_active_tasks = -1;
+};
+
+template <typename Ftype>
+static bool symldl_v2_cpu_scheduler_progress(
+    xLUstruct_t<Ftype> *lu, SymLDLV2CpuProgressState *progress_state)
+{
+    if (!symldl_v2_cpu_async_exchange_enabled() ||
+        !symldl_v2_cpu_has_active_exchange(lu))
+        return false;
+    if (progress_state == NULL)
+        ABORT("SymFact V2 CPU scheduler progress state is missing.");
+
+    int active_tasks = symldl_v2_cpu_deferred_tasks_active(lu);
+    bool poll = active_tasks == 0 ||
+                active_tasks != progress_state->last_active_tasks;
+    bool progressed = false;
+    if (poll)
+    {
+        progressed =
+            symldl_v2_cpu_progress_all_fragment_exchanges(lu, false);
+        active_tasks = symldl_v2_cpu_deferred_tasks_active(lu);
+    }
+
+    if (!progressed && active_tasks == 0 &&
+        symldl_v2_cpu_has_active_exchange(lu))
+    {
+        progressed =
+            symldl_v2_cpu_progress_all_fragment_exchanges(lu, true);
+    }
+    if (active_tasks > 0 &&
+        active_tasks != progress_state->last_active_tasks)
+        ++lu->symV2CpuProgressYieldsWithTasks;
+    progress_state->last_active_tasks = active_tasks;
+    return progressed;
+}
+
+template <typename Ftype>
 static void symldl_v2_cpu_wait_for_counter(
     xLUstruct_t<Ftype> *lu, int *counter, bool slot_backpressure)
 {
     if (counter == NULL)
         ABORT("SymFact V2 CPU scheduler counter is missing.");
     bool blocked = false;
+    SymLDLV2CpuProgressState progress_state;
     double wait_start = SuperLU_timer_();
     for (;;)
     {
@@ -41,6 +103,7 @@ static void symldl_v2_cpu_wait_for_counter(
             if (slot_backpressure)
                 ++lu->symV2CpuSlotBackpressureEvents;
         }
+        symldl_v2_cpu_scheduler_progress(lu, &progress_state);
 #ifdef _OPENMP
 #pragma omp taskyield
 #endif
@@ -111,10 +174,19 @@ static int_t symldl_v2_cpu_factor_forest(
                 }
                 else
                 {
-                    symldl_v2_cpu_exchange_fragments_and_update(
-                        lu, k, parent, slot, true);
+                    if (symldl_v2_cpu_async_exchange_enabled())
+                    {
+                        symldl_v2_cpu_issue_fragment_exchange(
+                            lu, k, parent, slot, true);
+                        symldl_v2_cpu_progress_all_fragment_exchanges(
+                            lu, false);
+                    }
+                    else
+                        symldl_v2_cpu_exchange_fragments_and_update(
+                            lu, k, parent, slot, true);
                 }
-                ++lu->symV2CpuPanelsCompleted;
+                if (lu->Pr == 1 && lu->Pc == 1)
+                    ++lu->symV2CpuPanelsCompleted;
                 lu->symV2CpuPanelIssueTime +=
                     SuperLU_timer_() - panel_issue_start;
                 uint64_t active_slots = 0;
@@ -127,13 +199,26 @@ static int_t symldl_v2_cpu_factor_forest(
                 lu->symV2CpuActiveSlotHighWater = SUPERLU_MAX(
                     lu->symV2CpuActiveSlotHighWater, active_slots);
             }
+            SymLDLV2CpuProgressState drain_progress_state;
+            while (symldl_v2_cpu_has_active_exchange(lu))
+            {
+                symldl_v2_cpu_scheduler_progress(
+                    lu, &drain_progress_state);
+#ifdef _OPENMP
+#pragma omp taskyield
+#endif
+            }
 #pragma omp taskwait
+            if (symldl_v2_cpu_deferred_tasks_active(lu) != 0)
+                ABORT("SymFact V2 CPU tasks remain active after taskwait.");
         }
     }
     lu->symV2CpuSchedulerTime += SuperLU_timer_() - scheduler_start;
 
     for (int slot = 0; slot < slots; ++slot)
     {
+        if (lu->symV2CpuExchangeStates[static_cast<size_t>(slot)].active)
+            ABORT("SymFact V2 CPU exchange remains active after factorization.");
         symldl_v2_cpu_drain_slot_sends(lu, slot);
         if (lu->symV2CpuSlotPending[slot] != 0)
             ABORT("SymFact V2 CPU slot remains active after forest factorization.");

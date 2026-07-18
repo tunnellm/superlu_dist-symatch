@@ -82,6 +82,9 @@ static void symldl_v2_cpu_drain_slot_sends(
         static_cast<size_t>(slot) >= lu->symV2CpuSlotRequestCounts.size() ||
         static_cast<size_t>(slot) >= lu->symV2CpuSlotSendBegins.size())
         ABORT("SymFact V2 CPU send-drain slot is invalid.");
+    if (static_cast<size_t>(slot) < lu->symV2CpuExchangeStates.size() &&
+        lu->symV2CpuExchangeStates[static_cast<size_t>(slot)].active)
+        ABORT("SymFact V2 CPU send-drain slot still owns an exchange.");
     size_t request_count =
         lu->symV2CpuSlotRequestCounts[static_cast<size_t>(slot)];
     size_t send_begin =
@@ -230,10 +233,48 @@ static void symldl_v2_cpu_pack_row_destination(
 }
 
 template <typename Ftype>
-static void symldl_v2_cpu_exchange_fragments_and_update(
+static void symldl_v2_cpu_note_slot_pending(
+    xLUstruct_t<Ftype> *lu, int slot, int delta)
+{
+    if (slot < 0 ||
+        static_cast<size_t>(slot) >= lu->symV2CpuRawPanelBufs.size())
+        ABORT("SymFact V2 CPU exchange slot is invalid.");
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+    lu->symV2CpuSlotPending[slot] += delta;
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_reserve_partner_outputs(
+    xLUstruct_t<Ftype> *lu, int_t k, int slot, int pr, int delta)
+{
+    size_t receive_slot = static_cast<size_t>(k) * lu->Pr + pr;
+    if (receive_slot >= lu->symV2CpuPartnerRecvSizes.size() ||
+        receive_slot >= lu->symV2PartnerLRecvIndexBySrc.size() ||
+        static_cast<size_t>(k) >= lu->symV2RowFragRecvIndex.size())
+        ABORT("SymFact V2 CPU exchange reservation is invalid.");
+    const std::vector<int_t> &row_index =
+        lu->symV2RowFragRecvIndex[static_cast<size_t>(k)];
+    const std::vector<int_t> &column_index =
+        lu->symV2PartnerLRecvIndexBySrc[receive_slot];
+    if (row_index.empty() || column_index.empty() ||
+        lu->symV2CpuPartnerRecvSizes[receive_slot] == 0)
+        return;
+    xlpanel_t<Ftype> column_panel(
+        const_cast<int_t *>(column_index.data()), NULL);
+    for (int_t source_j = 0; source_j < column_panel.nblocks(); ++source_j)
+        symldl_v2_cpu_note_task_pending(
+            lu, column_panel.gid(source_j), slot, delta);
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_issue_fragment_exchange(
     xLUstruct_t<Ftype> *lu, int_t k, int_t parent, int slot,
     bool submit_tasks)
 {
+    if (!submit_tasks)
+        ABORT("SymFact V2 CPU asynchronous exchange requires task submission.");
     if (slot < 0 ||
         static_cast<size_t>(slot) >= lu->symV2CpuPartnerSendBufs.size() ||
         static_cast<size_t>(slot) >= lu->symV2CpuPartnerRecvBufs.size() ||
@@ -242,7 +283,9 @@ static void symldl_v2_cpu_exchange_fragments_and_update(
         ABORT("SymFact V2 CPU fragment slot is invalid.");
 
     if (lu->symV2CpuRequestsPerSlot == 0 ||
-        lu->symV2CpuSlotRequestCounts[static_cast<size_t>(slot)] != 0)
+        lu->symV2CpuSlotRequestCounts[static_cast<size_t>(slot)] != 0 ||
+        static_cast<size_t>(slot) >= lu->symV2CpuExchangeStates.size() ||
+        lu->symV2CpuExchangeStates[static_cast<size_t>(slot)].active)
         ABORT("SymFact V2 CPU fragment slot still owns MPI requests.");
 
     double start = SuperLU_timer_();
@@ -259,12 +302,24 @@ static void symldl_v2_cpu_exchange_fragments_and_update(
         static_cast<size_t>(k) >= lu->symV2RowFragRecvIndex.size())
         ABORT("SymFact V2 CPU fragment metadata is missing.");
 
-    std::fill(lu->symV2CpuPartnerRecvChunksRemaining.begin(),
-              lu->symV2CpuPartnerRecvChunksRemaining.end(), 0);
-    std::fill(lu->symV2CpuPartnerUpdateSubmitted.begin(),
-              lu->symV2CpuPartnerUpdateSubmitted.end(), 0);
-    std::fill(lu->symV2CpuPartnerRecvOffsets.begin(),
-              lu->symV2CpuPartnerRecvOffsets.end(),
+    size_t slot_peer_base = static_cast<size_t>(slot) * lu->Pr;
+    if (slot_peer_base + static_cast<size_t>(lu->Pr) >
+            lu->symV2CpuPartnerRecvChunksRemaining.size() ||
+        slot_peer_base + static_cast<size_t>(lu->Pr) >
+            lu->symV2CpuPartnerUpdateSubmitted.size() ||
+        slot_peer_base + static_cast<size_t>(lu->Pr) >
+            lu->symV2CpuPartnerRecvOffsets.size())
+        ABORT("SymFact V2 CPU per-slot exchange state is undersized.");
+    std::fill(lu->symV2CpuPartnerRecvChunksRemaining.begin() +
+                  slot_peer_base,
+              lu->symV2CpuPartnerRecvChunksRemaining.begin() +
+                  slot_peer_base + lu->Pr, 0);
+    std::fill(lu->symV2CpuPartnerUpdateSubmitted.begin() + slot_peer_base,
+              lu->symV2CpuPartnerUpdateSubmitted.begin() +
+                  slot_peer_base + lu->Pr, 0);
+    std::fill(lu->symV2CpuPartnerRecvOffsets.begin() + slot_peer_base,
+              lu->symV2CpuPartnerRecvOffsets.begin() +
+                  slot_peer_base + lu->Pr,
               std::numeric_limits<size_t>::max());
 
     size_t request_count = 0;
@@ -280,7 +335,8 @@ static void symldl_v2_cpu_exchange_fragments_and_update(
                         SUPERLU_MIN(partner_receive_total,
                                     lu->symV2CpuPartnerRecvCapacity))
             ABORT("SymFact V2 CPU partner receive exceeds workspace.");
-        lu->symV2CpuPartnerRecvOffsets[static_cast<size_t>(pr)] =
+        lu->symV2CpuPartnerRecvOffsets[
+            slot_peer_base + static_cast<size_t>(pr)] =
             partner_receive_total;
         size_t chunks = symldl_v2_cpu_post_receive_chunks(
             lu, slot, request_count, partner_recv + partner_receive_total,
@@ -288,13 +344,16 @@ static void symldl_v2_cpu_exchange_fragments_and_update(
         if (chunks > static_cast<size_t>(std::numeric_limits<int>::max()))
             ABORT("SymFact V2 CPU partner receive has too many chunks.");
         lu->symV2CpuPartnerRecvChunksRemaining[
-            static_cast<size_t>(pr)] = static_cast<int>(chunks);
+            slot_peer_base + static_cast<size_t>(pr)] =
+            static_cast<int>(chunks);
         partner_receive_total += count;
     }
     lu->symV2CpuRecvPostTime += SuperLU_timer_() - receive_post_start;
 
     const std::vector<int_t> &row_index =
         lu->symV2RowFragRecvIndex[static_cast<size_t>(k)];
+    if (!row_index.empty() && row_index.size() < 2)
+        ABORT("SymFact V2 CPU row receive index is invalid.");
     size_t row_values = row_index.empty() ? 0 :
         symldl_v2_checked_product(
             static_cast<size_t>(row_index[1]),
@@ -387,157 +446,264 @@ static void symldl_v2_cpu_exchange_fragments_and_update(
         }
     }
 
-    Ftype *row_fragment_values = row_recv;
-    if (lu->mycol == source_pc && row_values > 0)
-    {
-        size_t send_slot = static_cast<size_t>(local_panel) *
-                               static_cast<size_t>(lu->Pc) +
-                           static_cast<size_t>(lu->mycol);
-        if (send_slot >= lu->symV2CpuRowSendSizes.size() ||
-            lu->symV2CpuRowSendSizes[send_slot] != row_values)
-            ABORT("SymFact V2 CPU self row-fragment size mismatch.");
-        row_fragment_values = row_send +
-            lu->symV2CpuRowSendOffsets[send_slot];
-    }
-    xlpanel_t<Ftype> row_panel;
-    if (!row_index.empty())
-        row_panel = xlpanel_t<Ftype>(
-            const_cast<int_t *>(row_index.data()), row_fragment_values);
-
-    auto update_partner_fragment = [&](int pr)
-    {
-        size_t receive_slot = recv_base + static_cast<size_t>(pr);
-        size_t count = lu->symV2CpuPartnerRecvSizes[receive_slot];
-        const std::vector<int_t> &column_index =
-            lu->symV2PartnerLRecvIndexBySrc[receive_slot];
-        if (count == 0 || column_index.empty() || row_index.empty())
-            return;
-        int source = PNUM(pr, source_pc, lu->grid);
-        Ftype *column_values = NULL;
-        if (source == lu->iam)
-        {
-            size_t send_slot = static_cast<size_t>(local_panel) *
-                                   static_cast<size_t>(lu->Pc) +
-                               static_cast<size_t>(lu->mycol);
-            if (send_slot >= lu->symV2CpuPartnerSendSizes.size() ||
-                lu->symV2CpuPartnerSendSizes[send_slot] != count)
-                ABORT("SymFact V2 CPU self partner-fragment size mismatch.");
-            column_values = partner_send +
-                lu->symV2CpuPartnerSendOffsets[send_slot];
-        }
-        else
-        {
-            size_t offset = lu->symV2CpuPartnerRecvOffsets[
-                static_cast<size_t>(pr)];
-            if (offset == std::numeric_limits<size_t>::max())
-                ABORT("SymFact V2 CPU partner receive offset is invalid.");
-            column_values = partner_recv + offset;
-        }
-        xlpanel_t<Ftype> column_panel(
-            const_cast<int_t *>(column_index.data()), column_values);
-        if (submit_tasks)
-            symldl_v2_cpu_submit_dual_schur_tasks(
-                lu, k, parent, slot, row_panel, column_panel);
-        else
-            symldl_v2_cpu_dual_schur_update(
-                lu, k, row_panel, column_panel);
-    };
-
-    bool row_ready = row_chunks_remaining == 0;
-    auto submit_ready_partners = [&]()
-    {
-        if (!row_ready)
-            return;
-        for (int pr = 0; pr < lu->Pr; ++pr)
-        {
-            size_t receive_slot = recv_base + static_cast<size_t>(pr);
-            if (lu->symV2CpuPartnerRecvSizes[receive_slot] == 0 ||
-                lu->symV2CpuPartnerUpdateSubmitted[
-                    static_cast<size_t>(pr)] != 0 ||
-                lu->symV2CpuPartnerRecvChunksRemaining[
-                    static_cast<size_t>(pr)] != 0)
-                continue;
-            update_partner_fragment(pr);
-            lu->symV2CpuPartnerUpdateSubmitted[
-                static_cast<size_t>(pr)] = 1;
-        }
-    };
-    submit_ready_partners();
-
-    size_t pending_receive_chunks = receive_request_count;
-    size_t request_base = static_cast<size_t>(slot) *
-                          lu->symV2CpuRequestsPerSlot;
-    while (pending_receive_chunks > 0)
-    {
-        if (receive_request_count >
-            static_cast<size_t>(std::numeric_limits<int>::max()))
-            ABORT("SymFact V2 CPU receive request count exceeds MPI limits.");
-        int completed = 0;
-        double progress_start = SuperLU_timer_();
-        if (MPI_Testsome(static_cast<int>(receive_request_count),
-                         lu->symV2CpuRequests.data() + request_base,
-                         &completed, lu->symV2CpuWaitIndices.data(),
-                         lu->symV2CpuWaitStatuses.data()) != MPI_SUCCESS)
-            ABORT("SymFact V2 CPU receive progress failed.");
-        lu->symV2CpuRecvProgressTime +=
-            SuperLU_timer_() - progress_start;
-        ++lu->symV2CpuMpiTestsomeCalls;
-        if (completed == MPI_UNDEFINED)
-            ABORT("SymFact V2 CPU receive progress lost active requests.");
-        if (completed == 0)
-        {
-            double wait_start = SuperLU_timer_();
-            if (MPI_Waitsome(static_cast<int>(receive_request_count),
-                             lu->symV2CpuRequests.data() + request_base,
-                             &completed, lu->symV2CpuWaitIndices.data(),
-                             lu->symV2CpuWaitStatuses.data()) != MPI_SUCCESS)
-                ABORT("SymFact V2 CPU receive wait failed.");
-            lu->symV2CpuRecvWaitTime += SuperLU_timer_() - wait_start;
-            ++lu->symV2CpuMpiWaitsomeCalls;
-        }
-        if (completed == MPI_UNDEFINED || completed <= 0 ||
-            static_cast<size_t>(completed) > pending_receive_chunks)
-            ABORT("SymFact V2 CPU fragment receive made no progress.");
-        lu->symV2CpuMpiCompletions += static_cast<uint64_t>(completed);
-        for (int item = 0; item < completed; ++item)
-        {
-            int request = lu->symV2CpuWaitIndices[
-                static_cast<size_t>(item)];
-            if (request < 0 ||
-                static_cast<size_t>(request) >= receive_request_count)
-                ABORT("SymFact V2 CPU receive completion is invalid.");
-            int peer = lu->symV2CpuRequestPeers[
-                request_base + static_cast<size_t>(request)];
-            if (peer >= 0)
-            {
-                int &remaining = lu->symV2CpuPartnerRecvChunksRemaining[
-                    static_cast<size_t>(peer)];
-                if (remaining <= 0)
-                    ABORT("SymFact V2 CPU partner receive completed twice.");
-                --remaining;
-            }
-            else if (peer == -2)
-            {
-                if (row_chunks_remaining <= 0)
-                    ABORT("SymFact V2 CPU row receive completed twice.");
-                --row_chunks_remaining;
-                row_ready = row_chunks_remaining == 0;
-            }
-            else
-                ABORT("SymFact V2 CPU receive has an invalid peer.");
-        }
-        pending_receive_chunks -= static_cast<size_t>(completed);
-        submit_ready_partners();
-    }
-    if (!row_ready)
-        ABORT("SymFact V2 CPU row fragment did not complete.");
-    submit_ready_partners();
-
     lu->symV2CpuSlotSendBegins[static_cast<size_t>(slot)] =
         receive_request_count;
     lu->symV2CpuSlotRequestCounts[static_cast<size_t>(slot)] =
         request_count;
-    if (request_count == receive_request_count)
-        symldl_v2_cpu_drain_slot_sends(lu, slot);
+    for (int pr = 0; pr < lu->Pr; ++pr)
+        symldl_v2_cpu_reserve_partner_outputs(lu, k, slot, pr, 1);
+    symldl_v2_cpu_note_slot_pending(lu, slot, 1);
+
+    SymLDLV2CpuExchangeState &state =
+        lu->symV2CpuExchangeStates[static_cast<size_t>(slot)];
+    state.k = k;
+    state.parent = parent;
+    state.local_panel = local_panel;
+    state.source_pc = static_cast<int>(source_pc);
+    state.row_chunks_remaining = row_chunks_remaining;
+    state.receive_request_count = receive_request_count;
+    state.pending_receive_chunks = receive_request_count;
+    state.active = 1;
+    ++lu->symV2CpuExchangeIssues;
+    uint64_t active_exchanges = 0;
+    for (size_t active_slot = 0;
+         active_slot < lu->symV2CpuExchangeStates.size(); ++active_slot)
+        active_exchanges +=
+            lu->symV2CpuExchangeStates[active_slot].active != 0;
+    lu->symV2CpuActiveExchangeHighWater = SUPERLU_MAX(
+        lu->symV2CpuActiveExchangeHighWater, active_exchanges);
     lu->symV2CpuFragmentExchangeTime += SuperLU_timer_() - start;
+}
+
+template <typename Ftype>
+static bool symldl_v2_cpu_progress_fragment_exchange(
+    xLUstruct_t<Ftype> *lu, int slot, bool blocking)
+{
+    if (slot < 0 ||
+        static_cast<size_t>(slot) >= lu->symV2CpuExchangeStates.size())
+        ABORT("SymFact V2 CPU exchange-progress slot is invalid.");
+    SymLDLV2CpuExchangeState &state =
+        lu->symV2CpuExchangeStates[static_cast<size_t>(slot)];
+    if (!state.active)
+        return false;
+
+    double progress_wall_start = SuperLU_timer_();
+    bool made_progress = false;
+    size_t request_base = static_cast<size_t>(slot) *
+                          lu->symV2CpuRequestsPerSlot;
+    size_t slot_peer_base = static_cast<size_t>(slot) * lu->Pr;
+    if (state.receive_request_count >
+        static_cast<size_t>(std::numeric_limits<int>::max()))
+        ABORT("SymFact V2 CPU receive request count exceeds MPI limits.");
+
+    if (state.pending_receive_chunks > 0)
+    {
+        int completed = 0;
+        double mpi_start = SuperLU_timer_();
+        if (MPI_Testsome(static_cast<int>(state.receive_request_count),
+                         lu->symV2CpuRequests.data() + request_base,
+                         &completed, lu->symV2CpuWaitIndices.data(),
+                         lu->symV2CpuWaitStatuses.data()) != MPI_SUCCESS)
+            ABORT("SymFact V2 CPU receive progress failed.");
+        lu->symV2CpuRecvProgressTime += SuperLU_timer_() - mpi_start;
+        ++lu->symV2CpuMpiTestsomeCalls;
+        if (completed == MPI_UNDEFINED)
+            ABORT("SymFact V2 CPU receive progress lost active requests.");
+        if (completed == 0 && blocking)
+        {
+            mpi_start = SuperLU_timer_();
+            if (MPI_Waitsome(static_cast<int>(state.receive_request_count),
+                             lu->symV2CpuRequests.data() + request_base,
+                             &completed, lu->symV2CpuWaitIndices.data(),
+                             lu->symV2CpuWaitStatuses.data()) != MPI_SUCCESS)
+                ABORT("SymFact V2 CPU receive wait failed.");
+            lu->symV2CpuRecvWaitTime += SuperLU_timer_() - mpi_start;
+            ++lu->symV2CpuMpiWaitsomeCalls;
+            ++lu->symV2CpuBlockingProgressCalls;
+        }
+        if (completed == MPI_UNDEFINED || completed < 0 ||
+            static_cast<size_t>(completed) > state.pending_receive_chunks)
+            ABORT("SymFact V2 CPU fragment receive made invalid progress.");
+        if (completed > 0)
+        {
+            made_progress = true;
+            lu->symV2CpuMpiCompletions +=
+                static_cast<uint64_t>(completed);
+            for (int item = 0; item < completed; ++item)
+            {
+                int request = lu->symV2CpuWaitIndices[
+                    static_cast<size_t>(item)];
+                if (request < 0 ||
+                    static_cast<size_t>(request) >=
+                        state.receive_request_count)
+                    ABORT("SymFact V2 CPU receive completion is invalid.");
+                int peer = lu->symV2CpuRequestPeers[
+                    request_base + static_cast<size_t>(request)];
+                if (peer >= 0)
+                {
+                    size_t peer_slot = slot_peer_base +
+                                       static_cast<size_t>(peer);
+                    int &remaining =
+                        lu->symV2CpuPartnerRecvChunksRemaining[peer_slot];
+                    if (remaining <= 0)
+                        ABORT("SymFact V2 CPU partner receive completed twice.");
+                    --remaining;
+                }
+                else if (peer == -2)
+                {
+                    if (state.row_chunks_remaining <= 0)
+                        ABORT("SymFact V2 CPU row receive completed twice.");
+                    --state.row_chunks_remaining;
+                }
+                else
+                    ABORT("SymFact V2 CPU receive has an invalid peer.");
+            }
+            state.pending_receive_chunks -=
+                static_cast<size_t>(completed);
+        }
+    }
+
+    if (state.row_chunks_remaining == 0)
+    {
+        const std::vector<int_t> &row_index =
+            lu->symV2RowFragRecvIndex[static_cast<size_t>(state.k)];
+        if (!row_index.empty() && row_index.size() < 2)
+            ABORT("SymFact V2 CPU row receive index is invalid.");
+        Ftype *row_values = lu->symV2CpuRowRecvBufs[slot];
+        if (lu->mycol == state.source_pc && !row_index.empty())
+        {
+            if (state.local_panel < 0 ||
+                state.local_panel >= lu->symV2PanelCount())
+                ABORT("SymFact V2 CPU self row panel is invalid.");
+            size_t send_slot = static_cast<size_t>(state.local_panel) *
+                                   static_cast<size_t>(lu->Pc) +
+                               static_cast<size_t>(lu->mycol);
+            if (send_slot >= lu->symV2CpuRowSendSizes.size())
+                ABORT("SymFact V2 CPU self row plan is invalid.");
+            row_values = lu->symV2CpuRowSendBufs[slot] +
+                         lu->symV2CpuRowSendOffsets[send_slot];
+        }
+        xlpanel_t<Ftype> row_panel;
+        if (!row_index.empty())
+            row_panel = xlpanel_t<Ftype>(
+                const_cast<int_t *>(row_index.data()), row_values);
+
+        size_t recv_base = static_cast<size_t>(state.k) * lu->Pr;
+        for (int pr = 0; pr < lu->Pr; ++pr)
+        {
+            size_t peer_slot = slot_peer_base + static_cast<size_t>(pr);
+            size_t receive_slot = recv_base + static_cast<size_t>(pr);
+            size_t count = lu->symV2CpuPartnerRecvSizes[receive_slot];
+            if (count == 0 ||
+                lu->symV2CpuPartnerUpdateSubmitted[peer_slot] != 0 ||
+                lu->symV2CpuPartnerRecvChunksRemaining[peer_slot] != 0)
+                continue;
+
+            const std::vector<int_t> &column_index =
+                lu->symV2PartnerLRecvIndexBySrc[receive_slot];
+            if (!row_index.empty() && !column_index.empty())
+            {
+                int source = PNUM(pr, state.source_pc, lu->grid);
+                Ftype *column_values = NULL;
+                if (source == lu->iam)
+                {
+                    size_t send_slot =
+                        static_cast<size_t>(state.local_panel) *
+                            static_cast<size_t>(lu->Pc) +
+                        static_cast<size_t>(lu->mycol);
+                    if (send_slot >= lu->symV2CpuPartnerSendSizes.size() ||
+                        lu->symV2CpuPartnerSendSizes[send_slot] != count)
+                        ABORT("SymFact V2 CPU self partner-fragment size mismatch.");
+                    column_values = lu->symV2CpuPartnerSendBufs[slot] +
+                        lu->symV2CpuPartnerSendOffsets[send_slot];
+                }
+                else
+                {
+                    size_t offset =
+                        lu->symV2CpuPartnerRecvOffsets[peer_slot];
+                    if (offset == std::numeric_limits<size_t>::max())
+                        ABORT("SymFact V2 CPU partner receive offset is invalid.");
+                    column_values =
+                        lu->symV2CpuPartnerRecvBufs[slot] + offset;
+                }
+                xlpanel_t<Ftype> column_panel(
+                    const_cast<int_t *>(column_index.data()),
+                    column_values);
+                symldl_v2_cpu_submit_dual_schur_tasks(
+                    lu, state.k, state.parent, slot, row_panel,
+                    column_panel);
+            }
+            symldl_v2_cpu_reserve_partner_outputs(
+                lu, state.k, slot, pr, -1);
+            lu->symV2CpuPartnerUpdateSubmitted[peer_slot] = 1;
+            made_progress = true;
+        }
+    }
+
+    if (state.pending_receive_chunks == 0)
+    {
+        if (state.row_chunks_remaining != 0)
+            ABORT("SymFact V2 CPU row fragment did not complete.");
+        size_t recv_base = static_cast<size_t>(state.k) * lu->Pr;
+        for (int pr = 0; pr < lu->Pr; ++pr)
+            if (lu->symV2CpuPartnerRecvSizes[
+                    recv_base + static_cast<size_t>(pr)] != 0 &&
+                lu->symV2CpuPartnerUpdateSubmitted[
+                    slot_peer_base + static_cast<size_t>(pr)] == 0)
+                ABORT("SymFact V2 CPU partner update was not submitted.");
+
+        state = SymLDLV2CpuExchangeState();
+        symldl_v2_cpu_note_slot_pending(lu, slot, -1);
+        ++lu->symV2CpuExchangeCompletions;
+        ++lu->symV2CpuPanelsCompleted;
+        made_progress = true;
+        if (lu->symV2CpuSlotRequestCounts[static_cast<size_t>(slot)] ==
+            lu->symV2CpuSlotSendBegins[static_cast<size_t>(slot)])
+            symldl_v2_cpu_drain_slot_sends(lu, slot);
+    }
+
+    lu->symV2CpuFragmentExchangeTime +=
+        SuperLU_timer_() - progress_wall_start;
+    return made_progress;
+}
+
+template <typename Ftype>
+static bool symldl_v2_cpu_progress_all_fragment_exchanges(
+    xLUstruct_t<Ftype> *lu, bool blocking)
+{
+    bool made_progress = false;
+    int blocking_slot = -1;
+    int_t blocking_k = std::numeric_limits<int_t>::max();
+    for (size_t slot = 0; slot < lu->symV2CpuExchangeStates.size(); ++slot)
+    {
+        const SymLDLV2CpuExchangeState &state =
+            lu->symV2CpuExchangeStates[slot];
+        if (!state.active)
+            continue;
+        if (state.k < blocking_k)
+        {
+            blocking_k = state.k;
+            blocking_slot = static_cast<int>(slot);
+        }
+        made_progress = symldl_v2_cpu_progress_fragment_exchange(
+                            lu, static_cast<int>(slot), false) ||
+                        made_progress;
+    }
+    if (blocking && !made_progress && blocking_slot >= 0 &&
+        lu->symV2CpuExchangeStates[
+            static_cast<size_t>(blocking_slot)].active)
+        made_progress = symldl_v2_cpu_progress_fragment_exchange(
+            lu, blocking_slot, true);
+    return made_progress;
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_exchange_fragments_and_update(
+    xLUstruct_t<Ftype> *lu, int_t k, int_t parent, int slot,
+    bool submit_tasks)
+{
+    symldl_v2_cpu_issue_fragment_exchange(
+        lu, k, parent, slot, submit_tasks);
+    while (lu->symV2CpuExchangeStates[static_cast<size_t>(slot)].active)
+        symldl_v2_cpu_progress_fragment_exchange(lu, slot, true);
 }

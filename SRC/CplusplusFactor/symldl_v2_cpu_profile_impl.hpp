@@ -62,6 +62,7 @@ static SymLDLV2CpuCapacitySnapshot symldl_v2_cpu_capacity_snapshot(
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuWaitStatuses);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerRecvChunksRemaining);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerUpdateSubmitted);
+    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuExchangeStates);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuSlotRequestCounts);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuSlotSendBegins);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuReductionPanelSlots);
@@ -94,7 +95,7 @@ static uint64_t symldl_v2_cpu_count_outstanding_requests(
 template <typename Ftype>
 static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 {
-    enum { timer_count = 29, counter_count = 27 };
+    enum { timer_count = 29, counter_count = 31 };
     double local_timers[timer_count] = {
         lu->symV2CpuPlanBuildTime,
         lu->symV2CpuWorkspaceInitTime,
@@ -157,14 +158,21 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuOutstandingRequests,
         lu->symV2CpuTaskBatches,
         lu->symV2CpuDeferredTaskBatches,
-        lu->symV2CpuInlineTaskBatches
+        lu->symV2CpuInlineTaskBatches,
+        lu->symV2CpuExchangeIssues,
+        lu->symV2CpuExchangeCompletions,
+        lu->symV2CpuBlockingProgressCalls,
+        lu->symV2CpuProgressYieldsWithTasks
     };
     unsigned long long sum_counters[counter_count] = {0};
     MPI_Reduce(local_counters, sum_counters, counter_count,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, lu->grid3d->comm);
-    unsigned long long local_high_water = lu->symV2CpuActiveSlotHighWater;
-    unsigned long long max_high_water = 0;
-    MPI_Reduce(&local_high_water, &max_high_water, 1,
+    unsigned long long local_high_water[2] = {
+        lu->symV2CpuActiveSlotHighWater,
+        lu->symV2CpuActiveExchangeHighWater
+    };
+    unsigned long long max_high_water[2] = {0, 0};
+    MPI_Reduce(local_high_water, max_high_water, 2,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, lu->grid3d->comm);
 
     unsigned long long local_shapes[31] = {0};
@@ -231,9 +239,9 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         "SymFact V2 CPU setup profile (max-rank): plan_build=%.6f workspace_init=%.6f factor_total=%.6f\n",
         max_timers[0], max_timers[1], max_timers[28]);
     std::printf(
-        "SymFact V2 CPU scheduler profile (max-rank): scheduler=%.6f panel_issue=%.6f idle=%.6f slot_backpressure=%.6f active_slots=%llu\n",
+        "SymFact V2 CPU scheduler profile (max-rank): scheduler=%.6f panel_issue=%.6f idle=%.6f slot_backpressure=%.6f active_slots=%llu active_exchanges=%llu\n",
         max_timers[2], max_timers[3], max_timers[24], max_timers[25],
-        max_high_water);
+        max_high_water[0], max_high_water[1]);
     std::printf(
         "SymFact V2 CPU communication profile (max-rank): panel_exchange=%.6f fragment_exchange=%.6f partner_pack=%.6f row_pack=%.6f recv_post=%.6f recv_progress=%.6f recv_wait=%.6f send_post=%.6f send_drain=%.6f assembly=%.6f reduction=%.6f\n",
         max_timers[4], max_timers[5], max_timers[6], max_timers[7],
@@ -284,15 +292,20 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         blas_source = "generic-BLAS";
     }
     std::printf(
-        "SymFact V2 CPU execution policy: outer_task_workers=%d min_deferred_work=%" PRIu64 " blas_threads=%s source=%s padded_direct=%d\n",
+        "SymFact V2 CPU execution policy: outer_task_workers=%d min_deferred_work=%" PRIu64 " blas_threads=%s source=%s padded_direct=%d async_exchange=%d\n",
         max_workers, symldl_v2_cpu_min_deferred_work(), blas_threads,
-        blas_source, symldl_v2_cpu_padded_direct_enabled() ? 1 : 0);
+        blas_source, symldl_v2_cpu_padded_direct_enabled() ? 1 : 0,
+        symldl_v2_cpu_async_exchange_enabled() ? 1 : 0);
     std::printf(
         "SymFact V2 CPU communication counters (sum): partner_bytes=%llu row_bytes=%llu invdiag_bytes=%llu reduction_bytes=%llu backpressure=%llu testsome=%llu waitsome=%llu mpi_completions=%llu send_drains=%llu oversized_chunks=%llu\n",
         sum_counters[11], sum_counters[12], sum_counters[13],
         sum_counters[14], sum_counters[15], sum_counters[16],
         sum_counters[17], sum_counters[18], sum_counters[19],
         sum_counters[20]);
+    std::printf(
+        "SymFact V2 CPU asynchronous exchange counters (sum): issued=%llu completed=%llu blocking_progress=%llu task_progress_yields=%llu\n",
+        sum_counters[27], sum_counters[28], sum_counters[29],
+        sum_counters[30]);
     std::printf(
         "SymFact V2 CPU runtime invariants (sum): allocations=%llu vector_growths=%llu outstanding_requests=%llu\n",
         sum_counters[21], sum_counters[22], sum_counters[23]);

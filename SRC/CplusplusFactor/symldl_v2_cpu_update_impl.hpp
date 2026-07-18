@@ -1027,6 +1027,8 @@ static void symldl_v2_cpu_submit_grouped_task_range(
     if (defer)
     {
         int priority_value = lookahead ? 100 : 0;
+#pragma omp atomic update
+        ++lu->symV2CpuDeferredTasksActive;
 #pragma omp task firstprivate(source_k, slot, row_index, row_values,             \
                               first_row_block, column_index, column_values,     \
                               source_j_begin, source_j_end, parent, lookahead,  \
@@ -1055,6 +1057,8 @@ static void symldl_v2_cpu_submit_grouped_task_range(
 #pragma omp atomic update
                 lu->symV2CpuSchurTime += task_elapsed;
             }
+#pragma omp atomic update
+            --lu->symV2CpuDeferredTasksActive;
         }
         return;
     }
