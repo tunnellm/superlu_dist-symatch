@@ -16,6 +16,34 @@ inline bool xLUstruct_t<Ftype>::needsUPanelStorage() const
 }
 
 template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2UsesCpuFactor() const
+{
+    return useSymV2Solve() &&
+           symV2FactorBackendKind == SYM_LDL_V2_BACKEND_CPU;
+}
+
+template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2UsesGpuFactor() const
+{
+    return useSymV2Solve() &&
+           symV2FactorBackendKind == SYM_LDL_V2_BACKEND_GPU;
+}
+
+template <typename Ftype>
+inline const char *xLUstruct_t<Ftype>::symV2FactorBackendName() const
+{
+    switch (symV2FactorBackendKind)
+    {
+    case SYM_LDL_V2_BACKEND_CPU:
+        return "cpu";
+    case SYM_LDL_V2_BACKEND_GPU:
+        return "gpu";
+    default:
+        return "none";
+    }
+}
+
+template <typename Ftype>
 inline bool xLUstruct_t<Ftype>::symV2IsCollapsedGrid() const
 {
     return symldl_v2_is_collapsed_grid(grid3d);

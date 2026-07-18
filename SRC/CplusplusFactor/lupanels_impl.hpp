@@ -129,6 +129,19 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
                                              trf3Dpartition->myNodeCount,
                                              trf3Dpartition->treePerm);
     superlu_acc_offload = sp_ienv_dist(10, options); // get_acc_offload();
+    symV2FactorBackendKind = SYM_LDL_V2_BACKEND_NONE;
+    if (useSymV2Solve())
+    {
+#ifdef HAVE_CUDA
+        symV2FactorBackendKind = superlu_acc_offload
+                                     ? SYM_LDL_V2_BACKEND_GPU
+                                     : SYM_LDL_V2_BACKEND_CPU;
+#else
+        symV2FactorBackendKind = SYM_LDL_V2_BACKEND_CPU;
+#endif
+        if (needsUPanelStorage())
+            ABORT("SymFact V2 must not allocate U panel storage.");
+    }
     if (options != NULL && options->SymFact == YES)
     {
         symFactTagUb = set_tag_ub();

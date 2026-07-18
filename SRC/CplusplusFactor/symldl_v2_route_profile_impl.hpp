@@ -112,7 +112,7 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
     std::printf("SymFact V2 route profile");
     if (phase != NULL && phase[0] != '\0')
         std::printf(" (%s)", phase);
-    std::printf(":");
+    std::printf(": backend=%s", symV2FactorBackendName());
     for (int i = 0; i < SYM_V2_ROUTE_PROFILE_COUNTERS; ++i)
         std::printf(" %s=%lld",
                     symldl_v2_route_profile_label(

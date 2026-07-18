@@ -4,6 +4,13 @@
 
 #include "superlu_ddefs.h"
 
+enum SymLDLV2FactorBackend
+{
+    SYM_LDL_V2_BACKEND_NONE = 0,
+    SYM_LDL_V2_BACKEND_CPU,
+    SYM_LDL_V2_BACKEND_GPU
+};
+
 struct SymV2RowDownSendSegmentGPU
 {
     size_t map_offset;
