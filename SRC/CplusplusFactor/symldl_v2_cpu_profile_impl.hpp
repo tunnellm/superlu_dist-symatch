@@ -94,7 +94,7 @@ static uint64_t symldl_v2_cpu_count_outstanding_requests(
 template <typename Ftype>
 static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 {
-    enum { timer_count = 28, counter_count = 27 };
+    enum { timer_count = 29, counter_count = 27 };
     double local_timers[timer_count] = {
         lu->symV2CpuPlanBuildTime,
         lu->symV2CpuWorkspaceInitTime,
@@ -123,6 +123,7 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuSchedulerIdleTime,
         lu->symV2CpuSlotBackpressureTime,
         lu->symV2CpuReductionTime,
+        lu->symV2CpuPaddedPackTime,
         lu->SCT->pdgstrfTimer
     };
     double max_timers[timer_count] = {0.0};
@@ -166,7 +167,7 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
     MPI_Reduce(&local_high_water, &max_high_water, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, lu->grid3d->comm);
 
-    unsigned long long local_shapes[17] = {0};
+    unsigned long long local_shapes[31] = {0};
     unsigned long long local_shape_max[3] = {0};
     for (size_t thread = 0; thread < lu->symV2CpuThreadProfiles.size();
          ++thread)
@@ -190,6 +191,20 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         local_shapes[14] += profile.mapped_destination_full;
         local_shapes[15] += profile.mapped_row_contiguous_values;
         local_shapes[16] += profile.mapped_rectangular_values;
+        local_shapes[17] += profile.padded_candidate_scatters;
+        local_shapes[18] += profile.padded_candidate_source_values;
+        local_shapes[19] += profile.padded_candidate_destination_values;
+        local_shapes[20] += profile.padded_le_125_source_values;
+        local_shapes[21] += profile.padded_le_125_destination_values;
+        local_shapes[22] += profile.padded_le_150_source_values;
+        local_shapes[23] += profile.padded_le_150_destination_values;
+        local_shapes[24] += profile.padded_le_200_source_values;
+        local_shapes[25] += profile.padded_le_200_destination_values;
+        local_shapes[26] += profile.padded_le_400_source_values;
+        local_shapes[27] += profile.padded_le_400_destination_values;
+        local_shapes[28] += profile.padded_direct_groups;
+        local_shapes[29] += profile.padded_direct_source_values;
+        local_shapes[30] += profile.padded_direct_destination_values;
         local_shape_max[0] = SUPERLU_MAX(
             local_shape_max[0],
             static_cast<unsigned long long>(profile.max_m));
@@ -200,9 +215,9 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
             local_shape_max[2],
             static_cast<unsigned long long>(profile.max_k));
     }
-    unsigned long long sum_shapes[17] = {0};
+    unsigned long long sum_shapes[31] = {0};
     unsigned long long max_shapes[3] = {0};
-    MPI_Reduce(local_shapes, sum_shapes, 17, MPI_UNSIGNED_LONG_LONG,
+    MPI_Reduce(local_shapes, sum_shapes, 31, MPI_UNSIGNED_LONG_LONG,
                MPI_SUM, 0, lu->grid3d->comm);
     MPI_Reduce(local_shape_max, max_shapes, 3, MPI_UNSIGNED_LONG_LONG,
                MPI_MAX, 0, lu->grid3d->comm);
@@ -214,7 +229,7 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         return;
     std::printf(
         "SymFact V2 CPU setup profile (max-rank): plan_build=%.6f workspace_init=%.6f factor_total=%.6f\n",
-        max_timers[0], max_timers[1], max_timers[27]);
+        max_timers[0], max_timers[1], max_timers[28]);
     std::printf(
         "SymFact V2 CPU scheduler profile (max-rank): scheduler=%.6f panel_issue=%.6f idle=%.6f slot_backpressure=%.6f active_slots=%llu\n",
         max_timers[2], max_timers[3], max_timers[24], max_timers[25],
@@ -225,10 +240,10 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         max_timers[8], max_timers[9], max_timers[10], max_timers[11],
         max_timers[12], max_timers[13], max_timers[26]);
     std::printf(
-        "SymFact V2 CPU compute profile (max-rank): diag=%.6f invdiag_comm=%.6f w_transform=%.6f schur=%.6f gemm=%.6f lookahead_gemm=%.6f exclude_gemm=%.6f direct=%.6f mapped=%.6f lock_wait=%.6f\n",
+        "SymFact V2 CPU compute profile (max-rank): diag=%.6f invdiag_comm=%.6f w_transform=%.6f schur=%.6f gemm=%.6f lookahead_gemm=%.6f exclude_gemm=%.6f direct=%.6f mapped=%.6f padded_pack=%.6f lock_wait=%.6f\n",
         max_timers[14], max_timers[15], max_timers[16], max_timers[17],
         max_timers[18], max_timers[19], max_timers[20], max_timers[21],
-        max_timers[22], max_timers[23]);
+        max_timers[22], max_timers[27], max_timers[23]);
     std::printf(
         "SymFact V2 CPU work counters (sum): panels=%llu/%llu tasks=%llu task_batches=%llu deferred_batches=%llu inline_batches=%llu gemms=%llu gemm_flops=%llu direct=%llu mapped=%llu lookahead=%llu exclude=%llu lock_attempts=%llu lock_conflicts=%llu\n",
         sum_counters[0], sum_counters[1], sum_counters[2], sum_counters[24],
@@ -248,6 +263,14 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         sum_shapes[7], sum_shapes[8], sum_shapes[9], sum_shapes[10],
         sum_shapes[11], sum_shapes[12], sum_shapes[13], sum_shapes[14],
         sum_shapes[15], sum_shapes[16]);
+    std::printf(
+        "SymFact V2 CPU padded-direct candidates (sum): scatters=%llu source_values=%llu destination_values=%llu le_1.25=%llu/%llu le_1.50=%llu/%llu le_2.00=%llu/%llu le_4.00=%llu/%llu\n",
+        sum_shapes[17], sum_shapes[18], sum_shapes[19], sum_shapes[20],
+        sum_shapes[21], sum_shapes[22], sum_shapes[23], sum_shapes[24],
+        sum_shapes[25], sum_shapes[26], sum_shapes[27]);
+    std::printf(
+        "SymFact V2 CPU padded-direct execution (sum): groups=%llu source_values=%llu destination_values=%llu\n",
+        sum_shapes[28], sum_shapes[29], sum_shapes[30]);
     const char *blas_threads = std::getenv("OPENBLAS_NUM_THREADS");
     const char *blas_source = "OPENBLAS_NUM_THREADS";
     if (blas_threads == NULL || blas_threads[0] == '\0')
@@ -261,9 +284,9 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         blas_source = "generic-BLAS";
     }
     std::printf(
-        "SymFact V2 CPU execution policy: outer_task_workers=%d min_deferred_work=%" PRIu64 " blas_threads=%s source=%s\n",
+        "SymFact V2 CPU execution policy: outer_task_workers=%d min_deferred_work=%" PRIu64 " blas_threads=%s source=%s padded_direct=%d\n",
         max_workers, symldl_v2_cpu_min_deferred_work(), blas_threads,
-        blas_source);
+        blas_source, symldl_v2_cpu_padded_direct_enabled() ? 1 : 0);
     std::printf(
         "SymFact V2 CPU communication counters (sum): partner_bytes=%llu row_bytes=%llu invdiag_bytes=%llu reduction_bytes=%llu backpressure=%llu testsome=%llu waitsome=%llu mpi_completions=%llu send_drains=%llu oversized_chunks=%llu\n",
         sum_counters[11], sum_counters[12], sum_counters[13],

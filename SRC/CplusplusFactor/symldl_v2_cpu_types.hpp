@@ -1,7 +1,17 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
+
+static inline bool symldl_v2_cpu_padded_direct_enabled()
+{
+    static const bool enabled = []() {
+        const char *value = std::getenv("GPU3DV2_CPU_PADDED_DIRECT");
+        return value == NULL || std::atoi(value) != 0;
+    }();
+    return enabled;
+}
 
 static inline size_t symldl_v2_cpu_mpi_chunk_count(size_t count)
 {
@@ -43,4 +53,18 @@ struct SymLDLV2CpuThreadProfile
     uint64_t mapped_destination_full = 0;
     uint64_t mapped_row_contiguous_values = 0;
     uint64_t mapped_rectangular_values = 0;
+    uint64_t padded_candidate_scatters = 0;
+    uint64_t padded_candidate_source_values = 0;
+    uint64_t padded_candidate_destination_values = 0;
+    uint64_t padded_le_125_source_values = 0;
+    uint64_t padded_le_125_destination_values = 0;
+    uint64_t padded_le_150_source_values = 0;
+    uint64_t padded_le_150_destination_values = 0;
+    uint64_t padded_le_200_source_values = 0;
+    uint64_t padded_le_200_destination_values = 0;
+    uint64_t padded_le_400_source_values = 0;
+    uint64_t padded_le_400_destination_values = 0;
+    uint64_t padded_direct_groups = 0;
+    uint64_t padded_direct_source_values = 0;
+    uint64_t padded_direct_destination_values = 0;
 };

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include "xlupanels.hpp"
 #include "symldl_v2_cpu_blas.hpp"
 
@@ -301,6 +303,45 @@ static void symldl_v2_cpu_scatter_dual_block(
             row_contiguous ? values : 0;
         profile.mapped_rectangular_values +=
             row_contiguous && column_contiguous ? values : 0;
+        if (column_full)
+        {
+            uint64_t source_values =
+                static_cast<uint64_t>(source_rows) *
+                static_cast<uint64_t>(source_columns);
+            uint64_t destination_values =
+                static_cast<uint64_t>(destination_rows) *
+                static_cast<uint64_t>(destination_columns);
+            ++profile.padded_candidate_scatters;
+            profile.padded_candidate_source_values += source_values;
+            profile.padded_candidate_destination_values += destination_values;
+            uint64_t source_row_count = static_cast<uint64_t>(source_rows);
+            uint64_t destination_row_count =
+                static_cast<uint64_t>(destination_rows);
+            if (4 * destination_row_count <= 5 * source_row_count)
+            {
+                profile.padded_le_125_source_values += source_values;
+                profile.padded_le_125_destination_values +=
+                    destination_values;
+            }
+            if (2 * destination_row_count <= 3 * source_row_count)
+            {
+                profile.padded_le_150_source_values += source_values;
+                profile.padded_le_150_destination_values +=
+                    destination_values;
+            }
+            if (destination_row_count <= 2 * source_row_count)
+            {
+                profile.padded_le_200_source_values += source_values;
+                profile.padded_le_200_destination_values +=
+                    destination_values;
+            }
+            if (destination_row_count <= 4 * source_row_count)
+            {
+                profile.padded_le_400_source_values += source_values;
+                profile.padded_le_400_destination_values +=
+                    destination_values;
+            }
+        }
     }
 
     Ftype *destination = destination_panel.blkPtr(local_block);
@@ -436,12 +477,13 @@ static void symldl_v2_cpu_dual_update_block(
 }
 
 template <typename Ftype>
-static bool symldl_v2_cpu_find_direct_group_destination(
+static bool symldl_v2_cpu_find_group_destination(
     xLUstruct_t<Ftype> *lu, xlpanel_t<Ftype> &row_panel,
     int_t first_row_block, int_t last_row_block,
     xlpanel_t<Ftype> &column_panel,
-    int_t source_j, int_t *local_panel_out, int_t *first_block_out,
-    int_t *last_block_out)
+    int_t source_j, bool allow_row_padding, int_t *local_panel_out,
+    int_t *first_block_out, int_t *last_block_out,
+    int_t *destination_rows_out)
 {
     int_t gj = column_panel.gid(source_j);
     if (lu->symV2PanelRoot(gj) != lu->mycol)
@@ -475,24 +517,27 @@ static bool symldl_v2_cpu_find_direct_group_destination(
             symldl_v2_cpu_panel_find(destination, gi);
         if (destination_block == GLOBAL_BLOCK_NOT_FOUND ||
             (previous_destination_block >= 0 &&
-             destination_block != previous_destination_block + 1) ||
-            destination.nbrow(destination_block) !=
-                row_panel.nbrow(source_block))
+             destination_block != previous_destination_block + 1))
             return false;
         if (first_destination_block < 0)
         {
             first_destination_block = destination_block;
             destination_row_begin = destination.stRow(destination_block);
         }
-        if (destination.stRow(destination_block) - destination_row_begin !=
-            row_panel.stRow(source_block) - source_row_begin)
-            return false;
         int_t rows = row_panel.nbrow(source_block);
-        int_t *source_rows = row_panel.rowList(source_block);
-        int_t *destination_rows = destination.rowList(destination_block);
-        for (int_t row = 0; row < rows; ++row)
-            if (source_rows[row] != destination_rows[row])
+        if (!allow_row_padding)
+        {
+            if (destination.nbrow(destination_block) != rows ||
+                destination.stRow(destination_block) -
+                        destination_row_begin !=
+                    row_panel.stRow(source_block) - source_row_begin)
                 return false;
+            int_t *source_rows = row_panel.rowList(source_block);
+            int_t *destination_rows = destination.rowList(destination_block);
+            for (int_t row = 0; row < rows; ++row)
+                if (source_rows[row] != destination_rows[row])
+                    return false;
+        }
         previous_destination_block = destination_block;
     }
     if (first_destination_block < 0)
@@ -500,7 +545,117 @@ static bool symldl_v2_cpu_find_direct_group_destination(
     *local_panel_out = local_panel;
     *first_block_out = first_destination_block;
     *last_block_out = previous_destination_block;
+    *destination_rows_out =
+        destination.stRow(previous_destination_block) +
+        destination.nbrow(previous_destination_block) -
+        destination_row_begin;
     return true;
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_pack_padded_group(
+    xlpanel_t<Ftype> &row_panel, int_t first_row_block,
+    int_t last_row_block, xlpanel_t<Ftype> &destination,
+    int_t first_destination_block, int_t destination_rows,
+    int_t *destination_index, int_t *row_map, int_t map_capacity,
+    Ftype *padded)
+{
+    int_t source_row_begin = row_panel.stRow(first_row_block);
+    int_t destination_row_begin =
+        destination.stRow(first_destination_block);
+    int_t k = row_panel.ncols();
+    std::fill(padded,
+              padded + static_cast<size_t>(destination_rows) * k,
+              zeroT<Ftype>());
+
+    for (int_t source_block = first_row_block;
+         source_block <= last_row_block; ++source_block)
+    {
+        int_t destination_block =
+            first_destination_block + source_block - first_row_block;
+        int_t source_rows = row_panel.nbrow(source_block);
+        int_t destination_block_rows =
+            destination.nbrow(destination_block);
+        int_t *source_row_list = row_panel.rowList(source_block);
+        int_t *destination_row_list =
+            destination.rowList(destination_block);
+        int_t source_offset =
+            row_panel.stRow(source_block) - source_row_begin;
+        int_t destination_offset =
+            destination.stRow(destination_block) - destination_row_begin;
+
+        bool sorted_rows = true;
+        for (int_t row = 1; row < source_rows; ++row)
+            sorted_rows = sorted_rows &&
+                          source_row_list[row - 1] < source_row_list[row];
+        for (int_t row = 1; row < destination_block_rows; ++row)
+            sorted_rows = sorted_rows &&
+                          destination_row_list[row - 1] <
+                              destination_row_list[row];
+        if (sorted_rows)
+        {
+            int_t destination_row = 0;
+            for (int_t source_row = 0; source_row < source_rows;
+                 ++source_row)
+            {
+                while (destination_row < destination_block_rows &&
+                       destination_row_list[destination_row] <
+                           source_row_list[source_row])
+                    ++destination_row;
+                if (destination_row >= destination_block_rows ||
+                    destination_row_list[destination_row] !=
+                        source_row_list[source_row])
+                    ABORT(
+                        "SymFact V2 CPU padded row is absent from destination.");
+                row_map[source_row] = destination_row;
+            }
+        }
+        else
+        {
+            for (int_t destination_row = 0;
+                 destination_row < destination_block_rows;
+                 ++destination_row)
+            {
+                if (destination_row_list[destination_row] < 0 ||
+                    destination_row_list[destination_row] >= map_capacity)
+                    ABORT(
+                        "SymFact V2 CPU padded destination row is invalid.");
+                destination_index[
+                    destination_row_list[destination_row]] =
+                    destination_row;
+            }
+            for (int_t source_row = 0; source_row < source_rows;
+                 ++source_row)
+            {
+                if (source_row_list[source_row] < 0 ||
+                    source_row_list[source_row] >= map_capacity)
+                    ABORT("SymFact V2 CPU padded source row is invalid.");
+                int_t destination_row =
+                    destination_index[source_row_list[source_row]];
+                if (destination_row < 0 ||
+                    destination_row >= destination_block_rows ||
+                    destination_row_list[destination_row] !=
+                        source_row_list[source_row])
+                    ABORT(
+                        "SymFact V2 CPU padded row is absent from destination.");
+                row_map[source_row] = destination_row;
+            }
+        }
+
+        for (int_t column = 0; column < k; ++column)
+        {
+            Ftype *destination_column =
+                padded + destination_offset +
+                static_cast<size_t>(column) * destination_rows;
+            Ftype *source_column =
+                row_panel.val + source_row_begin + source_offset +
+                static_cast<size_t>(column) * row_panel.LDA();
+            for (int_t source_row = 0; source_row < source_rows;
+                 ++source_row)
+                destination_column[row_map[source_row]] =
+                    source_column[source_row];
+        }
+    }
 }
 
 template <typename Ftype>
@@ -548,10 +703,11 @@ static long long symldl_v2_cpu_grouped_update_column(
         int_t direct_local_panel = -1;
         int_t direct_first_block = -1;
         int_t direct_last_block = -1;
-        if (symldl_v2_cpu_find_direct_group_destination(
+        int_t direct_destination_rows = 0;
+        if (symldl_v2_cpu_find_group_destination(
                 lu, row_panel, source_i, group_last, column_panel, source_j,
-                &direct_local_panel, &direct_first_block,
-                &direct_last_block))
+                false, &direct_local_panel, &direct_first_block,
+                &direct_last_block, &direct_destination_rows))
         {
             symldl_v2_cpu_note_gemm_shape(lu, m, n, k);
             xlpanel_t<Ftype> &destination =
@@ -616,6 +772,117 @@ static long long symldl_v2_cpu_grouped_update_column(
 #endif
                 lu->symV2CpuGemmFlops +=
                     symldl_v2_cpu_gemm_flops(m, n, k);
+            }
+        }
+        else if (symldl_v2_cpu_padded_direct_enabled() &&
+                 symldl_v2_cpu_find_group_destination(
+                     lu, row_panel, source_i, group_last, column_panel,
+                     source_j, true, &direct_local_panel,
+                     &direct_first_block, &direct_last_block,
+                     &direct_destination_rows) &&
+                 direct_destination_rows <= lu->ldt &&
+                 static_cast<uint64_t>(direct_destination_rows) * 4 <=
+                     static_cast<uint64_t>(m) * 5)
+        {
+            int thread_id = 0;
+#ifdef _OPENMP
+            thread_id = omp_get_thread_num();
+#endif
+            Ftype *padded = lu->bigV +
+                static_cast<size_t>(thread_id) * lu->ldt * lu->ldt;
+            int_t *destination_index =
+                lu->indirect + static_cast<size_t>(thread_id) * lu->ldt;
+            int_t *row_map =
+                lu->indirectRow + static_cast<size_t>(thread_id) * lu->ldt;
+            xlpanel_t<Ftype> &destination =
+                lu->lPanelVec[direct_local_panel];
+            double pack_start =
+                lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
+            symldl_v2_cpu_pack_padded_group(
+                row_panel, source_i, group_last, destination,
+                direct_first_block, direct_destination_rows,
+                destination_index, row_map, lu->ldt, padded);
+            double pack_time = lu->symV2CpuProfileEnabled ?
+                SuperLU_timer_() - pack_start : 0.0;
+            for (int_t block = direct_first_block;
+                 block <= direct_last_block; ++block)
+                symldl_v2_cpu_lock_output(
+                    lu, symldl_v2_cpu_output_lock_id(
+                            lu, direct_local_panel, block));
+            Ftype alpha = -one<Ftype>();
+            Ftype beta = one<Ftype>();
+            double gemm_start =
+                lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
+            symldl_v2_cpu_gemm<Ftype>(
+                "N", "T", direct_destination_rows, n, k, alpha,
+                padded, direct_destination_rows,
+                const_cast<Ftype *>(column_values) +
+                    column_panel.blkPtrOffset(source_j),
+                column_panel.LDA(), beta,
+                destination.blkPtr(direct_first_block), destination.LDA());
+            double gemm_time = lu->symV2CpuProfileEnabled ?
+                SuperLU_timer_() - gemm_start : 0.0;
+            for (int_t block = direct_last_block;
+                 block >= direct_first_block; --block)
+                symldl_v2_cpu_unlock_output(
+                    lu, symldl_v2_cpu_output_lock_id(
+                            lu, direct_local_panel, block));
+            if (lu->symV2CpuProfileEnabled)
+            {
+                symldl_v2_cpu_note_gemm_shape(
+                    lu, direct_destination_rows, n, k);
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                lu->symV2CpuGemmTime += gemm_time;
+                if (lookahead)
+                {
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                    lu->symV2CpuLookaheadGemmTime += gemm_time;
+                }
+                else
+                {
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                    lu->symV2CpuExcludeGemmTime += gemm_time;
+                }
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                lu->symV2CpuDirectScatterTime += gemm_time;
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                lu->symV2CpuPaddedPackTime += pack_time;
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                ++lu->symV2CpuGroupedGemms;
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                ++lu->symV2CpuDirectScatters;
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+                lu->symV2CpuGemmFlops += symldl_v2_cpu_gemm_flops(
+                    direct_destination_rows, n, k);
+                if (thread_id < 0 ||
+                    static_cast<size_t>(thread_id) >=
+                        lu->symV2CpuThreadProfiles.size())
+                    ABORT(
+                        "SymFact V2 CPU padded profile does not cover the OpenMP team.");
+                SymLDLV2CpuThreadProfile &profile =
+                    lu->symV2CpuThreadProfiles[
+                        static_cast<size_t>(thread_id)];
+                ++profile.padded_direct_groups;
+                profile.padded_direct_source_values +=
+                    static_cast<uint64_t>(m) * n;
+                profile.padded_direct_destination_values +=
+                    static_cast<uint64_t>(direct_destination_rows) * n;
             }
         }
         else
