@@ -740,6 +740,17 @@ pdgstrs3d_symldl_sync_factor_gpu(pdgstrs3d_symldl_solve_meta_t *meta)
     meta->factor_gpu_synchronized = 1;
 }
 
+static int
+pdgstrs3d_symldl_factor_offload(superlu_dist_options_t *options)
+{
+#if defined(GPU_ACC)
+    return sp_ienv_dist(10, options);
+#else
+    (void) options;
+    return 0;
+#endif
+}
+
 static dSymLDLSolveGraph *
 pdgstrs3d_symldl_solve_graph_create(
     pdgstrs3d_symldl_solve_meta_t *meta, gridinfo3d_t *grid3d)
@@ -1155,12 +1166,8 @@ pdgstrs3d_symldl_finalize(dSOLVEstruct_t *SOLVEstruct)
     if (SOLVEstruct == NULL || SOLVEstruct->symldl_v2_solve_meta == NULL)
     {
         if (SOLVEstruct != NULL && SOLVEstruct->symldl_v2_factor_handle != NULL) {
-#if defined(GPU_ACC)
             dDestroyLUgpuHandle(
                 (dLUgpu_Handle) SOLVEstruct->symldl_v2_factor_handle);
-#else
-            ABORT("SymLDL V2 solve cannot destroy GPU factor state in a non-CUDA build.");
-#endif
             SOLVEstruct->symldl_v2_factor_handle = NULL;
         }
         return;
@@ -1296,7 +1303,7 @@ pdgstrs3d_symldl_init_meta(superlu_dist_options_t *options, int_t n, int nrhs,
     (void) pdgstrs3d_symldl_solve_meta_get(
         SOLVEstruct, n, nsupers, nrhs, LUstruct, trf3Dpartition,
         supernodeMask, &grid3d->grid2d, grid3d, global_nprocs,
-        sp_ienv_dist(10, options), sp_ienv_dist(11, options),
+        pdgstrs3d_symldl_factor_offload(options), sp_ienv_dist(11, options),
         sp_ienv_dist(7, options));
 }
 
@@ -1583,7 +1590,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         ldalsum, nrhs, nlb, XK_H, "3D SymLDL solve x workspace");
     int global_rank;
     int global_nprocs;
-    int superlu_acc_offload = sp_ienv_dist(10, options);
+    int superlu_acc_offload = pdgstrs3d_symldl_factor_offload(options);
     int superlu_acc_solve = sp_ienv_dist(11, options);
     int superlu_n_gemm = sp_ienv_dist(7, options);
     pdgstrs3d_symldl_solve_meta_t *solve_meta;
