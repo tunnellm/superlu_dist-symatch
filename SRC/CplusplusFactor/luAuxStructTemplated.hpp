@@ -196,6 +196,7 @@ inline doublecomplex zeroT<doublecomplex>() {
     return z;
 }
 
+#if defined(HAVE_CUDA) && defined(__CUDACC__)
 template <typename T>
 __device__
 inline T atomicAddT(T* address, T val);
@@ -216,33 +217,37 @@ inline float atomicAddT<float>(float* address, float val) {
 template<>
 inline doublecomplex atomicAddT<doublecomplex>(doublecomplex* address, doublecomplex val) {
     // doublecomplex out = *address;
-    
+
     atomicAdd (&address->r, val.r);
     atomicAdd (&address->i, val.i);
     return *address;
 }
+#define SUPERLU_HOST_DEVICE __host__ __device__
+#else
+#define SUPERLU_HOST_DEVICE
+#endif
 
 
 // External Operator Overload for '-'
-__host__ __device__
+SUPERLU_HOST_DEVICE
 inline doublecomplex operator-(const doublecomplex& a, const doublecomplex& b) {
     return {a.r - b.r, a.i - b.i};
 }
 
 // External Operator Overload for '=='
-__host__ __device__
+SUPERLU_HOST_DEVICE
 inline bool operator==(const doublecomplex& a, const doublecomplex& b) {
     return (a.r == b.r) && (a.i == b.i);
 }
 
 // External Operator Overload for '/'
-__host__ __device__
+SUPERLU_HOST_DEVICE
 inline doublecomplex operator/(const doublecomplex& a, const doublecomplex& b) {
     double denom = b.r * b.r + b.i * b.i;
     return {(a.r * b.r + a.i * b.i) / denom, (a.i * b.r - a.r * b.i) / denom};
 }
 
-__host__ __device__
+SUPERLU_HOST_DEVICE
 inline doublecomplex operator-(const doublecomplex& a) {
     return {-a.r, -a.i};
 }
@@ -251,7 +256,7 @@ inline doublecomplex operator-(const doublecomplex& a) {
 // It must be a member function.
 
 // External Operator Overload for '*='
-__host__ __device__
+SUPERLU_HOST_DEVICE
 inline doublecomplex& operator*=(doublecomplex& a, const doublecomplex& b) {
     double tr = a.r * b.r - a.i * b.i;
     double ti = a.r * b.i + a.i * b.r;
@@ -261,12 +266,14 @@ inline doublecomplex& operator*=(doublecomplex& a, const doublecomplex& b) {
 }
 
 // External Operator Overload for '-='
-__host__ __device__
+SUPERLU_HOST_DEVICE
 inline doublecomplex& operator-=(doublecomplex& a, const doublecomplex& b) {
     a.r -= b.r;
     a.i -= b.i;
     return a;
 }
+
+#undef SUPERLU_HOST_DEVICE
 
 
 // Template for general case (not yet defined)
@@ -323,4 +330,3 @@ inline void setDiagToThreshold(doublecomplex* diagptr, double thresh) {
     
     *diagptr = z;
 }
-

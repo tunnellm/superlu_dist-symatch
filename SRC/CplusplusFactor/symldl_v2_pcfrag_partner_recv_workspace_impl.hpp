@@ -56,8 +56,8 @@ static void symldl_v2_build_partner_l_recv_maps(xLUstruct_t<Ftype> *lu)
     SymLDLV2PartnerMetaPayload meta =
         symldl_v2_collect_partner_l_metadata(lu);
     const std::vector<int_t> &all_meta_payload = meta.payload;
-    const std::vector<int> &meta_counts = meta.counts;
-    const std::vector<int> &meta_displs = meta.displs;
+    const std::vector<size_t> &meta_counts = meta.counts;
+    const std::vector<size_t> &meta_displs = meta.displs;
     int comm_size = meta.comm_size;
 
     size_t compact_count = symldl_v2_checked_product(

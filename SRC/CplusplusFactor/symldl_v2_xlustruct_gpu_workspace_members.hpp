@@ -2,7 +2,6 @@
 // Keep declarations here limited to SymLDL V2 GPU workspace state.
 
 std::vector<int> symPanelReadyEventIds;
-std::vector<unsigned char> symV2UsePcFragmentSchur;
 std::vector<int_t> symV2RawPanelNodes;
 
 void *symV2LPanelArenaGPU = NULL;

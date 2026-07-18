@@ -3,6 +3,7 @@
 
 #include "symldl_v2_xlustruct_core_members.hpp"
 #include "symldl_v2_xlustruct_plan_members.hpp"
+#include "symldl_v2_xlustruct_cpu_members.hpp"
 
 #ifdef HAVE_CUDA
 #include "symldl_v2_xlustruct_gpu_members.hpp"

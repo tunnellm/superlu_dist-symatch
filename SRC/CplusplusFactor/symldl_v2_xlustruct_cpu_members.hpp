@@ -1,0 +1,106 @@
+// This file is included inside xLUstruct_t.
+// Keep declarations here limited to SymLDL V2 CPU factor state.
+
+std::vector<Ftype *> symV2CpuRawPanelBufs;
+std::vector<Ftype *> symV2CpuPartnerSendBufs;
+std::vector<Ftype *> symV2CpuPartnerRecvBufs;
+std::vector<Ftype *> symV2CpuRowSendBufs;
+std::vector<Ftype *> symV2CpuRowRecvBufs;
+size_t symV2CpuRawPanelCapacity = 0;
+size_t symV2CpuPartnerSendCapacity = 0;
+size_t symV2CpuPartnerRecvCapacity = 0;
+size_t symV2CpuRowSendCapacity = 0;
+size_t symV2CpuRowRecvCapacity = 0;
+
+std::vector<size_t> symV2CpuPartnerSegOffsets;
+std::vector<size_t> symV2CpuPartnerSendOffsets;
+std::vector<size_t> symV2CpuPartnerSendSizes;
+std::vector<size_t> symV2CpuPartnerRecvSizes;
+std::vector<SymLDLV2CpuPackSegment> symV2CpuPartnerSegments;
+std::vector<int_t> symV2CpuPartnerRowPermutations;
+
+std::vector<size_t> symV2CpuRowSegOffsets;
+std::vector<size_t> symV2CpuRowSendOffsets;
+std::vector<size_t> symV2CpuRowSendSizes;
+std::vector<SymLDLV2CpuPackSegment> symV2CpuRowSegments;
+std::vector<int_t> symV2CpuRowPermutations;
+
+std::vector<MPI_Request> symV2CpuRequests;
+size_t symV2CpuRequestsPerSlot = 0;
+std::vector<size_t> symV2CpuPartnerRecvOffsets;
+std::vector<int> symV2CpuRequestPeers;
+std::vector<int> symV2CpuWaitIndices;
+std::vector<MPI_Status> symV2CpuWaitStatuses;
+std::vector<int> symV2CpuPartnerRecvChunksRemaining;
+std::vector<unsigned char> symV2CpuPartnerUpdateSubmitted;
+std::vector<size_t> symV2CpuSlotRequestCounts;
+std::vector<size_t> symV2CpuSlotSendBegins;
+std::vector<int_t> symV2CpuReductionPanelSlots;
+std::vector<int> symV2CpuReductionChunksRemaining;
+std::vector<SymLDLV2CpuThreadProfile> symV2CpuThreadProfiles;
+std::vector<size_t> symV2CpuOutputLockOffsets;
+int *symV2CpuPanelPending = NULL;
+int *symV2CpuSlotPending = NULL;
+// Keep the class layout identical in C++ and nvcc translation units.  nvcc
+// does not define _OPENMP for host code in this build, so expose OpenMP state
+// through an opaque pointer and cast only in OpenMP-compiled CPU code.
+void *symV2CpuOutputLocks = NULL;
+
+double symV2CpuPanelExchangeTime = 0.0;
+double symV2CpuFragmentExchangeTime = 0.0;
+double symV2CpuSchurTime = 0.0;
+double symV2CpuReductionTime = 0.0;
+double symV2CpuPlanBuildTime = 0.0;
+double symV2CpuWorkspaceInitTime = 0.0;
+double symV2CpuSchedulerTime = 0.0;
+double symV2CpuPanelIssueTime = 0.0;
+double symV2CpuDiagFactorTime = 0.0;
+double symV2CpuInvDiagCommTime = 0.0;
+double symV2CpuWTransformTime = 0.0;
+double symV2CpuPartnerPackTime = 0.0;
+double symV2CpuRowPackTime = 0.0;
+double symV2CpuRecvPostTime = 0.0;
+double symV2CpuRecvProgressTime = 0.0;
+double symV2CpuRecvWaitTime = 0.0;
+double symV2CpuSendPostTime = 0.0;
+double symV2CpuSendDrainTime = 0.0;
+double symV2CpuGemmTime = 0.0;
+double symV2CpuDirectScatterTime = 0.0;
+double symV2CpuMappedScatterTime = 0.0;
+double symV2CpuScatterLockWaitTime = 0.0;
+double symV2CpuSchedulerIdleTime = 0.0;
+double symV2CpuSlotBackpressureTime = 0.0;
+double symV2CpuFragmentAssemblyTime = 0.0;
+double symV2CpuLookaheadGemmTime = 0.0;
+double symV2CpuExcludeGemmTime = 0.0;
+uint64_t symV2CpuSchurTasks = 0;
+uint64_t symV2CpuReductionBytes = 0;
+uint64_t symV2CpuOutputLockConflicts = 0;
+uint64_t symV2CpuPanelsIssued = 0;
+uint64_t symV2CpuPanelsCompleted = 0;
+uint64_t symV2CpuGroupedGemms = 0;
+uint64_t symV2CpuGemmFlops = 0;
+uint64_t symV2CpuDirectScatters = 0;
+uint64_t symV2CpuMappedScatters = 0;
+uint64_t symV2CpuLookaheadTasks = 0;
+uint64_t symV2CpuExcludeTasks = 0;
+uint64_t symV2CpuTaskBatches = 0;
+uint64_t symV2CpuDeferredTaskBatches = 0;
+uint64_t symV2CpuInlineTaskBatches = 0;
+uint64_t symV2CpuOutputLockAttempts = 0;
+uint64_t symV2CpuPartnerBytes = 0;
+uint64_t symV2CpuRowBytes = 0;
+uint64_t symV2CpuActiveSlotHighWater = 0;
+uint64_t symV2CpuSlotBackpressureEvents = 0;
+uint64_t symV2CpuMpiTestsomeCalls = 0;
+uint64_t symV2CpuMpiWaitsomeCalls = 0;
+uint64_t symV2CpuMpiCompletions = 0;
+uint64_t symV2CpuSendDrainCalls = 0;
+uint64_t symV2CpuOversizedMpiChunks = 0;
+uint64_t symV2CpuInvDiagBytes = 0;
+uint64_t symV2CpuRuntimeAllocations = 0;
+uint64_t symV2CpuRuntimeVectorGrowths = 0;
+uint64_t symV2CpuOutstandingRequests = 0;
+bool symV2CpuFactorLoopActive = false;
+bool symV2CpuProfileEnabled = false;
+int symV2CpuWorkerCount = 1;

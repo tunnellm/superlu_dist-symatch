@@ -29,18 +29,19 @@ void symV2RouteProfileNoteDualFragmentLookahead();
 void symV2RouteProfileNoteDualFragmentExclude();
 void symV2RouteProfilePrint(const char *phase) const;
 void symV2FreeDiagBlocks();
+void symV2FreeCpuStorage();
 void symV2FreeStreamHostBuffers(int stream);
+int_t pdgstrf3dSymV2();
+bool symV2UsePcFragmentSchurPanel(int_t k) const;
 
 #ifdef HAVE_CUDA
 void symV2FreeGpuStorage();
 
 int_t dSymV2PanelBcastGPU(int_t k, int_t offset);
-int_t pdgstrf3dSymV2();
 int_t dSymV2PrepackLFragmentsGPU(int_t k, int_t stream_offset);
 int_t dSymV2LFragmentExchangeGPU(int_t k, int_t stream_offset);
 int_t dSymV2LookAheadUpdateGPU(int streamId, int_t k, int_t laIdx,
                                xlpanel_t<Ftype> &lpanel);
 int_t dSymV2SchurCompUpdateExcludeOneGPU(int streamId, int_t k, int_t ex,
                                          xlpanel_t<Ftype> &lpanel);
-bool symV2UsePcFragmentSchurPanel(int_t k) const;
 #endif

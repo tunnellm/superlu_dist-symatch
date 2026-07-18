@@ -576,11 +576,11 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
     dtrf3Dpartition_t *trf3Dpartition=LUstruct->trf3Dpart;
     int gpu3dVersion = 1; // default is to use C++ code in CplusplusFactor/ directory
-#ifdef GPU_ACC
     if (getenv("GPU3DVERSION")) {
        gpu3dVersion = atoi(getenv("GPU3DVERSION"));
     }
 
+#ifdef GPU_ACC
     LUgpu_Handle LUgpu;
 #endif
 
@@ -1570,11 +1570,33 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 #endif /* matching ifdef GPU_ACC */
 		{
 #ifndef GPU_ACC
-			if (dSymV2SolveEnabled(options, gpu3dVersion))
-				ABORT("SymFact GPU3DVERSION=2 requires GPU_ACC.");
+			if (gpu3dVersion == 2 && !use_sym_v2_solve)
+				ABORT("GPU3DVERSION=2 requires SymFact=YES.");
+			if (use_sym_v2_solve) {
+				if (options->batchCount != 0)
+					ABORT("SymFact V2 CPU backend does not support batchCount>0.");
+				int ldt = sp_ienv_dist(3, options);
+				double s_eps = smach_dist("Epsilon");
+				double thresh = s_eps * anorm;
+				dLUgpu_Handle dLUcpu = dCreateLUgpuHandle(
+					nsupers, ldt, trf3Dpartition, LUstruct, grid3d,
+					SCT, options, stat, thresh, info);
+				pdgstrf3d_LUv2(dLUcpu);
+				if (nrhs > 0 && *info == 0) {
+					SOLVEstruct->symldl_v2_factor_handle = (void *) dLUcpu;
+					dLUcpu = NULL;
+				} else {
+					dCopyLUGPU2Host(dLUcpu, LUstruct);
+				}
+				if (dLUcpu != NULL)
+					dDestroyLUgpuHandle(dLUcpu);
+				reduceStat(FACT, stat, grid3d);
+			} else
 #endif
-			pdgstrf3d(options, m, n, anorm, trf3Dpartition, SCT, LUstruct,
-					  grid3d, stat, info);
+			{
+				pdgstrf3d(options, m, n, anorm, trf3Dpartition, SCT,
+					  LUstruct, grid3d, stat, info);
+			}
 
 			// dDumpLblocks3D(nsupers, grid3d, LUstruct->Glu_persist, LUstruct->Llu);
 		}

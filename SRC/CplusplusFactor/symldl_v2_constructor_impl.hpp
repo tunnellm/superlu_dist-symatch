@@ -3,6 +3,9 @@
 #include <vector>
 
 #include "xlupanels.hpp"
+#include "symldl_v2_cpu_workspace_impl.hpp"
+#include "symldl_v2_cpu_plan_impl.hpp"
+#include "symldl_v2_plan_signature_impl.hpp"
 
 // Keep SymLDL V2 constructor orchestration out of the legacy LU panel setup.
 
@@ -42,7 +45,10 @@ static void symldl_v2_constructor_setup_factor_workspace(
 {
     symldl_v2_compute_pcfrag_scratch(lu, LUstruct);
     if (lu->useSymV2Solve())
+    {
         symldl_v2_allocate_factor_workspace(lu);
+        symldl_v2_allocate_cpu_factor_workspace(lu);
+    }
 }
 
 template <typename Ftype>
@@ -53,11 +59,13 @@ static void symldl_v2_constructor_setup_fragment_metadata(
         return;
 
     symldl_v2_initialize_pcfrag_tables(lu);
+    symldl_v2_build_cpu_fragment_plan(lu);
 #ifdef HAVE_CUDA
     symldl_v2_build_partner_l_send_maps(lu);
     symldl_v2_build_partner_l_recv_maps(lu);
     symldl_v2_build_row_down_maps(lu);
 #endif
+    symldl_v2_print_logical_plan_signature(lu);
     symldl_v2_allocate_fragment_host_buffers(lu);
 }
 

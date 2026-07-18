@@ -728,6 +728,10 @@ pdgstrs3d_symldl_sync_factor_gpu(pdgstrs3d_symldl_solve_meta_t *meta)
     if (meta == NULL || meta->factor_gpu_handle == NULL ||
         meta->factor_gpu_synchronized)
         return;
+    if (!meta->superlu_acc_offload) {
+        meta->factor_gpu_synchronized = 1;
+        return;
+    }
 #if defined(GPU_ACC)
     dSymLDLFactorGPUSynchronize((dLUgpu_Handle) meta->factor_gpu_handle);
 #else
@@ -835,6 +839,8 @@ pdgstrs3d_symldl_prepare_host_factor_panels(
 {
     if (meta == NULL || meta->panel_meta == NULL ||
         meta->factor_gpu_handle == NULL)
+        return;
+    if (!meta->superlu_acc_offload)
         return;
 
     pdgstrs3d_symldl_sync_factor_gpu(meta);
@@ -1133,13 +1139,8 @@ pdgstrs3d_symldl_solve_meta_destroy(pdgstrs3d_symldl_solve_meta_t *meta)
     if (meta->cpu_solve_state)
         dSymLDLCPUSolveDestroy(
             (dSymLDLCPUSolveHandle *) meta->cpu_solve_state);
-#if defined(GPU_ACC)
     if (meta->factor_gpu_handle)
         dDestroyLUgpuHandle((dLUgpu_Handle) meta->factor_gpu_handle);
-#else
-    if (meta->factor_gpu_handle)
-        ABORT("SymLDL V2 solve cannot destroy GPU factor state in a non-CUDA build.");
-#endif
     pdgstrs3d_symldl_redistribution_free(&meta->redistribution);
     pdgstrs3d_symldl_workspace_free(&meta->work);
     dSymLDLSolveGraphDestroy(meta->solve_graph);

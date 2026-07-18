@@ -6,6 +6,7 @@
 #include "superlu_ddefs.h"   // superlu_defs.h ??
 #include "lu_common.hpp"
 #include "symldl_v2_xlustruct_deps.hpp"
+#include "symldl_v2_cpu_types.hpp"
 #ifdef HAVE_CUDA
 #include "lupanels_GPU.cuh"
 #include "xlupanels_GPU.cuh"
@@ -428,8 +429,10 @@ struct xLUstruct_t
     int_t g2lCol(int_t k) { return k / Pc; }
     anc25d_t anc25d;
     // For GPU acceleration
+#ifdef HAVE_CUDA
     xLUstructGPU_t<Ftype> *dA_gpu; // pointing to memory on GPU
     xLUstructGPU_t<Ftype> A_gpu;   // pointing to memory accessible on CPU
+#endif
 
     /////////////////////////////////////////////////////////////////
     // Intermediate for flat batched
@@ -500,7 +503,10 @@ struct xLUstruct_t
             delete[] uPanelVec;
 
         if (useSymV2Solve())
+        {
             symV2FreeDiagBlocks();
+            symV2FreeCpuStorage();
+        }
 
         /* free diagonal L and U blocks */
         // dfreeDiagFactBufsArr(maxLeafNodes, dFBufs);
@@ -527,6 +533,7 @@ struct xLUstruct_t
 
         /* Sherry added the following, which comes from batch setup */
         superlu_acc_offload = sp_ienv_dist(10, options); //get_acc_offload();
+#ifdef HAVE_CUDA
         if (superlu_acc_offload)
         {
             // printf(".. free batch buffers\n");  fflush(stdout);
@@ -547,6 +554,7 @@ struct xLUstruct_t
                 cublasDestroy(A_gpu.lookAheadUHandle[stream]);
             }
         }
+#endif
 
         SUPERLU_FREE(isNodeInMyGrid);
 
@@ -586,6 +594,8 @@ struct xLUstruct_t
         int tag_ub);
 
     diagFactBufs_type<Ftype>** initDiagFactBufsArr(int_t mxLeafNode, int_t ldt);
+    int freeDiagFactBufsArr(int_t num_bufs,
+                            diagFactBufs_type<Ftype> **dFBufs);
 
     // Helper routine to marshall batch LU data into the device data in A_gpu
     void marshallBatchedLUData(int k_st, int k_end, int_t *perm_c_supno);
@@ -698,8 +708,6 @@ struct xLUstruct_t
 
     xlpanelGPU_t<Ftype> *copyLpanelsToGPU();
     xupanelGPU_t<Ftype> *copyUpanelsToGPU();
-
-    int freeDiagFactBufsArr(int_t num_bufs, diagFactBufs_type<Ftype>** dFBufs);
 
     // to perform diagFactOn GPU
     int_t dDFactPSolveGPU(int_t k, int_t offset, diagFactBufs_type<Ftype>** dFBufs);

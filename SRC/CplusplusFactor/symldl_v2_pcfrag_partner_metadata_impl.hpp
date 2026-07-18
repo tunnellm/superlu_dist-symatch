@@ -1,28 +1,112 @@
 #pragma once
 
+#include <algorithm>
+#include <climits>
+#include <cstring>
 #include <limits>
 #include <vector>
 
 #include "xlupanels.hpp"
 
-#ifdef HAVE_CUDA
-
 struct SymLDLV2PartnerMetaPayload
 {
     int comm_size;
-    std::vector<int> counts;
-    std::vector<int> displs;
+    std::vector<size_t> counts;
+    std::vector<size_t> displs;
     std::vector<int_t> payload;
 };
+
+static SymLDLV2PartnerMetaPayload symldl_v2_allgather_metadata(
+    const std::vector<int_t> &local_payload, MPI_Comm comm,
+    uint64_t *oversized_chunks)
+{
+    SymLDLV2PartnerMetaPayload result;
+    result.comm_size = 0;
+    MPI_Comm_size(comm, &result.comm_size);
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+
+    if (local_payload.size() >
+        static_cast<size_t>(std::numeric_limits<unsigned long long>::max()))
+        ABORT("SymFact V2 metadata payload size overflows.");
+    unsigned long long local_count =
+        static_cast<unsigned long long>(local_payload.size());
+    std::vector<unsigned long long> gathered_counts(
+        static_cast<size_t>(result.comm_size), 0);
+    if (MPI_Allgather(&local_count, 1, MPI_UNSIGNED_LONG_LONG,
+                      gathered_counts.data(), 1, MPI_UNSIGNED_LONG_LONG,
+                      comm) != MPI_SUCCESS)
+        ABORT("SymFact V2 metadata size exchange failed.");
+
+    result.counts.assign(static_cast<size_t>(result.comm_size), 0);
+    result.displs.assign(static_cast<size_t>(result.comm_size), 0);
+    size_t total = 0;
+    bool fits_allgatherv = true;
+    for (int source = 0; source < result.comm_size; ++source)
+    {
+        if (gathered_counts[source] >
+            static_cast<unsigned long long>(
+                std::numeric_limits<size_t>::max()))
+            ABORT("SymFact V2 metadata payload size overflows.");
+        size_t count = static_cast<size_t>(gathered_counts[source]);
+        if (count > std::numeric_limits<size_t>::max() - total)
+            ABORT("SymFact V2 metadata payload size overflows.");
+        result.counts[source] = count;
+        result.displs[source] = total;
+        total += count;
+        fits_allgatherv = fits_allgatherv &&
+            count <= static_cast<size_t>(INT_MAX);
+    }
+    fits_allgatherv = fits_allgatherv &&
+        total <= static_cast<size_t>(INT_MAX);
+    result.payload.assign(total, 0);
+
+    if (fits_allgatherv)
+    {
+        std::vector<int> counts(static_cast<size_t>(result.comm_size), 0);
+        std::vector<int> displs(static_cast<size_t>(result.comm_size), 0);
+        for (int source = 0; source < result.comm_size; ++source)
+        {
+            counts[source] = static_cast<int>(result.counts[source]);
+            displs[source] = static_cast<int>(result.displs[source]);
+        }
+        if (MPI_Allgatherv(
+                local_payload.empty() ? NULL : local_payload.data(),
+                static_cast<int>(local_payload.size()), mpi_int_t,
+                result.payload.empty() ? NULL : result.payload.data(),
+                counts.data(), displs.data(), mpi_int_t, comm) != MPI_SUCCESS)
+            ABORT("SymFact V2 metadata exchange failed.");
+        return result;
+    }
+
+    for (int source = 0; source < result.comm_size; ++source)
+    {
+        int_t *destination = result.counts[source] == 0 ? NULL :
+            result.payload.data() + result.displs[source];
+        if (rank == source && result.counts[source] != 0)
+            std::memcpy(destination, local_payload.data(),
+                        result.counts[source] * sizeof(int_t));
+        size_t offset = 0;
+        while (offset < result.counts[source])
+        {
+            int chunk = static_cast<int>(std::min(
+                static_cast<size_t>(INT_MAX),
+                result.counts[source] - offset));
+            if (MPI_Bcast(destination + offset, chunk, mpi_int_t,
+                          source, comm) != MPI_SUCCESS)
+                ABORT("SymFact V2 chunked metadata exchange failed.");
+            offset += static_cast<size_t>(chunk);
+            if (oversized_chunks != NULL)
+                ++*oversized_chunks;
+        }
+    }
+    return result;
+}
 
 template <typename Ftype>
 static SymLDLV2PartnerMetaPayload
 symldl_v2_collect_partner_l_metadata(xLUstruct_t<Ftype> *lu)
 {
-    SymLDLV2PartnerMetaPayload result;
-    result.comm_size = 0;
-    MPI_Comm_size(lu->grid->comm, &result.comm_size);
-
     std::vector<int_t> local_meta_payload;
     for (int_t lk = 0; lk < lu->symV2PanelCount(); ++lk)
     {
@@ -49,39 +133,7 @@ symldl_v2_collect_partner_l_metadata(xLUstruct_t<Ftype> *lu)
                                       lu->symL2LSendMeta[flat].end());
         }
     }
-    if (local_meta_payload.size() >
-        static_cast<size_t>(std::numeric_limits<int>::max()))
-        ABORT("SymFact V2 partner metadata payload exceeds MPI limit.");
-
-    int local_meta_count = static_cast<int>(local_meta_payload.size());
-    result.counts.assign(static_cast<size_t>(result.comm_size), 0);
-    MPI_Allgather(&local_meta_count, 1, MPI_INT,
-                  result.counts.data(), 1, MPI_INT, lu->grid->comm);
-
-    result.displs.assign(static_cast<size_t>(result.comm_size), 0);
-    long long total_meta_count = 0;
-    for (int r = 0; r < result.comm_size; ++r)
-    {
-        if (result.counts[r] < 0)
-            ABORT("SymFact V2 partner metadata count is invalid.");
-        if (total_meta_count >
-            static_cast<long long>(std::numeric_limits<int>::max()))
-            ABORT("SymFact V2 partner metadata payload exceeds MPI limit.");
-        result.displs[r] = static_cast<int>(total_meta_count);
-        total_meta_count += result.counts[r];
-    }
-    if (total_meta_count >
-        static_cast<long long>(std::numeric_limits<int>::max()))
-        ABORT("SymFact V2 partner metadata payload exceeds MPI limit.");
-
-    result.payload.assign(static_cast<size_t>(total_meta_count), 0);
-    MPI_Allgatherv(local_meta_payload.empty() ? NULL
-                                             : local_meta_payload.data(),
-                   local_meta_count, mpi_int_t,
-                   result.payload.empty() ? NULL : result.payload.data(),
-                   result.counts.data(), result.displs.data(), mpi_int_t,
-                   lu->grid->comm);
-    return result;
+    return symldl_v2_allgather_metadata(
+        local_meta_payload, lu->grid->comm,
+        &lu->symV2CpuOversizedMpiChunks);
 }
-
-#endif

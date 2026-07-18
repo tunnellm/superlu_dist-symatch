@@ -217,6 +217,7 @@ if (TPL_ENABLE_CUDALIB)
 ##       CplusplusFactor/l_panels.cpp
 ##       CplusplusFactor/u_panels.cpp
        CplusplusFactor/lupanels_GPU.cpp
+       CplusplusFactor/symldl_v2_factor_interface.cpp
 ##       CplusplusFactor/anc25d.cpp 
 ##       CplusplusFactor/anc25d-GPU.cpp 
 ##       CplusplusFactor/LUgpuCHandle_interface.cpp
@@ -225,7 +226,9 @@ if (TPL_ENABLE_CUDALIB)
        CplusplusFactor/batch_block_copy.cu
   )
 else()
-  list(APPEND sources double/dsymldl_v2_nvshmem_solve_stub.c)
+  list(APPEND sources
+       double/dsymldl_v2_nvshmem_solve_stub.c
+       CplusplusFactor/symldl_v2_cpu_interface.cpp)
 endif()
 
 if (HAVE_COMBBLAS)

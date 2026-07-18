@@ -11,6 +11,12 @@ static void symldl_v2_ensure_factor_work(xLUstruct_t<Ftype> *lu,
 {
     if (requested <= lu->symFactWorkSize)
         return;
+    if (lu->symV2UsesCpuFactor())
+    {
+        if (lu->symV2CpuFactorLoopActive)
+            ++lu->symV2CpuRuntimeAllocations;
+        ABORT("SymFact V2 CPU factor workspace is undersized.");
+    }
     Ftype *work = (Ftype *) SUPERLU_MALLOC(
         symldl_v2_checked_product((size_t) requested, sizeof(Ftype),
                                   "SymFact V2 workspace resize overflows."));
@@ -62,6 +68,11 @@ static void symldl_v2_factor_invert_diag_owner(
         ABORT("SymFact V2 diagonal block vector has invalid size.");
     if (lu->symV2DiagBlocks[k] == NULL)
     {
+        if (lu->symV2UsesCpuFactor() && lu->symV2CpuFactorLoopActive)
+        {
+            ++lu->symV2CpuRuntimeAllocations;
+            ABORT("SymFact V2 CPU diagonal workspace was not preallocated.");
+        }
         lu->symV2DiagBlocks[k] = (double *) SUPERLU_MALLOC(
             symldl_v2_checked_product(
                 symldl_v2_checked_product((size_t) ksupc, (size_t) ksupc,

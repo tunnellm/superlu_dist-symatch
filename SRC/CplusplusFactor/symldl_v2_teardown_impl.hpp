@@ -14,6 +14,63 @@ void xLUstruct_t<Ftype>::symV2FreeDiagBlocks()
 }
 
 template <typename Ftype>
+void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
+{
+    for (size_t slot = 0; slot < symV2CpuSlotRequestCounts.size(); ++slot)
+        if (symV2CpuSlotRequestCounts[slot] != 0)
+            ABORT("SymFact V2 CPU slot still owns MPI requests at teardown.");
+    for (size_t request = 0; request < symV2CpuRequests.size(); ++request)
+        if (symV2CpuRequests[request] != MPI_REQUEST_NULL)
+            ABORT("SymFact V2 CPU MPI request remains active at teardown.");
+
+    std::vector<Ftype *> *buffers[] = {
+        &symV2CpuRawPanelBufs, &symV2CpuPartnerSendBufs,
+        &symV2CpuPartnerRecvBufs, &symV2CpuRowSendBufs,
+        &symV2CpuRowRecvBufs
+    };
+    for (size_t b = 0; b < sizeof(buffers) / sizeof(buffers[0]); ++b)
+    {
+        for (size_t i = 0; i < buffers[b]->size(); ++i)
+            if ((*buffers[b])[i] != NULL)
+                SUPERLU_FREE((*buffers[b])[i]);
+        buffers[b]->clear();
+    }
+    symV2CpuRawPanelCapacity = 0;
+    symV2CpuPartnerSendCapacity = 0;
+    symV2CpuPartnerRecvCapacity = 0;
+    symV2CpuRowSendCapacity = 0;
+    symV2CpuRowRecvCapacity = 0;
+    if (symV2CpuPanelPending != NULL)
+        SUPERLU_FREE(symV2CpuPanelPending);
+    if (symV2CpuSlotPending != NULL)
+        SUPERLU_FREE(symV2CpuSlotPending);
+    symV2CpuPanelPending = NULL;
+    symV2CpuSlotPending = NULL;
+#ifdef _OPENMP
+    if (symV2CpuOutputLocks != NULL)
+    {
+        size_t lock_count = symV2CpuOutputLockOffsets.empty()
+            ? 0 : symV2CpuOutputLockOffsets.back();
+        omp_lock_t *locks =
+            static_cast<omp_lock_t *>(symV2CpuOutputLocks);
+        for (size_t lock = 0; lock < lock_count; ++lock)
+            omp_destroy_lock(&locks[lock]);
+        SUPERLU_FREE(symV2CpuOutputLocks);
+        symV2CpuOutputLocks = NULL;
+    }
+#endif
+    symV2CpuOutputLockOffsets.clear();
+    symV2CpuRequests.clear();
+    symV2CpuRequestPeers.clear();
+    symV2CpuWaitIndices.clear();
+    symV2CpuWaitStatuses.clear();
+    symV2CpuSlotRequestCounts.clear();
+    symV2CpuSlotSendBegins.clear();
+    symV2CpuThreadProfiles.clear();
+    symV2CpuRequestsPerSlot = 0;
+}
+
+template <typename Ftype>
 void xLUstruct_t<Ftype>::symV2FreeStreamHostBuffers(int stream)
 {
     if (stream < (int) symPartnerLvalRecvBufs.size() &&

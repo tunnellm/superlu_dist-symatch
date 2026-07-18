@@ -3,7 +3,6 @@
 #include "lupanels.hpp"
 #include "xlupanels.hpp"
 #include "lupanels_impl.hpp"
-#include "symldl_v2_factor_impl.hpp"
 #include "symldl_v2_pcfrag_exchange_impl.cuh"
 #include "symldl_v2_dual_fragment_schur_impl.cuh"
 #include "pdgstrf3d_upacked_impl.hpp" //unneeded?
@@ -11,6 +10,9 @@
 
 extern "C"
 {
+
+    int pdgstrf3d_symv2_factor_cpp(dLUgpu_Handle handle);
+    void pdgstrf3d_symv2_destroy_cpu_runtime_cpp(dLUgpu_Handle handle);
 
     dLUgpu_Handle dCreateLUgpuHandle(int_t nsupers, int_t ldt_, dtrf3Dpartition_t *trf3Dpartition,
                                      dLUstruct_t *LUstruct, gridinfo3d_t *grid3d,
@@ -35,8 +37,9 @@ extern "C"
 
     void dDestroyLUgpuHandle(dLUgpu_Handle LuH)
     {
-	// printf("\t... before delete luH\n"); fflush(stdout);
+		// printf("\t... before delete luH\n"); fflush(stdout);
 
+        pdgstrf3d_symv2_destroy_cpu_runtime_cpp(LuH);
         delete reinterpret_cast<xLUstruct_t<double> *>(LuH);
 	
         // printf("\t... after delete luH\n"); fflush(stdout);
@@ -76,8 +79,7 @@ extern "C"
 
     int pdgstrf3d_LUv2(dLUgpu_Handle LUHand)
     {
-        xLUstruct_t<double> *LU_v2 = reinterpret_cast<xLUstruct_t<double> *>(LUHand);
-        return LU_v2->pdgstrf3dSymV2();
+        return pdgstrf3d_symv2_factor_cpp(LUHand);
     }
 
 #include "symldl_v2_factor_gpu_access_impl.cuh"

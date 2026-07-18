@@ -6,6 +6,25 @@
 #include "xlupanels.hpp"
 #include "symldl_v2_diag_factor_impl.hpp"
 
+static inline void symldl_v2_diag_bcast_chunks(
+    double *buffer, size_t count, int root, MPI_Comm comm,
+    uint64_t *oversized_chunks)
+{
+    size_t offset = 0;
+    const size_t limit = static_cast<size_t>(INT_MAX);
+    size_t chunks = count == 0 ? 0 : (count - 1) / limit + 1;
+    if (chunks > 1 && oversized_chunks != NULL)
+        *oversized_chunks += static_cast<uint64_t>(chunks);
+    while (offset < count)
+    {
+        int chunk = static_cast<int>(SUPERLU_MIN(limit, count - offset));
+        if (MPI_Bcast(buffer + offset, chunk, MPI_DOUBLE, root, comm) !=
+            MPI_SUCCESS)
+            ABORT("SymFact V2 diagonal broadcast failed.");
+        offset += static_cast<size_t>(chunk);
+    }
+}
+
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::dSymDiagFactorPanelSolve(
     int_t, int_t, int_t, diagFactBufs_type<Ftype> **)
@@ -38,9 +57,6 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
     size_t diag_count = symldl_v2_checked_product((size_t) ksupc,
                                                   (size_t) ksupc,
                                                   "SymFact V2 diagonal block size overflows.");
-    if (diag_count > (size_t) INT_MAX)
-        ABORT("SymFact V2 diagonal block is too large for MPI count.");
-    int diag_mpi_count = (int) diag_count;
     double t0 = SuperLU_timer_();
 
     if (buffer_offset < 0 || buffer_offset >= numDiagBufs)
@@ -53,8 +69,13 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
         ABORT("SymFact V2 inverse diagonal buffer is not allocated.");
 
     if (iam == sym_diag_proc)
+    {
+        double diag_start = SuperLU_timer_();
         symldl_v2_factor_invert_diag_owner(this, k, ksupc,
                                            handle_offset, invDiag);
+        if (symV2UsesCpuFactor())
+            symV2CpuDiagFactorTime += SuperLU_timer_() - diag_start;
+    }
 
     if (mycol == sym_panel_root)
     {
@@ -71,10 +92,23 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
             if (symV2DiagBlocks[k] == NULL)
                 ABORT("Malloc fails for SymFact V2 diagonal block.");
         }
-        MPI_Bcast(symV2DiagBlocks[k], diag_mpi_count, MPI_DOUBLE,
-                  (int) sym_diag_root, grid3d->cscp.comm);
-        MPI_Bcast(invDiag, diag_mpi_count, MPI_DOUBLE,
-                  (int) sym_diag_root, grid3d->cscp.comm);
+        double comm_start = SuperLU_timer_();
+        uint64_t *chunk_counter = symV2UsesCpuFactor()
+            ? &symV2CpuOversizedMpiChunks : NULL;
+        symldl_v2_diag_bcast_chunks(
+            symV2DiagBlocks[k], diag_count, (int) sym_diag_root,
+            grid3d->cscp.comm, chunk_counter);
+        symldl_v2_diag_bcast_chunks(
+            invDiag, diag_count, (int) sym_diag_root,
+            grid3d->cscp.comm, chunk_counter);
+        if (symV2UsesCpuFactor())
+        {
+            symV2CpuInvDiagCommTime += SuperLU_timer_() - comm_start;
+            if (myrow == sym_diag_root && grid3d->cscp.Np > 1)
+                symV2CpuInvDiagBytes += static_cast<uint64_t>(
+                    diag_count * sizeof(double)) *
+                    static_cast<uint64_t>(grid3d->cscp.Np - 1);
+        }
 #ifdef HAVE_CUDA
         if (superlu_acc_offload)
         {
@@ -157,10 +191,14 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
         else
 #endif
         {
+            double transform_start = SuperLU_timer_();
             symldl_v2_ensure_factor_work(
                 this, (int64_t) lpanel.nzrows() * (int64_t) ksupc);
             lpanel.panelSolveSymmetric(ksupc, invDiag, ksupc,
                                        symFactWork, lpanel.nzrows());
+            if (symV2UsesCpuFactor())
+                symV2CpuWTransformTime +=
+                    SuperLU_timer_() - transform_start;
         }
     }
 

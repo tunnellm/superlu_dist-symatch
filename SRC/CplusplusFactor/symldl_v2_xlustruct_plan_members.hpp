@@ -1,6 +1,8 @@
 // This file is included inside xLUstruct_t.
 // Keep declarations here limited to backend-neutral SymLDL V2 plan state.
 
+std::vector<unsigned char> symV2UsePcFragmentSchur;
+
 std::vector<std::vector<int_t> > symL2LSendMeta;
 std::vector<int> symV2PartnerLSendSizes;
 std::vector<int> symV2PartnerLRecvSizes;
