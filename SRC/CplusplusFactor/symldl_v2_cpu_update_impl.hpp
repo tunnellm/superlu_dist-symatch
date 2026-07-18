@@ -7,9 +7,18 @@ template <typename Ftype>
 static int_t symldl_v2_cpu_panel_find(
     xlpanel_t<Ftype> &panel, int_t gid)
 {
-    for (int_t block = 0; block < panel.nblocks(); ++block)
-        if (panel.gid(block) == gid)
-            return block;
+    int_t begin = 0;
+    int_t end = panel.nblocks();
+    while (begin < end)
+    {
+        int_t middle = begin + (end - begin) / 2;
+        if (panel.gid(middle) < gid)
+            begin = middle + 1;
+        else
+            end = middle;
+    }
+    if (begin < panel.nblocks() && panel.gid(begin) == gid)
+        return begin;
     return GLOBAL_BLOCK_NOT_FOUND;
 }
 
@@ -147,7 +156,7 @@ static void symldl_v2_cpu_note_gemm_shape(
 #endif
     if (thread < 0 ||
         static_cast<size_t>(thread) >= lu->symV2CpuThreadProfiles.size())
-        ABORT("SymFact V2 CPU thread profile is undersized.");
+        ABORT("SymFact V2 CPU worker profile does not cover the OpenMP team.");
     SymLDLV2CpuThreadProfile &profile =
         lu->symV2CpuThreadProfiles[static_cast<size_t>(thread)];
     uint64_t flops = symldl_v2_cpu_gemm_flops(m, n, k);
@@ -266,7 +275,8 @@ static void symldl_v2_cpu_scatter_dual_block(
 #endif
         if (thread < 0 || static_cast<size_t>(thread) >=
                               lu->symV2CpuThreadProfiles.size())
-            ABORT("SymFact V2 CPU scatter profile is undersized.");
+            ABORT(
+                "SymFact V2 CPU scatter profile does not cover the OpenMP team.");
         SymLDLV2CpuThreadProfile &profile =
             lu->symV2CpuThreadProfiles[static_cast<size_t>(thread)];
         profile.mapped_scatter_values +=

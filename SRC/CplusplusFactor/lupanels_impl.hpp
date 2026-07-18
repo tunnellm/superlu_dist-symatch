@@ -295,10 +295,10 @@ xLUstruct_t<Ftype>::xLUstruct_t(int_t nsupers_, int_t ldt_,
     maxSymPartnerLvalCount = sym_v2_mode ? 0 : maxLvalCount;
     maxSymPartnerLidxCount = sym_v2_mode ? 0 : maxLidxCount;
     maxSymPartnerLSendStageCount = 0;
+    nThreads = getNumThreads(iam);
     symldl_v2_constructor_setup_factor_workspace(this, LUstruct);
 
     // Allocate bigV, indirect
-    nThreads = getNumThreads(iam);
     // bigV = dgetBigV(ldt, nThreads);
     bigV = getBigV<Ftype>(ldt, nThreads);
     indirect = (int_t *)SUPERLU_MALLOC(nThreads * ldt * sizeof(int_t));

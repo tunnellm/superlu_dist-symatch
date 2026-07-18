@@ -138,10 +138,7 @@ static void symldl_v2_allocate_cpu_factor_workspace(
     lu->symV2CpuReductionPanelSlots.assign(static_cast<size_t>(slots), -1);
     lu->symV2CpuReductionChunksRemaining.assign(
         static_cast<size_t>(slots), 0);
-    int profile_threads = 1;
-#ifdef _OPENMP
-    profile_threads = SUPERLU_MAX(1, omp_get_max_threads());
-#endif
+    int profile_threads = SUPERLU_MAX(1, lu->nThreads);
     lu->symV2CpuThreadProfiles.assign(
         static_cast<size_t>(profile_threads), SymLDLV2CpuThreadProfile());
     lu->symV2CpuSlotPending = int32Calloc_dist(slots);
@@ -160,7 +157,12 @@ static void symldl_v2_allocate_cpu_factor_workspace(
             static_cast<size_t>(local_panel)] = output_locks;
         xlpanel_t<Ftype> &panel = lu->lPanelVec[local_panel];
         if (!panel.isEmpty())
+        {
+            for (int_t block = 1; block < panel.nblocks(); ++block)
+                if (panel.gid(block - 1) >= panel.gid(block))
+                    ABORT("SymFact V2 CPU local panel blocks are not ordered.");
             output_locks += static_cast<size_t>(panel.nblocks());
+        }
     }
     lu->symV2CpuOutputLockOffsets[
         static_cast<size_t>(lu->symV2PanelCount())] = output_locks;
