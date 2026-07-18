@@ -68,6 +68,12 @@ static inline bool superlu_sym_v2_route_profile()
            !std::strcmp(profile, "all");
 }
 
+static inline bool superlu_sym_v2_plan_signature_components()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "SYMLDL_V2_PLAN_SIGNATURE_COMPONENTS", 0);
+}
+
 static inline bool superlu_sym_v2_pc_fragment_schur()
 {
     return superlu_sym_v2_env_bool_flag("GPU3DV2_PC_FRAGMENT_SCHUR", 1);

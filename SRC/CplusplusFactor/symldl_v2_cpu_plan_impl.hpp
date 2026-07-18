@@ -439,6 +439,7 @@ static void symldl_v2_build_cpu_row_receive_plan(
                                   "SymFact V2 CPU row plan overflows."),
         0);
     std::vector<int_t> local_demands;
+    std::vector<size_t> chunk_values(static_cast<size_t>(lu->Pc), 0);
     for (int_t k = 0; k < lu->nsupers; ++k)
     {
         std::vector<int_t> &blocks = needed[static_cast<size_t>(k)];
@@ -446,6 +447,7 @@ static void symldl_v2_build_cpu_row_receive_plan(
             continue;
         std::sort(blocks.begin(), blocks.end());
         blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        std::fill(chunk_values.begin(), chunk_values.end(), 0);
 
         const std::vector<SymLDLV2CachedPartnerBlock> &rows =
             row_blocks[static_cast<size_t>(k)];
@@ -464,6 +466,17 @@ static void symldl_v2_build_cpu_row_receive_plan(
             if (row_count > std::numeric_limits<int_t>::max() - row->len)
                 ABORT("SymFact V2 CPU row index overflows.");
             row_count += row->len;
+            int chunk_pc = static_cast<int>(lu->symV2PanelRoot(row->gid));
+            if (chunk_pc < 0 || chunk_pc >= lu->Pc)
+                ABORT("SymFact V2 CPU row source column is invalid.");
+            size_t block_values = symldl_v2_checked_product(
+                static_cast<size_t>(row->len),
+                static_cast<size_t>(lu->supersize(k)),
+                "SymFact V2 CPU row receive chunk size overflows.");
+            if (chunk_values[static_cast<size_t>(chunk_pc)] >
+                std::numeric_limits<size_t>::max() - block_values)
+                ABORT("SymFact V2 CPU row receive chunk size overflows.");
+            chunk_values[static_cast<size_t>(chunk_pc)] += block_values;
         }
         size_t index_size = static_cast<size_t>(LPANEL_HEADER_SIZE) +
                             2 * blocks.size() + 1 +
@@ -501,11 +514,15 @@ static void symldl_v2_build_cpu_row_receive_plan(
             "SymFact V2 CPU row receive size overflows.");
         if (values > lu->symV2CpuRowRecvCapacity)
             ABORT("SymFact V2 CPU row receive exceeds workspace.");
-        if (values <=
-            static_cast<size_t>(std::numeric_limits<int>::max()))
-            lu->symV2RowFragRecvSizes[
-                static_cast<size_t>(k) * lu->Pc + lu->mycol] =
-                static_cast<int>(values);
+        for (int chunk_pc = 0; chunk_pc < lu->Pc; ++chunk_pc)
+        {
+            size_t chunk = chunk_values[static_cast<size_t>(chunk_pc)];
+            if (chunk <=
+                static_cast<size_t>(std::numeric_limits<int>::max()))
+                lu->symV2RowFragRecvSizes[
+                    static_cast<size_t>(k) * lu->Pc + chunk_pc] =
+                    static_cast<int>(chunk);
+        }
 
         local_demands.push_back(k);
         local_demands.push_back(static_cast<int_t>(blocks.size()));
