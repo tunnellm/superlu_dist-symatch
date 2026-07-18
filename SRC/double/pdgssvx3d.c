@@ -1657,7 +1657,15 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 
 			// dDumpLblocks3D(nsupers, grid3d, LUstruct->Glu_persist, LUstruct->Llu);
 		}
-	} // matching if not SolveOnly ... end Factorization
+			double numeric_factor_local = SuperLU_timer_() - t;
+			double numeric_factor_max = 0.0;
+			MPI_Reduce(&numeric_factor_local, &numeric_factor_max, 1,
+				   MPI_DOUBLE, MPI_MAX, 0, grid3d->comm);
+			if (grid3d->iam == 0) {
+				printf("NUMERIC_FACTOR time %12.6f\n", numeric_factor_max);
+				fflush(stdout);
+			}
+		} // matching if not SolveOnly ... end Factorization
 
 	/* Now proceed with the Solve setup */
 		if (get_new3dsolve() && !use_sym_v2_solve){
