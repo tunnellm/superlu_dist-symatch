@@ -25,6 +25,10 @@ std::vector<size_t> symV2CpuRowSendSizes;
 std::vector<SymLDLV2CpuPackSegment> symV2CpuRowSegments;
 std::vector<int_t> symV2CpuRowPermutations;
 
+std::vector<SymLDLV2CpuCanonicalBlock> symV2CpuCanonicalBlocks;
+std::vector<int_t> symV2CpuCanonicalToOriginalRows;
+bool symV2CpuRowsCanonical = false;
+
 std::vector<MPI_Request> symV2CpuRequests;
 size_t symV2CpuRequestsPerSlot = 0;
 std::vector<size_t> symV2CpuPartnerRecvOffsets;

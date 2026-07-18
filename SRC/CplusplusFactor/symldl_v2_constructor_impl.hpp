@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "xlupanels.hpp"
+#include "symldl_v2_cpu_layout_impl.hpp"
 #include "symldl_v2_cpu_workspace_impl.hpp"
 #include "symldl_v2_cpu_plan_impl.hpp"
 #include "symldl_v2_plan_signature_impl.hpp"
@@ -22,6 +23,7 @@ static void symldl_v2_constructor_build_l_panels(
     symldl_v2_build_l_panels(lu, LUstruct,
                              localLvalSendCounts,
                              localLidxSendCounts);
+    symldl_v2_cpu_canonicalize_l_panel_rows(lu);
 }
 
 template <typename Ftype>

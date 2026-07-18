@@ -6,6 +6,7 @@
 #include "xlupanels.hpp"
 #include "symldl_v2_cpu_scheduler_impl.hpp"
 #include "symldl_v2_cpu_reduction_impl.hpp"
+#include "symldl_v2_cpu_layout_impl.hpp"
 #include "symldl_v2_cpu_profile_impl.hpp"
 #include "symldl_v2_factor_gpu_bridge.hpp"
 
@@ -96,6 +97,7 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
 
     if (symV2UsesCpuFactor())
     {
+        symldl_v2_cpu_restore_l_panel_rows(this);
         symV2CpuFactorLoopActive = false;
         SymLDLV2CpuCapacitySnapshot cpu_capacity_after =
             symldl_v2_cpu_capacity_snapshot(this);

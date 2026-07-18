@@ -471,6 +471,14 @@ static void symldl_v2_cpu_scatter_dual_block(
 
     if (lu->symV2CpuProfileEnabled)
     {
+        bool source_rows_sorted = true;
+        for (int_t i = 1; i < source_rows; ++i)
+            source_rows_sorted = source_rows_sorted &&
+                                 source_row_list[i - 1] < source_row_list[i];
+        bool destination_rows_sorted = true;
+        for (int_t i = 1; i < destination_rows; ++i)
+            destination_rows_sorted = destination_rows_sorted &&
+                destination_row_list[i - 1] < destination_row_list[i];
         bool row_exact = source_rows == destination_rows;
         if (row_exact)
             for (int_t i = 0; i < source_rows; ++i)
@@ -505,6 +513,9 @@ static void symldl_v2_cpu_scatter_dual_block(
         profile.mapped_rectangular +=
             row_contiguous && column_contiguous ? 1 : 0;
         profile.mapped_sorted_rows += sorted_rows ? 1 : 0;
+        profile.mapped_source_rows_sorted += source_rows_sorted ? 1 : 0;
+        profile.mapped_destination_rows_sorted +=
+            destination_rows_sorted ? 1 : 0;
         bool destination_full = destination_rows == lu->supersize(gi);
         if (destination_full)
             for (int_t i = 0; i < destination_rows; ++i)
