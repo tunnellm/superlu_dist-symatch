@@ -4,6 +4,7 @@
 #include "symldl_v2_cpu_panel_impl.hpp"
 #include "symldl_v2_cpu_exchange_impl.hpp"
 #include "symldl_v2_cpu_update_impl.hpp"
+#include "symldl_v2_factor_gpu_bridge.hpp"
 
 template <typename Ftype>
 static void symldl_v2_cpu_wait_for_counter(
@@ -91,8 +92,13 @@ static int_t symldl_v2_cpu_factor_forest(
                 double panel_issue_start = SuperLU_timer_();
                 ++lu->symV2CpuPanelsIssued;
                 symldl_v2_cpu_capture_raw_panel(lu, k, slot);
+#ifdef HAVE_CUDA
+                pdgstrf3d_symv2_diag_panel_cuda_bridge(
+                    static_cast<void *>(lu), k, slot, slot, diag_buffers);
+#else
                 lu->dSymDiagFactorPanelSolve(
                     k, slot, slot, diag_buffers);
+#endif
                 int_t parent = etree->setree[k];
 
                 if (lu->Pr == 1 && lu->Pc == 1)

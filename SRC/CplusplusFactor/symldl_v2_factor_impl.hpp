@@ -7,6 +7,7 @@
 #include "symldl_v2_cpu_scheduler_impl.hpp"
 #include "symldl_v2_cpu_reduction_impl.hpp"
 #include "symldl_v2_cpu_profile_impl.hpp"
+#include "symldl_v2_factor_gpu_bridge.hpp"
 
 template <typename Ftype>
 int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
@@ -57,8 +58,9 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                 else
                 {
 #ifdef HAVE_CUDA
-                    dsparseTreeFactorGPU(sforest, dFBufs, &gEtreeInfo,
-                                         tag_ub);
+                    pdgstrf3d_symv2_factor_forest_cuda_bridge(
+                        static_cast<void *>(this), sforest, dFBufs,
+                        &gEtreeInfo, tag_ub);
 #else
                     ABORT("SymFact V2 GPU backend is unavailable.");
 #endif
@@ -77,7 +79,9 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                 else
                 {
 #ifdef HAVE_CUDA
-                    ancestorReduction3dGPU(ilvl, myNodeCount, treePerm);
+                    pdgstrf3d_symv2_ancestor_cuda_bridge(
+                        static_cast<void *>(this), ilvl, myNodeCount,
+                        treePerm);
 #else
                     ABORT("SymFact V2 GPU backend is unavailable.");
 #endif

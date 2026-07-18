@@ -4,6 +4,16 @@
 #include "symldl_v2_cpu_blas.hpp"
 
 template <typename Ftype>
+static int_t symldl_v2_cpu_panel_find(
+    xlpanel_t<Ftype> &panel, int_t gid)
+{
+    for (int_t block = 0; block < panel.nblocks(); ++block)
+        if (panel.gid(block) == gid)
+            return block;
+    return GLOBAL_BLOCK_NOT_FOUND;
+}
+
+template <typename Ftype>
 static size_t symldl_v2_cpu_output_lock_id(
     xLUstruct_t<Ftype> *lu, int_t local_panel, int_t local_block)
 {
@@ -177,7 +187,7 @@ static void symldl_v2_cpu_scatter_dual_block(
     xlpanel_t<Ftype> &destination_panel = lu->lPanelVec[local_panel];
     if (destination_panel.isEmpty())
         return;
-    int_t local_block = destination_panel.find(gi);
+    int_t local_block = symldl_v2_cpu_panel_find(destination_panel, gi);
     if (local_block == GLOBAL_BLOCK_NOT_FOUND)
         return;
 
@@ -451,7 +461,8 @@ static bool symldl_v2_cpu_find_direct_group_destination(
         int_t gi = row_panel.gid(source_block);
         if (gi < gj || lu->symV2DiagRoot(gi) != lu->myrow)
             return false;
-        int_t destination_block = destination.find(gi);
+        int_t destination_block =
+            symldl_v2_cpu_panel_find(destination, gi);
         if (destination_block == GLOBAL_BLOCK_NOT_FOUND ||
             (previous_destination_block >= 0 &&
              destination_block != previous_destination_block + 1) ||
