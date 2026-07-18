@@ -46,6 +46,8 @@ static void symldl_v2_factor_invert_diag_owner(
     int_t ldd = lpanel.LDA();
     if (lu->symFactWork == NULL || lu->symFactIPIV == NULL)
         ABORT("SymFact V2 factor workspace is not allocated.");
+    if (ksupc > lu->symFactIPIVSize)
+        ABORT("SymFact V2 pivot workspace is undersized.");
 
 #ifdef HAVE_CUDA
     if (lu->superlu_acc_offload)

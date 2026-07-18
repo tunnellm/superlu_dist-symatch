@@ -72,8 +72,12 @@ static void symldl_v2_allocate_factor_workspace(xLUstruct_t<Ftype> *lu)
     if (!lu->useSymV2Solve())
         return;
 
-    size_t diag_work = symldl_v2_checked_product((size_t) lu->ldt,
-                                                 (size_t) lu->ldt,
+    int_t diag_dim = symldl_v2_max_local_diag_dim(lu);
+    if (diag_dim <= 0)
+        ABORT("SymFact V2 diagonal workspace has an invalid dimension.");
+    int_t work_dim = SUPERLU_MAX(diag_dim, SUPERLU_MAX((int_t) 1, lu->ldt));
+    size_t diag_work = symldl_v2_checked_product((size_t) work_dim,
+                                                 (size_t) work_dim,
                                                  "SymFact V2 diagonal workspace size overflows.");
     size_t panel_work = (lu->maxLvalCount > 0) ? (size_t) lu->maxLvalCount : 1;
     size_t work_count = SUPERLU_MAX(diag_work, panel_work);
@@ -89,12 +93,13 @@ static void symldl_v2_allocate_factor_workspace(xLUstruct_t<Ftype> *lu)
     if (lu->symFactWork == NULL)
         ABORT("Malloc fails for SymFact V2 workspace.");
 
-    size_t ipiv_count = lu->ldt > 0 ? (size_t) lu->ldt : 1;
+    size_t ipiv_count = (size_t) diag_dim;
     lu->symFactIPIV = (int *) SUPERLU_MALLOC(
         symldl_v2_checked_product(ipiv_count, sizeof(int),
                                   "SymFact V2 IPIV allocation overflows."));
     if (lu->symFactIPIV == NULL)
         ABORT("Malloc fails for SymFact V2 IPIV.");
+    lu->symFactIPIVSize = diag_dim;
 }
 
 template <typename Ftype>

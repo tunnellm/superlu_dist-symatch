@@ -7,6 +7,10 @@ void xLUstruct_t<Ftype>::symV2FreeDiagBlocks()
         SUPERLU_FREE(symFactWork);
     if (symFactIPIV != NULL)
         SUPERLU_FREE(symFactIPIV);
+    symFactWork = NULL;
+    symFactIPIV = NULL;
+    symFactWorkSize = 0;
+    symFactIPIVSize = 0;
 
     for (size_t i = 0; i < symV2DiagBlocks.size(); ++i)
         if (symV2DiagBlocks[i] != NULL)

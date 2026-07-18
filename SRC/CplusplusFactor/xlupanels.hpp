@@ -394,6 +394,7 @@ struct xLUstruct_t
     Ftype *symFactWork = NULL;
     int *symFactIPIV = NULL;
     int64_t symFactWorkSize = 0;
+    int_t symFactIPIVSize = 0;
     int symFactTagUb = 0;
     std::vector<Ftype *> LvalRecvBufs;
     std::vector<Ftype *> UvalRecvBufs;
