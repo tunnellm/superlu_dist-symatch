@@ -2,6 +2,7 @@
 
 #include <climits>
 #include <cstring>
+#include <limits>
 
 #include "xlupanels.hpp"
 #include "symldl_v2_diag_factor_impl.hpp"
@@ -95,12 +96,41 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
         double comm_start = SuperLU_timer_();
         uint64_t *chunk_counter = symV2UsesCpuFactor()
             ? &symV2CpuOversizedMpiChunks : NULL;
-        symldl_v2_diag_bcast_chunks(
-            symV2DiagBlocks[k], diag_count, (int) sym_diag_root,
-            grid3d->cscp.comm, chunk_counter);
-        symldl_v2_diag_bcast_chunks(
-            invDiag, diag_count, (int) sym_diag_root,
-            grid3d->cscp.comm, chunk_counter);
+        // D and inv(D) have the same root and lifetime, so send one packet.
+        if (symV2UsesCpuFactor() && grid3d->cscp.Np > 1)
+        {
+            size_t packet_count = symldl_v2_checked_product(
+                diag_count, (size_t) 2,
+                "SymFact V2 diagonal broadcast size overflows.");
+            if (packet_count > static_cast<size_t>(
+                                   std::numeric_limits<int64_t>::max()))
+                ABORT("SymFact V2 diagonal broadcast exceeds workspace limits.");
+            symldl_v2_ensure_factor_work(this, (int64_t) packet_count);
+            double *packet = symFactWork;
+            if (iam == sym_diag_proc)
+            {
+                std::memcpy(packet, symV2DiagBlocks[k],
+                            diag_count * sizeof(double));
+                std::memcpy(packet + diag_count, invDiag,
+                            diag_count * sizeof(double));
+            }
+            symldl_v2_diag_bcast_chunks(
+                packet, packet_count, (int) sym_diag_root,
+                grid3d->cscp.comm, chunk_counter);
+            std::memcpy(symV2DiagBlocks[k], packet,
+                        diag_count * sizeof(double));
+            std::memcpy(invDiag, packet + diag_count,
+                        diag_count * sizeof(double));
+        }
+        else if (!symV2UsesCpuFactor())
+        {
+            symldl_v2_diag_bcast_chunks(
+                symV2DiagBlocks[k], diag_count, (int) sym_diag_root,
+                grid3d->cscp.comm, chunk_counter);
+            symldl_v2_diag_bcast_chunks(
+                invDiag, diag_count, (int) sym_diag_root,
+                grid3d->cscp.comm, chunk_counter);
+        }
         if (symV2UsesCpuFactor())
         {
             symV2CpuInvDiagCommTime += SuperLU_timer_() - comm_start;

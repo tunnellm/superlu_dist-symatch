@@ -79,6 +79,10 @@ static void symldl_v2_allocate_factor_workspace(xLUstruct_t<Ftype> *lu)
     size_t diag_work = symldl_v2_checked_product((size_t) work_dim,
                                                  (size_t) work_dim,
                                                  "SymFact V2 diagonal workspace size overflows.");
+    if (lu->symV2UsesCpuFactor() && lu->grid3d->cscp.Np > 1)
+        diag_work = symldl_v2_checked_product(
+            diag_work, (size_t) 2,
+            "SymFact V2 diagonal broadcast workspace size overflows.");
     size_t panel_work = (lu->maxLvalCount > 0) ? (size_t) lu->maxLvalCount : 1;
     size_t work_count = SUPERLU_MAX(diag_work, panel_work);
     if (work_count == 0)
