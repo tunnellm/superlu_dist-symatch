@@ -180,6 +180,86 @@ static void symldl_v2_cpu_note_gemm_shape(
     profile.max_k = SUPERLU_MAX(profile.max_k, static_cast<uint64_t>(k));
 }
 
+static bool symldl_v2_cpu_build_row_map(
+    const int_t *source_row_list, int_t source_rows,
+    const int_t *destination_row_list, int_t destination_rows,
+    int_t *destination_permutation, int_t *row_map, int_t map_capacity,
+    bool *sorted_rows_out)
+{
+    if (source_rows <= 0 || destination_rows <= 0 ||
+        source_rows > map_capacity || destination_rows > map_capacity)
+        ABORT("SymFact V2 CPU row map exceeds workspace bounds.");
+
+    bool sorted_rows = true;
+    for (int_t row = 1; row < source_rows; ++row)
+        sorted_rows = sorted_rows &&
+                      source_row_list[row - 1] < source_row_list[row];
+    for (int_t row = 1; row < destination_rows; ++row)
+        sorted_rows = sorted_rows &&
+                      destination_row_list[row - 1] <
+                          destination_row_list[row];
+
+    if (sorted_rows)
+    {
+        int_t destination_row = 0;
+        for (int_t source_row = 0; source_row < source_rows; ++source_row)
+        {
+            while (destination_row < destination_rows &&
+                   destination_row_list[destination_row] <
+                       source_row_list[source_row])
+                ++destination_row;
+            if (destination_row >= destination_rows ||
+                destination_row_list[destination_row] !=
+                    source_row_list[source_row])
+                ABORT("SymFact V2 CPU source row is absent from destination.");
+            row_map[source_row] = destination_row;
+        }
+    }
+    else
+    {
+        for (int_t row = 0; row < destination_rows; ++row)
+            destination_permutation[row] = row;
+        std::sort(
+            destination_permutation,
+            destination_permutation + destination_rows,
+            [destination_row_list](int_t left, int_t right)
+            {
+                int_t left_gid = destination_row_list[left];
+                int_t right_gid = destination_row_list[right];
+                return left_gid < right_gid ||
+                       (left_gid == right_gid && left < right);
+            });
+        for (int_t row = 1; row < destination_rows; ++row)
+            if (destination_row_list[destination_permutation[row - 1]] ==
+                destination_row_list[destination_permutation[row]])
+                ABORT("SymFact V2 CPU destination rows are duplicated.");
+
+        for (int_t source_row = 0; source_row < source_rows; ++source_row)
+        {
+            int_t gid = source_row_list[source_row];
+            int_t *position = std::lower_bound(
+                destination_permutation,
+                destination_permutation + destination_rows, gid,
+                [destination_row_list](int_t row, int_t value)
+                {
+                    return destination_row_list[row] < value;
+                });
+            if (position == destination_permutation + destination_rows ||
+                destination_row_list[*position] != gid)
+                ABORT("SymFact V2 CPU source row is absent from destination.");
+            row_map[source_row] = *position;
+        }
+    }
+
+    bool row_contiguous = true;
+    for (int_t row = 1; row < source_rows; ++row)
+        row_contiguous = row_contiguous &&
+                         row_map[row] == row_map[0] + row;
+    if (sorted_rows_out != NULL)
+        *sorted_rows_out = sorted_rows;
+    return row_contiguous;
+}
+
 template <typename Ftype>
 static void symldl_v2_cpu_scatter_dual_block(
     xLUstruct_t<Ftype> *lu, xlpanel_t<Ftype> &row_panel,
@@ -217,43 +297,11 @@ static void symldl_v2_cpu_scatter_dual_block(
     int_t *source_column_list = column_panel.rowList(source_j);
     int_t *destination_row_list = destination_panel.rowList(local_block);
 
-    bool sorted_rows = true;
-    for (int_t i = 1; i < source_rows; ++i)
-        sorted_rows = sorted_rows &&
-                      source_row_list[i - 1] < source_row_list[i];
-    for (int_t i = 1; i < destination_rows; ++i)
-        sorted_rows = sorted_rows &&
-                      destination_row_list[i - 1] < destination_row_list[i];
-    bool row_contiguous = source_rows > 0;
-    if (sorted_rows)
-    {
-        int_t destination_row = 0;
-        for (int_t source_row = 0; source_row < source_rows; ++source_row)
-        {
-            while (destination_row < destination_rows &&
-                   destination_row_list[destination_row] <
-                       source_row_list[source_row])
-                ++destination_row;
-            if (destination_row >= destination_rows ||
-                destination_row_list[destination_row] !=
-                    source_row_list[source_row])
-                ABORT("SymFact V2 CPU scatter row is absent from destination.");
-            row_map[source_row] = destination_row;
-            row_contiguous = row_contiguous &&
-                             destination_row == row_map[0] + source_row;
-        }
-    }
-    else
-    {
-        for (int_t i = 0; i < destination_rows; ++i)
-            destination_index[destination_row_list[i]] = i;
-        for (int_t i = 0; i < source_rows; ++i)
-        {
-            row_map[i] = destination_index[source_row_list[i]];
-            row_contiguous = row_contiguous &&
-                             row_map[i] == row_map[0] + i;
-        }
-    }
+    bool sorted_rows = false;
+    bool row_contiguous = symldl_v2_cpu_build_row_map(
+        source_row_list, source_rows, destination_row_list,
+        destination_rows, destination_index, row_map, lu->ldt,
+        &sorted_rows);
 
     if (lu->symV2CpuProfileEnabled)
     {
@@ -584,63 +632,10 @@ static void symldl_v2_cpu_pack_padded_group(
         int_t destination_offset =
             destination.stRow(destination_block) - destination_row_begin;
 
-        bool sorted_rows = true;
-        for (int_t row = 1; row < source_rows; ++row)
-            sorted_rows = sorted_rows &&
-                          source_row_list[row - 1] < source_row_list[row];
-        for (int_t row = 1; row < destination_block_rows; ++row)
-            sorted_rows = sorted_rows &&
-                          destination_row_list[row - 1] <
-                              destination_row_list[row];
-        if (sorted_rows)
-        {
-            int_t destination_row = 0;
-            for (int_t source_row = 0; source_row < source_rows;
-                 ++source_row)
-            {
-                while (destination_row < destination_block_rows &&
-                       destination_row_list[destination_row] <
-                           source_row_list[source_row])
-                    ++destination_row;
-                if (destination_row >= destination_block_rows ||
-                    destination_row_list[destination_row] !=
-                        source_row_list[source_row])
-                    ABORT(
-                        "SymFact V2 CPU padded row is absent from destination.");
-                row_map[source_row] = destination_row;
-            }
-        }
-        else
-        {
-            for (int_t destination_row = 0;
-                 destination_row < destination_block_rows;
-                 ++destination_row)
-            {
-                if (destination_row_list[destination_row] < 0 ||
-                    destination_row_list[destination_row] >= map_capacity)
-                    ABORT(
-                        "SymFact V2 CPU padded destination row is invalid.");
-                destination_index[
-                    destination_row_list[destination_row]] =
-                    destination_row;
-            }
-            for (int_t source_row = 0; source_row < source_rows;
-                 ++source_row)
-            {
-                if (source_row_list[source_row] < 0 ||
-                    source_row_list[source_row] >= map_capacity)
-                    ABORT("SymFact V2 CPU padded source row is invalid.");
-                int_t destination_row =
-                    destination_index[source_row_list[source_row]];
-                if (destination_row < 0 ||
-                    destination_row >= destination_block_rows ||
-                    destination_row_list[destination_row] !=
-                        source_row_list[source_row])
-                    ABORT(
-                        "SymFact V2 CPU padded row is absent from destination.");
-                row_map[source_row] = destination_row;
-            }
-        }
+        symldl_v2_cpu_build_row_map(
+            source_row_list, source_rows, destination_row_list,
+            destination_block_rows, destination_index, row_map,
+            map_capacity, NULL);
 
         for (int_t column = 0; column < k; ++column)
         {
