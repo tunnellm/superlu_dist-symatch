@@ -67,9 +67,6 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuPanelFactorStarted.clear();
     symV2CpuSlotOwner.clear();
     symV2CpuSlotGeneration.clear();
-    symV2CpuCanonicalBlocks.clear();
-    symV2CpuCanonicalToOriginalRows.clear();
-    symV2CpuRowsCanonical = false;
     symV2CpuRequests.clear();
     symV2CpuRequestPeers.clear();
     symV2CpuWaitIndices.clear();

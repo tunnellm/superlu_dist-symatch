@@ -55,8 +55,6 @@ static SymLDLV2CpuCapacitySnapshot symldl_v2_cpu_capacity_snapshot(
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRowSendSizes);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRowSegments);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRowPermutations);
-    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuCanonicalBlocks);
-    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuCanonicalToOriginalRows);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRequests);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerRecvOffsets);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRequestPeers);
@@ -177,7 +175,7 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
     MPI_Reduce(local_high_water, max_high_water, 2,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, lu->grid3d->comm);
 
-    unsigned long long local_shapes[33] = {0};
+    unsigned long long local_shapes[31] = {0};
     unsigned long long local_shape_max[3] = {0};
     for (size_t thread = 0; thread < lu->symV2CpuThreadProfiles.size();
          ++thread)
@@ -215,8 +213,6 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         local_shapes[28] += profile.padded_direct_groups;
         local_shapes[29] += profile.padded_direct_source_values;
         local_shapes[30] += profile.padded_direct_destination_values;
-        local_shapes[31] += profile.mapped_source_rows_sorted;
-        local_shapes[32] += profile.mapped_destination_rows_sorted;
         local_shape_max[0] = SUPERLU_MAX(
             local_shape_max[0],
             static_cast<unsigned long long>(profile.max_m));
@@ -227,9 +223,9 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
             local_shape_max[2],
             static_cast<unsigned long long>(profile.max_k));
     }
-    unsigned long long sum_shapes[33] = {0};
+    unsigned long long sum_shapes[31] = {0};
     unsigned long long max_shapes[3] = {0};
-    MPI_Reduce(local_shapes, sum_shapes, 33, MPI_UNSIGNED_LONG_LONG,
+    MPI_Reduce(local_shapes, sum_shapes, 31, MPI_UNSIGNED_LONG_LONG,
                MPI_SUM, 0, lu->grid3d->comm);
     MPI_Reduce(local_shape_max, max_shapes, 3, MPI_UNSIGNED_LONG_LONG,
                MPI_MAX, 0, lu->grid3d->comm);
@@ -271,10 +267,10 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         gemm_count > 0.0 ? sum_shapes[6] / gemm_count : 0.0,
         max_shapes[0], max_shapes[1], max_shapes[2]);
     std::printf(
-        "SymFact V2 CPU mapped-scatter profile (sum): values=%llu row_exact=%llu row_contiguous=%llu column_full=%llu column_contiguous=%llu rectangular=%llu sorted_rows=%llu source_sorted=%llu destination_sorted=%llu destination_full=%llu row_contiguous_values=%llu rectangular_values=%llu\n",
+        "SymFact V2 CPU mapped-scatter profile (sum): values=%llu row_exact=%llu row_contiguous=%llu column_full=%llu column_contiguous=%llu rectangular=%llu sorted_rows=%llu destination_full=%llu row_contiguous_values=%llu rectangular_values=%llu\n",
         sum_shapes[7], sum_shapes[8], sum_shapes[9], sum_shapes[10],
-        sum_shapes[11], sum_shapes[12], sum_shapes[13], sum_shapes[31],
-        sum_shapes[32], sum_shapes[14], sum_shapes[15], sum_shapes[16]);
+        sum_shapes[11], sum_shapes[12], sum_shapes[13], sum_shapes[14],
+        sum_shapes[15], sum_shapes[16]);
     std::printf(
         "SymFact V2 CPU padded-direct candidates (sum): scatters=%llu source_values=%llu destination_values=%llu le_1.25=%llu/%llu le_1.50=%llu/%llu le_2.00=%llu/%llu le_4.00=%llu/%llu\n",
         sum_shapes[17], sum_shapes[18], sum_shapes[19], sum_shapes[20],

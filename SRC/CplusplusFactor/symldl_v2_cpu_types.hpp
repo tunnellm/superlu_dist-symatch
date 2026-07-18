@@ -58,13 +58,6 @@ struct SymLDLV2CpuPackSegment
     size_t row_permutation_offset;
 };
 
-struct SymLDLV2CpuCanonicalBlock
-{
-    int_t local_panel;
-    int_t block;
-    size_t permutation_offset;
-};
-
 struct SymLDLV2CpuExchangeState
 {
     int_t k = -1;
@@ -96,8 +89,6 @@ struct SymLDLV2CpuThreadProfile
     uint64_t mapped_column_contiguous = 0;
     uint64_t mapped_rectangular = 0;
     uint64_t mapped_sorted_rows = 0;
-    uint64_t mapped_source_rows_sorted = 0;
-    uint64_t mapped_destination_rows_sorted = 0;
     uint64_t mapped_destination_full = 0;
     uint64_t mapped_row_contiguous_values = 0;
     uint64_t mapped_rectangular_values = 0;
