@@ -83,6 +83,7 @@ double symV2CpuGemmTime = 0.0;
 double symV2CpuDirectScatterTime = 0.0;
 double symV2CpuMappedScatterTime = 0.0;
 double symV2CpuPaddedPackTime = 0.0;
+double symV2CpuRowMapTime = 0.0;
 double symV2CpuScatterLockWaitTime = 0.0;
 double symV2CpuSchedulerIdleTime = 0.0;
 double symV2CpuSlotBackpressureTime = 0.0;

@@ -95,7 +95,7 @@ static uint64_t symldl_v2_cpu_count_outstanding_requests(
 template <typename Ftype>
 static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 {
-    enum { timer_count = 39, counter_count = 37 };
+    enum { timer_count = 40, counter_count = 37 };
     double local_timers[timer_count] = {
         lu->symV2CpuPlanBuildTime,
         lu->symV2CpuWorkspaceInitTime,
@@ -135,7 +135,8 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuRowDemandPlanTime,
         lu->symV2CpuRowRecvLayoutTime,
         lu->symV2CpuRowDemandExchangeTime,
-        lu->symV2CpuRowSendPlanTime
+        lu->symV2CpuRowSendPlanTime,
+        lu->symV2CpuRowMapTime
     };
     double max_timers[timer_count] = {0.0};
     MPI_Reduce(local_timers, max_timers, timer_count, MPI_DOUBLE, MPI_MAX, 0,
@@ -193,6 +194,7 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 
     unsigned long long local_shapes[31] = {0};
     unsigned long long local_shape_max[3] = {0};
+    double local_worker_times[5] = {0.0};
     for (size_t thread = 0; thread < lu->symV2CpuThreadProfiles.size();
          ++thread)
     {
@@ -238,12 +240,20 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         local_shape_max[2] = SUPERLU_MAX(
             local_shape_max[2],
             static_cast<unsigned long long>(profile.max_k));
+        local_worker_times[0] += profile.small_gemm_time;
+        local_worker_times[1] += profile.medium_gemm_time;
+        local_worker_times[2] += profile.large_gemm_time;
+        local_worker_times[3] += profile.contiguous_scatter_time;
+        local_worker_times[4] += profile.irregular_scatter_time;
     }
     unsigned long long sum_shapes[31] = {0};
     unsigned long long max_shapes[3] = {0};
+    double max_worker_times[5] = {0.0};
     MPI_Reduce(local_shapes, sum_shapes, 31, MPI_UNSIGNED_LONG_LONG,
                MPI_SUM, 0, lu->grid3d->comm);
     MPI_Reduce(local_shape_max, max_shapes, 3, MPI_UNSIGNED_LONG_LONG,
+               MPI_MAX, 0, lu->grid3d->comm);
+    MPI_Reduce(local_worker_times, max_worker_times, 5, MPI_DOUBLE,
                MPI_MAX, 0, lu->grid3d->comm);
     int max_workers = 1;
     MPI_Reduce(&lu->symV2CpuWorkerCount, &max_workers, 1, MPI_INT,
@@ -276,10 +286,10 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         max_timers[8], max_timers[9], max_timers[10], max_timers[11],
         max_timers[12], max_timers[13], max_timers[26]);
     std::printf(
-        "SymFact V2 CPU compute profile (max-rank): diag=%.6f invdiag_comm=%.6f w_transform=%.6f schur=%.6f gemm=%.6f lookahead_gemm=%.6f exclude_gemm=%.6f direct=%.6f mapped=%.6f padded_pack=%.6f lock_wait=%.6f\n",
+        "SymFact V2 CPU compute profile (max-rank): diag=%.6f invdiag_comm=%.6f w_transform=%.6f schur=%.6f gemm=%.6f lookahead_gemm=%.6f exclude_gemm=%.6f direct=%.6f mapped=%.6f padded_pack=%.6f row_map=%.6f lock_wait=%.6f\n",
         max_timers[14], max_timers[15], max_timers[16], max_timers[17],
         max_timers[18], max_timers[19], max_timers[20], max_timers[21],
-        max_timers[22], max_timers[27], max_timers[23]);
+        max_timers[22], max_timers[27], max_timers[39], max_timers[23]);
     std::printf(
         "SymFact V2 CPU work counters (sum): panels=%llu/%llu tasks=%llu task_batches=%llu deferred_batches=%llu inline_batches=%llu gemms=%llu gemm_flops=%llu direct=%llu mapped=%llu lookahead=%llu exclude=%llu lock_attempts=%llu lock_conflicts=%llu\n",
         sum_counters[0], sum_counters[1], sum_counters[2], sum_counters[24],
@@ -294,6 +304,10 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         gemm_count > 0.0 ? sum_shapes[5] / gemm_count : 0.0,
         gemm_count > 0.0 ? sum_shapes[6] / gemm_count : 0.0,
         max_shapes[0], max_shapes[1], max_shapes[2]);
+    std::printf(
+        "SymFact V2 CPU worker timing profile (max-rank sum): gemm_small=%.6f gemm_medium=%.6f gemm_large=%.6f scatter_contiguous=%.6f scatter_irregular=%.6f\n",
+        max_worker_times[0], max_worker_times[1], max_worker_times[2],
+        max_worker_times[3], max_worker_times[4]);
     std::printf(
         "SymFact V2 CPU mapped-scatter profile (sum): values=%llu row_exact=%llu row_contiguous=%llu column_full=%llu column_contiguous=%llu rectangular=%llu sorted_rows=%llu destination_full=%llu row_contiguous_values=%llu rectangular_values=%llu\n",
         sum_shapes[7], sum_shapes[8], sum_shapes[9], sum_shapes[10],

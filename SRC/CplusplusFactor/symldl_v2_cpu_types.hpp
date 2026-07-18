@@ -82,6 +82,11 @@ struct SymLDLV2CpuThreadProfile
     uint64_t max_m = 0;
     uint64_t max_n = 0;
     uint64_t max_k = 0;
+    double small_gemm_time = 0.0;
+    double medium_gemm_time = 0.0;
+    double large_gemm_time = 0.0;
+    double contiguous_scatter_time = 0.0;
+    double irregular_scatter_time = 0.0;
     uint64_t mapped_scatter_values = 0;
     uint64_t mapped_row_exact = 0;
     uint64_t mapped_row_contiguous = 0;

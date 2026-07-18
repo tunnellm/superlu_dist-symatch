@@ -273,7 +273,8 @@ static inline uint64_t symldl_v2_cpu_min_deferred_work()
 
 template <typename Ftype>
 static void symldl_v2_cpu_note_gemm_shape(
-    xLUstruct_t<Ftype> *lu, int_t m, int_t n, int_t k)
+    xLUstruct_t<Ftype> *lu, int_t m, int_t n, int_t k,
+    double elapsed)
 {
     if (!lu->symV2CpuProfileEnabled)
         return;
@@ -289,11 +290,20 @@ static void symldl_v2_cpu_note_gemm_shape(
     uint64_t flops = symldl_v2_cpu_gemm_flops(m, n, k);
     ++profile.gemms;
     if (flops < symldl_v2_cpu_min_deferred_work())
+    {
         ++profile.small_gemms;
+        profile.small_gemm_time += elapsed;
+    }
     else if (flops < UINT64_C(1048576))
+    {
         ++profile.medium_gemms;
+        profile.medium_gemm_time += elapsed;
+    }
     else
+    {
         ++profile.large_gemms;
+        profile.large_gemm_time += elapsed;
+    }
     profile.m_sum = symldl_v2_cpu_saturating_add(
         profile.m_sum, static_cast<uint64_t>(m));
     profile.n_sum = symldl_v2_cpu_saturating_add(
@@ -464,10 +474,20 @@ static void symldl_v2_cpu_scatter_dual_block(
     int_t *destination_row_list = destination_panel.rowList(local_block);
 
     bool sorted_rows = false;
+    double row_map_start =
+        lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
     bool row_contiguous = symldl_v2_cpu_build_row_map(
         source_row_list, source_rows, destination_row_list,
         destination_rows, destination_index, row_map, lu->ldt,
         &sorted_rows);
+    if (lu->symV2CpuProfileEnabled)
+    {
+        double row_map_time = SuperLU_timer_() - row_map_start;
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+        lu->symV2CpuRowMapTime += row_map_time;
+    }
 
     if (lu->symV2CpuProfileEnabled)
     {
@@ -610,6 +630,12 @@ static void symldl_v2_cpu_scatter_dual_block(
 #pragma omp atomic update
 #endif
     ++lu->symV2CpuMappedScatters;
+    SymLDLV2CpuThreadProfile &profile =
+        lu->symV2CpuThreadProfiles[static_cast<size_t>(thread_id)];
+    if (row_contiguous)
+        profile.contiguous_scatter_time += scatter_time;
+    else
+        profile.irregular_scatter_time += scatter_time;
 }
 
 template <typename Ftype>
@@ -870,7 +896,6 @@ static long long symldl_v2_cpu_grouped_update_column(
         {
             symldl_v2_cpu_assert_panel_unfactored(
                 lu, direct_local_panel);
-            symldl_v2_cpu_note_gemm_shape(lu, m, n, k);
             xlpanel_t<Ftype> &destination =
                 lu->lPanelVec[direct_local_panel];
             for (int_t block = direct_first_block;
@@ -891,6 +916,8 @@ static long long symldl_v2_cpu_grouped_update_column(
                 destination.blkPtr(direct_first_block), destination.LDA());
             double direct_time = lu->symV2CpuProfileEnabled ?
                 SuperLU_timer_() - direct_start : 0.0;
+            symldl_v2_cpu_note_gemm_shape(
+                lu, m, n, k, direct_time);
             for (int_t block = direct_last_block;
                  block >= direct_first_block; --block)
                 symldl_v2_cpu_unlock_output(
@@ -993,7 +1020,7 @@ static long long symldl_v2_cpu_grouped_update_column(
             if (lu->symV2CpuProfileEnabled)
             {
                 symldl_v2_cpu_note_gemm_shape(
-                    lu, direct_destination_rows, n, k);
+                    lu, direct_destination_rows, n, k, gemm_time);
 #ifdef _OPENMP
 #pragma omp atomic update
 #endif
@@ -1050,7 +1077,6 @@ static long long symldl_v2_cpu_grouped_update_column(
         }
         else
         {
-            symldl_v2_cpu_note_gemm_shape(lu, m, n, k);
             int thread_id = 0;
 #ifdef _OPENMP
             thread_id = omp_get_thread_num();
@@ -1069,6 +1095,8 @@ static long long symldl_v2_cpu_grouped_update_column(
                 column_panel.LDA(), beta, update, m);
             double gemm_time = lu->symV2CpuProfileEnabled ?
                 SuperLU_timer_() - gemm_start : 0.0;
+            symldl_v2_cpu_note_gemm_shape(
+                lu, m, n, k, gemm_time);
             if (lu->symV2CpuProfileEnabled)
             {
 #ifdef _OPENMP
