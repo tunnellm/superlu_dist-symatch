@@ -138,6 +138,10 @@ static void symldl_v2_allocate_cpu_factor_workspace(
     lu->symV2CpuPartnerUpdateSubmitted.assign(exchange_peers, 0);
     lu->symV2CpuExchangeStates.assign(
         static_cast<size_t>(slots), SymLDLV2CpuExchangeState());
+    lu->symV2CpuSlotOwner.assign(static_cast<size_t>(slots), -1);
+    lu->symV2CpuSlotGeneration.assign(static_cast<size_t>(slots), 0);
+    lu->symV2CpuPanelFactorStarted.assign(
+        static_cast<size_t>(lu->symV2PanelCount()), 0);
     lu->symV2CpuDeferredTasksActive = 0;
     lu->symV2CpuReductionPanelSlots.assign(static_cast<size_t>(slots), -1);
     lu->symV2CpuReductionChunksRemaining.assign(

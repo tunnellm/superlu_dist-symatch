@@ -25,6 +25,23 @@ static int_t symldl_v2_cpu_panel_find(
 }
 
 template <typename Ftype>
+static int_t symldl_v2_cpu_panel_lower_bound(
+    xlpanel_t<Ftype> &panel, int_t gid, int_t begin, int_t end)
+{
+    if (begin < 0 || end < begin || end > panel.nblocks())
+        ABORT("SymFact V2 CPU panel search range is invalid.");
+    while (begin < end)
+    {
+        int_t middle = begin + (end - begin) / 2;
+        if (panel.gid(middle) < gid)
+            begin = middle + 1;
+        else
+            end = middle;
+    }
+    return begin;
+}
+
+template <typename Ftype>
 static size_t symldl_v2_cpu_output_lock_id(
     xLUstruct_t<Ftype> *lu, int_t local_panel, int_t local_block)
 {
@@ -86,6 +103,114 @@ static void symldl_v2_cpu_unlock_output(
     (void) lu;
     (void) lock_id;
 #endif
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_assert_panel_unfactored(
+    xLUstruct_t<Ftype> *lu, int_t local_panel)
+{
+    if (!symldl_v2_cpu_ownership_check_enabled())
+        return;
+    if (local_panel < 0 ||
+        static_cast<size_t>(local_panel) >=
+            lu->symV2CpuPanelFactorStarted.size())
+        ABORT("SymFact V2 CPU panel ownership check is invalid.");
+    int started = 0;
+#ifdef _OPENMP
+#pragma omp atomic read
+#endif
+    started = lu->symV2CpuPanelFactorStarted[
+        static_cast<size_t>(local_panel)];
+    if (started != 0)
+        ABORT("SymFact V2 CPU update targets a factored panel.");
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_mark_panel_factor_started(
+    xLUstruct_t<Ftype> *lu, int_t local_panel)
+{
+    if (!symldl_v2_cpu_ownership_check_enabled())
+        return;
+    if (local_panel < 0 ||
+        static_cast<size_t>(local_panel + 1) >=
+            lu->symV2CpuOutputLockOffsets.size() ||
+        static_cast<size_t>(local_panel) >=
+            lu->symV2CpuPanelFactorStarted.size())
+        ABORT("SymFact V2 CPU factor ownership check is invalid.");
+
+    int started = 0;
+#ifdef _OPENMP
+#pragma omp atomic read
+#endif
+    started = lu->symV2CpuPanelFactorStarted[
+        static_cast<size_t>(local_panel)];
+    if (started != 0)
+        ABORT("SymFact V2 CPU panel factorization started twice.");
+
+#ifdef _OPENMP
+    if (symldl_v2_cpu_output_lock_check_enabled())
+    {
+        if (lu->symV2CpuOutputLocks == NULL &&
+            lu->symV2CpuOutputLockOffsets.back() != 0)
+            ABORT("SymFact V2 CPU output lock table is missing.");
+        omp_lock_t *locks =
+            static_cast<omp_lock_t *>(lu->symV2CpuOutputLocks);
+        size_t begin = lu->symV2CpuOutputLockOffsets[
+            static_cast<size_t>(local_panel)];
+        size_t end = lu->symV2CpuOutputLockOffsets[
+            static_cast<size_t>(local_panel + 1)];
+        for (size_t lock = begin; lock < end; ++lock)
+        {
+            if (!omp_test_lock(&locks[lock]))
+                ABORT(
+                    "SymFact V2 CPU panel factorization overlaps an update lock.");
+            omp_unset_lock(&locks[lock]);
+        }
+    }
+#endif
+
+#ifdef _OPENMP
+#pragma omp atomic write
+#endif
+    lu->symV2CpuPanelFactorStarted[static_cast<size_t>(local_panel)] = 1;
+}
+
+template <typename Ftype>
+static uint64_t symldl_v2_cpu_slot_generation(
+    xLUstruct_t<Ftype> *lu, int slot, int_t source_k)
+{
+    if (!symldl_v2_cpu_ownership_check_enabled())
+        return 0;
+    if (slot < 0 ||
+        static_cast<size_t>(slot) >= lu->symV2CpuSlotGeneration.size() ||
+        static_cast<size_t>(slot) >= lu->symV2CpuSlotOwner.size())
+        ABORT("SymFact V2 CPU slot ownership check is invalid.");
+    uint64_t generation = 0;
+    int_t owner = -1;
+#ifdef _OPENMP
+#pragma omp atomic read
+#endif
+    generation = lu->symV2CpuSlotGeneration[static_cast<size_t>(slot)];
+#ifdef _OPENMP
+#pragma omp atomic read
+#endif
+    owner = lu->symV2CpuSlotOwner[static_cast<size_t>(slot)];
+    if (generation == 0 || owner != source_k)
+        ABORT("SymFact V2 CPU task observes a reused source slot.");
+    return generation;
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_assert_slot_generation(
+    xLUstruct_t<Ftype> *lu, int slot, int_t source_k,
+    uint64_t expected_generation)
+{
+    if (!symldl_v2_cpu_ownership_check_enabled())
+        return;
+    uint64_t generation = symldl_v2_cpu_slot_generation(
+        lu, slot, source_k);
+    if (generation != expected_generation)
+        ABORT("SymFact V2 CPU task source slot changed generation.");
 }
 
 static inline uint64_t symldl_v2_cpu_gemm_flops(
@@ -321,6 +446,7 @@ static void symldl_v2_cpu_scatter_dual_block(
     int_t local_block = symldl_v2_cpu_panel_find(destination_panel, gi);
     if (local_block == GLOBAL_BLOCK_NOT_FOUND)
         return;
+    symldl_v2_cpu_assert_panel_unfactored(lu, local_panel);
 
     int thread_id = 0;
 #ifdef _OPENMP
@@ -700,10 +826,8 @@ static long long symldl_v2_cpu_grouped_update_column(
     int_t source_j, const Ftype *column_values, bool lookahead)
 {
     int_t gj = column_panel.gid(source_j);
-    int_t source_i = first_row_block;
-    while (source_i < row_panel.nblocks() &&
-           row_panel.gid(source_i) < gj)
-        ++source_i;
+    int_t source_i = symldl_v2_cpu_panel_lower_bound(
+        row_panel, gj, first_row_block, row_panel.nblocks());
     if (source_i >= row_panel.nblocks())
         return 0;
 
@@ -744,6 +868,8 @@ static long long symldl_v2_cpu_grouped_update_column(
                 false, &direct_local_panel, &direct_first_block,
                 &direct_last_block, &direct_destination_rows))
         {
+            symldl_v2_cpu_assert_panel_unfactored(
+                lu, direct_local_panel);
             symldl_v2_cpu_note_gemm_shape(lu, m, n, k);
             xlpanel_t<Ftype> &destination =
                 lu->lPanelVec[direct_local_panel];
@@ -819,6 +945,8 @@ static long long symldl_v2_cpu_grouped_update_column(
                  static_cast<uint64_t>(direct_destination_rows) * 4 <=
                      static_cast<uint64_t>(m) * 5)
         {
+            symldl_v2_cpu_assert_panel_unfactored(
+                lu, direct_local_panel);
             int thread_id = 0;
 #ifdef _OPENMP
             thread_id = omp_get_thread_num();
@@ -996,6 +1124,7 @@ static void symldl_v2_cpu_note_task_pending(
     if (slot < 0 ||
         static_cast<size_t>(slot) >= lu->symV2CpuRawPanelBufs.size())
         ABORT("SymFact V2 CPU task slot is invalid.");
+    symldl_v2_cpu_assert_panel_unfactored(lu, local_panel);
 #ifdef _OPENMP
 #pragma omp atomic update
 #endif
@@ -1033,6 +1162,8 @@ static void symldl_v2_cpu_submit_grouped_task_range(
         }
     }
     bool defer = false;
+    uint64_t expected_generation =
+        symldl_v2_cpu_slot_generation(lu, slot, source_k);
 #ifdef _OPENMP
     if (omp_in_parallel() && omp_get_num_threads() > 1)
     {
@@ -1048,6 +1179,9 @@ static void symldl_v2_cpu_submit_grouped_task_range(
                         row_panel, first_row_block, column_panel, source_j));
         }
         defer = range_work >= symldl_v2_cpu_min_deferred_work();
+        // Release the parent before exclude tasks occupy the worker queue.
+        if (lookahead && (lu->Pr > 1 || lu->Pc > 1))
+            defer = false;
     }
 #endif
     if (lu->symV2CpuProfileEnabled)
@@ -1067,9 +1201,11 @@ static void symldl_v2_cpu_submit_grouped_task_range(
 #pragma omp task firstprivate(source_k, slot, row_index, row_values,             \
                               first_row_block, column_index, column_values,     \
                               source_j_begin, source_j_end, parent, lookahead,  \
-                              priority_value)                                  \
+                              priority_value, expected_generation)             \
                  shared(lu) priority(priority_value)
         {
+            symldl_v2_cpu_assert_slot_generation(
+                lu, slot, source_k, expected_generation);
             xlpanel_t<Ftype> task_row(row_index, row_values);
             xlpanel_t<Ftype> task_column(column_index, column_values);
             double task_start =
@@ -1078,6 +1214,8 @@ static void symldl_v2_cpu_submit_grouped_task_range(
             for (int_t source_j = source_j_begin;
                  source_j < source_j_end; ++source_j)
             {
+                symldl_v2_cpu_assert_slot_generation(
+                    lu, slot, source_k, expected_generation);
                 completed += symldl_v2_cpu_grouped_update_column(
                     lu, task_row, first_row_block, task_column, source_j,
                     column_values, lookahead);
@@ -1099,10 +1237,14 @@ static void symldl_v2_cpu_submit_grouped_task_range(
     }
 #endif
     xlpanel_t<Ftype> row_panel(row_index, row_values);
+    symldl_v2_cpu_assert_slot_generation(
+        lu, slot, source_k, expected_generation);
     double task_start = lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
     long long completed = 0;
     for (int_t source_j = source_j_begin; source_j < source_j_end; ++source_j)
     {
+        symldl_v2_cpu_assert_slot_generation(
+            lu, slot, source_k, expected_generation);
         completed += symldl_v2_cpu_grouped_update_column(
             lu, row_panel, first_row_block, column_panel, source_j,
             column_values, lookahead);

@@ -22,6 +22,24 @@ static inline bool symldl_v2_cpu_async_exchange_enabled()
     return enabled;
 }
 
+static inline bool symldl_v2_cpu_ownership_check_enabled()
+{
+    static const bool enabled = []() {
+        const char *value = std::getenv("GPU3DV2_CPU_OWNERSHIP_CHECK");
+        return value != NULL && std::atoi(value) != 0;
+    }();
+    return enabled;
+}
+
+static inline bool symldl_v2_cpu_output_lock_check_enabled()
+{
+    static const bool enabled = []() {
+        const char *value = std::getenv("GPU3DV2_CPU_OUTPUT_LOCK_CHECK");
+        return value != NULL && std::atoi(value) != 0;
+    }();
+    return enabled;
+}
+
 static inline size_t symldl_v2_cpu_mpi_chunk_count(size_t count)
 {
     const size_t limit =

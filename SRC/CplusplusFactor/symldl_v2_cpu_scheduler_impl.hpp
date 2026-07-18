@@ -141,6 +141,16 @@ static int_t symldl_v2_cpu_factor_forest(
                 symldl_v2_cpu_wait_for_counter(
                     lu, &lu->symV2CpuSlotPending[slot], true);
                 symldl_v2_cpu_drain_slot_sends(lu, slot);
+                if (symldl_v2_cpu_ownership_check_enabled())
+                {
+                    uint64_t generation =
+                        lu->symV2CpuSlotGeneration[static_cast<size_t>(slot)];
+                    if (generation == std::numeric_limits<uint64_t>::max())
+                        ABORT("SymFact V2 CPU slot generation overflows.");
+                    lu->symV2CpuSlotGeneration[
+                        static_cast<size_t>(slot)] = generation + 1;
+                    lu->symV2CpuSlotOwner[static_cast<size_t>(slot)] = k;
+                }
                 if (lu->mycol == lu->symV2PanelRoot(k))
                 {
                     int_t local_panel = lu->symV2PanelIndex(k);
@@ -150,6 +160,8 @@ static int_t symldl_v2_cpu_factor_forest(
                         ABORT("SymFact V2 CPU factor panel is invalid.");
                     symldl_v2_cpu_wait_for_counter(
                         lu, &lu->symV2CpuPanelPending[local_panel], false);
+                    symldl_v2_cpu_mark_panel_factor_started(
+                        lu, local_panel);
                 }
 
                 double panel_issue_start = SuperLU_timer_();

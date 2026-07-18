@@ -59,7 +59,8 @@ dreadMM_dist(FILE *fp, int_t *m, int_t *n, int_t *nonz,
      cs = fgets(line,512,fp);
      for (p=line; *p!='\0'; *p=tolower(*p),p++);
 
-     if (sscanf(line, "%s %s %s %s %s", banner, mtx, crd, arith, sym) != 5) {
+     if (sscanf(line, "%63s %63s %63s %63s %63s",
+                banner, mtx, crd, arith, sym) != 5) {
        printf("Invalid header (first line does not contain 5 tokens)\n");
        exit(-1);
      }
@@ -102,7 +103,7 @@ dreadMM_dist(FILE *fp, int_t *m, int_t *n, int_t *nonz,
      /* 2/ Skip comments */
      while(banner[0]=='%') {
        cs = fgets(line,512,fp);
-       sscanf(line,"%s",banner);
+       sscanf(line, "%63s", banner);
      }
 
      /* 3/ Read n and nnz */

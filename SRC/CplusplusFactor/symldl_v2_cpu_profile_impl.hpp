@@ -279,12 +279,22 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
     std::printf(
         "SymFact V2 CPU padded-direct execution (sum): groups=%llu source_values=%llu destination_values=%llu\n",
         sum_shapes[28], sum_shapes[29], sum_shapes[30]);
-    const char *blas_threads = std::getenv("OPENBLAS_NUM_THREADS");
-    const char *blas_source = "OPENBLAS_NUM_THREADS";
+    const char *blas_threads = std::getenv("BLIS_NUM_THREADS");
+    const char *blas_source = "BLIS_NUM_THREADS";
+    if (blas_threads == NULL || blas_threads[0] == '\0')
+    {
+        blas_threads = std::getenv("OPENBLAS_NUM_THREADS");
+        blas_source = "OPENBLAS_NUM_THREADS";
+    }
     if (blas_threads == NULL || blas_threads[0] == '\0')
     {
         blas_threads = std::getenv("MKL_NUM_THREADS");
         blas_source = "MKL_NUM_THREADS";
+    }
+    if (blas_threads == NULL || blas_threads[0] == '\0')
+    {
+        blas_threads = std::getenv("CRAYBLAS_NUM_THREADS");
+        blas_source = "CRAYBLAS_NUM_THREADS";
     }
     if (blas_threads == NULL || blas_threads[0] == '\0')
     {

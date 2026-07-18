@@ -97,7 +97,8 @@ int_t symbfact
     int_t *iwork, *perm_r, *segrep, *repfnz;
     int_t *xprune, *marker, *parent, *xplore;
     int_t relax, *desc, *relax_end;
-    int_t nnzLU, nnzLSUB;
+    long long int nnzLU;
+    int_t nnzLSUB;
     int_t nnzL, nnzU;
 
 #if ( DEBUGlevel>=1 )
@@ -235,17 +236,19 @@ int_t symbfact
     SUPERLU_FREE(desc);
     
     countnz_dist(min_mn, xprune, &nnzL, &nnzU, Glu_persist, Glu_freeable);
-    Glu_freeable->nnzLU = nnzL + nnzU - min_mn;	
+    Glu_freeable->nnzLU = (int64_t) nnzL + (int64_t) nnzU -
+        (int64_t) min_mn;
     /* Apply perm_r to L; Compress LSUB array. */
     nnzLSUB = fixupL_dist(min_mn, perm_r, Glu_persist, Glu_freeable);
 
     if ( !pnum && (options->PrintStat == YES)) {
-	nnzLU = nnzL + nnzU - min_mn;				   
-	printf("\tMatrix size min_mn  " IFMT "\n", min_mn);
-	printf("\tNonzeros in L       " IFMT "\n", nnzL);
-	printf("\tNonzeros in U       " IFMT "\n", nnzU);
-	printf("\tnonzeros in L+U     " IFMT "\n", nnzLU);
-	printf("\tnonzeros in LSUB    " IFMT "\n", nnzLSUB);
+		nnzLU = (long long int) nnzL + (long long int) nnzU
+		    - (long long int) min_mn;
+		printf("\tMatrix size min_mn  " IFMT "\n", min_mn);
+		printf("\tNonzeros in L       " IFMT "\n", nnzL);
+		printf("\tNonzeros in U       " IFMT "\n", nnzU);
+		printf("\tnonzeros in L+U     %lld\n", nnzLU);
+		printf("\tnonzeros in LSUB    " IFMT "\n", nnzLSUB);
     }
     SUPERLU_FREE(iwork);
 
@@ -1058,4 +1061,3 @@ static void pruneL
 	} /* if */
     } /* for each U-segment ... */
 } /* PRUNEL */
-
