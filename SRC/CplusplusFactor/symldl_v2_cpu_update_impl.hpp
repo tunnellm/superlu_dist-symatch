@@ -217,37 +217,77 @@ static bool symldl_v2_cpu_build_row_map(
     }
     else
     {
+        bool bounded_ids = true;
+        for (int_t row = 0; row < source_rows; ++row)
+            bounded_ids = bounded_ids && source_row_list[row] >= 0 &&
+                          source_row_list[row] < map_capacity;
         for (int_t row = 0; row < destination_rows; ++row)
-            destination_permutation[row] = row;
-        std::sort(
-            destination_permutation,
-            destination_permutation + destination_rows,
-            [destination_row_list](int_t left, int_t right)
-            {
-                int_t left_gid = destination_row_list[left];
-                int_t right_gid = destination_row_list[right];
-                return left_gid < right_gid ||
-                       (left_gid == right_gid && left < right);
-            });
-        for (int_t row = 1; row < destination_rows; ++row)
-            if (destination_row_list[destination_permutation[row - 1]] ==
-                destination_row_list[destination_permutation[row]])
-                ABORT("SymFact V2 CPU destination rows are duplicated.");
+            bounded_ids = bounded_ids && destination_row_list[row] >= 0 &&
+                          destination_row_list[row] < map_capacity;
 
-        for (int_t source_row = 0; source_row < source_rows; ++source_row)
+        if (bounded_ids)
         {
-            int_t gid = source_row_list[source_row];
-            int_t *position = std::lower_bound(
+            // Clear every key this map may read before reusing the worker
+            // scratch.  This retains the linear indirect-map path without
+            // relying on values left by an earlier update.
+            for (int_t row = 0; row < source_rows; ++row)
+                destination_permutation[source_row_list[row]] = -1;
+            for (int_t row = 0; row < destination_rows; ++row)
+                destination_permutation[destination_row_list[row]] = -1;
+            for (int_t row = 0; row < destination_rows; ++row)
+            {
+                int_t gid = destination_row_list[row];
+                if (destination_permutation[gid] != -1)
+                    ABORT("SymFact V2 CPU destination rows are duplicated.");
+                destination_permutation[gid] = row;
+            }
+            for (int_t row = 0; row < source_rows; ++row)
+            {
+                int_t gid = source_row_list[row];
+                int_t position = destination_permutation[gid];
+                if (position < 0 || position >= destination_rows ||
+                    destination_row_list[position] != gid)
+                    ABORT(
+                        "SymFact V2 CPU source row is absent from destination.");
+                row_map[row] = position;
+            }
+        }
+        else
+        {
+            for (int_t row = 0; row < destination_rows; ++row)
+                destination_permutation[row] = row;
+            std::sort(
                 destination_permutation,
-                destination_permutation + destination_rows, gid,
-                [destination_row_list](int_t row, int_t value)
+                destination_permutation + destination_rows,
+                [destination_row_list](int_t left, int_t right)
                 {
-                    return destination_row_list[row] < value;
+                    int_t left_gid = destination_row_list[left];
+                    int_t right_gid = destination_row_list[right];
+                    return left_gid < right_gid ||
+                           (left_gid == right_gid && left < right);
                 });
-            if (position == destination_permutation + destination_rows ||
-                destination_row_list[*position] != gid)
-                ABORT("SymFact V2 CPU source row is absent from destination.");
-            row_map[source_row] = *position;
+            for (int_t row = 1; row < destination_rows; ++row)
+                if (destination_row_list[
+                        destination_permutation[row - 1]] ==
+                    destination_row_list[destination_permutation[row]])
+                    ABORT("SymFact V2 CPU destination rows are duplicated.");
+
+            for (int_t source_row = 0; source_row < source_rows; ++source_row)
+            {
+                int_t gid = source_row_list[source_row];
+                int_t *position = std::lower_bound(
+                    destination_permutation,
+                    destination_permutation + destination_rows, gid,
+                    [destination_row_list](int_t row, int_t value)
+                    {
+                        return destination_row_list[row] < value;
+                    });
+                if (position == destination_permutation + destination_rows ||
+                    destination_row_list[*position] != gid)
+                    ABORT(
+                        "SymFact V2 CPU source row is absent from destination.");
+                row_map[source_row] = *position;
+            }
         }
     }
 
