@@ -95,7 +95,7 @@ static uint64_t symldl_v2_cpu_count_outstanding_requests(
 template <typename Ftype>
 static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 {
-    enum { timer_count = 34, counter_count = 31 };
+    enum { timer_count = 39, counter_count = 37 };
     double local_timers[timer_count] = {
         lu->symV2CpuPlanBuildTime,
         lu->symV2CpuWorkspaceInitTime,
@@ -130,7 +130,12 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuMetadataGatherTime,
         lu->symV2CpuPartnerRecvPlanTime,
         lu->symV2CpuRowPlanTime,
-        lu->symV2CpuRequestPlanTime
+        lu->symV2CpuRequestPlanTime,
+        lu->symV2CpuRowMetadataPlanTime,
+        lu->symV2CpuRowDemandPlanTime,
+        lu->symV2CpuRowRecvLayoutTime,
+        lu->symV2CpuRowDemandExchangeTime,
+        lu->symV2CpuRowSendPlanTime
     };
     double max_timers[timer_count] = {0.0};
     MPI_Reduce(local_timers, max_timers, timer_count, MPI_DOUBLE, MPI_MAX, 0,
@@ -167,7 +172,13 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuExchangeIssues,
         lu->symV2CpuExchangeCompletions,
         lu->symV2CpuBlockingProgressCalls,
-        lu->symV2CpuProgressYieldsWithTasks
+        lu->symV2CpuProgressYieldsWithTasks,
+        lu->symV2CpuRowMetadataBlocks,
+        lu->symV2CpuRowDemandRawBlocks,
+        lu->symV2CpuRowDemandUniqueBlocks,
+        lu->symV2CpuRowRecvIndexEntries,
+        lu->symV2CpuRowLocalDemandEntries,
+        lu->symV2CpuRowReceivedDemandEntries
     };
     unsigned long long sum_counters[counter_count] = {0};
     MPI_Reduce(local_counters, sum_counters, counter_count,
@@ -247,6 +258,14 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         "SymFact V2 CPU plan profile (max-rank): partner_send=%.6f metadata_gather=%.6f partner_recv=%.6f row_plan=%.6f request_workspace=%.6f\n",
         max_timers[29], max_timers[30], max_timers[31], max_timers[32],
         max_timers[33]);
+    std::printf(
+        "SymFact V2 CPU row-plan profile (max-rank): metadata=%.6f demand=%.6f recv_layout=%.6f demand_exchange=%.6f send_plan=%.6f\n",
+        max_timers[34], max_timers[35], max_timers[36], max_timers[37],
+        max_timers[38]);
+    std::printf(
+        "SymFact V2 CPU row-plan volumes (sum): metadata_blocks=%llu raw_demands=%llu unique_demands=%llu recv_index_entries=%llu local_demand_entries=%llu received_demand_entries=%llu\n",
+        sum_counters[31], sum_counters[32], sum_counters[33],
+        sum_counters[34], sum_counters[35], sum_counters[36]);
     std::printf(
         "SymFact V2 CPU scheduler profile (max-rank): scheduler=%.6f panel_issue=%.6f idle=%.6f slot_backpressure=%.6f active_slots=%llu active_exchanges=%llu\n",
         max_timers[2], max_timers[3], max_timers[24], max_timers[25],

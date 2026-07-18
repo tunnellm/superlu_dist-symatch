@@ -1,12 +1,130 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
 #include <limits>
 #include <utility>
 
 #include "xlupanels.hpp"
-#include "symldl_v2_pcfrag_cached_block_impl.hpp"
 #include "symldl_v2_pcfrag_partner_metadata_impl.hpp"
+
+struct SymLDLV2CpuCachedRowBlock
+{
+    int_t gid;
+    size_t cols_begin;
+    int_t len;
+    bool needed;
+};
+
+static SymLDLV2PartnerMetaPayload symldl_v2_cpu_route_row_demands(
+    const std::vector<std::vector<int_t> > &send_payloads, MPI_Comm comm,
+    uint64_t *oversized_chunks)
+{
+    int comm_size = 0;
+    MPI_Comm_size(comm, &comm_size);
+    if (send_payloads.size() != static_cast<size_t>(comm_size))
+        ABORT("SymFact V2 CPU row demand route has wrong size.");
+
+    std::vector<unsigned long long> send_counts(
+        static_cast<size_t>(comm_size), 0);
+    std::vector<unsigned long long> recv_counts(
+        static_cast<size_t>(comm_size), 0);
+    std::vector<size_t> send_displs(static_cast<size_t>(comm_size), 0);
+    size_t send_total = 0;
+    bool local_fits = true;
+    for (int destination = 0; destination < comm_size; ++destination)
+    {
+        const std::vector<int_t> &payload =
+            send_payloads[static_cast<size_t>(destination)];
+        if (payload.size() >
+            static_cast<size_t>(std::numeric_limits<unsigned long long>::max()) ||
+            payload.size() > std::numeric_limits<size_t>::max() - send_total)
+            ABORT("SymFact V2 CPU row demand payload size overflows.");
+        send_counts[static_cast<size_t>(destination)] =
+            static_cast<unsigned long long>(payload.size());
+        send_displs[static_cast<size_t>(destination)] = send_total;
+        send_total += payload.size();
+        local_fits = local_fits &&
+            payload.size() <= static_cast<size_t>(INT_MAX) &&
+            send_displs[static_cast<size_t>(destination)] <=
+                static_cast<size_t>(INT_MAX);
+    }
+
+    std::vector<int_t> send_payload(send_total);
+    for (int destination = 0; destination < comm_size; ++destination)
+    {
+        const std::vector<int_t> &payload =
+            send_payloads[static_cast<size_t>(destination)];
+        std::copy(payload.begin(), payload.end(),
+                  send_payload.begin() +
+                      send_displs[static_cast<size_t>(destination)]);
+    }
+
+    if (MPI_Alltoall(send_counts.data(), 1, MPI_UNSIGNED_LONG_LONG,
+                     recv_counts.data(), 1, MPI_UNSIGNED_LONG_LONG,
+                     comm) != MPI_SUCCESS)
+        ABORT("SymFact V2 CPU row demand size exchange failed.");
+
+    SymLDLV2PartnerMetaPayload result;
+    result.comm_size = comm_size;
+    result.counts.assign(static_cast<size_t>(comm_size), 0);
+    result.displs.assign(static_cast<size_t>(comm_size), 0);
+    size_t recv_total = 0;
+    for (int source = 0; source < comm_size; ++source)
+    {
+        unsigned long long count = recv_counts[static_cast<size_t>(source)];
+        if (count > static_cast<unsigned long long>(
+                        std::numeric_limits<size_t>::max()) ||
+            static_cast<size_t>(count) >
+                std::numeric_limits<size_t>::max() - recv_total)
+            ABORT("SymFact V2 CPU row demand payload size overflows.");
+        result.counts[static_cast<size_t>(source)] =
+            static_cast<size_t>(count);
+        result.displs[static_cast<size_t>(source)] = recv_total;
+        recv_total += static_cast<size_t>(count);
+        local_fits = local_fits &&
+            count <= static_cast<unsigned long long>(INT_MAX) &&
+            result.displs[static_cast<size_t>(source)] <=
+                static_cast<size_t>(INT_MAX);
+    }
+    local_fits = local_fits &&
+        send_total <= static_cast<size_t>(INT_MAX) &&
+        recv_total <= static_cast<size_t>(INT_MAX);
+
+    int local_fits_int = local_fits ? 1 : 0;
+    int all_fit = 0;
+    if (MPI_Allreduce(&local_fits_int, &all_fit, 1, MPI_INT, MPI_MIN,
+                      comm) != MPI_SUCCESS)
+        ABORT("SymFact V2 CPU row demand limit exchange failed.");
+    if (!all_fit)
+        return symldl_v2_allgather_metadata(
+            send_payload, comm, oversized_chunks);
+
+    std::vector<int> send_counts_int(static_cast<size_t>(comm_size), 0);
+    std::vector<int> send_displs_int(static_cast<size_t>(comm_size), 0);
+    std::vector<int> recv_counts_int(static_cast<size_t>(comm_size), 0);
+    std::vector<int> recv_displs_int(static_cast<size_t>(comm_size), 0);
+    for (int peer = 0; peer < comm_size; ++peer)
+    {
+        send_counts_int[static_cast<size_t>(peer)] =
+            static_cast<int>(send_counts[static_cast<size_t>(peer)]);
+        send_displs_int[static_cast<size_t>(peer)] =
+            static_cast<int>(send_displs[static_cast<size_t>(peer)]);
+        recv_counts_int[static_cast<size_t>(peer)] =
+            static_cast<int>(result.counts[static_cast<size_t>(peer)]);
+        recv_displs_int[static_cast<size_t>(peer)] =
+            static_cast<int>(result.displs[static_cast<size_t>(peer)]);
+    }
+    result.payload.assign(recv_total, 0);
+    if (MPI_Alltoallv(
+            send_payload.empty() ? NULL : send_payload.data(),
+            send_counts_int.data(), send_displs_int.data(), mpi_int_t,
+            result.payload.empty() ? NULL : result.payload.data(),
+            recv_counts_int.data(), recv_displs_int.data(), mpi_int_t,
+            comm) != MPI_SUCCESS)
+        ABORT("SymFact V2 CPU row demand exchange failed.");
+    return result;
+}
 
 template <typename Ftype>
 static std::vector<int_t> symldl_v2_cpu_fragment_index(
@@ -156,46 +274,6 @@ static void symldl_v2_build_cpu_partner_receive_plan(
     xLUstruct_t<Ftype> *lu,
     const SymLDLV2PartnerMetaPayload &metadata)
 {
-    size_t size_count = symldl_v2_checked_product(
-        symldl_v2_checked_product(static_cast<size_t>(lu->nsupers),
-                                  static_cast<size_t>(lu->Pc),
-                                  "SymFact V2 CPU receive plan overflows."),
-        static_cast<size_t>(lu->Pr),
-        "SymFact V2 CPU receive plan overflows.");
-    std::vector<unsigned long long> local_sizes(size_count, 0);
-    std::vector<unsigned long long> global_sizes(size_count, 0);
-    for (int_t local_panel = 0;
-         local_panel < lu->symV2PanelCount(); ++local_panel)
-    {
-        int_t k = lu->symV2PanelGid(local_panel);
-        for (int pc = 0; pc < lu->Pc; ++pc)
-        {
-            size_t send_slot = static_cast<size_t>(local_panel) *
-                                   static_cast<size_t>(lu->Pc) +
-                               static_cast<size_t>(pc);
-            size_t size_slot = (static_cast<size_t>(k) *
-                                    static_cast<size_t>(lu->Pc) +
-                                static_cast<size_t>(pc)) *
-                                   static_cast<size_t>(lu->Pr) +
-                               static_cast<size_t>(lu->myrow);
-            local_sizes[size_slot] =
-                static_cast<unsigned long long>(
-                    lu->symV2CpuPartnerSendSizes[send_slot]);
-        }
-    }
-    size_t reduced = 0;
-    const size_t mpi_limit =
-        static_cast<size_t>(std::numeric_limits<int>::max());
-    while (reduced < size_count)
-    {
-        int chunk = static_cast<int>(SUPERLU_MIN(
-            mpi_limit, size_count - reduced));
-        MPI_Allreduce(local_sizes.data() + reduced,
-                      global_sizes.data() + reduced, chunk,
-                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, lu->grid->comm);
-        reduced += static_cast<size_t>(chunk);
-    }
-
     size_t receive_slots = symldl_v2_checked_product(
         static_cast<size_t>(lu->nsupers), static_cast<size_t>(lu->Pr),
         "SymFact V2 CPU compact receive plan overflows.");
@@ -203,26 +281,6 @@ static void symldl_v2_build_cpu_partner_receive_plan(
     lu->symV2CpuPartnerRecvSizes.assign(receive_slots, 0);
     lu->symV2PartnerLRecvIndexBySrc.assign(
         receive_slots, std::vector<int_t>());
-    for (int_t k = 0; k < lu->nsupers; ++k)
-        for (int pr = 0; pr < lu->Pr; ++pr)
-        {
-            size_t source = (static_cast<size_t>(k) *
-                                 static_cast<size_t>(lu->Pc) +
-                             static_cast<size_t>(lu->mycol)) *
-                                static_cast<size_t>(lu->Pr) +
-                            static_cast<size_t>(pr);
-            size_t receive_slot = static_cast<size_t>(k) * lu->Pr + pr;
-            if (global_sizes[source] >
-                static_cast<unsigned long long>(
-                    std::numeric_limits<size_t>::max()))
-                ABORT("SymFact V2 CPU partner receive size overflows.");
-            size_t values = static_cast<size_t>(global_sizes[source]);
-            lu->symV2CpuPartnerRecvSizes[receive_slot] = values;
-            if (values <=
-                static_cast<size_t>(std::numeric_limits<int>::max()))
-                lu->symV2PartnerLRecvSizes[receive_slot] =
-                    static_cast<int>(values);
-        }
 
     for (int rank = 0; rank < metadata.comm_size; ++rank)
     {
@@ -255,6 +313,8 @@ static void symldl_v2_build_cpu_partner_receive_plan(
                     int_t rows = metadata.payload[scan++];
                     if (rows < 0 || scan + static_cast<size_t>(rows) > record_end)
                         ABORT("SymFact V2 CPU partner block is invalid.");
+                    if (nrows > std::numeric_limits<int_t>::max() - rows)
+                        ABORT("SymFact V2 CPU partner row count overflows.");
                     nrows += rows;
                     scan += static_cast<size_t>(rows);
                 }
@@ -271,6 +331,15 @@ static void symldl_v2_build_cpu_partner_receive_plan(
                 index[1] = nrows;
                 index[2] = 0;
                 index[3] = lu->supersize(k);
+                size_t values = symldl_v2_checked_product(
+                    static_cast<size_t>(nrows),
+                    static_cast<size_t>(lu->supersize(k)),
+                    "SymFact V2 CPU partner receive size overflows.");
+                lu->symV2CpuPartnerRecvSizes[slot] = values;
+                if (values <=
+                    static_cast<size_t>(std::numeric_limits<int>::max()))
+                    lu->symV2PartnerLRecvSizes[slot] =
+                        static_cast<int>(values);
                 int_t gid_pos = LPANEL_HEADER_SIZE;
                 int_t prefix_pos = LPANEL_HEADER_SIZE + nblocks;
                 int_t row_pos = LPANEL_HEADER_SIZE + 2 * nblocks + 1;
@@ -288,12 +357,6 @@ static void symldl_v2_build_cpu_partner_receive_plan(
                     row_pos += rows;
                     scan += static_cast<size_t>(rows);
                 }
-                size_t expected = symldl_v2_checked_product(
-                    static_cast<size_t>(nrows),
-                    static_cast<size_t>(lu->supersize(k)),
-                    "SymFact V2 CPU partner receive size overflows.");
-                if (expected != lu->symV2CpuPartnerRecvSizes[slot])
-                    ABORT("SymFact V2 CPU partner metadata size mismatch.");
             }
             position = record_end;
         }
@@ -305,8 +368,15 @@ static void symldl_v2_build_cpu_row_receive_plan(
     xLUstruct_t<Ftype> *lu,
     const SymLDLV2PartnerMetaPayload &metadata)
 {
+    double phase_start = SuperLU_timer_();
     const std::vector<int_t> &payload = metadata.payload;
-    std::vector<std::vector<SymLDLV2CachedPartnerBlock> > row_blocks(
+    lu->symV2CpuRowMetadataBlocks = 0;
+    lu->symV2CpuRowDemandRawBlocks = 0;
+    lu->symV2CpuRowDemandUniqueBlocks = 0;
+    lu->symV2CpuRowRecvIndexEntries = 0;
+    lu->symV2CpuRowLocalDemandEntries = 0;
+    lu->symV2CpuRowReceivedDemandEntries = 0;
+    std::vector<std::vector<SymLDLV2CpuCachedRowBlock> > row_blocks(
         static_cast<size_t>(lu->nsupers));
     for (int rank = 0; rank < metadata.comm_size; ++rank)
     {
@@ -331,17 +401,17 @@ static void symldl_v2_build_cpu_row_receive_plan(
                 {
                     if (position + 2 > record_end)
                         ABORT("SymFact V2 CPU row block is truncated.");
-                    SymLDLV2CachedPartnerBlock block;
+                    SymLDLV2CpuCachedRowBlock block;
                     block.gid = payload[position++];
                     block.len = payload[position++];
                     block.cols_begin = position;
+                    block.needed = false;
                     if (block.len < 0 ||
                         position + static_cast<size_t>(block.len) >
                             record_end)
                         ABORT("SymFact V2 CPU row block is invalid.");
-                    block.cols.assign(payload.begin() + position,
-                                      payload.begin() + position + block.len);
                     row_blocks[static_cast<size_t>(k)].push_back(block);
+                    ++lu->symV2CpuRowMetadataBlocks;
                     position += static_cast<size_t>(block.len);
                 }
             }
@@ -351,11 +421,11 @@ static void symldl_v2_build_cpu_row_receive_plan(
 
     for (int_t k = 0; k < lu->nsupers; ++k)
     {
-        std::vector<SymLDLV2CachedPartnerBlock> &blocks =
+        std::vector<SymLDLV2CpuCachedRowBlock> &blocks =
             row_blocks[static_cast<size_t>(k)];
         std::sort(blocks.begin(), blocks.end(),
-                  [](const SymLDLV2CachedPartnerBlock &left,
-                     const SymLDLV2CachedPartnerBlock &right)
+                  [](const SymLDLV2CpuCachedRowBlock &left,
+                     const SymLDLV2CpuCachedRowBlock &right)
                   {
                       return left.gid < right.gid;
                   });
@@ -363,6 +433,8 @@ static void symldl_v2_build_cpu_row_receive_plan(
             if (blocks[block - 1].gid == blocks[block].gid)
                 ABORT("SymFact V2 CPU row block metadata is duplicated.");
     }
+    lu->symV2CpuRowMetadataPlanTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
 
     std::vector<std::vector<int_t> > needed(
         static_cast<size_t>(lu->nsupers));
@@ -384,7 +456,7 @@ static void symldl_v2_build_cpu_row_receive_plan(
             size_t record_end = position + static_cast<size_t>(length);
             if (target_pc == lu->mycol)
             {
-                const std::vector<SymLDLV2CachedPartnerBlock> &rows =
+                std::vector<SymLDLV2CpuCachedRowBlock> &rows =
                     row_blocks[static_cast<size_t>(k)];
                 while (position < record_end)
                 {
@@ -408,19 +480,42 @@ static void symldl_v2_build_cpu_row_receive_plan(
                             if (!destination.isEmpty())
                             {
                                 typename std::vector<
-                                    SymLDLV2CachedPartnerBlock>::const_iterator
+                                    SymLDLV2CpuCachedRowBlock>::iterator
                                     row = std::lower_bound(
                                         rows.begin(), rows.end(), gj,
-                                        [](const SymLDLV2CachedPartnerBlock &block,
+                                        [](const SymLDLV2CpuCachedRowBlock &block,
                                            int_t gid)
                                         {
                                             return block.gid < gid;
                                         });
-                                for (; row != rows.end(); ++row)
-                                    if (destination.find(row->gid) !=
-                                        GLOBAL_BLOCK_NOT_FOUND)
+                                int_t destination_block = 0;
+                                while (row != rows.end() &&
+                                       destination_block <
+                                           destination.nblocks())
+                                {
+                                    int_t destination_gid =
+                                        destination.gid(destination_block);
+                                    if (row->gid < destination_gid)
+                                    {
+                                        ++row;
+                                        continue;
+                                    }
+                                    if (destination_gid < row->gid)
+                                    {
+                                        ++destination_block;
+                                        continue;
+                                    }
+                                    ++lu->symV2CpuRowDemandRawBlocks;
+                                    if (!row->needed)
+                                    {
+                                        row->needed = true;
                                         needed[static_cast<size_t>(k)]
                                             .push_back(row->gid);
+                                        ++lu->symV2CpuRowDemandUniqueBlocks;
+                                    }
+                                    ++row;
+                                    ++destination_block;
+                                }
                             }
                         }
                     }
@@ -430,6 +525,8 @@ static void symldl_v2_build_cpu_row_receive_plan(
             position = record_end;
         }
     }
+    lu->symV2CpuRowDemandPlanTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
 
     lu->symV2RowFragRecvIndex.assign(static_cast<size_t>(lu->nsupers),
                                      std::vector<int_t>());
@@ -438,39 +535,42 @@ static void symldl_v2_build_cpu_row_receive_plan(
                                   static_cast<size_t>(lu->Pc),
                                   "SymFact V2 CPU row plan overflows."),
         0);
-    std::vector<int_t> local_demands;
+    std::vector<std::vector<int_t> > local_demands(
+        static_cast<size_t>(lu->Pc));
     std::vector<size_t> chunk_values(static_cast<size_t>(lu->Pc), 0);
+    std::vector<const SymLDLV2CpuCachedRowBlock *> selected_rows;
     for (int_t k = 0; k < lu->nsupers; ++k)
     {
         std::vector<int_t> &blocks = needed[static_cast<size_t>(k)];
         if (blocks.empty())
             continue;
-        std::sort(blocks.begin(), blocks.end());
-        blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        size_t unique_blocks = blocks.size();
+
+        blocks.clear();
+        selected_rows.clear();
+        selected_rows.reserve(unique_blocks);
         std::fill(chunk_values.begin(), chunk_values.end(), 0);
 
-        const std::vector<SymLDLV2CachedPartnerBlock> &rows =
+        const std::vector<SymLDLV2CpuCachedRowBlock> &rows =
             row_blocks[static_cast<size_t>(k)];
         int_t row_count = 0;
-        for (size_t block = 0; block < blocks.size(); ++block)
+        for (size_t block = 0; block < rows.size(); ++block)
         {
-            typename std::vector<SymLDLV2CachedPartnerBlock>::const_iterator
-                row = std::lower_bound(
-                    rows.begin(), rows.end(), blocks[block],
-                    [](const SymLDLV2CachedPartnerBlock &entry, int_t gid)
-                    {
-                        return entry.gid < gid;
-                    });
-            if (row == rows.end() || row->gid != blocks[block])
-                ABORT("SymFact V2 CPU row demand cannot find its source block.");
-            if (row_count > std::numeric_limits<int_t>::max() - row->len)
+            const SymLDLV2CpuCachedRowBlock &row = rows[block];
+            if (row.gid < 0 || row.gid >= lu->nsupers)
+                ABORT("SymFact V2 CPU row metadata block is invalid.");
+            if (!row.needed)
+                continue;
+            blocks.push_back(row.gid);
+            selected_rows.push_back(&row);
+            if (row_count > std::numeric_limits<int_t>::max() - row.len)
                 ABORT("SymFact V2 CPU row index overflows.");
-            row_count += row->len;
-            int chunk_pc = static_cast<int>(lu->symV2PanelRoot(row->gid));
+            row_count += row.len;
+            int chunk_pc = static_cast<int>(lu->symV2PanelRoot(row.gid));
             if (chunk_pc < 0 || chunk_pc >= lu->Pc)
                 ABORT("SymFact V2 CPU row source column is invalid.");
             size_t block_values = symldl_v2_checked_product(
-                static_cast<size_t>(row->len),
+                static_cast<size_t>(row.len),
                 static_cast<size_t>(lu->supersize(k)),
                 "SymFact V2 CPU row receive chunk size overflows.");
             if (chunk_values[static_cast<size_t>(chunk_pc)] >
@@ -478,9 +578,12 @@ static void symldl_v2_build_cpu_row_receive_plan(
                 ABORT("SymFact V2 CPU row receive chunk size overflows.");
             chunk_values[static_cast<size_t>(chunk_pc)] += block_values;
         }
+        if (blocks.size() != unique_blocks)
+            ABORT("SymFact V2 CPU row demand cannot find its source block.");
         size_t index_size = static_cast<size_t>(LPANEL_HEADER_SIZE) +
                             2 * blocks.size() + 1 +
                             static_cast<size_t>(row_count);
+        lu->symV2CpuRowRecvIndexEntries += index_size;
         std::vector<int_t> &index =
             lu->symV2RowFragRecvIndex[static_cast<size_t>(k)];
         index.assign(index_size, 0);
@@ -494,19 +597,15 @@ static void symldl_v2_build_cpu_row_receive_plan(
         index[prefix_pos] = 0;
         for (int_t block = 0; block < index[0]; ++block)
         {
-            typename std::vector<SymLDLV2CachedPartnerBlock>::const_iterator
-                row = std::lower_bound(
-                    rows.begin(), rows.end(), blocks[block],
-                    [](const SymLDLV2CachedPartnerBlock &entry, int_t gid)
-                    {
-                        return entry.gid < gid;
-                    });
-            index[gid_pos + block] = row->gid;
+            const SymLDLV2CpuCachedRowBlock &row =
+                *selected_rows[static_cast<size_t>(block)];
+            index[gid_pos + block] = row.gid;
             index[prefix_pos + block + 1] =
-                index[prefix_pos + block] + row->len;
-            std::copy(row->cols.begin(), row->cols.end(),
+                index[prefix_pos + block] + row.len;
+            std::copy(payload.begin() + row.cols_begin,
+                      payload.begin() + row.cols_begin + row.len,
                       index.begin() + row_pos);
-            row_pos += row->len;
+            row_pos += row.len;
         }
         size_t values = symldl_v2_checked_product(
             static_cast<size_t>(row_count),
@@ -524,20 +623,33 @@ static void symldl_v2_build_cpu_row_receive_plan(
                     static_cast<int>(chunk);
         }
 
-        local_demands.push_back(k);
-        local_demands.push_back(static_cast<int_t>(blocks.size()));
-        local_demands.insert(local_demands.end(), blocks.begin(), blocks.end());
+        int source_pc = static_cast<int>(lu->symV2PanelRoot(k));
+        if (source_pc < 0 || source_pc >= lu->Pc)
+            ABORT("SymFact V2 CPU row demand source is invalid.");
+        std::vector<int_t> &source_demands =
+            local_demands[static_cast<size_t>(source_pc)];
+        source_demands.push_back(k);
+        source_demands.push_back(static_cast<int_t>(blocks.size()));
+        source_demands.insert(source_demands.end(), blocks.begin(), blocks.end());
     }
+    for (int source_pc = 0; source_pc < lu->Pc; ++source_pc)
+        lu->symV2CpuRowLocalDemandEntries +=
+            local_demands[static_cast<size_t>(source_pc)].size();
+    lu->symV2CpuRowRecvLayoutTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
 
     int row_comm_size = 0;
+    int row_comm_rank = -1;
     MPI_Comm_size(lu->grid3d->rscp.comm, &row_comm_size);
-    if (row_comm_size != lu->Pc)
-        ABORT("SymFact V2 CPU row communicator has wrong size.");
+    MPI_Comm_rank(lu->grid3d->rscp.comm, &row_comm_rank);
+    if (row_comm_size != lu->Pc || row_comm_rank != lu->mycol)
+        ABORT("SymFact V2 CPU row communicator is invalid.");
     SymLDLV2PartnerMetaPayload gathered_demands =
-        symldl_v2_allgather_metadata(
+        symldl_v2_cpu_route_row_demands(
             local_demands, lu->grid3d->rscp.comm,
             &lu->symV2CpuOversizedMpiChunks);
     const std::vector<int_t> &all_demands = gathered_demands.payload;
+    lu->symV2CpuRowReceivedDemandEntries = all_demands.size();
 
     size_t slots = symldl_v2_checked_product(
         static_cast<size_t>(lu->symV2PanelCount()),
@@ -575,6 +687,8 @@ static void symldl_v2_build_cpu_row_receive_plan(
             position += static_cast<size_t>(count);
         }
     }
+    lu->symV2CpuRowDemandExchangeTime += SuperLU_timer_() - phase_start;
+    phase_start = SuperLU_timer_();
 
     lu->symV2CpuRowSegOffsets.assign(slots + 1, 0);
     lu->symV2CpuRowSendOffsets.assign(slots, 0);
@@ -582,11 +696,37 @@ static void symldl_v2_build_cpu_row_receive_plan(
     lu->symV2CpuRowSegments.clear();
     lu->symV2CpuRowPermutations.clear();
     size_t max_panel_values = 0;
-    std::vector<std::pair<int_t, int_t> > sorted_rows;
+    std::vector<size_t> partner_segment_by_block;
     for (int_t local_panel = 0; local_panel < lu->symV2PanelCount();
          ++local_panel)
     {
         xlpanel_t<Ftype> &panel = lu->lPanelVec[local_panel];
+        partner_segment_by_block.assign(
+            static_cast<size_t>(panel.isEmpty() ? 0 : panel.nblocks()),
+            std::numeric_limits<size_t>::max());
+        for (int source_pc = 0; source_pc < lu->Pc; ++source_pc)
+        {
+            size_t partner_slot = static_cast<size_t>(local_panel) * lu->Pc +
+                                  static_cast<size_t>(source_pc);
+            for (size_t segment_id =
+                     lu->symV2CpuPartnerSegOffsets[partner_slot];
+                 segment_id <
+                     lu->symV2CpuPartnerSegOffsets[partner_slot + 1];
+                 ++segment_id)
+            {
+                const SymLDLV2CpuPackSegment &segment =
+                    lu->symV2CpuPartnerSegments[segment_id];
+                if (segment.source_block < 0 ||
+                    segment.source_block >= panel.nblocks())
+                    ABORT("SymFact V2 CPU partner segment is invalid.");
+                size_t source_block =
+                    static_cast<size_t>(segment.source_block);
+                if (partner_segment_by_block[source_block] !=
+                    std::numeric_limits<size_t>::max())
+                    ABORT("SymFact V2 CPU partner segment is duplicated.");
+                partner_segment_by_block[source_block] = segment_id;
+            }
+        }
         size_t panel_values = 0;
         for (int destination_pc = 0; destination_pc < lu->Pc;
              ++destination_pc)
@@ -604,34 +744,39 @@ static void symldl_v2_build_cpu_row_receive_plan(
                 int_t source_block = panel.find(gid);
                 if (source_block == GLOBAL_BLOCK_NOT_FOUND)
                     ABORT("SymFact V2 CPU row source block is missing.");
-                int_t rows = panel.nbrow(source_block);
-                int_t *row_ids = panel.rowList(source_block);
-                bool rows_are_sorted = true;
-                for (int_t row = 1; row < rows; ++row)
-                    rows_are_sorted = rows_are_sorted &&
-                                      row_ids[row - 1] < row_ids[row];
-                if (!rows_are_sorted)
-                {
-                    sorted_rows.clear();
-                    sorted_rows.reserve(static_cast<size_t>(rows));
-                    for (int_t row = 0; row < rows; ++row)
-                        sorted_rows.push_back(
-                            std::make_pair(row_ids[row], row));
-                    std::sort(sorted_rows.begin(), sorted_rows.end());
-                }
-                SymLDLV2CpuPackSegment segment;
-                segment.source_block = source_block;
-                segment.row_count = rows;
+                size_t partner_segment_id =
+                    partner_segment_by_block[static_cast<size_t>(source_block)];
+                if (partner_segment_id ==
+                    std::numeric_limits<size_t>::max())
+                    ABORT("SymFact V2 CPU row source segment is missing.");
+                const SymLDLV2CpuPackSegment &partner_segment =
+                    lu->symV2CpuPartnerSegments[partner_segment_id];
+                if (partner_segment.row_count != panel.nbrow(source_block))
+                    ABORT("SymFact V2 CPU row source segment is invalid.");
+                SymLDLV2CpuPackSegment segment = partner_segment;
                 segment.packed_row_offset = packed_rows;
-                segment.row_permutation_offset = rows_are_sorted
-                    ? SYM_LDL_V2_CPU_CONTIGUOUS_ROWS
-                    : lu->symV2CpuRowPermutations.size();
+                if (segment.row_permutation_offset !=
+                    SYM_LDL_V2_CPU_CONTIGUOUS_ROWS)
+                {
+                    size_t permutation_begin = segment.row_permutation_offset;
+                    size_t permutation_end = permutation_begin +
+                                             static_cast<size_t>(
+                                                 segment.row_count);
+                    if (permutation_end < permutation_begin ||
+                        permutation_end >
+                            lu->symV2CpuPartnerRowPermutations.size())
+                        ABORT("SymFact V2 CPU partner permutation is invalid.");
+                    segment.row_permutation_offset =
+                        lu->symV2CpuRowPermutations.size();
+                    lu->symV2CpuRowPermutations.insert(
+                        lu->symV2CpuRowPermutations.end(),
+                        lu->symV2CpuPartnerRowPermutations.begin() +
+                            permutation_begin,
+                        lu->symV2CpuPartnerRowPermutations.begin() +
+                            permutation_end);
+                }
                 lu->symV2CpuRowSegments.push_back(segment);
-                if (!rows_are_sorted)
-                    for (int_t row = 0; row < rows; ++row)
-                        lu->symV2CpuRowPermutations.push_back(
-                            sorted_rows[static_cast<size_t>(row)].second);
-                packed_rows += rows;
+                packed_rows += segment.row_count;
             }
             size_t values = symldl_v2_checked_product(
                 static_cast<size_t>(packed_rows),
@@ -650,6 +795,7 @@ static void symldl_v2_build_cpu_row_receive_plan(
         max_panel_values,
         "SymFact V2 CPU compact row-send workspace overflows.",
         "Malloc fails for SymFact V2 CPU compact row-send workspace.");
+    lu->symV2CpuRowSendPlanTime += SuperLU_timer_() - phase_start;
 }
 
 template <typename Ftype>
