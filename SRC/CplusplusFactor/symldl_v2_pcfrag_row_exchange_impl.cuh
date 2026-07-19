@@ -218,6 +218,9 @@ symldl_v2_pcfrag_exchange_row_fragments(
                           count, MPI_DOUBLE, pc_dest, SLU_MPI_TAG(5, k),
                           lu->grid3d->rscp.comm, &req);
                 send_reqs.push_back(req);
+                lu->symV2RouteProfileNoteRowSend(
+                    static_cast<size_t>(count), 1,
+                    static_cast<size_t>(count));
             }
         }
     }

@@ -275,6 +275,9 @@ static int_t symldl_v2_l_fragment_exchange(
                 MPI_Isend(cuda_aware ? sendbuf : hostbuf, count, MPI_DOUBLE,
                           dest, SLU_MPI_TAG(5, k), lu->grid->comm, &req);
                 send_reqs.push_back(req);
+                lu->symV2RouteProfileNotePartnerSend(
+                    static_cast<size_t>(count), 1,
+                    static_cast<size_t>(count));
             }
         }
     }

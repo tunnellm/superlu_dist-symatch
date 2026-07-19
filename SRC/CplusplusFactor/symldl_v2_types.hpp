@@ -45,3 +45,13 @@ struct SymV2RouteProfile
 {
     long long counters[SYM_V2_ROUTE_PROFILE_COUNTERS] = {0};
 };
+
+struct SymV2CommunicationProfile
+{
+    unsigned long long partner_send_messages = 0;
+    unsigned long long partner_send_bytes = 0;
+    unsigned long long partner_max_message_bytes = 0;
+    unsigned long long row_send_messages = 0;
+    unsigned long long row_send_bytes = 0;
+    unsigned long long row_max_message_bytes = 0;
+};

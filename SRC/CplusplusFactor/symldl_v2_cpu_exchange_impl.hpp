@@ -48,7 +48,7 @@ static size_t symldl_v2_cpu_post_receive_chunks(
 }
 
 template <typename Ftype>
-static void symldl_v2_cpu_post_send_chunks(
+static size_t symldl_v2_cpu_post_send_chunks(
     xLUstruct_t<Ftype> *lu, int slot, size_t &request_count,
     Ftype *buffer, size_t count, int destination, int tag, MPI_Comm comm)
 {
@@ -72,6 +72,7 @@ static void symldl_v2_cpu_post_send_chunks(
             ABORT("SymFact V2 CPU fragment send could not be posted.");
         offset += static_cast<size_t>(chunk_count);
     }
+    return chunks;
 }
 
 template <typename Ftype>
@@ -402,10 +403,15 @@ static void symldl_v2_cpu_issue_fragment_exchange(
                 if (destination == lu->iam)
                     continue;
                 double send_start = SuperLU_timer_();
-                symldl_v2_cpu_post_send_chunks(
+                size_t chunks = symldl_v2_cpu_post_send_chunks(
                     lu, slot, request_count, buffer, count, destination,
                     SLU_MPI_TAG(5, k), lu->grid->comm);
                 lu->symV2CpuSendPostTime += SuperLU_timer_() - send_start;
+                lu->symV2RouteProfileNotePartnerSend(
+                    count, chunks,
+                    SUPERLU_MIN(
+                        count,
+                        static_cast<size_t>(std::numeric_limits<int>::max())));
                 lu->symV2CpuPartnerBytes += static_cast<uint64_t>(
                     count * sizeof(Ftype));
             }
@@ -437,10 +443,15 @@ static void symldl_v2_cpu_issue_fragment_exchange(
                 continue;
             }
             double send_start = SuperLU_timer_();
-            symldl_v2_cpu_post_send_chunks(
+            size_t chunks = symldl_v2_cpu_post_send_chunks(
                 lu, slot, request_count, row_send + offset, count, pc,
                 SLU_MPI_TAG(5, k), lu->grid3d->rscp.comm);
             lu->symV2CpuSendPostTime += SuperLU_timer_() - send_start;
+            lu->symV2RouteProfileNoteRowSend(
+                count, chunks,
+                SUPERLU_MIN(
+                    count,
+                    static_cast<size_t>(std::numeric_limits<int>::max())));
             lu->symV2CpuRowBytes += static_cast<uint64_t>(
                 count * sizeof(Ftype));
         }

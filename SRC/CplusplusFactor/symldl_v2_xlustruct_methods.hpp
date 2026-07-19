@@ -27,6 +27,10 @@ void symV2RouteProfileNoteLFragmentExchange();
 void symV2RouteProfileNotePcFragmentExchange();
 void symV2RouteProfileNoteDualFragmentLookahead();
 void symV2RouteProfileNoteDualFragmentExclude();
+void symV2RouteProfileNotePartnerSend(size_t values, size_t messages,
+                                      size_t max_message_values);
+void symV2RouteProfileNoteRowSend(size_t values, size_t messages,
+                                  size_t max_message_values);
 void symV2RouteProfilePrint(const char *phase) const;
 void symV2FreeDiagBlocks();
 void symV2FreeCpuStorage();

@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 static inline const char *symldl_v2_route_profile_label(
     SymV2RouteProfileCounter counter)
@@ -33,6 +34,7 @@ template <typename Ftype>
 inline void xLUstruct_t<Ftype>::symV2RouteProfileReset()
 {
     std::memset(&symV2RouteProfile, 0, sizeof(symV2RouteProfile));
+    symV2CommunicationProfile = SymV2CommunicationProfile();
 }
 
 template <typename Ftype>
@@ -79,6 +81,48 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfileNoteDualFragmentExclude()
 }
 
 template <typename Ftype>
+static unsigned long long symldl_v2_profile_byte_count(size_t values)
+{
+    if (values > static_cast<size_t>(
+                     std::numeric_limits<unsigned long long>::max() /
+                     sizeof(Ftype)))
+        ABORT("SymFact V2 communication profile byte count overflows.");
+    return static_cast<unsigned long long>(values) * sizeof(Ftype);
+}
+
+template <typename Ftype>
+inline void xLUstruct_t<Ftype>::symV2RouteProfileNotePartnerSend(
+    size_t values, size_t messages, size_t max_message_values)
+{
+    if (messages > static_cast<size_t>(
+                       std::numeric_limits<unsigned long long>::max()))
+        ABORT("SymFact V2 partner message count overflows.");
+    symV2CommunicationProfile.partner_send_messages +=
+        static_cast<unsigned long long>(messages);
+    symV2CommunicationProfile.partner_send_bytes +=
+        symldl_v2_profile_byte_count<Ftype>(values);
+    symV2CommunicationProfile.partner_max_message_bytes = SUPERLU_MAX(
+        symV2CommunicationProfile.partner_max_message_bytes,
+        symldl_v2_profile_byte_count<Ftype>(max_message_values));
+}
+
+template <typename Ftype>
+inline void xLUstruct_t<Ftype>::symV2RouteProfileNoteRowSend(
+    size_t values, size_t messages, size_t max_message_values)
+{
+    if (messages > static_cast<size_t>(
+                       std::numeric_limits<unsigned long long>::max()))
+        ABORT("SymFact V2 row message count overflows.");
+    symV2CommunicationProfile.row_send_messages +=
+        static_cast<unsigned long long>(messages);
+    symV2CommunicationProfile.row_send_bytes +=
+        symldl_v2_profile_byte_count<Ftype>(values);
+    symV2CommunicationProfile.row_max_message_bytes = SUPERLU_MAX(
+        symV2CommunicationProfile.row_max_message_bytes,
+        symldl_v2_profile_byte_count<Ftype>(max_message_values));
+}
+
+template <typename Ftype>
 inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
     const char *phase) const
 {
@@ -106,6 +150,36 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
             global[i] = local[i];
     }
 
+    unsigned long long local_sum[4] = {
+        symV2CommunicationProfile.partner_send_messages,
+        symV2CommunicationProfile.partner_send_bytes,
+        symV2CommunicationProfile.row_send_messages,
+        symV2CommunicationProfile.row_send_bytes
+    };
+    unsigned long long global_sum[4] = {0, 0, 0, 0};
+    unsigned long long global_rank_max[4] = {0, 0, 0, 0};
+    unsigned long long local_message_max[2] = {
+        symV2CommunicationProfile.partner_max_message_bytes,
+        symV2CommunicationProfile.row_max_message_bytes
+    };
+    unsigned long long global_message_max[2] = {0, 0};
+    if (grid3d != NULL)
+    {
+        MPI_Reduce(local_sum, global_sum, 4, MPI_UNSIGNED_LONG_LONG,
+                   MPI_SUM, root, grid3d->comm);
+        MPI_Reduce(local_sum, global_rank_max, 4,
+                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+        MPI_Reduce(local_message_max, global_message_max, 2,
+                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+    }
+    else
+    {
+        for (int i = 0; i < 4; ++i)
+            global_sum[i] = global_rank_max[i] = local_sum[i];
+        for (int i = 0; i < 2; ++i)
+            global_message_max[i] = local_message_max[i];
+    }
+
     if (rank != root)
         return;
 
@@ -121,5 +195,21 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
     std::printf(" dual_fragment_schur=%lld\n",
                 global[SYM_V2_ROUTE_DUAL_FRAGMENT_LOOKAHEAD] +
                 global[SYM_V2_ROUTE_DUAL_FRAGMENT_EXCLUDE]);
+
+    double partner_mean = global_sum[0] > 0
+                              ? static_cast<double>(global_sum[1]) /
+                                    static_cast<double>(global_sum[0])
+                              : 0.0;
+    double row_mean = global_sum[2] > 0
+                          ? static_cast<double>(global_sum[3]) /
+                                static_cast<double>(global_sum[2])
+                          : 0.0;
+    std::printf(
+        "SymFact V2 communication profile (%s, sum/max-rank): partner_messages=%llu/%llu partner_bytes=%llu/%llu partner_mean_bytes=%.3f partner_max_message_bytes=%llu row_messages=%llu/%llu row_bytes=%llu/%llu row_mean_bytes=%.3f row_max_message_bytes=%llu\n",
+        phase != NULL && phase[0] != '\0' ? phase : "unknown",
+        global_sum[0], global_rank_max[0], global_sum[1],
+        global_rank_max[1], partner_mean, global_message_max[0],
+        global_sum[2], global_rank_max[2], global_sum[3],
+        global_rank_max[3], row_mean, global_message_max[1]);
     std::fflush(stdout);
 }
