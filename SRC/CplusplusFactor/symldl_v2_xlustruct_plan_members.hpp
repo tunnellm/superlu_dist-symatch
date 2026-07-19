@@ -9,6 +9,11 @@ std::vector<int> symV2PartnerLRecvSizes;
 std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
 std::vector<std::vector<int_t> > symV2PartnerLRecvIndexBySrc;
 
+unsigned long long symV2PartnerMetadataGatherCalls = 0;
+unsigned long long symV2PartnerMetadataLocalBytes = 0;
+unsigned long long symV2PartnerMetadataReceivedBytes = 0;
+double symV2PartnerMetadataGatherTime = 0.0;
+
 std::vector<int> symV2RowDownSendSizes;
 std::vector<size_t> symV2RowDownSegOffsets;
 std::vector<SymV2RowDownSeg> symV2RowDownSegs;

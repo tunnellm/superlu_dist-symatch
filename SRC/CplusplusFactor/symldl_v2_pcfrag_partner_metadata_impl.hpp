@@ -107,6 +107,8 @@ template <typename Ftype>
 static SymLDLV2PartnerMetaPayload
 symldl_v2_collect_partner_l_metadata(xLUstruct_t<Ftype> *lu)
 {
+    const bool profile = superlu_sym_v2_route_profile();
+    const double gather_start = profile ? SuperLU_timer_() : 0.0;
     std::vector<int_t> local_meta_payload;
     for (int_t lk = 0; lk < lu->symV2PanelCount(); ++lk)
     {
@@ -133,7 +135,34 @@ symldl_v2_collect_partner_l_metadata(xLUstruct_t<Ftype> *lu)
                                       lu->symL2LSendMeta[flat].end());
         }
     }
-    return symldl_v2_allgather_metadata(
+    SymLDLV2PartnerMetaPayload result = symldl_v2_allgather_metadata(
         local_meta_payload, lu->grid->comm,
         &lu->symV2CpuOversizedMpiChunks);
+    if (profile)
+    {
+        if (local_meta_payload.size() >
+                std::numeric_limits<unsigned long long>::max() /
+                    sizeof(int_t) ||
+            result.payload.size() >
+                std::numeric_limits<unsigned long long>::max() /
+                    sizeof(int_t))
+            ABORT("SymFact V2 metadata profile byte count overflows.");
+        if (lu->symV2PartnerMetadataGatherCalls ==
+                std::numeric_limits<unsigned long long>::max() ||
+            lu->symV2PartnerMetadataLocalBytes >
+                std::numeric_limits<unsigned long long>::max() -
+                    local_meta_payload.size() * sizeof(int_t) ||
+            lu->symV2PartnerMetadataReceivedBytes >
+                std::numeric_limits<unsigned long long>::max() -
+                    result.payload.size() * sizeof(int_t))
+            ABORT("SymFact V2 metadata profile counter overflows.");
+        ++lu->symV2PartnerMetadataGatherCalls;
+        lu->symV2PartnerMetadataLocalBytes +=
+            local_meta_payload.size() * sizeof(int_t);
+        lu->symV2PartnerMetadataReceivedBytes +=
+            result.payload.size() * sizeof(int_t);
+        lu->symV2PartnerMetadataGatherTime +=
+            SuperLU_timer_() - gather_start;
+    }
+    return result;
 }

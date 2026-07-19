@@ -163,6 +163,15 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         symV2CommunicationProfile.row_max_message_bytes
     };
     unsigned long long global_message_max[2] = {0, 0};
+    unsigned long long metadata_calls_min =
+        symV2PartnerMetadataGatherCalls;
+    unsigned long long metadata_calls_max =
+        symV2PartnerMetadataGatherCalls;
+    unsigned long long metadata_local_bytes =
+        symV2PartnerMetadataLocalBytes;
+    unsigned long long metadata_received_bytes_max =
+        symV2PartnerMetadataReceivedBytes;
+    double metadata_time_max = symV2PartnerMetadataGatherTime;
     if (grid3d != NULL)
     {
         MPI_Reduce(local_sum, global_sum, 4, MPI_UNSIGNED_LONG_LONG,
@@ -171,6 +180,17 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
                    MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
         MPI_Reduce(local_message_max, global_message_max, 2,
                    MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+        MPI_Reduce(&symV2PartnerMetadataGatherCalls, &metadata_calls_min, 1,
+                   MPI_UNSIGNED_LONG_LONG, MPI_MIN, root, grid3d->comm);
+        MPI_Reduce(&symV2PartnerMetadataGatherCalls, &metadata_calls_max, 1,
+                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+        MPI_Reduce(&symV2PartnerMetadataLocalBytes, &metadata_local_bytes, 1,
+                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, root, grid3d->comm);
+        MPI_Reduce(&symV2PartnerMetadataReceivedBytes,
+                   &metadata_received_bytes_max, 1,
+                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+        MPI_Reduce(&symV2PartnerMetadataGatherTime, &metadata_time_max, 1,
+                   MPI_DOUBLE, MPI_MAX, root, grid3d->comm);
     }
     else
     {
@@ -211,5 +231,10 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         global_rank_max[1], partner_mean, global_message_max[0],
         global_sum[2], global_rank_max[2], global_sum[3],
         global_rank_max[3], row_mean, global_message_max[1]);
+    std::printf(
+        "SymFact V2 metadata profile (%s, min/max-rank-calls): gather_calls=%llu/%llu source_payload_bytes=%llu received_payload_bytes_max_rank=%llu gather_time_max_rank=%.6f\n",
+        phase != NULL && phase[0] != '\0' ? phase : "unknown",
+        metadata_calls_min, metadata_calls_max, metadata_local_bytes,
+        metadata_received_bytes_max, metadata_time_max);
     std::fflush(stdout);
 }
