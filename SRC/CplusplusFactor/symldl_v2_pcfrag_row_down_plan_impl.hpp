@@ -6,6 +6,7 @@
 
 #include "xlupanels.hpp"
 #include "symldl_v2_config.hpp"
+#include "symldl_v2_pcfrag_partner_metadata_impl.hpp"
 
 #ifdef HAVE_CUDA
 
@@ -13,7 +14,9 @@
 #include "symldl_v2_pcfrag_row_down_recv_layout_impl.hpp"
 
 template <typename Ftype>
-static void symldl_v2_build_row_down_maps(xLUstruct_t<Ftype> *lu)
+static void symldl_v2_build_row_down_maps(
+    xLUstruct_t<Ftype> *lu,
+    const SymLDLV2PartnerMetaPayload &meta)
 {
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload ||
         lu->Pr <= 1 || lu->Pc <= 1 ||
@@ -47,8 +50,6 @@ static void symldl_v2_build_row_down_maps(xLUstruct_t<Ftype> *lu)
         static_cast<size_t>(lu->Pc),
         "SymFact V2 row-down send table size overflows.");
 
-    SymLDLV2PartnerMetaPayload meta =
-        symldl_v2_collect_partner_l_metadata(lu);
     const std::vector<int_t> &all_meta_payload = meta.payload;
 
     std::vector<std::vector<int_t> >

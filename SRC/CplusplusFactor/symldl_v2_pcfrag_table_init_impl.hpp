@@ -21,11 +21,16 @@ static void symldl_v2_initialize_pcfrag_plan_tables(
         "SymFact V2 partner-L table size overflows.");
     lu->symL2LSendMeta.assign(l2l_slots, std::vector<int_t>());
     lu->symV2PartnerLSendSizes.assign(l2l_slots, 0);
+    size_t partner_active = symldl_v2_checked_product(
+        l2l_slots, static_cast<size_t>(lu->Pr),
+        "SymFact V2 partner-L active table overflows.");
+    lu->symV2PartnerLSendRowActive.assign(partner_active, 0);
 
     size_t partner_recv_slots = symldl_v2_checked_product(
         static_cast<size_t>(lu->nsupers), static_cast<size_t>(lu->Pr),
         "SymFact V2 partner receive table overflows.");
     lu->symV2PartnerLRecvSizes.assign(partner_recv_slots, 0);
+    lu->symV2PartnerLRecvActive.assign(partner_recv_slots, 0);
     lu->symV2PartnerLRecvIndex.assign(static_cast<size_t>(lu->nsupers),
                                       std::vector<int_t>());
     lu->symV2PartnerLRecvIndexBySrc.assign(partner_recv_slots,
@@ -85,10 +90,6 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
     lu->symV2UsePcFragmentSchur.assign(
         static_cast<size_t>(lu->nsupers), pc_fragment ? 1 : 0);
 
-    size_t partner_active = symldl_v2_checked_product(
-        l2l_slots, static_cast<size_t>(lu->Pr),
-        "SymFact V2 partner-L active table overflows.");
-    lu->symV2PartnerLSendRowActive.assign(partner_active, 0);
     if (pc_fragment)
     {
         size_t row_active = symldl_v2_checked_product(

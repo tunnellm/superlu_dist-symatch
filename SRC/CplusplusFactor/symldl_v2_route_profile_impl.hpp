@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -163,6 +164,23 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         symV2CommunicationProfile.row_max_message_bytes
     };
     unsigned long long global_message_max[2] = {0, 0};
+    uint64_t local_plan[8] = {
+        symV2PartnerCandidateRemoteRecipients,
+        symV2PartnerActiveRemoteRecipients,
+        symV2PartnerCandidateRemoteValues,
+        symV2PartnerActiveRemoteValues,
+        symV2PartnerActiveSelfRecipients,
+        symV2PartnerDemandRecords,
+        symV2PartnerDemandPayloadBytes,
+        symV2PartnerMetadataPayloadBytes
+    };
+    uint64_t global_plan[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    double local_plan_time[3] = {
+        symV2PartnerMetadataGatherTime,
+        symV2PartnerDemandPlanTime,
+        symV2PartnerDemandExchangeTime
+    };
+    double global_plan_time[3] = {0.0, 0.0, 0.0};
     if (grid3d != NULL)
     {
         MPI_Reduce(local_sum, global_sum, 4, MPI_UNSIGNED_LONG_LONG,
@@ -171,6 +189,10 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
                    MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
         MPI_Reduce(local_message_max, global_message_max, 2,
                    MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+        MPI_Reduce(local_plan, global_plan, 8, MPI_UINT64_T,
+                   MPI_SUM, root, grid3d->comm);
+        MPI_Reduce(local_plan_time, global_plan_time, 3, MPI_DOUBLE,
+                   MPI_MAX, root, grid3d->comm);
     }
     else
     {
@@ -178,6 +200,10 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
             global_sum[i] = global_rank_max[i] = local_sum[i];
         for (int i = 0; i < 2; ++i)
             global_message_max[i] = local_message_max[i];
+        for (int i = 0; i < 8; ++i)
+            global_plan[i] = local_plan[i];
+        for (int i = 0; i < 3; ++i)
+            global_plan_time[i] = local_plan_time[i];
     }
 
     if (rank != root)
@@ -211,5 +237,26 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         global_rank_max[1], partner_mean, global_message_max[0],
         global_sum[2], global_rank_max[2], global_sum[3],
         global_rank_max[3], row_mean, global_message_max[1]);
+    uint64_t removed_recipients = global_plan[1] <= global_plan[0]
+        ? global_plan[0] - global_plan[1]
+        : 0;
+    uint64_t removed_values = global_plan[3] <= global_plan[2]
+        ? global_plan[2] - global_plan[3]
+        : 0;
+    double recipient_reduction = global_plan[0] > 0
+        ? 100.0 * static_cast<double>(removed_recipients) /
+              static_cast<double>(global_plan[0])
+        : 0.0;
+    double value_reduction = global_plan[2] > 0
+        ? 100.0 * static_cast<double>(removed_values) /
+              static_cast<double>(global_plan[2])
+        : 0.0;
+    std::printf(
+        "SymFact V2 partner demand profile (%s, sum/max-rank-time): candidate_remote_recipients=%" PRIu64 " active_remote_recipients=%" PRIu64 " recipient_reduction_pct=%.3f candidate_remote_values=%" PRIu64 " active_remote_values=%" PRIu64 " value_reduction_pct=%.3f active_self_recipients=%" PRIu64 " demand_records=%" PRIu64 " demand_payload_bytes=%" PRIu64 " metadata_payload_bytes=%" PRIu64 " metadata_gather_time=%.6f plan_time=%.6f exchange_time=%.6f\n",
+        phase != NULL && phase[0] != '\0' ? phase : "unknown",
+        global_plan[0], global_plan[1], recipient_reduction,
+        global_plan[2], global_plan[3], value_reduction,
+        global_plan[4], global_plan[5], global_plan[6], global_plan[7],
+        global_plan_time[0], global_plan_time[1], global_plan_time[2]);
     std::fflush(stdout);
 }

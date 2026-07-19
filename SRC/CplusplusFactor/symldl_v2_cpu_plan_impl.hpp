@@ -7,6 +7,7 @@
 
 #include "xlupanels.hpp"
 #include "symldl_v2_pcfrag_partner_metadata_impl.hpp"
+#include "symldl_v2_partner_demand_impl.hpp"
 
 struct SymLDLV2CpuCachedRowBlock
 {
@@ -299,7 +300,9 @@ static void symldl_v2_build_cpu_partner_receive_plan(
                 position + static_cast<size_t>(length) > end)
                 ABORT("SymFact V2 CPU partner metadata is invalid.");
             size_t record_end = position + static_cast<size_t>(length);
-            if (target_pc == lu->mycol)
+            size_t slot = static_cast<size_t>(k) * lu->Pr + source_pr;
+            if (target_pc == lu->mycol &&
+                lu->symV2PartnerLRecvActive[slot])
             {
                 int_t nblocks = 0;
                 int_t nrows = 0;
@@ -318,7 +321,6 @@ static void symldl_v2_build_cpu_partner_receive_plan(
                     nrows += rows;
                     scan += static_cast<size_t>(rows);
                 }
-                size_t slot = static_cast<size_t>(k) * lu->Pr + source_pr;
                 if (!lu->symV2PartnerLRecvIndexBySrc[slot].empty())
                     ABORT("SymFact V2 CPU partner metadata is duplicated.");
                 std::vector<int_t> &index =
@@ -810,10 +812,15 @@ static void symldl_v2_build_cpu_fragment_plan(xLUstruct_t<Ftype> *lu)
     phase_start = SuperLU_timer_();
     SymLDLV2PartnerMetaPayload metadata =
         symldl_v2_collect_partner_l_metadata(lu);
-    lu->symV2CpuMetadataGatherTime += SuperLU_timer_() - phase_start;
+    double metadata_time = SuperLU_timer_() - phase_start;
+    lu->symV2CpuMetadataGatherTime += metadata_time;
+    lu->symV2PartnerMetadataGatherTime = metadata_time;
+    phase_start = SuperLU_timer_();
+    symldl_v2_build_partner_demand_plan(lu, metadata);
     phase_start = SuperLU_timer_();
     symldl_v2_build_cpu_partner_receive_plan(lu, metadata);
     lu->symV2CpuPartnerRecvPlanTime += SuperLU_timer_() - phase_start;
+    symldl_v2_validate_partner_demand_plan(lu);
     phase_start = SuperLU_timer_();
     symldl_v2_build_cpu_row_receive_plan(lu, metadata);
     lu->symV2CpuRowPlanTime += SuperLU_timer_() - phase_start;
