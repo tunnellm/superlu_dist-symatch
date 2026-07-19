@@ -12,7 +12,9 @@
 #ifdef HAVE_CUDA
 
 template <typename Ftype>
-static void symldl_v2_build_partner_l_recv_maps(xLUstruct_t<Ftype> *lu)
+static void symldl_v2_build_partner_l_recv_maps(
+    xLUstruct_t<Ftype> *lu,
+    const SymLDLV2PartnerMetaPayload &meta)
 {
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload || lu->Pr <= 1)
         return;
@@ -53,8 +55,6 @@ static void symldl_v2_build_partner_l_recv_maps(xLUstruct_t<Ftype> *lu)
                   static_cast<int>(table_count), MPI_INT, MPI_SUM,
                   lu->grid->comm);
 
-    SymLDLV2PartnerMetaPayload meta =
-        symldl_v2_collect_partner_l_metadata(lu);
     const std::vector<int_t> &all_meta_payload = meta.payload;
     const std::vector<size_t> &meta_counts = meta.counts;
     const std::vector<size_t> &meta_displs = meta.displs;

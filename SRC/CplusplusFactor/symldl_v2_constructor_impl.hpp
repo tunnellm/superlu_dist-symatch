@@ -62,8 +62,13 @@ static void symldl_v2_constructor_setup_fragment_metadata(
     symldl_v2_build_cpu_fragment_plan(lu);
 #ifdef HAVE_CUDA
     symldl_v2_build_partner_l_send_maps(lu);
-    symldl_v2_build_partner_l_recv_maps(lu);
-    symldl_v2_build_row_down_maps(lu);
+    if (lu->superlu_acc_offload && lu->Pr > 1)
+    {
+        SymLDLV2PartnerMetaPayload metadata =
+            symldl_v2_collect_partner_l_metadata(lu);
+        symldl_v2_build_partner_l_recv_maps(lu, metadata);
+        symldl_v2_build_row_down_maps(lu, metadata);
+    }
 #endif
     symldl_v2_print_logical_plan_signature(lu);
     symldl_v2_allocate_fragment_host_buffers(lu);
