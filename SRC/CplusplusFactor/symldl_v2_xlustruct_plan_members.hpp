@@ -5,7 +5,10 @@ std::vector<unsigned char> symV2UsePcFragmentSchur;
 
 std::vector<std::vector<int_t> > symL2LSendMeta;
 std::vector<int> symV2PartnerLSendSizes;
+std::vector<unsigned char> symV2PartnerLSendRowActive;
+std::vector<unsigned char> symV2PartnerLSendAnyActive;
 std::vector<int> symV2PartnerLRecvSizes;
+std::vector<unsigned char> symV2PartnerLRecvActive;
 std::vector<std::vector<int_t> > symV2PartnerLRecvIndex;
 std::vector<std::vector<int_t> > symV2PartnerLRecvIndexBySrc;
 
@@ -13,6 +16,16 @@ unsigned long long symV2PartnerMetadataGatherCalls = 0;
 unsigned long long symV2PartnerMetadataLocalBytes = 0;
 unsigned long long symV2PartnerMetadataReceivedBytes = 0;
 double symV2PartnerMetadataGatherTime = 0.0;
+
+uint64_t symV2PartnerCandidateRemoteRecipients = 0;
+uint64_t symV2PartnerActiveRemoteRecipients = 0;
+uint64_t symV2PartnerCandidateRemoteValues = 0;
+uint64_t symV2PartnerActiveRemoteValues = 0;
+uint64_t symV2PartnerActiveSelfRecipients = 0;
+uint64_t symV2PartnerExclusionRecords = 0;
+uint64_t symV2PartnerExclusionPayloadBytes = 0;
+double symV2PartnerFilterPlanTime = 0.0;
+double symV2PartnerExclusionExchangeTime = 0.0;
 
 std::vector<int> symV2RowDownSendSizes;
 std::vector<size_t> symV2RowDownSegOffsets;

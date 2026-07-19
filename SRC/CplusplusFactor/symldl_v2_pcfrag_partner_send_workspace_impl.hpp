@@ -217,15 +217,6 @@ static void symldl_v2_build_partner_l_send_maps(xLUstruct_t<Ftype> *lu)
             }
             map_write_offsets[flat] = map_pos;
 
-            for (int pr = 0; pr < lu->Pr; ++pr)
-            {
-                size_t active_pos =
-                    flat * static_cast<size_t>(lu->Pr) +
-                    static_cast<size_t>(pr);
-                if (active_pos >= lu->symV2PartnerLSendRowActive.size())
-                    ABORT("SymFact V2 partner-L send mask is invalid.");
-                lu->symV2PartnerLSendRowActive[active_pos] = 1;
-            }
         }
     }
 

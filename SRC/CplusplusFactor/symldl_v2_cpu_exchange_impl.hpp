@@ -391,6 +391,10 @@ static void symldl_v2_cpu_issue_fragment_exchange(
             size_t count = lu->symV2CpuPartnerSendSizes[send_slot];
             if (count == 0)
                 continue;
+            if (send_slot >= lu->symV2PartnerLSendAnyActive.size())
+                ABORT("SymFact V2 CPU partner send summary is invalid.");
+            if (!lu->symV2PartnerLSendAnyActive[send_slot])
+                continue;
             double pack_start = SuperLU_timer_();
             symldl_v2_cpu_pack_partner_destination(
                 lu, local_panel, pc, raw_values, partner_send);
@@ -399,6 +403,14 @@ static void symldl_v2_cpu_issue_fragment_exchange(
                             lu->symV2CpuPartnerSendOffsets[send_slot];
             for (int pr = 0; pr < lu->Pr; ++pr)
             {
+                size_t active_pos =
+                    send_slot * static_cast<size_t>(lu->Pr) +
+                    static_cast<size_t>(pr);
+                if (active_pos >=
+                    lu->symV2PartnerLSendRowActive.size())
+                    ABORT("SymFact V2 CPU partner send mask is invalid.");
+                if (!lu->symV2PartnerLSendRowActive[active_pos])
+                    continue;
                 int destination = PNUM(pr, pc, lu->grid);
                 if (destination == lu->iam)
                     continue;

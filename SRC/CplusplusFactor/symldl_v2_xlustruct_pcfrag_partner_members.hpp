@@ -23,7 +23,6 @@ size_t symV2PartnerLHostSendPoolPinnedCount = 0;
 size_t symV2PartnerLHostRecvPoolPinnedCount = 0;
 int symV2PartnerLHostRecvPinned = 0;
 
-std::vector<unsigned char> symV2PartnerLSendRowActive;
 std::vector<unsigned char> symV2PartnerLPrepacked;
 std::vector<std::vector<int_t> > symV2PartnerLRecvMap;
 std::vector<size_t> symV2PartnerLRecvMapOffsets;

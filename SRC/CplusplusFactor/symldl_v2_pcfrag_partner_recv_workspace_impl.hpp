@@ -88,7 +88,13 @@ static void symldl_v2_build_partner_l_recv_maps(
 
             size_t block_pos = meta_pos;
             size_t block_end = meta_pos + static_cast<size_t>(meta_len);
-            if (target_pc == lu->mycol)
+            size_t recv_pos = static_cast<size_t>(k0) *
+                                  static_cast<size_t>(lu->Pr) +
+                              static_cast<size_t>(source_pr);
+            if (recv_pos >= lu->symV2PartnerLRecvActive.size())
+                ABORT("SymFact V2 partner receive mask is invalid.");
+            if (target_pc == lu->mycol &&
+                lu->symV2PartnerLRecvActive[recv_pos])
             {
                 while (block_pos < block_end)
                 {
@@ -109,9 +115,6 @@ static void symldl_v2_build_partner_l_recv_maps(
                     block_pos += static_cast<size_t>(block.len);
                     cached_partner_blocks[static_cast<size_t>(k0)]
                         .push_back(block);
-                    size_t recv_pos = static_cast<size_t>(k0) *
-                                          static_cast<size_t>(lu->Pr) +
-                                      static_cast<size_t>(source_pr);
                     cached_partner_recv_blocks[recv_pos].push_back(block);
                 }
             }
@@ -141,7 +144,9 @@ static void symldl_v2_build_partner_l_recv_maps(
                                  static_cast<size_t>(lu->Pr) +
                              static_cast<size_t>(pr);
             lu->symV2PartnerLRecvSizes[dst_pos] =
-                global_recv_sizes[src_pos];
+                lu->symV2PartnerLRecvActive[dst_pos]
+                    ? global_recv_sizes[src_pos]
+                    : 0;
         }
 
         std::vector<SymLDLV2CachedPartnerBlock> &blocks =

@@ -130,7 +130,13 @@ static void symldl_v2_print_logical_plan_signature(xLUstruct_t<Ftype> *lu)
     symldl_v2_plan_signature_mix_vector(
         &signature, lu->symV2PartnerLSendSizes);
     symldl_v2_plan_signature_mix_vector(
+        &signature, lu->symV2PartnerLSendRowActive);
+    symldl_v2_plan_signature_mix_vector(
+        &signature, lu->symV2PartnerLSendAnyActive);
+    symldl_v2_plan_signature_mix_vector(
         &signature, lu->symV2PartnerLRecvSizes);
+    symldl_v2_plan_signature_mix_vector(
+        &signature, lu->symV2PartnerLRecvActive);
     symldl_v2_plan_signature_mix_nested_vector(
         &signature, lu->symV2PartnerLRecvIndexBySrc);
     symldl_v2_plan_signature_mix_vector(
@@ -169,7 +175,16 @@ static void symldl_v2_print_logical_plan_signature(xLUstruct_t<Ftype> *lu)
         "partner-send-sizes", lu->symV2PartnerLSendSizes);
     symldl_v2_print_vector_plan_signature(
         lu,
+        "partner-send-active", lu->symV2PartnerLSendRowActive);
+    symldl_v2_print_vector_plan_signature(
+        lu,
+        "partner-send-any-active", lu->symV2PartnerLSendAnyActive);
+    symldl_v2_print_vector_plan_signature(
+        lu,
         "partner-recv-sizes", lu->symV2PartnerLRecvSizes);
+    symldl_v2_print_vector_plan_signature(
+        lu,
+        "partner-recv-active", lu->symV2PartnerLRecvActive);
     symldl_v2_print_nested_vector_plan_signature(
         lu,
         "partner-recv-index", lu->symV2PartnerLRecvIndexBySrc);

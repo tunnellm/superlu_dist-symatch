@@ -66,8 +66,10 @@ static void symldl_v2_constructor_setup_fragment_metadata(
     {
         SymLDLV2PartnerMetaPayload metadata =
             symldl_v2_collect_partner_l_metadata(lu);
+        symldl_v2_build_partner_filter_plan(lu, metadata);
         symldl_v2_build_partner_l_recv_maps(lu, metadata);
         symldl_v2_build_row_down_maps(lu, metadata);
+        symldl_v2_validate_partner_filter_plan(lu);
     }
 #endif
     symldl_v2_print_logical_plan_signature(lu);
