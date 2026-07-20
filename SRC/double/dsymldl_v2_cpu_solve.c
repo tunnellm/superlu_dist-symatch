@@ -124,6 +124,7 @@ struct dSymLDLCPUSolveHandle {
     double sparse_reduce_time;
     double sparse_broadcast_time;
     double panel_replication_time;
+    dSymLDLCPUSolveCommStats comm_stats;
 };
 
 static size_t
@@ -506,6 +507,25 @@ symldl_cpu_post_send(dSymLDLCPUSolveHandle *handle,
                   &handle->send_requests[handle->send_count++]) !=
         MPI_SUCCESS)
         ABORT("SymLDL CPU tree send failed.");
+    if (handle->phase == SYMLDL_CPU_PHASE_FORWARD) {
+        if (message->kind == SYMLDL_CPU_MESSAGE_X) {
+            ++handle->comm_stats.forward_x_messages;
+            handle->comm_stats.forward_x_bytes += bytes;
+        } else if (message->kind == SYMLDL_CPU_MESSAGE_PARTIAL) {
+            ++handle->comm_stats.forward_partial_messages;
+            handle->comm_stats.forward_partial_bytes += bytes;
+        } else
+            ABORT("SymLDL CPU send has an unknown message kind.");
+    } else {
+        if (message->kind == SYMLDL_CPU_MESSAGE_X) {
+            ++handle->comm_stats.backward_x_messages;
+            handle->comm_stats.backward_x_bytes += bytes;
+        } else if (message->kind == SYMLDL_CPU_MESSAGE_PARTIAL) {
+            ++handle->comm_stats.backward_partial_messages;
+            handle->comm_stats.backward_partial_bytes += bytes;
+        } else
+            ABORT("SymLDL CPU send has an unknown message kind.");
+    }
 }
 
 static void
@@ -1773,6 +1793,16 @@ dSymLDLCPUSolveTakeTimers(dSymLDLCPUSolveHandle *handle, double *setup,
     handle->sparse_reduce_time = 0.0;
     handle->sparse_broadcast_time = 0.0;
     handle->panel_replication_time = 0.0;
+}
+
+void
+dSymLDLCPUSolveTakeCommStats(dSymLDLCPUSolveHandle *handle,
+                             dSymLDLCPUSolveCommStats *stats)
+{
+    if (handle == NULL || stats == NULL)
+        return;
+    *stats = handle->comm_stats;
+    memset(&handle->comm_stats, 0, sizeof(handle->comm_stats));
 }
 
 void

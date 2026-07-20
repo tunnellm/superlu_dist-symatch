@@ -495,10 +495,14 @@ typedef struct {
     double workspace;
     double nvshmem_setup;
     double b_to_x;
+    double solve_core;
+    double forward_wall;
     double forward_compute;
     double forward_values;
     double forward_apply;
+    double diag_wall;
     double diag_compute;
+    double backward_wall;
     double backward_compute;
     double x_to_b;
     double gpu_h2d;
@@ -1119,7 +1123,8 @@ pdgstrs3d_symldl_nvshmem_take_timers(
 static void
 pdgstrs3d_symldl_cpu_take_timers(
     pdgstrs3d_symldl_solve_meta_t *meta,
-    pdgstrs3d_symldl_timer_t *timer)
+    pdgstrs3d_symldl_timer_t *timer,
+    dSymLDLCPUSolveCommStats *comm_stats)
 {
     double setup = 0.0;
     double forward = 0.0;
@@ -1132,6 +1137,9 @@ pdgstrs3d_symldl_cpu_take_timers(
     dSymLDLCPUSolveTakeTimers(
         (dSymLDLCPUSolveHandle *) meta->cpu_solve_state,
         &setup, &forward, &diagonal, &backward, &progress, &numeric);
+    if (comm_stats != NULL)
+        dSymLDLCPUSolveTakeCommStats(
+            (dSymLDLCPUSolveHandle *) meta->cpu_solve_state, comm_stats);
     timer->cpu_event_setup += setup;
     timer->forward_compute += forward;
     timer->diag_compute += diagonal;
@@ -1511,7 +1519,7 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
                              pdgstrs3d_symldl_solve_meta_t *meta,
                              gridinfo3d_t *grid3d)
 {
-    enum { SYMLDL_TIMER_COUNT = 17 };
+    enum { SYMLDL_TIMER_COUNT = 21 };
     double local[SYMLDL_TIMER_COUNT];
     double maxv[SYMLDL_TIMER_COUNT];
     double sumv[SYMLDL_TIMER_COUNT];
@@ -1522,20 +1530,24 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
     local[0] = timer->metadata;
     local[1] = timer->workspace;
     local[2] = timer->b_to_x;
-    local[3] = timer->forward_compute;
-    local[4] = timer->forward_values;
-    local[5] = timer->forward_apply;
-    local[6] = timer->diag_compute;
-    local[7] = timer->backward_compute;
-    local[8] = timer->x_to_b;
-    local[9] = timer->gpu_h2d;
-    local[10] = timer->gpu_compute;
-    local[11] = timer->gpu_d2h;
-    local[12] = meta != NULL ? meta->host_panel_copy_time : 0.0;
-    local[13] = timer->nvshmem_setup;
-    local[14] = timer->cpu_event_setup;
-    local[15] = timer->cpu_event_progress;
-    local[16] = timer->cpu_event_numeric;
+    local[3] = timer->solve_core;
+    local[4] = timer->forward_wall;
+    local[5] = timer->forward_compute;
+    local[6] = timer->forward_values;
+    local[7] = timer->forward_apply;
+    local[8] = timer->diag_wall;
+    local[9] = timer->diag_compute;
+    local[10] = timer->backward_wall;
+    local[11] = timer->backward_compute;
+    local[12] = timer->x_to_b;
+    local[13] = timer->gpu_h2d;
+    local[14] = timer->gpu_compute;
+    local[15] = timer->gpu_d2h;
+    local[16] = meta != NULL ? meta->host_panel_copy_time : 0.0;
+    local[17] = timer->nvshmem_setup;
+    local[18] = timer->cpu_event_setup;
+    local[19] = timer->cpu_event_progress;
+    local[20] = timer->cpu_event_numeric;
 
     MPI_Comm_rank(grid3d->comm, &rank);
     MPI_Comm_size(grid3d->comm, &nprocs);
@@ -1552,8 +1564,9 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
 
     if (rank == 0) {
         static const char *names[SYMLDL_TIMER_COUNT] = {
-            "metadata", "workspace", "B_to_X", "forward_compute",
-            "forward_z_reduce", "forward_z_bcast", "diag_compute",
+            "metadata", "workspace", "B_to_X", "solve_core",
+            "L_wall", "forward_compute", "forward_z_reduce",
+            "forward_z_bcast", "D_wall", "diag_compute", "LT_wall",
             "backward_compute", "X_to_B", "gpu_h2d", "gpu_compute",
             "gpu_d2h", "host_panel_copy", "nvshmem_setup",
             "cpu_event_setup", "cpu_event_progress", "cpu_event_numeric"
@@ -1562,6 +1575,57 @@ pdgstrs3d_symldl_timer_print(pdgstrs3d_symldl_timer_t *timer,
         for (int i = 0; i < SYMLDL_TIMER_COUNT; ++i)
             printf("  %-17s %.6f / %.6f / %d\n", names[i], maxv[i],
                    sumv[i] / (double) nprocs, global_max[i].rank);
+    }
+}
+
+static void
+pdgstrs3d_symldl_cpu_comm_print(
+    const dSymLDLCPUSolveCommStats *stats, gridinfo3d_t *grid3d)
+{
+    enum { COMM_CLASS_COUNT = 5 };
+    unsigned long long local_messages[COMM_CLASS_COUNT];
+    unsigned long long local_bytes[COMM_CLASS_COUNT];
+    unsigned long long sum_messages[COMM_CLASS_COUNT];
+    unsigned long long sum_bytes[COMM_CLASS_COUNT];
+    unsigned long long max_messages[COMM_CLASS_COUNT];
+    unsigned long long max_bytes[COMM_CLASS_COUNT];
+    int rank;
+
+    local_messages[0] = stats->forward_x_messages;
+    local_messages[1] = stats->forward_partial_messages;
+    local_messages[2] = stats->backward_x_messages;
+    local_messages[3] = stats->backward_partial_messages;
+    local_messages[4] = local_messages[0] + local_messages[1] +
+                        local_messages[2] + local_messages[3];
+    local_bytes[0] = stats->forward_x_bytes;
+    local_bytes[1] = stats->forward_partial_bytes;
+    local_bytes[2] = stats->backward_x_bytes;
+    local_bytes[3] = stats->backward_partial_bytes;
+    local_bytes[4] = local_bytes[0] + local_bytes[1] +
+                     local_bytes[2] + local_bytes[3];
+
+    MPI_Comm_rank(grid3d->comm, &rank);
+    MPI_Reduce(local_messages, sum_messages, COMM_CLASS_COUNT,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(local_bytes, sum_bytes, COMM_CLASS_COUNT,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(local_messages, max_messages, COMM_CLASS_COUNT,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, grid3d->comm);
+    MPI_Reduce(local_bytes, max_bytes, COMM_CLASS_COUNT,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, grid3d->comm);
+
+    if (rank == 0) {
+        static const char *names[COMM_CLASS_COUNT] = {
+            "L_x_bcast", "L_partial_reduce", "LT_x_bcast",
+            "LT_partial_reduce", "total"
+        };
+        printf("SymLDL V2 CPU solve communication "
+               "(sum_messages / sum_bytes / max_rank_messages / "
+               "max_rank_bytes):\n");
+        for (int i = 0; i < COMM_CLASS_COUNT; ++i)
+            printf("  %-17s %llu / %llu / %llu / %llu\n", names[i],
+                   sum_messages[i], sum_bytes[i], max_messages[i],
+                   max_bytes[i]);
     }
 }
 
@@ -1601,12 +1665,14 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
     double tx_st;
     double ttmp;
     pdgstrs3d_symldl_timer_t symldl_timer;
+    dSymLDLCPUSolveCommStats cpu_comm_stats;
     xtrsTimer_t xtrsTimer;
 
     (void) info;
     MPI_Comm_rank(global_comm, &global_rank);
     MPI_Comm_size(global_comm, &global_nprocs);
     memset(&symldl_timer, 0, sizeof(symldl_timer));
+    memset(&cpu_comm_stats, 0, sizeof(cpu_comm_stats));
 
     ttmp = SuperLU_timer_();
     solve_meta = (pdgstrs3d_symldl_solve_meta_t *)
@@ -1681,7 +1747,9 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         }
     }
     xtrsTimer.t_forwardSolve = SuperLU_timer_() - tx;
+    symldl_timer.forward_wall = xtrsTimer.t_forwardSolve;
 
+    tx = SuperLU_timer_();
     if (solve_meta->nvshmem_state != NULL) {
         if (dSymLDLNVSHMEMDiagonal(solve_meta->nvshmem_state,
                                    x, x_count) != 0)
@@ -1710,6 +1778,7 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
                     (double) nrhs);
         }
     }
+    symldl_timer.diag_wall = SuperLU_timer_() - tx;
 
     tx = SuperLU_timer_();
     if (solve_meta->nvshmem_state != NULL) {
@@ -1743,9 +1812,11 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
         }
     }
     xtrsTimer.t_backwardSolve = SuperLU_timer_() - tx;
+    symldl_timer.backward_wall = xtrsTimer.t_backwardSolve;
 
     MPI_Barrier(global_comm);
     stat->utime[SOLVE] = SuperLU_timer_() - tx_st;
+    symldl_timer.solve_core = stat->utime[SOLVE];
 
     tx = SuperLU_timer_();
     pdReDistribute3d_X_to_B_symv2(
@@ -1757,9 +1828,14 @@ pdgstrs3d_symldl_distributed(superlu_dist_options_t *options, int_t n,
 
     reduceStat(SOLVE, stat, grid3d);
     pdgstrs3d_symldl_nvshmem_take_timers(solve_meta, &symldl_timer);
-    pdgstrs3d_symldl_cpu_take_timers(solve_meta, &symldl_timer);
-    if (pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TIMING"))
+    pdgstrs3d_symldl_cpu_take_timers(
+        solve_meta, &symldl_timer, &cpu_comm_stats);
+    if (pdgstrs3d_symldl_env_enabled("GPU3DV2_SYM_SOLVE_TIMING") ||
+        pdgstrs3d_symldl_env_enabled("SUPERLU_SOLVE_PHASE_TIMING")) {
         pdgstrs3d_symldl_timer_print(&symldl_timer, solve_meta, grid3d);
+        if (solve_meta->cpu_solve_state != NULL)
+            pdgstrs3d_symldl_cpu_comm_print(&cpu_comm_stats, grid3d);
+    }
 
 #if (PRNTlevel >= 1)
     printTRStimer(&xtrsTimer, grid3d);

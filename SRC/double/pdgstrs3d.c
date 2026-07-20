@@ -7459,6 +7459,91 @@ pdgstrs3d (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
     return;
 }                               /* pdgstrs3d */
 
+static int
+pdgstrs3d_solve_phase_timing_enabled(void)
+{
+    const char *value = getenv("SUPERLU_SOLVE_PHASE_TIMING");
+    return value != NULL && atoi(value) != 0;
+}
+
+static void
+pdgstrs3d_newsolve_phase_timing_print(const xtrsTimer_t *timer,
+                                      double solve_core,
+                                      double x_gather,
+                                      gridinfo3d_t *grid3d)
+{
+    enum { PHASE_COUNT = 11 };
+    double local[PHASE_COUNT] = {
+        solve_core,
+        timer->t_pxReDistribute_B_to_X,
+        timer->t_forwardSolve,
+        timer->tfs_compute,
+        timer->tfs_comm,
+        timer->trs_comm_z,
+        timer->t_backwardSolve,
+        timer->tbs_compute,
+        timer->tbs_comm,
+        x_gather,
+        timer->t_pxReDistribute_X_to_B
+    };
+    double maxv[PHASE_COUNT];
+    double sumv[PHASE_COUNT];
+    struct { double val; int rank; } local_max[PHASE_COUNT];
+    struct { double val; int rank; } global_max[PHASE_COUNT];
+    int rank, nprocs;
+
+    MPI_Comm_rank(grid3d->comm, &rank);
+    MPI_Comm_size(grid3d->comm, &nprocs);
+    for (int i = 0; i < PHASE_COUNT; ++i) {
+        local_max[i].val = local[i];
+        local_max[i].rank = rank;
+    }
+    MPI_Reduce(local, maxv, PHASE_COUNT, MPI_DOUBLE, MPI_MAX, 0,
+               grid3d->comm);
+    MPI_Reduce(local, sumv, PHASE_COUNT, MPI_DOUBLE, MPI_SUM, 0,
+               grid3d->comm);
+    MPI_Reduce(local_max, global_max, PHASE_COUNT, MPI_DOUBLE_INT,
+               MPI_MAXLOC, 0, grid3d->comm);
+
+    if (rank == 0) {
+        static const char *names[PHASE_COUNT] = {
+            "solve_core", "B_to_X", "L_wall", "L_compute", "L_comm",
+            "L_to_U_Z", "U_wall", "U_compute", "U_comm",
+            "X_gather_Z", "X_to_B"
+        };
+        printf("3D L/U solve timing (max_rank / avg_rank / max_rank_id):\n");
+        for (int i = 0; i < PHASE_COUNT; ++i)
+            printf("  %-17s %.6f / %.6f / %d\n", names[i], maxv[i],
+                   sumv[i] / (double) nprocs, global_max[i].rank);
+    }
+
+    enum { COMM_COUNT = 5 };
+    double comm_local[COMM_COUNT] = {
+        timer->trsDataSendXY * sizeof(double),
+        timer->trsDataRecvXY * sizeof(double),
+        timer->trsDataSendZ * sizeof(double),
+        timer->trsDataRecvZ * sizeof(double),
+        0.5 * (timer->trsDataSendXY + timer->trsDataRecvXY +
+               timer->trsDataSendZ + timer->trsDataRecvZ) * sizeof(double)
+    };
+    double comm_sum[COMM_COUNT];
+    double comm_max[COMM_COUNT];
+    MPI_Reduce(comm_local, comm_sum, COMM_COUNT, MPI_DOUBLE, MPI_SUM, 0,
+               grid3d->comm);
+    MPI_Reduce(comm_local, comm_max, COMM_COUNT, MPI_DOUBLE, MPI_MAX, 0,
+               grid3d->comm);
+    if (rank == 0) {
+        static const char *comm_names[COMM_COUNT] = {
+            "XY_send_bytes", "XY_recv_bytes", "Z_send_bytes",
+            "Z_recv_bytes", "logical_bytes"
+        };
+        printf("3D L/U solve communication (sum / max_rank):\n");
+        for (int i = 0; i < COMM_COUNT; ++i)
+            printf("  %-17s %.0f / %.0f\n", comm_names[i], comm_sum[i],
+                   comm_max[i]);
+    }
+}
+
 
 void
 pdgstrs3d_newsolve (superlu_dist_options_t *options, int_t n, dLUstruct_t * LUstruct,
@@ -7794,12 +7879,18 @@ if ( !(get_new3dsolvetreecomm() && get_acc_solve())){
     xtrsTimer.t_backwardSolve = SuperLU_timer_() - tx;
     MPI_Barrier (grid3d->comm);
     stat->utime[SOLVE] = SuperLU_timer_ () - tx_st;
+    tx = SuperLU_timer_();
     dtrs_X_gather3d(x, nrhs, trf3Dpartition, LUstruct, grid3d, &xtrsTimer);
+    double x_gather = SuperLU_timer_() - tx;
     tx = SuperLU_timer_();
     pdReDistribute3d_X_to_B(n, B, m_loc, ldb, fst_row, nrhs, x, ilsum,
                             ScalePermstruct, Glu_persist, grid3d, SOLVEstruct);
 
     xtrsTimer.t_pxReDistribute_X_to_B = SuperLU_timer_() - tx;
+
+    if (pdgstrs3d_solve_phase_timing_enabled())
+        pdgstrs3d_newsolve_phase_timing_print(
+            &xtrsTimer, stat->utime[SOLVE], x_gather, grid3d);
 
     /**
      * Reduce the Solve flops from all the grids to grid zero
