@@ -68,6 +68,11 @@ static inline bool superlu_sym_v2_route_profile()
            !std::strcmp(profile, "all");
 }
 
+static inline bool superlu_sym_v2_factor_comm_profile()
+{
+    return superlu_sym_v2_env_bool_flag("SUPERLU_FACTOR_COMM_PROFILE", 0);
+}
+
 static inline bool superlu_sym_v2_plan_signature_components()
 {
     return superlu_sym_v2_env_bool_flag(

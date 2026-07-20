@@ -97,13 +97,24 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfileNotePartnerSend(
     if (messages > static_cast<size_t>(
                        std::numeric_limits<unsigned long long>::max()))
         ABORT("SymFact V2 partner message count overflows.");
+    const unsigned long long bytes =
+        symldl_v2_profile_byte_count<Ftype>(values);
+    const unsigned long long max_bytes =
+        symldl_v2_profile_byte_count<Ftype>(max_message_values);
     symV2CommunicationProfile.partner_send_messages +=
         static_cast<unsigned long long>(messages);
-    symV2CommunicationProfile.partner_send_bytes +=
-        symldl_v2_profile_byte_count<Ftype>(values);
+    symV2CommunicationProfile.partner_send_bytes += bytes;
     symV2CommunicationProfile.partner_max_message_bytes = SUPERLU_MAX(
         symV2CommunicationProfile.partner_max_message_bytes,
-        symldl_v2_profile_byte_count<Ftype>(max_message_values));
+        max_bytes);
+    if (SCT->factorCommProfileEnabled)
+    {
+        SCT->factorCommDataMessages +=
+            static_cast<unsigned long long>(messages);
+        SCT->factorCommDataBytes += bytes;
+        SCT->factorCommMaxDataBytes = SUPERLU_MAX(
+            SCT->factorCommMaxDataBytes, max_bytes);
+    }
 }
 
 template <typename Ftype>
@@ -113,20 +124,32 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfileNoteRowSend(
     if (messages > static_cast<size_t>(
                        std::numeric_limits<unsigned long long>::max()))
         ABORT("SymFact V2 row message count overflows.");
+    const unsigned long long bytes =
+        symldl_v2_profile_byte_count<Ftype>(values);
+    const unsigned long long max_bytes =
+        symldl_v2_profile_byte_count<Ftype>(max_message_values);
     symV2CommunicationProfile.row_send_messages +=
         static_cast<unsigned long long>(messages);
-    symV2CommunicationProfile.row_send_bytes +=
-        symldl_v2_profile_byte_count<Ftype>(values);
+    symV2CommunicationProfile.row_send_bytes += bytes;
     symV2CommunicationProfile.row_max_message_bytes = SUPERLU_MAX(
         symV2CommunicationProfile.row_max_message_bytes,
-        symldl_v2_profile_byte_count<Ftype>(max_message_values));
+        max_bytes);
+    if (SCT->factorCommProfileEnabled)
+    {
+        SCT->factorCommDataMessages +=
+            static_cast<unsigned long long>(messages);
+        SCT->factorCommDataBytes += bytes;
+        SCT->factorCommMaxDataBytes = SUPERLU_MAX(
+            SCT->factorCommMaxDataBytes, max_bytes);
+    }
 }
 
 template <typename Ftype>
 inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
     const char *phase) const
 {
-    if (!superlu_sym_v2_route_profile())
+    if (!superlu_sym_v2_route_profile() &&
+        !superlu_sym_v2_factor_comm_profile())
         return;
 
     long long local[SYM_V2_ROUTE_PROFILE_COUNTERS];
@@ -169,6 +192,8 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         symV2PartnerMetadataGatherCalls;
     unsigned long long metadata_local_bytes =
         symV2PartnerMetadataLocalBytes;
+    unsigned long long metadata_received_bytes_sum =
+        symV2PartnerMetadataReceivedBytes;
     unsigned long long metadata_received_bytes_max =
         symV2PartnerMetadataReceivedBytes;
     double metadata_time_max = symV2PartnerMetadataGatherTime;
@@ -185,6 +210,9 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         MPI_Reduce(&symV2PartnerMetadataGatherCalls, &metadata_calls_max, 1,
                    MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
         MPI_Reduce(&symV2PartnerMetadataLocalBytes, &metadata_local_bytes, 1,
+                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, root, grid3d->comm);
+        MPI_Reduce(&symV2PartnerMetadataReceivedBytes,
+                   &metadata_received_bytes_sum, 1,
                    MPI_UNSIGNED_LONG_LONG, MPI_SUM, root, grid3d->comm);
         MPI_Reduce(&symV2PartnerMetadataReceivedBytes,
                    &metadata_received_bytes_max, 1,
@@ -232,9 +260,10 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         global_sum[2], global_rank_max[2], global_sum[3],
         global_rank_max[3], row_mean, global_message_max[1]);
     std::printf(
-        "SymFact V2 metadata profile (%s, min/max-rank-calls): gather_calls=%llu/%llu source_payload_bytes=%llu received_payload_bytes_max_rank=%llu gather_time_max_rank=%.6f\n",
+        "SymFact V2 metadata profile (%s, min/max-rank-calls): gather_calls=%llu/%llu source_payload_bytes=%llu received_payload_bytes_sum=%llu received_payload_bytes_max_rank=%llu gather_time_max_rank=%.6f\n",
         phase != NULL && phase[0] != '\0' ? phase : "unknown",
         metadata_calls_min, metadata_calls_max, metadata_local_bytes,
-        metadata_received_bytes_max, metadata_time_max);
+        metadata_received_bytes_sum, metadata_received_bytes_max,
+        metadata_time_max);
     std::fflush(stdout);
 }

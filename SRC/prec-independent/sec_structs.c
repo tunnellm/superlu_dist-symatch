@@ -290,6 +290,30 @@ void slu_SCT_init(SCT_t* SCT)
 
     SCT->commVolFactor =0.0;
     SCT->commVolRed =0.0;
+    const char *factor_comm_profile =
+        getenv("SUPERLU_FACTOR_COMM_PROFILE");
+    if (factor_comm_profile == NULL || factor_comm_profile[0] == '\0' ||
+        strcmp(factor_comm_profile, "0") == 0)
+        SCT->factorCommProfileEnabled = 0;
+    else if (strcmp(factor_comm_profile, "1") == 0)
+        SCT->factorCommProfileEnabled = 1;
+    else
+        ABORT("SUPERLU_FACTOR_COMM_PROFILE must be 0 or 1.");
+    SCT->factorCommDataMessages = 0;
+    SCT->factorCommDataBytes = 0;
+    SCT->factorCommMetadataMessages = 0;
+    SCT->factorCommMetadataBytes = 0;
+    SCT->factorCommPackedMessages = 0;
+    SCT->factorCommPackedBytes = 0;
+    SCT->factorCommAuxMessages = 0;
+    SCT->factorCommAuxBytes = 0;
+    SCT->factorCommReductionMessages = 0;
+    SCT->factorCommReductionBytes = 0;
+    SCT->factorCommMaxDataBytes = 0;
+    SCT->factorCommMaxMetadataBytes = 0;
+    SCT->factorCommMaxPackedBytes = 0;
+    SCT->factorCommMaxAuxBytes = 0;
+    SCT->factorCommMaxReductionBytes = 0;
 } /* slu_SCT_init */
 
 void slu_SCT_free(SCT_t* SCT)
@@ -771,4 +795,3 @@ void initTRStimer(xtrsTimer_t *xtrsTimer, gridinfo_t *grid)
 
     return;
 }
-

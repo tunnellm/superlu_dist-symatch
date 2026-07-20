@@ -131,6 +131,37 @@ inline int_t xLUstruct_t<double>::dSymDiagFactorPanelSolve(
                 invDiag, diag_count, (int) sym_diag_root,
                 grid3d->cscp.comm, chunk_counter);
         }
+        if (SCT->factorCommProfileEnabled && myrow == sym_diag_root &&
+            grid3d->cscp.Np > 1)
+        {
+            const size_t logical_count = symV2UsesCpuFactor()
+                                             ? diag_count * 2
+                                             : diag_count;
+            const size_t chunks = logical_count == 0
+                                      ? 0
+                                      : (logical_count - 1) /
+                                                static_cast<size_t>(INT_MAX) +
+                                            1;
+            const unsigned long long broadcasts =
+                symV2UsesCpuFactor() ? 1ULL : 2ULL;
+            const unsigned long long recipients =
+                static_cast<unsigned long long>(grid3d->cscp.Np - 1);
+            const unsigned long long messages =
+                static_cast<unsigned long long>(chunks) * broadcasts *
+                recipients;
+            const unsigned long long bytes =
+                static_cast<unsigned long long>(diag_count) *
+                static_cast<unsigned long long>(sizeof(double)) * 2ULL *
+                recipients;
+            const unsigned long long max_bytes =
+                static_cast<unsigned long long>(SUPERLU_MIN(
+                    logical_count, static_cast<size_t>(INT_MAX))) *
+                static_cast<unsigned long long>(sizeof(double));
+            SCT->factorCommAuxMessages += messages;
+            SCT->factorCommAuxBytes += bytes;
+            SCT->factorCommMaxAuxBytes = SUPERLU_MAX(
+                SCT->factorCommMaxAuxBytes, max_bytes);
+        }
         if (symV2UsesCpuFactor())
         {
             symV2CpuInvDiagCommTime += SuperLU_timer_() - comm_start;

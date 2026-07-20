@@ -122,6 +122,17 @@ int_t dStartL2U_comm(int_t k,
                         if(Llu->Send_CommL[lk].ComQuant[i].size>0){
                             dest = PNUM(krow, i, grid);
                             MPI_Isend (Llu->Send_CommL[lk].ComQuant[i].dat, Llu->Send_CommL[lk].ComQuant[i].size, MPI_DOUBLE, dest, SLU_MPI_TAG (5, k), grid->comm, &Llu->Send_CommL[lk].req[i]);
+                            if (SCT->factorCommProfileEnabled)
+                            {
+                                unsigned long long bytes =
+                                    (unsigned long long)
+                                        Llu->Send_CommL[lk].ComQuant[i].size *
+                                    sizeof(double);
+                                ++SCT->factorCommPackedMessages;
+                                SCT->factorCommPackedBytes += bytes;
+                                SCT->factorCommMaxPackedBytes = SUPERLU_MAX(
+                                    SCT->factorCommMaxPackedBytes, bytes);
+                            }
                         }
                     }
 
@@ -365,6 +376,21 @@ int_t dDiagFactIBCast(int_t k,  int_t k0,      // supernode to be factored
         if(options->SymFact == NO){          
             dISend_LDiagBlock(k0, BlockLFactor,
                             nsupc * nsupc, L_diag_blk_send_req, grid, tag_ub);
+        }
+        if (SCT->factorCommProfileEnabled)
+        {
+            unsigned long long diag_bytes =
+                (unsigned long long) nsupc * (unsigned long long) nsupc *
+                sizeof(double);
+            unsigned long long diag_messages =
+                (unsigned long long) SUPERLU_MAX(0, Pr - 1);
+            if (options->SymFact == NO)
+                diag_messages +=
+                    (unsigned long long) SUPERLU_MAX(0, Pc - 1);
+            SCT->factorCommAuxMessages += diag_messages;
+            SCT->factorCommAuxBytes += diag_messages * diag_bytes;
+            SCT->factorCommMaxAuxBytes = SUPERLU_MAX(
+                SCT->factorCommMaxAuxBytes, diag_bytes);
         }
         SCT->commVolFactor += 1.0 * nsupc * nsupc * (Pr + Pc);
     }
@@ -674,6 +700,27 @@ int_t dIBcastRecvLPanel(
         dIBcast_LPanel (k, k0, lsub, lusup, grid, msgcnt, send_req,
 		       ToSendR, xsup, tag_ub);
 
+        if (SCT->factorCommProfileEnabled)
+        {
+            unsigned long long metadata_bytes =
+                (unsigned long long) msgcnt[0] * sizeof(int_t);
+            unsigned long long data_bytes =
+                (unsigned long long) msgcnt[1] * sizeof(double);
+            for (int_t pj = 0; pj < Pc; ++pj)
+            {
+                if (ToSendR[lk][pj] == SLU_EMPTY)
+                    continue;
+                ++SCT->factorCommMetadataMessages;
+                SCT->factorCommMetadataBytes += metadata_bytes;
+                SCT->factorCommMaxMetadataBytes = SUPERLU_MAX(
+                    SCT->factorCommMaxMetadataBytes, metadata_bytes);
+                ++SCT->factorCommDataMessages;
+                SCT->factorCommDataBytes += data_bytes;
+                SCT->factorCommMaxDataBytes = SUPERLU_MAX(
+                    SCT->factorCommMaxDataBytes, data_bytes);
+            }
+        }
+
         if (lsub)
         {
             int_t nrbl  =   lsub[0]; /*number of L blocks */
@@ -728,6 +775,23 @@ int_t dIBcastRecvUPanel(int_t k, int_t k0, int* msgcnt,
         double* uval = Unzval_br_ptr[lk];
         dIBcast_UPanel(k, k0, usub, uval, grid, msgcnt,
                         send_requ, ToSendD, tag_ub);
+        if (SCT->factorCommProfileEnabled && ToSendD[lk] == YES)
+        {
+            unsigned long long recipients =
+                (unsigned long long) SUPERLU_MAX(0, Pr - 1);
+            unsigned long long metadata_bytes =
+                (unsigned long long) msgcnt[2] * sizeof(int_t);
+            unsigned long long data_bytes =
+                (unsigned long long) msgcnt[3] * sizeof(double);
+            SCT->factorCommMetadataMessages += recipients;
+            SCT->factorCommMetadataBytes += recipients * metadata_bytes;
+            SCT->factorCommMaxMetadataBytes = SUPERLU_MAX(
+                SCT->factorCommMaxMetadataBytes, metadata_bytes);
+            SCT->factorCommDataMessages += recipients;
+            SCT->factorCommDataBytes += recipients * data_bytes;
+            SCT->factorCommMaxDataBytes = SUPERLU_MAX(
+                SCT->factorCommMaxDataBytes, data_bytes);
+        }
         if (usub)
         {
             /* code */

@@ -107,7 +107,8 @@ template <typename Ftype>
 static SymLDLV2PartnerMetaPayload
 symldl_v2_collect_partner_l_metadata(xLUstruct_t<Ftype> *lu)
 {
-    const bool profile = superlu_sym_v2_route_profile();
+    const bool profile = superlu_sym_v2_route_profile() ||
+                         superlu_sym_v2_factor_comm_profile();
     const double gather_start = profile ? SuperLU_timer_() : 0.0;
     std::vector<int_t> local_meta_payload;
     for (int_t lk = 0; lk < lu->symV2PanelCount(); ++lk)
@@ -163,6 +164,46 @@ symldl_v2_collect_partner_l_metadata(xLUstruct_t<Ftype> *lu)
             result.payload.size() * sizeof(int_t);
         lu->symV2PartnerMetadataGatherTime +=
             SuperLU_timer_() - gather_start;
+    }
+    if (lu->SCT->factorCommProfileEnabled && result.comm_size > 1)
+    {
+        const unsigned long long limit =
+            std::numeric_limits<unsigned long long>::max();
+        const unsigned long long recipients =
+            static_cast<unsigned long long>(result.comm_size - 1);
+        const unsigned long long payload_bytes =
+            static_cast<unsigned long long>(local_meta_payload.size()) *
+            sizeof(int_t);
+        const size_t payload_chunks = local_meta_payload.empty()
+                                          ? 0
+                                          : (local_meta_payload.size() - 1) /
+                                                    static_cast<size_t>(INT_MAX) +
+                                                1;
+        if (payload_chunks > static_cast<size_t>(limit - 1))
+            ABORT("SymFact V2 metadata profile message count overflows.");
+        const unsigned long long messages_per_recipient =
+            1 + static_cast<unsigned long long>(payload_chunks);
+        if (messages_per_recipient > limit / recipients)
+            ABORT("SymFact V2 metadata profile message count overflows.");
+        const unsigned long long messages =
+            messages_per_recipient * recipients;
+        if (payload_bytes > limit - sizeof(unsigned long long) ||
+            payload_bytes + sizeof(unsigned long long) > limit / recipients)
+            ABORT("SymFact V2 metadata profile byte count overflows.");
+        const unsigned long long bytes =
+            (payload_bytes + sizeof(unsigned long long)) * recipients;
+        const unsigned long long max_payload_bytes = SUPERLU_MAX(
+            static_cast<unsigned long long>(sizeof(unsigned long long)),
+            static_cast<unsigned long long>(SUPERLU_MIN(
+                local_meta_payload.size(), static_cast<size_t>(INT_MAX))) *
+                sizeof(int_t));
+        if (lu->SCT->factorCommMetadataMessages > limit - messages ||
+            lu->SCT->factorCommMetadataBytes > limit - bytes)
+            ABORT("SymFact V2 metadata profile counter overflows.");
+        lu->SCT->factorCommMetadataMessages += messages;
+        lu->SCT->factorCommMetadataBytes += bytes;
+        lu->SCT->factorCommMaxMetadataBytes = SUPERLU_MAX(
+            lu->SCT->factorCommMaxMetadataBytes, max_payload_bytes);
     }
     return result;
 }

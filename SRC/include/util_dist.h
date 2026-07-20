@@ -319,6 +319,24 @@ typedef struct
     double commVolFactor;
     double commVolRed;
 
+    /* Optional exact factor communication accounting. */
+    int factorCommProfileEnabled;
+    unsigned long long factorCommDataMessages;
+    unsigned long long factorCommDataBytes;
+    unsigned long long factorCommMetadataMessages;
+    unsigned long long factorCommMetadataBytes;
+    unsigned long long factorCommPackedMessages;
+    unsigned long long factorCommPackedBytes;
+    unsigned long long factorCommAuxMessages;
+    unsigned long long factorCommAuxBytes;
+    unsigned long long factorCommReductionMessages;
+    unsigned long long factorCommReductionBytes;
+    unsigned long long factorCommMaxDataBytes;
+    unsigned long long factorCommMaxMetadataBytes;
+    unsigned long long factorCommMaxPackedBytes;
+    unsigned long long factorCommMaxAuxBytes;
+    unsigned long long factorCommMaxReductionBytes;
+
     /*timer for new code */
     double tDiagFactorPanelSolve;
     double tPanelBcast;
@@ -326,4 +344,3 @@ typedef struct
 } SCT_t;
 
 #endif /* __SUPERLU_DIST_UTIL */
-

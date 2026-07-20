@@ -44,7 +44,65 @@ at the top-level directory.
 // 			   dLUstruct_t* LUstruct, gridinfo3d_t* grid3d, SCT_t* SCT );
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 // #define DBG_MATCHING
+
+static void dPrintFactorCommProfile(SCT_t *SCT, gridinfo3d_t *grid3d,
+                                    const char *backend)
+{
+    if (!SCT->factorCommProfileEnabled)
+        return;
+
+    unsigned long long local[12] = {
+        SCT->factorCommDataMessages +
+            SCT->factorCommMetadataMessages +
+            SCT->factorCommPackedMessages + SCT->factorCommAuxMessages +
+            SCT->factorCommReductionMessages,
+        SCT->factorCommDataBytes + SCT->factorCommMetadataBytes +
+            SCT->factorCommPackedBytes + SCT->factorCommAuxBytes +
+            SCT->factorCommReductionBytes,
+        SCT->factorCommDataMessages,
+        SCT->factorCommDataBytes,
+        SCT->factorCommMetadataMessages,
+        SCT->factorCommMetadataBytes,
+        SCT->factorCommPackedMessages,
+        SCT->factorCommPackedBytes,
+        SCT->factorCommAuxMessages,
+        SCT->factorCommAuxBytes,
+        SCT->factorCommReductionMessages,
+        SCT->factorCommReductionBytes
+    };
+    unsigned long long sum[12] = {0};
+    unsigned long long rank_max[12] = {0};
+    unsigned long long local_message_max[5] = {
+        SCT->factorCommMaxDataBytes,
+        SCT->factorCommMaxMetadataBytes,
+        SCT->factorCommMaxPackedBytes,
+        SCT->factorCommMaxAuxBytes,
+        SCT->factorCommMaxReductionBytes
+    };
+    unsigned long long message_max[5] = {0};
+
+    MPI_Reduce(local, sum, 12, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0,
+               grid3d->comm);
+    MPI_Reduce(local, rank_max, 12, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0,
+               grid3d->comm);
+    MPI_Reduce(local_message_max, message_max, 5, MPI_UNSIGNED_LONG_LONG,
+               MPI_MAX, 0, grid3d->comm);
+
+    if (grid3d->iam != 0)
+        return;
+
+    printf(
+        "Factor communication profile (logical payloads, sum/max-rank): backend=%s total_messages=%llu/%llu total_bytes=%llu/%llu data_messages=%llu/%llu data_bytes=%llu/%llu metadata_messages=%llu/%llu metadata_bytes=%llu/%llu packed_messages=%llu/%llu packed_bytes=%llu/%llu auxiliary_messages=%llu/%llu auxiliary_bytes=%llu/%llu reduction_messages=%llu/%llu reduction_bytes=%llu/%llu max_data_message_bytes=%llu max_metadata_message_bytes=%llu max_packed_message_bytes=%llu max_auxiliary_message_bytes=%llu max_reduction_message_bytes=%llu\n",
+        backend, sum[0], rank_max[0], sum[1], rank_max[1], sum[2],
+        rank_max[2], sum[3], rank_max[3], sum[4], rank_max[4], sum[5],
+        rank_max[5], sum[6], rank_max[6], sum[7], rank_max[7], sum[8],
+        rank_max[8], sum[9], rank_max[9], sum[10], rank_max[10], sum[11],
+        rank_max[11], message_max[0], message_max[1], message_max[2],
+        message_max[3], message_max[4]);
+    fflush(stdout);
+}
 
 /*! \brief
  *
@@ -1665,6 +1723,12 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				printf("NUMERIC_FACTOR time %12.6f\n", numeric_factor_max);
 				fflush(stdout);
 			}
+			dPrintFactorCommProfile(
+				SCT, grid3d,
+				use_sym_v2_solve
+					? "symldl-v2"
+					: (options->SymFact == YES ? "symmetric-u"
+					                           : "unsymmetric-lu"));
 		} // matching if not SolveOnly ... end Factorization
 
 	/* Now proceed with the Solve setup */
