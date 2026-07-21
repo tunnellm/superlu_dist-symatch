@@ -19,41 +19,52 @@ static void symldl_v2_build_partner_l_recv_maps(
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload || lu->Pr <= 1)
         return;
 
-    size_t table_count = symldl_v2_checked_product(
-        symldl_v2_checked_product(static_cast<size_t>(lu->nsupers),
-                                  static_cast<size_t>(lu->Pc),
-                                  "SymFact V2 partner receive table overflows."),
-        static_cast<size_t>(lu->Pr),
-        "SymFact V2 partner receive table overflows.");
-    if (table_count > static_cast<size_t>(std::numeric_limits<int>::max()))
-        ABORT("SymFact V2 partner receive table exceeds MPI limit.");
-
-    std::vector<int> local_recv_sizes(table_count, 0);
-    std::vector<int> global_recv_sizes(table_count, 0);
-    for (int_t lk = 0; lk < lu->symV2PanelCount(); ++lk)
+    const bool derive_recv_sizes =
+        superlu_sym_v2_scoped_fragment_metadata();
+    const bool verify_recv_sizes =
+        derive_recv_sizes &&
+        superlu_sym_v2_scoped_fragment_metadata_verify();
+    std::vector<int> global_recv_sizes;
+    if (!derive_recv_sizes || verify_recv_sizes)
     {
-        int_t k0 = lu->symV2PanelGid(lk);
-        if (k0 < 0 || k0 >= lu->nsupers)
-            continue;
-        for (int pc = 0; pc < lu->Pc; ++pc)
+        size_t table_count = symldl_v2_checked_product(
+            symldl_v2_checked_product(
+                static_cast<size_t>(lu->nsupers),
+                static_cast<size_t>(lu->Pc),
+                "SymFact V2 partner receive table overflows."),
+            static_cast<size_t>(lu->Pr),
+            "SymFact V2 partner receive table overflows.");
+        if (table_count >
+            static_cast<size_t>(std::numeric_limits<int>::max()))
+            ABORT("SymFact V2 partner receive table exceeds MPI limit.");
+
+        std::vector<int> local_recv_sizes(table_count, 0);
+        global_recv_sizes.assign(table_count, 0);
+        for (int_t lk = 0; lk < lu->symV2PanelCount(); ++lk)
         {
-            size_t flat = static_cast<size_t>(lk) *
-                              static_cast<size_t>(lu->Pc) +
-                          static_cast<size_t>(pc);
-            int size = flat < lu->symV2PartnerLSendSizes.size()
-                           ? lu->symV2PartnerLSendSizes[flat]
-                           : 0;
-            size_t pos = (static_cast<size_t>(k0) *
-                              static_cast<size_t>(lu->Pc) +
-                          static_cast<size_t>(pc)) *
-                             static_cast<size_t>(lu->Pr) +
-                         static_cast<size_t>(lu->myrow);
-            local_recv_sizes[pos] = size;
+            int_t k0 = lu->symV2PanelGid(lk);
+            if (k0 < 0 || k0 >= lu->nsupers)
+                continue;
+            for (int pc = 0; pc < lu->Pc; ++pc)
+            {
+                size_t flat = static_cast<size_t>(lk) *
+                                  static_cast<size_t>(lu->Pc) +
+                              static_cast<size_t>(pc);
+                int size = flat < lu->symV2PartnerLSendSizes.size()
+                               ? lu->symV2PartnerLSendSizes[flat]
+                               : 0;
+                size_t pos = (static_cast<size_t>(k0) *
+                                  static_cast<size_t>(lu->Pc) +
+                              static_cast<size_t>(pc)) *
+                                 static_cast<size_t>(lu->Pr) +
+                             static_cast<size_t>(lu->myrow);
+                local_recv_sizes[pos] = size;
+            }
         }
+        MPI_Allreduce(local_recv_sizes.data(), global_recv_sizes.data(),
+                      static_cast<int>(table_count), MPI_INT, MPI_SUM,
+                      lu->grid->comm);
     }
-    MPI_Allreduce(local_recv_sizes.data(), global_recv_sizes.data(),
-                  static_cast<int>(table_count), MPI_INT, MPI_SUM,
-                  lu->grid->comm);
 
     const std::vector<int_t> &all_meta_payload = meta.payload;
     const std::vector<size_t> &meta_counts = meta.counts;
@@ -73,7 +84,8 @@ static void symldl_v2_build_partner_l_recv_maps(
     {
         size_t meta_pos = static_cast<size_t>(meta_displs[r]);
         size_t rank_end = meta_pos + static_cast<size_t>(meta_counts[r]);
-        int source_pr = MYROW(r, lu->grid);
+        int source_pr =
+            symldl_v2_partner_metadata_source_row(meta, r, lu);
         while (meta_pos < rank_end)
         {
             if (meta_pos + 3 > rank_end)
@@ -130,18 +142,21 @@ static void symldl_v2_build_partner_l_recv_maps(
 
     for (int_t k0 = 0; k0 < lu->nsupers; ++k0)
     {
-        for (int pr = 0; pr < lu->Pr; ++pr)
+        if (!derive_recv_sizes)
         {
-            size_t src_pos = (static_cast<size_t>(k0) *
-                                  static_cast<size_t>(lu->Pc) +
-                              static_cast<size_t>(lu->mycol)) *
-                                 static_cast<size_t>(lu->Pr) +
-                             static_cast<size_t>(pr);
-            size_t dst_pos = static_cast<size_t>(k0) *
-                                 static_cast<size_t>(lu->Pr) +
-                             static_cast<size_t>(pr);
-            lu->symV2PartnerLRecvSizes[dst_pos] =
-                global_recv_sizes[src_pos];
+            for (int pr = 0; pr < lu->Pr; ++pr)
+            {
+                size_t src_pos = (static_cast<size_t>(k0) *
+                                      static_cast<size_t>(lu->Pc) +
+                                  static_cast<size_t>(lu->mycol)) *
+                                     static_cast<size_t>(lu->Pr) +
+                                 static_cast<size_t>(pr);
+                size_t dst_pos = static_cast<size_t>(k0) *
+                                     static_cast<size_t>(lu->Pr) +
+                                 static_cast<size_t>(pr);
+                lu->symV2PartnerLRecvSizes[dst_pos] =
+                    global_recv_sizes[src_pos];
+            }
         }
 
         std::vector<SymLDLV2CachedPartnerBlock> &blocks =
@@ -279,6 +294,24 @@ static void symldl_v2_build_partner_l_recv_maps(
                 src_offset += rows * lu->supersize(k0);
                 expected_values += static_cast<long long>(rows) *
                                    static_cast<long long>(lu->supersize(k0));
+            }
+            if (derive_recv_sizes)
+            {
+                if (expected_values < 0 ||
+                    expected_values > std::numeric_limits<int>::max())
+                    ABORT("SymFact V2 partner receive size exceeds MPI limit.");
+                lu->symV2PartnerLRecvSizes[recv_pos] =
+                    static_cast<int>(expected_values);
+                if (verify_recv_sizes)
+                {
+                    size_t src_pos = (static_cast<size_t>(k0) *
+                                          static_cast<size_t>(lu->Pc) +
+                                      static_cast<size_t>(lu->mycol)) *
+                                         static_cast<size_t>(lu->Pr) +
+                                     static_cast<size_t>(pr);
+                    if (global_recv_sizes[src_pos] != expected_values)
+                        ABORT("SymFact V2 scoped partner receive size mismatch.");
+                }
             }
             if (expected_values !=
                 static_cast<long long>(lu->symV2PartnerLRecvSizes[recv_pos]))

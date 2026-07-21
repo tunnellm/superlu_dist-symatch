@@ -57,6 +57,9 @@ static void symldl_v2_constructor_setup_fragment_metadata(
 {
     if (!lu->useSymV2Solve())
         return;
+    if (superlu_sym_v2_scoped_fragment_metadata_verify() &&
+        !superlu_sym_v2_scoped_fragment_metadata())
+        ABORT("SYMLDL_V2_SCOPED_FRAGMENT_METADATA_VERIFY requires SYMLDL_V2_SCOPED_FRAGMENT_METADATA=1.");
 
     symldl_v2_initialize_pcfrag_tables(lu);
     symldl_v2_build_cpu_fragment_plan(lu);
@@ -64,10 +67,22 @@ static void symldl_v2_constructor_setup_fragment_metadata(
     symldl_v2_build_partner_l_send_maps(lu);
     if (lu->superlu_acc_offload && lu->Pr > 1)
     {
-        SymLDLV2PartnerMetaPayload metadata =
-            symldl_v2_collect_partner_l_metadata(lu);
-        symldl_v2_build_partner_l_recv_maps(lu, metadata);
-        symldl_v2_build_row_down_maps(lu, metadata);
+        if (superlu_sym_v2_scoped_fragment_metadata())
+        {
+            SymLDLV2ScopedPartnerMetaPayload metadata =
+                symldl_v2_collect_scoped_partner_l_metadata(lu);
+            symldl_v2_build_partner_l_recv_maps(
+                lu, metadata.target_column);
+            symldl_v2_build_row_down_maps(
+                lu, metadata.source_row, metadata.target_column);
+        }
+        else
+        {
+            SymLDLV2PartnerMetaPayload metadata =
+                symldl_v2_collect_partner_l_metadata(lu);
+            symldl_v2_build_partner_l_recv_maps(lu, metadata);
+            symldl_v2_build_row_down_maps(lu, metadata, metadata);
+        }
     }
 #endif
     symldl_v2_print_logical_plan_signature(lu);

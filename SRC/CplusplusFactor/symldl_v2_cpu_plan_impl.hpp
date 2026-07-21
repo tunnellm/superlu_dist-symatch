@@ -286,7 +286,8 @@ static void symldl_v2_build_cpu_partner_receive_plan(
     {
         size_t position = static_cast<size_t>(metadata.displs[rank]);
         size_t end = position + static_cast<size_t>(metadata.counts[rank]);
-        int source_pr = MYROW(rank, lu->grid);
+        int source_pr =
+            symldl_v2_partner_metadata_source_row(metadata, rank, lu);
         while (position < end)
         {
             if (position + 3 > end)
@@ -366,10 +367,11 @@ static void symldl_v2_build_cpu_partner_receive_plan(
 template <typename Ftype>
 static void symldl_v2_build_cpu_row_receive_plan(
     xLUstruct_t<Ftype> *lu,
-    const SymLDLV2PartnerMetaPayload &metadata)
+    const SymLDLV2PartnerMetaPayload &source_row_metadata,
+    const SymLDLV2PartnerMetaPayload &target_column_metadata)
 {
     double phase_start = SuperLU_timer_();
-    const std::vector<int_t> &payload = metadata.payload;
+    const std::vector<int_t> &payload = source_row_metadata.payload;
     lu->symV2CpuRowMetadataBlocks = 0;
     lu->symV2CpuRowDemandRawBlocks = 0;
     lu->symV2CpuRowDemandUniqueBlocks = 0;
@@ -378,11 +380,15 @@ static void symldl_v2_build_cpu_row_receive_plan(
     lu->symV2CpuRowReceivedDemandEntries = 0;
     std::vector<std::vector<SymLDLV2CpuCachedRowBlock> > row_blocks(
         static_cast<size_t>(lu->nsupers));
-    for (int rank = 0; rank < metadata.comm_size; ++rank)
+    for (int rank = 0; rank < source_row_metadata.comm_size; ++rank)
     {
-        size_t position = static_cast<size_t>(metadata.displs[rank]);
-        size_t end = position + static_cast<size_t>(metadata.counts[rank]);
-        int source_pr = MYROW(rank, lu->grid);
+        size_t position =
+            static_cast<size_t>(source_row_metadata.displs[rank]);
+        size_t end = position +
+                     static_cast<size_t>(source_row_metadata.counts[rank]);
+        int source_pr =
+            symldl_v2_partner_metadata_source_row(
+                source_row_metadata, rank, lu);
         while (position < end)
         {
             if (position + 3 > end)
@@ -438,17 +444,22 @@ static void symldl_v2_build_cpu_row_receive_plan(
 
     std::vector<std::vector<int_t> > needed(
         static_cast<size_t>(lu->nsupers));
-    for (int rank = 0; rank < metadata.comm_size; ++rank)
+    const std::vector<int_t> &target_payload =
+        target_column_metadata.payload;
+    for (int rank = 0; rank < target_column_metadata.comm_size; ++rank)
     {
-        size_t position = static_cast<size_t>(metadata.displs[rank]);
-        size_t end = position + static_cast<size_t>(metadata.counts[rank]);
+        size_t position =
+            static_cast<size_t>(target_column_metadata.displs[rank]);
+        size_t end = position +
+                     static_cast<size_t>(
+                         target_column_metadata.counts[rank]);
         while (position < end)
         {
             if (position + 3 > end)
                 ABORT("SymFact V2 CPU row-demand metadata is truncated.");
-            int_t target_pc = payload[position++];
-            int_t k = payload[position++];
-            int_t length = payload[position++];
+            int_t target_pc = target_payload[position++];
+            int_t k = target_payload[position++];
+            int_t length = target_payload[position++];
             if (target_pc < 0 || target_pc >= lu->Pc ||
                 k < 0 || k >= lu->nsupers || length < 0 ||
                 position + static_cast<size_t>(length) > end)
@@ -462,8 +473,8 @@ static void symldl_v2_build_cpu_row_receive_plan(
                 {
                     if (position + 2 > record_end)
                         ABORT("SymFact V2 CPU row-demand block is truncated.");
-                    int_t gj = payload[position++];
-                    int_t count = payload[position++];
+                    int_t gj = target_payload[position++];
+                    int_t count = target_payload[position++];
                     if (count < 0 ||
                         position + static_cast<size_t>(count) > record_end)
                         ABORT("SymFact V2 CPU row-demand block is invalid.");
@@ -808,14 +819,30 @@ static void symldl_v2_build_cpu_fragment_plan(xLUstruct_t<Ftype> *lu)
     symldl_v2_build_cpu_partner_send_plan(lu);
     lu->symV2CpuPartnerSendPlanTime += SuperLU_timer_() - phase_start;
     phase_start = SuperLU_timer_();
-    SymLDLV2PartnerMetaPayload metadata =
-        symldl_v2_collect_partner_l_metadata(lu);
+    SymLDLV2PartnerMetaPayload metadata;
+    SymLDLV2ScopedPartnerMetaPayload scoped_metadata;
+    const SymLDLV2PartnerMetaPayload *source_row_metadata = NULL;
+    const SymLDLV2PartnerMetaPayload *target_column_metadata = NULL;
+    if (superlu_sym_v2_scoped_fragment_metadata())
+    {
+        scoped_metadata = symldl_v2_collect_scoped_partner_l_metadata(lu);
+        source_row_metadata = &scoped_metadata.source_row;
+        target_column_metadata = &scoped_metadata.target_column;
+    }
+    else
+    {
+        metadata = symldl_v2_collect_partner_l_metadata(lu);
+        source_row_metadata = &metadata;
+        target_column_metadata = &metadata;
+    }
     lu->symV2CpuMetadataGatherTime += SuperLU_timer_() - phase_start;
     phase_start = SuperLU_timer_();
-    symldl_v2_build_cpu_partner_receive_plan(lu, metadata);
+    symldl_v2_build_cpu_partner_receive_plan(
+        lu, *target_column_metadata);
     lu->symV2CpuPartnerRecvPlanTime += SuperLU_timer_() - phase_start;
     phase_start = SuperLU_timer_();
-    symldl_v2_build_cpu_row_receive_plan(lu, metadata);
+    symldl_v2_build_cpu_row_receive_plan(
+        lu, *source_row_metadata, *target_column_metadata);
     lu->symV2CpuRowPlanTime += SuperLU_timer_() - phase_start;
     phase_start = SuperLU_timer_();
     symldl_v2_resize_cpu_request_workspace(lu);

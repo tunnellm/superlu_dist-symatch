@@ -73,6 +73,18 @@ static inline bool superlu_sym_v2_factor_comm_profile()
     return superlu_sym_v2_env_bool_flag("SUPERLU_FACTOR_COMM_PROFILE", 0);
 }
 
+static inline bool superlu_sym_v2_scoped_fragment_metadata()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "SYMLDL_V2_SCOPED_FRAGMENT_METADATA", 0);
+}
+
+static inline bool superlu_sym_v2_scoped_fragment_metadata_verify()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "SYMLDL_V2_SCOPED_FRAGMENT_METADATA_VERIFY", 0);
+}
+
 static inline bool superlu_sym_v2_plan_signature_components()
 {
     return superlu_sym_v2_env_bool_flag(

@@ -16,7 +16,8 @@
 template <typename Ftype>
 static void symldl_v2_build_row_down_maps(
     xLUstruct_t<Ftype> *lu,
-    const SymLDLV2PartnerMetaPayload &meta)
+    const SymLDLV2PartnerMetaPayload &source_row_meta,
+    const SymLDLV2PartnerMetaPayload &target_column_meta)
 {
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload ||
         lu->Pr <= 1 || lu->Pc <= 1 ||
@@ -50,22 +51,26 @@ static void symldl_v2_build_row_down_maps(
         static_cast<size_t>(lu->Pc),
         "SymFact V2 row-down send table size overflows.");
 
-    const std::vector<int_t> &all_meta_payload = meta.payload;
+    const std::vector<int_t> &source_row_payload = source_row_meta.payload;
+    const std::vector<int_t> &target_column_payload =
+        target_column_meta.payload;
 
     std::vector<std::vector<int_t> >
         row_blocks_by_panel(static_cast<size_t>(lu->nsupers));
-    for (int r = 0; r < meta.comm_size; ++r)
+    for (int r = 0; r < source_row_meta.comm_size; ++r)
     {
-        size_t meta_pos = static_cast<size_t>(meta.displs[r]);
-        size_t rank_end = meta_pos + static_cast<size_t>(meta.counts[r]);
-        int source_pr = MYROW(r, lu->grid);
+        size_t meta_pos = static_cast<size_t>(source_row_meta.displs[r]);
+        size_t rank_end = meta_pos +
+                          static_cast<size_t>(source_row_meta.counts[r]);
+        int source_pr =
+            symldl_v2_partner_metadata_source_row(source_row_meta, r, lu);
         while (meta_pos < rank_end)
         {
             if (meta_pos + 3 > rank_end)
                 ABORT("SymFact V2 row-down metadata payload is truncated.");
-            int_t target_pc = all_meta_payload[meta_pos++];
-            int_t k0 = all_meta_payload[meta_pos++];
-            int_t meta_len = all_meta_payload[meta_pos++];
+            int_t target_pc = source_row_payload[meta_pos++];
+            int_t k0 = source_row_payload[meta_pos++];
+            int_t meta_len = source_row_payload[meta_pos++];
             if (target_pc < 0 || target_pc >= lu->Pc ||
                 k0 < 0 || k0 >= lu->nsupers || meta_len < 0 ||
                 meta_pos + static_cast<size_t>(meta_len) > rank_end)
@@ -80,8 +85,8 @@ static void symldl_v2_build_row_down_maps(
                 {
                     if (block_pos + 2 > block_end)
                         ABORT("SymFact V2 row-down metadata block is truncated.");
-                    int_t gid = all_meta_payload[block_pos++];
-                    int_t len = all_meta_payload[block_pos++];
+                    int_t gid = source_row_payload[block_pos++];
+                    int_t len = source_row_payload[block_pos++];
                     if (len < 0 ||
                         block_pos + static_cast<size_t>(len) > block_end)
                         ABORT("SymFact V2 row-down metadata block has invalid length.");
@@ -106,18 +111,20 @@ static void symldl_v2_build_row_down_maps(
 
     std::vector<std::vector<int_t> >
         needed_row_blocks_by_panel(static_cast<size_t>(lu->nsupers));
-    for (int r = 0; r < meta.comm_size; ++r)
+    for (int r = 0; r < target_column_meta.comm_size; ++r)
     {
-        size_t meta_pos = static_cast<size_t>(meta.displs[r]);
-        size_t rank_end = meta_pos + static_cast<size_t>(meta.counts[r]);
-        int source_pr = MYROW(r, lu->grid);
+        size_t meta_pos =
+            static_cast<size_t>(target_column_meta.displs[r]);
+        size_t rank_end = meta_pos +
+                          static_cast<size_t>(
+                              target_column_meta.counts[r]);
         while (meta_pos < rank_end)
         {
             if (meta_pos + 3 > rank_end)
                 ABORT("SymFact V2 row-down metadata payload is truncated.");
-            int_t target_pc = all_meta_payload[meta_pos++];
-            int_t k0 = all_meta_payload[meta_pos++];
-            int_t meta_len = all_meta_payload[meta_pos++];
+            int_t target_pc = target_column_payload[meta_pos++];
+            int_t k0 = target_column_payload[meta_pos++];
+            int_t meta_len = target_column_payload[meta_pos++];
             if (target_pc < 0 || target_pc >= lu->Pc ||
                 k0 < 0 || k0 >= lu->nsupers || meta_len < 0 ||
                 meta_pos + static_cast<size_t>(meta_len) > rank_end)
@@ -133,8 +140,8 @@ static void symldl_v2_build_row_down_maps(
                 {
                     if (block_pos + 2 > block_end)
                         ABORT("SymFact V2 row-down metadata block is truncated.");
-                    int_t gj = all_meta_payload[block_pos++];
-                    int_t len = all_meta_payload[block_pos++];
+                    int_t gj = target_column_payload[block_pos++];
+                    int_t len = target_column_payload[block_pos++];
                     if (len < 0 ||
                         block_pos + static_cast<size_t>(len) > block_end)
                         ABORT("SymFact V2 row-down metadata block has invalid length.");
@@ -212,18 +219,20 @@ static void symldl_v2_build_row_down_maps(
         row_down_blocks_by_panel(static_cast<size_t>(lu->nsupers));
     std::vector<std::vector<SymLDLV2CachedPartnerBlock> >
         row_down_recv_blocks(row_chunk_count);
-    for (int r = 0; r < meta.comm_size; ++r)
+    for (int r = 0; r < source_row_meta.comm_size; ++r)
     {
-        size_t meta_pos = static_cast<size_t>(meta.displs[r]);
-        size_t rank_end = meta_pos + static_cast<size_t>(meta.counts[r]);
-        int source_pr = MYROW(r, lu->grid);
+        size_t meta_pos = static_cast<size_t>(source_row_meta.displs[r]);
+        size_t rank_end = meta_pos +
+                          static_cast<size_t>(source_row_meta.counts[r]);
+        int source_pr =
+            symldl_v2_partner_metadata_source_row(source_row_meta, r, lu);
         while (meta_pos < rank_end)
         {
             if (meta_pos + 3 > rank_end)
                 ABORT("SymFact V2 row-down metadata payload is truncated.");
-            int_t target_pc = all_meta_payload[meta_pos++];
-            int_t k0 = all_meta_payload[meta_pos++];
-            int_t meta_len = all_meta_payload[meta_pos++];
+            int_t target_pc = source_row_payload[meta_pos++];
+            int_t k0 = source_row_payload[meta_pos++];
+            int_t meta_len = source_row_payload[meta_pos++];
             if (target_pc < 0 || target_pc >= lu->Pc ||
                 k0 < 0 || k0 >= lu->nsupers || meta_len < 0 ||
                 meta_pos + static_cast<size_t>(meta_len) > rank_end)
@@ -244,8 +253,8 @@ static void symldl_v2_build_row_down_maps(
                         if (block_pos + 2 > block_end)
                             ABORT("SymFact V2 row-down metadata block is truncated.");
                         SymLDLV2CachedPartnerBlock block;
-                        block.gid = all_meta_payload[block_pos++];
-                        block.len = all_meta_payload[block_pos++];
+                        block.gid = source_row_payload[block_pos++];
+                        block.len = source_row_payload[block_pos++];
                         if (block.len < 0 ||
                             block_pos + static_cast<size_t>(block.len) >
                                 block_end)
@@ -256,8 +265,8 @@ static void symldl_v2_build_row_down_maps(
                         {
                             block.cols_begin = block_pos;
                             block.cols.assign(
-                                all_meta_payload.begin() + block_pos,
-                                all_meta_payload.begin() + block_pos +
+                                source_row_payload.begin() + block_pos,
+                                source_row_payload.begin() + block_pos +
                                     block.len);
                             row_down_blocks_by_panel[static_cast<size_t>(k0)]
                                 .push_back(block);

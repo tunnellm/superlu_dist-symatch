@@ -197,6 +197,21 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
     unsigned long long metadata_received_bytes_max =
         symV2PartnerMetadataReceivedBytes;
     double metadata_time_max = symV2PartnerMetadataGatherTime;
+    const bool scoped_metadata =
+        superlu_sym_v2_scoped_fragment_metadata();
+    unsigned long long metadata_row_bytes_sum =
+        symV2PartnerMetadataRowReceivedBytes;
+    unsigned long long metadata_row_bytes_max =
+        symV2PartnerMetadataRowReceivedBytes;
+    unsigned long long metadata_column_bytes_sum =
+        symV2PartnerMetadataColumnReceivedBytes;
+    unsigned long long metadata_column_bytes_max =
+        symV2PartnerMetadataColumnReceivedBytes;
+    unsigned long long metadata_scoped_peak_max =
+        symV2PartnerMetadataScopedPeakBytes;
+    double metadata_row_time_max = symV2PartnerMetadataRowGatherTime;
+    double metadata_column_time_max =
+        symV2PartnerMetadataColumnGatherTime;
     if (grid3d != NULL)
     {
         MPI_Reduce(local_sum, global_sum, 4, MPI_UNSIGNED_LONG_LONG,
@@ -219,6 +234,30 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
                    MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
         MPI_Reduce(&symV2PartnerMetadataGatherTime, &metadata_time_max, 1,
                    MPI_DOUBLE, MPI_MAX, root, grid3d->comm);
+        if (scoped_metadata)
+        {
+            MPI_Reduce(&symV2PartnerMetadataRowReceivedBytes,
+                       &metadata_row_bytes_sum, 1,
+                       MPI_UNSIGNED_LONG_LONG, MPI_SUM, root, grid3d->comm);
+            MPI_Reduce(&symV2PartnerMetadataRowReceivedBytes,
+                       &metadata_row_bytes_max, 1,
+                       MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+            MPI_Reduce(&symV2PartnerMetadataColumnReceivedBytes,
+                       &metadata_column_bytes_sum, 1,
+                       MPI_UNSIGNED_LONG_LONG, MPI_SUM, root, grid3d->comm);
+            MPI_Reduce(&symV2PartnerMetadataColumnReceivedBytes,
+                       &metadata_column_bytes_max, 1,
+                       MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+            MPI_Reduce(&symV2PartnerMetadataScopedPeakBytes,
+                       &metadata_scoped_peak_max, 1,
+                       MPI_UNSIGNED_LONG_LONG, MPI_MAX, root, grid3d->comm);
+            MPI_Reduce(&symV2PartnerMetadataRowGatherTime,
+                       &metadata_row_time_max, 1, MPI_DOUBLE, MPI_MAX,
+                       root, grid3d->comm);
+            MPI_Reduce(&symV2PartnerMetadataColumnGatherTime,
+                       &metadata_column_time_max, 1, MPI_DOUBLE, MPI_MAX,
+                       root, grid3d->comm);
+        }
     }
     else
     {
@@ -259,11 +298,22 @@ inline void xLUstruct_t<Ftype>::symV2RouteProfilePrint(
         global_rank_max[1], partner_mean, global_message_max[0],
         global_sum[2], global_rank_max[2], global_sum[3],
         global_rank_max[3], row_mean, global_message_max[1]);
-    std::printf(
-        "SymFact V2 metadata profile (%s, min/max-rank-calls): gather_calls=%llu/%llu source_payload_bytes=%llu received_payload_bytes_sum=%llu received_payload_bytes_max_rank=%llu gather_time_max_rank=%.6f\n",
-        phase != NULL && phase[0] != '\0' ? phase : "unknown",
-        metadata_calls_min, metadata_calls_max, metadata_local_bytes,
-        metadata_received_bytes_sum, metadata_received_bytes_max,
-        metadata_time_max);
+    if (scoped_metadata)
+        std::printf(
+            "SymFact V2 metadata profile (%s, mode=scoped, min/max-rank-calls): gather_calls=%llu/%llu source_payload_bytes=%llu received_payload_bytes_sum=%llu received_payload_bytes_max_rank=%llu row_received_bytes_sum=%llu row_received_bytes_max_rank=%llu column_received_bytes_sum=%llu column_received_bytes_max_rank=%llu scoped_peak_bytes_max_rank=%llu gather_time_max_rank=%.6f row_gather_time_max_rank=%.6f column_gather_time_max_rank=%.6f\n",
+            phase != NULL && phase[0] != '\0' ? phase : "unknown",
+            metadata_calls_min, metadata_calls_max, metadata_local_bytes,
+            metadata_received_bytes_sum, metadata_received_bytes_max,
+            metadata_row_bytes_sum, metadata_row_bytes_max,
+            metadata_column_bytes_sum, metadata_column_bytes_max,
+            metadata_scoped_peak_max, metadata_time_max,
+            metadata_row_time_max, metadata_column_time_max);
+    else
+        std::printf(
+            "SymFact V2 metadata profile (%s, min/max-rank-calls): gather_calls=%llu/%llu source_payload_bytes=%llu received_payload_bytes_sum=%llu received_payload_bytes_max_rank=%llu gather_time_max_rank=%.6f\n",
+            phase != NULL && phase[0] != '\0' ? phase : "unknown",
+            metadata_calls_min, metadata_calls_max, metadata_local_bytes,
+            metadata_received_bytes_sum, metadata_received_bytes_max,
+            metadata_time_max);
     std::fflush(stdout);
 }

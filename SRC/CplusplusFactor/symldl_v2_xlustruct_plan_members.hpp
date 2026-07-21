@@ -13,6 +13,11 @@ unsigned long long symV2PartnerMetadataGatherCalls = 0;
 unsigned long long symV2PartnerMetadataLocalBytes = 0;
 unsigned long long symV2PartnerMetadataReceivedBytes = 0;
 double symV2PartnerMetadataGatherTime = 0.0;
+unsigned long long symV2PartnerMetadataRowReceivedBytes = 0;
+unsigned long long symV2PartnerMetadataColumnReceivedBytes = 0;
+unsigned long long symV2PartnerMetadataScopedPeakBytes = 0;
+double symV2PartnerMetadataRowGatherTime = 0.0;
+double symV2PartnerMetadataColumnGatherTime = 0.0;
 
 std::vector<int> symV2RowDownSendSizes;
 std::vector<size_t> symV2RowDownSegOffsets;
