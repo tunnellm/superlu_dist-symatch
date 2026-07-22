@@ -76,7 +76,7 @@ static inline bool superlu_sym_v2_factor_comm_profile()
 static inline bool superlu_sym_v2_scoped_fragment_metadata()
 {
     return superlu_sym_v2_env_bool_flag(
-        "SYMLDL_V2_SCOPED_FRAGMENT_METADATA", 0);
+        "SYMLDL_V2_SCOPED_FRAGMENT_METADATA", 1);
 }
 
 static inline bool superlu_sym_v2_scoped_fragment_metadata_verify()
