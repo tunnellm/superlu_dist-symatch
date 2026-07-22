@@ -15,29 +15,6 @@ typedef struct {
     double tree_weight;
 } dSymV2LDLCost_t;
 
-typedef enum {
-    DSYM_V2_OWNER_BLOCK_CYCLIC = 0,
-    DSYM_V2_OWNER_GREEDY = 1,
-    DSYM_V2_OWNER_PAPER_ID_ROW = 2
-} dSymV2OwnerMapping_t;
-
-typedef enum {
-    DSYM_V2_OWNER_COST_LDL = 0,
-    DSYM_V2_OWNER_COST_PAPER = 1
-} dSymV2OwnerCost_t;
-
-typedef struct {
-    double *row_work;
-    double *column_work;
-    double *diagonal_work;
-    int_t *id_order;
-} dSymV2PaperWork_t;
-
-typedef struct {
-    int_t gid;
-    int_t depth;
-} dSymV2PaperOrderEntry_t;
-
 static int dSymV2PartitionBoolFlag(const char *name, int default_value)
 {
     const char *env = getenv(name);
@@ -54,53 +31,6 @@ static int dSymV2PartitionBoolFlag(const char *name, int default_value)
 static int dSymV2GreedyMappingEnabled(void)
 {
     return dSymV2PartitionBoolFlag("GPU3DV2_GREEDY_MAPPING", 1);
-}
-
-static dSymV2OwnerMapping_t dSymV2OwnerMapping(void)
-{
-    const char *env = getenv("GPU3DV2_OWNER_MAPPING");
-    if (env == NULL || env[0] == '\0')
-        return dSymV2GreedyMappingEnabled()
-                   ? DSYM_V2_OWNER_GREEDY
-                   : DSYM_V2_OWNER_BLOCK_CYCLIC;
-    if (strcmp(env, "block-cyclic") == 0)
-        return DSYM_V2_OWNER_BLOCK_CYCLIC;
-    if (strcmp(env, "greedy") == 0)
-        return DSYM_V2_OWNER_GREEDY;
-    if (strcmp(env, "paper-id-row") == 0)
-        return DSYM_V2_OWNER_PAPER_ID_ROW;
-    ABORT("GPU3DV2_OWNER_MAPPING must be block-cyclic, greedy, or paper-id-row.");
-    return DSYM_V2_OWNER_GREEDY;
-}
-
-static dSymV2OwnerCost_t dSymV2OwnerCost(void)
-{
-    const char *env = getenv("GPU3DV2_OWNER_COST");
-    if (env == NULL || env[0] == '\0' || strcmp(env, "ldl") == 0)
-        return DSYM_V2_OWNER_COST_LDL;
-    if (strcmp(env, "paper") == 0)
-        return DSYM_V2_OWNER_COST_PAPER;
-    ABORT("GPU3DV2_OWNER_COST must be ldl or paper.");
-    return DSYM_V2_OWNER_COST_LDL;
-}
-
-static const char *dSymV2OwnerMappingName(dSymV2OwnerMapping_t mapping)
-{
-    switch (mapping)
-    {
-        case DSYM_V2_OWNER_BLOCK_CYCLIC:
-            return "block-cyclic";
-        case DSYM_V2_OWNER_GREEDY:
-            return "greedy";
-        case DSYM_V2_OWNER_PAPER_ID_ROW:
-            return "paper increasing-depth rows/cyclic columns";
-    }
-    return "unknown";
-}
-
-static const char *dSymV2OwnerCostName(dSymV2OwnerCost_t cost)
-{
-    return cost == DSYM_V2_OWNER_COST_PAPER ? "paper" : "LDL";
 }
 
 static int dSymV2LDLForestWeightsEnabled(void)
@@ -136,217 +66,6 @@ static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
     cost->tree_weight =
         SUPERLU_MAX(1.0, diag_cost + panel_factor_cost + ll_schur_cost +
                          partner_comm_cost + solve_cost);
-}
-
-static int dSymV2PaperOrderCompare(const void *left, const void *right)
-{
-    const dSymV2PaperOrderEntry_t *a =
-        (const dSymV2PaperOrderEntry_t *) left;
-    const dSymV2PaperOrderEntry_t *b =
-        (const dSymV2PaperOrderEntry_t *) right;
-    if (a->depth < b->depth)
-        return -1;
-    if (a->depth > b->depth)
-        return 1;
-    if (a->gid < b->gid)
-        return -1;
-    if (a->gid > b->gid)
-        return 1;
-    return 0;
-}
-
-static int dSymV2IntCompare(const void *left, const void *right)
-{
-    const int_t a = *(const int_t *) left;
-    const int_t b = *(const int_t *) right;
-    return (a > b) - (a < b);
-}
-
-static void dSymV2BuildPaperIDOrder(int_t nsupers, treeList_t *treeList,
-                                    int_t *order)
-{
-    dSymV2PaperOrderEntry_t *entries =
-        (dSymV2PaperOrderEntry_t *) SUPERLU_MALLOC(
-            (size_t) nsupers * sizeof(dSymV2PaperOrderEntry_t));
-    int_t *stack = INT_T_ALLOC(nsupers);
-    int_t *depth = INT_T_ALLOC(nsupers);
-    if (entries == NULL || stack == NULL || depth == NULL)
-        ABORT("Malloc fails for SymFact V2 paper owner ordering.");
-
-    for (int_t k = 0; k < nsupers; ++k)
-        depth[k] = -1;
-
-    int_t stack_size = 0;
-    for (int_t r = 0; r < treeList[nsupers].numChild; ++r)
-    {
-        int_t root = treeList[nsupers].childrenList[r];
-        depth[root] = 0;
-        stack[stack_size++] = root;
-    }
-    while (stack_size > 0)
-    {
-        int_t parent = stack[--stack_size];
-        for (int_t c = 0; c < treeList[parent].numChild; ++c)
-        {
-            int_t child = treeList[parent].childrenList[c];
-            if (depth[child] >= 0)
-                ABORT("SymFact V2 paper owner ordering found an invalid tree.");
-            depth[child] = depth[parent] + 1;
-            stack[stack_size++] = child;
-        }
-    }
-
-    for (int_t k = 0; k < nsupers; ++k)
-    {
-        if (depth[k] < 0)
-            ABORT("SymFact V2 paper owner ordering missed a supernode.");
-        entries[k].gid = k;
-        entries[k].depth = depth[k];
-    }
-    qsort(entries, (size_t) nsupers, sizeof(dSymV2PaperOrderEntry_t),
-          dSymV2PaperOrderCompare);
-    for (int_t k = 0; k < nsupers; ++k)
-        order[k] = entries[k].gid;
-
-    SUPERLU_FREE(depth);
-    SUPERLU_FREE(stack);
-    SUPERLU_FREE(entries);
-}
-
-static void dSymV2FreePaperWork(dSymV2PaperWork_t *paper)
-{
-    SUPERLU_FREE(paper->row_work);
-    SUPERLU_FREE(paper->column_work);
-    SUPERLU_FREE(paper->diagonal_work);
-    SUPERLU_FREE(paper->id_order);
-    memset(paper, 0, sizeof(*paper));
-}
-
-static void dSymV2BuildPaperWork(int_t nsupers, int_t *xsup, int_t *supno,
-                                 Glu_freeable_t *Glu_freeable,
-                                 treeList_t *treeList,
-                                 dSymV2PaperWork_t *paper)
-{
-    const double operation_cost = 1000.0;
-    int_t *block_gids;
-    int_t *block_rows;
-
-    memset(paper, 0, sizeof(*paper));
-    if (xsup == NULL || supno == NULL || Glu_freeable == NULL ||
-        Glu_freeable->xlsub == NULL || Glu_freeable->lsub == NULL ||
-        treeList == NULL)
-        ABORT("The paper owner cost requires replicated symbolic L structure.");
-
-    paper->row_work = (double *) SUPERLU_MALLOC(
-        (size_t) nsupers * sizeof(double));
-    paper->column_work = (double *) SUPERLU_MALLOC(
-        (size_t) nsupers * sizeof(double));
-    paper->diagonal_work = (double *) SUPERLU_MALLOC(
-        (size_t) nsupers * sizeof(double));
-    paper->id_order = INT_T_ALLOC(nsupers);
-    block_gids = INT_T_ALLOC(nsupers);
-    block_rows = INT_T_ALLOC(nsupers);
-    if (paper->row_work == NULL || paper->column_work == NULL ||
-        paper->diagonal_work == NULL || paper->id_order == NULL ||
-        block_gids == NULL || block_rows == NULL)
-        ABORT("Malloc fails for SymFact V2 paper owner work.");
-
-    for (int_t k = 0; k < nsupers; ++k)
-    {
-        paper->row_work[k] = 0.0;
-        paper->column_work[k] = 0.0;
-        paper->diagonal_work[k] = 0.0;
-        block_rows[k] = 0;
-    }
-
-    for (int_t k = 0; k < nsupers; ++k)
-    {
-        const double width = (double) (xsup[k + 1] - xsup[k]);
-        const int_t fsupc = xsup[k];
-        const int_t begin = Glu_freeable->xlsub[fsupc];
-        const int_t end = Glu_freeable->xlsub[fsupc + 1];
-        int_t block_count = 0;
-
-        if (width <= 0.0 || begin < 0 || end < begin ||
-            end > Glu_freeable->nzlmax)
-            ABORT("The paper owner cost found invalid symbolic L bounds.");
-
-        double work = width * width * width / 3.0 + operation_cost;
-        paper->row_work[k] += work;
-        paper->column_work[k] += work;
-        paper->diagonal_work[k] += work;
-
-        for (int_t p = begin; p < end; ++p)
-        {
-            const int_t row = Glu_freeable->lsub[p];
-            if (row < 0 || row >= xsup[nsupers])
-                ABORT("The paper owner cost found an invalid L row.");
-            const int_t gid = supno[row];
-            if (gid < k || gid >= nsupers)
-                ABORT("The paper owner cost found an invalid lower block.");
-            if (gid > k)
-            {
-                if (block_rows[gid] == 0)
-                {
-                    if (block_count >= nsupers)
-                        ABORT("The paper owner block count exceeds the matrix size.");
-                    block_gids[block_count++] = gid;
-                }
-                ++block_rows[gid];
-            }
-        }
-        qsort(block_gids, (size_t) block_count, sizeof(int_t),
-              dSymV2IntCompare);
-
-        for (int_t b = 0; b < block_count; ++b)
-        {
-            const int_t gid = block_gids[b];
-            const double rows = (double) block_rows[gid];
-            work = rows * width * width + operation_cost;
-            paper->row_work[gid] += work;
-            paper->column_work[k] += work;
-        }
-
-        double prefix_rows = 0.0;
-        double total_rows = 0.0;
-        for (int_t b = 0; b < block_count; ++b)
-            total_rows += (double) block_rows[block_gids[b]];
-        for (int_t b = 0; b < block_count; ++b)
-        {
-            const int_t gid = block_gids[b];
-            const double rows = (double) block_rows[gid];
-            const double suffix_rows = total_rows - prefix_rows - rows;
-            const double diagonal_update =
-                rows * (rows + 1.0) * width;
-
-            paper->row_work[gid] +=
-                diagonal_update + 2.0 * rows * width * prefix_rows +
-                operation_cost * (double) (b + 1);
-            paper->column_work[gid] +=
-                diagonal_update + 2.0 * rows * width * suffix_rows +
-                operation_cost * (double) (block_count - b);
-            paper->diagonal_work[gid] +=
-                diagonal_update + operation_cost;
-            prefix_rows += rows;
-            block_rows[gid] = 0;
-        }
-    }
-
-    dSymV2BuildPaperIDOrder(nsupers, treeList, paper->id_order);
-    SUPERLU_FREE(block_rows);
-    SUPERLU_FREE(block_gids);
-}
-
-static void dSymV2PaperCostForSupernode(int_t k,
-                                        const dSymV2PaperWork_t *paper,
-                                        dSymV2LDLCost_t *cost)
-{
-    cost->panel_work = SUPERLU_MAX(1.0, paper->column_work[k]);
-    cost->row_work = SUPERLU_MAX(1.0, paper->row_work[k]);
-    cost->rank_work = SUPERLU_MAX(1.0, paper->diagonal_work[k]);
-    cost->comm_work = 0.0;
-    cost->tree_weight = SUPERLU_MAX(
-        1.0, cost->panel_work + cost->row_work - cost->rank_work);
 }
 
 static void dSymV2CalcLDLTreeWeight(int_t nsupers, int_t *setree,
@@ -525,31 +244,19 @@ static void dSymV2InitLDLOwners(int_t nsupers,
                                 dtrf3Dpartition_t *trf3Dpart,
                                 int_t *setree,
                                 int_t *xsup,
-                                int_t *supno,
                                 Glu_freeable_t *Glu_freeable,
-                                treeList_t *treeList,
                                 gridinfo3d_t *grid3d)
 {
     gridinfo_t *grid = &(grid3d->grid2d);
     int global_rank;
     int *local_owner;
     size_t owner_bytes = (size_t) nsupers * sizeof(int);
-    const dSymV2OwnerMapping_t owner_mapping = dSymV2OwnerMapping();
-    const dSymV2OwnerCost_t owner_cost = dSymV2OwnerCost();
-    dSymV2PaperWork_t paper_work;
+    const int greedy_mapping = dSymV2GreedyMappingEnabled();
     double *panel_load = NULL;
     double *row_load = NULL;
     double *rank_load = NULL;
 
-    memset(&paper_work, 0, sizeof(paper_work));
-    if (owner_mapping == DSYM_V2_OWNER_PAPER_ID_ROW &&
-        owner_cost != DSYM_V2_OWNER_COST_PAPER)
-        ABORT("The paper increasing-depth owner mapping requires paper owner cost.");
-    if (owner_cost == DSYM_V2_OWNER_COST_PAPER)
-        dSymV2BuildPaperWork(nsupers, xsup, supno, Glu_freeable, treeList,
-                             &paper_work);
-
-    if (owner_mapping != DSYM_V2_OWNER_BLOCK_CYCLIC)
+    if (greedy_mapping)
     {
         panel_load = (double *) SUPERLU_MALLOC(
             grid->npcol * sizeof(double));
@@ -578,16 +285,12 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         ABORT("Malloc fails for SymFact V2 LDL owner metadata.");
 
     MPI_Comm_rank(grid3d->comm, &global_rank);
-    const double affinity_weight =
-        owner_mapping == DSYM_V2_OWNER_GREEDY
-            ? dSymV2OwnerAffinityWeight()
-            : 0.0;
-    if (owner_cost == DSYM_V2_OWNER_COST_PAPER && affinity_weight > 0.0)
-        ABORT("Paper owner cost does not define the owner-affinity term.");
+    const double affinity_weight = greedy_mapping
+                                       ? dSymV2OwnerAffinityWeight()
+                                       : 0.0;
     if (grid3d->iam == 0)
-        printf("SymFact V2 LDL owner mapping: %s; owner cost: %s.\n",
-               dSymV2OwnerMappingName(owner_mapping),
-               dSymV2OwnerCostName(owner_cost));
+        printf("SymFact V2 LDL owner mapping: %s.\n",
+               greedy_mapping ? "greedy" : "block-cyclic");
     for (int_t k = 0; k < nsupers; ++k)
     {
         trf3Dpart->symV2PanelRoot[k] = -1;
@@ -595,15 +298,13 @@ static void dSymV2InitLDLOwners(int_t nsupers,
     }
     for (int_t order = 0; order < nsupers; ++order)
     {
-        const int_t k = owner_mapping == DSYM_V2_OWNER_PAPER_ID_ROW
-                            ? paper_work.id_order[order]
-                            : (affinity_weight > 0.0
-                                   ? nsupers - 1 - order
-                                   : order);
+        const int_t k = affinity_weight > 0.0
+                            ? nsupers - 1 - order
+                            : order;
         int panel_root;
         int diag_root;
         int owner_rank;
-        if (owner_mapping == DSYM_V2_OWNER_GREEDY)
+        if (greedy_mapping)
         {
             dSymV2LDLCost_t cost;
             const int_t parent = setree != NULL ? setree[k] : nsupers;
@@ -615,11 +316,7 @@ static void dSymV2InitLDLOwners(int_t nsupers,
                 (parent >= 0 && parent < nsupers)
                     ? trf3Dpart->symV2PanelRoot[parent]
                     : -1;
-            if (owner_cost == DSYM_V2_OWNER_COST_PAPER)
-                dSymV2PaperCostForSupernode(k, &paper_work, &cost);
-            else
-                dSymV2EstimateSupernodeWork(k, xsup, Glu_freeable, grid,
-                                            &cost);
+            dSymV2EstimateSupernodeWork(k, xsup, Glu_freeable, grid, &cost);
             dSymV2ChooseOwnerPair(panel_load, row_load, rank_load, grid,
                                   &cost, parent_pr, parent_pc,
                                   affinity_weight, &diag_root, &panel_root);
@@ -627,18 +324,6 @@ static void dSymV2InitLDLOwners(int_t nsupers,
             panel_load[panel_root] += cost.panel_work;
             row_load[diag_root] += cost.row_work;
             rank_load[owner_rank] += cost.rank_work;
-        }
-        else if (owner_mapping == DSYM_V2_OWNER_PAPER_ID_ROW)
-        {
-            diag_root = 0;
-            for (int pr = 1; pr < grid->nprow; ++pr)
-                if (row_load[pr] < row_load[diag_root])
-                    diag_root = pr;
-            panel_root = PCOL(k, grid);
-            owner_rank = PNUM(diag_root, panel_root, grid);
-            row_load[diag_root] += paper_work.row_work[k];
-            panel_load[panel_root] += paper_work.column_work[k];
-            rank_load[owner_rank] += paper_work.diagonal_work[k];
         }
         else
         {
@@ -655,31 +340,6 @@ static void dSymV2InitLDLOwners(int_t nsupers,
              grid->iam == owner_rank)
                 ? global_rank
                 : INT_MAX;
-    }
-
-    if (grid3d->iam == 0 && owner_cost == DSYM_V2_OWNER_COST_PAPER &&
-        owner_mapping != DSYM_V2_OWNER_BLOCK_CYCLIC)
-    {
-        double total_row_work = 0.0;
-        double total_column_work = 0.0;
-        double max_row_work = 0.0;
-        double max_column_work = 0.0;
-        for (int_t k = 0; k < nsupers; ++k)
-        {
-            total_row_work += paper_work.row_work[k];
-            total_column_work += paper_work.column_work[k];
-        }
-        for (int pr = 0; pr < grid->nprow; ++pr)
-            max_row_work = SUPERLU_MAX(max_row_work, row_load[pr]);
-        for (int pc = 0; pc < grid->npcol; ++pc)
-            max_column_work = SUPERLU_MAX(max_column_work,
-                                          panel_load[pc]);
-        printf("SymFact V2 paper owner balance: row %.6f, column %.6f.\n",
-               total_row_work /
-                   ((double) grid->nprow * SUPERLU_MAX(1.0, max_row_work)),
-               total_column_work /
-                   ((double) grid->npcol *
-                    SUPERLU_MAX(1.0, max_column_work)));
     }
 
     MPI_Allreduce(local_owner, trf3Dpart->symV2DiagOwner, (int) nsupers,
@@ -729,7 +389,6 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         SUPERLU_FREE(row_load);
     if (rank_load != NULL)
         SUPERLU_FREE(rank_load);
-    dSymV2FreePaperWork(&paper_work);
 }
 
 static void dSymV2BuildLocalLDLIndexes(int_t nsupers,
@@ -1209,8 +868,7 @@ void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
     trf3Dpart->gEtreeInfo = fillEtreeInfo(nsupers, setree, treeList);
     dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
                         LUstruct->Glu_persist->xsup,
-                        LUstruct->Glu_persist->supno,
-                        Glu_freeable, treeList, grid3d);
+                        Glu_freeable, grid3d);
     dSymV2BuildLDLSchedule(nsupers, setree, trf3Dpart,
                            LUstruct->Glu_persist->xsup, grid3d);
 

@@ -1728,7 +1728,7 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				use_sym_v2_solve
 					? "symldl-v2"
 					: (options->SymFact == YES ? "symmetric-u"
-					                           : "unsymmetric-lu"));
+						                           : "unsymmetric-lu"));
 		} // matching if not SolveOnly ... end Factorization
 
 	/* Now proceed with the Solve setup */
