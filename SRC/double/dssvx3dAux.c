@@ -189,7 +189,6 @@ void dscaleMatrixDiagonally(yes_no_t SymFact, fact_t Fact, dScalePermstruct_t *S
                             int *rowequ, int *colequ, int *iinfo)
 {
     int iam = grid->iam;
-    *iinfo = 0;
 
 #if (DEBUGlevel >= 1)
     CHECK_MALLOC(iam, "Enter equil");
