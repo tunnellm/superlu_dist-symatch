@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <limits>
 
+#include "symldl_v2_env_config.hpp"
+
 static inline bool symldl_v2_cpu_padded_direct_enabled()
 {
     static const bool enabled = []() {
@@ -15,10 +17,8 @@ static inline bool symldl_v2_cpu_padded_direct_enabled()
 
 static inline bool symldl_v2_cpu_async_exchange_enabled()
 {
-    static const bool enabled = []() {
-        const char *value = std::getenv("GPU3DV2_CPU_ASYNC_EXCHANGE");
-        return value != NULL && std::atoi(value) != 0;
-    }();
+    static const bool enabled = superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_CPU_ASYNC_EXCHANGE", 1);
     return enabled;
 }
 

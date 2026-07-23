@@ -32,7 +32,7 @@ static inline bool superlu_sym_v2_pinned_staging()
 
 static inline bool superlu_sym_v2_pinned_staging_pool()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_PINNED_STAGING_POOL", 0);
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PINNED_STAGING_POOL", 1);
 }
 
 static inline bool superlu_sym_v2_wpanel_cache()
@@ -42,12 +42,12 @@ static inline bool superlu_sym_v2_wpanel_cache()
 
 static inline bool superlu_sym_v2_panel_arena_enabled()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_PANEL_ARENA", 0);
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PANEL_ARENA", 1);
 }
 
 static inline bool superlu_sym_v2_workspace_arena_enabled()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_WORKSPACE_ARENA", 0);
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_WORKSPACE_ARENA", 1);
 }
 
 static inline bool superlu_sym_v2_trace_pcfrag()
@@ -229,7 +229,7 @@ static inline int superlu_sym_v2_batch_schur_col_limit(
 
 static inline bool superlu_sym_v2_pcfrag_async_exchange()
 {
-    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_ASYNC_EXCHANGE", 0);
+    return superlu_sym_v2_env_bool_flag("GPU3DV2_PCFRAG_ASYNC_EXCHANGE", 1);
 }
 
 static inline bool superlu_sym_v2_pcfrag_async_pipeline()

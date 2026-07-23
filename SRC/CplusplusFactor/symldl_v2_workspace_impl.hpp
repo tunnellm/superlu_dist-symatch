@@ -43,7 +43,8 @@ static void symldl_v2_initialize_diag_state(xLUstruct_t<Ftype> *lu)
         !superlu_sym_v2_pc_fragment_schur())
         ABORT("GPU3DV2_PC_FRAGMENT_LDL_NATIVE requires GPU3DV2_PC_FRAGMENT_SCHUR=1.");
 
-    symldl_v2_validate_async_pcfrag_config();
+    symldl_v2_validate_async_pcfrag_config(
+        lu->grid3d, lu->symV2UsesGpuFactor());
     lu->symV2DiagBlocks.assign((size_t) lu->nsupers, (Ftype *) NULL);
 #ifdef HAVE_CUDA
     lu->symV2DiagBlocksGPU.assign((size_t) lu->nsupers, (Ftype *) NULL);

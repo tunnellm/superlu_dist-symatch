@@ -96,8 +96,10 @@ static inline bool symldl_v2_has_local_row(
     return symldl_v2_row_local_index(partition, k) >= 0;
 }
 
-static inline void symldl_v2_validate_async_pcfrag_config()
+static inline void symldl_v2_validate_async_pcfrag_config(
+    const gridinfo3d_t *grid3d, bool gpu_factor)
 {
+    if (!gpu_factor || !symldl_v2_use_pc_fragment_schur(grid3d)) return;
     if (!superlu_sym_v2_pcfrag_async_requested()) return;
     if (!superlu_sym_v2_pcfrag_async_prereqs_enabled())
         ABORT("SymFact V2 Pc-fragment async exchange requires LDL-native lazy row-down exchange.");
