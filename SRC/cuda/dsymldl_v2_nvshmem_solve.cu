@@ -921,9 +921,9 @@ __global__ void symldl_nvshmem_forward_kernel
 
             lib = row_local_index[k];
             do {
-                tmp = fmod[lib * aln_i];
-                __threadfence();
+                tmp = atomicAdd(&fmod[lib * aln_i], 0);
             } while (tmp > 0);
+            __threadfence();
         }
         __syncthreads();
         //if(tid==0) printf("(%d) iam bid=%d,enter solve--2, unlock,gc=%d\n",mype,bid,gc);
@@ -1036,6 +1036,7 @@ __global__ void symldl_nvshmem_forward_kernel
                     return;
                 iknsupc = SuperSize(ik);
                 il = LSUM_BLK(lk);
+                __threadfence();
                 fmod_tmp = atomicSub(&fmod[lk * aln_i], 1);
                 if (fmod_tmp == 1 &&
                     LRtree_ptr[lk].myRoot_ != LRtree_ptr[lk].myRank_) {
@@ -1090,6 +1091,7 @@ __global__ void symldl_nvshmem_forward_kernel
                 }
                 __syncthreads();
                 if (tid == 0) {
+                    __threadfence();
                     fmod_tmp = atomicSub(&fmod[lk * aln_i], 1);
                     send_reduce = fmod_tmp == 1 &&
                         LRtree_ptr[lk].myRoot_ != LRtree_ptr[lk].myRank_;
@@ -1194,8 +1196,11 @@ symldl_nvshmem_forward_wrap(
     int status = nvshmemx_collective_launch(
         (const void *) symldl_nvshmem_wait_bcrd, wait_grid, wait_block,
         args, 0, stream[0]);
-    if (status != NVSHMEMX_SUCCESS)
+    if (status != NVSHMEMX_SUCCESS) {
+        for (int i = 0; i < 2; ++i)
+            CUDA_CHECK(cudaStreamDestroy(stream[i]));
         return -1;
+    }
 
     if (nbcol_loc > 0) {
         dim3 solve_grid(nbcol_loc);
@@ -1276,64 +1281,6 @@ symldl_nvshmem_backward_reduce_send(
     (void) target_slot; (void) width; (void) nrhs; (void) target_sum;
     (void) maxrecvsz; (void) reduce_trees; (void) flag_rd_q;
     (void) dready_lsum; (void) lsum;
-#endif
-}
-
-/* Keep reverse reductions resident without the generic WAIT bookkeeping. */
-__global__ void symldl_nvshmem_backward_wait_kernel(
-    int nrhs, int wait_count, const int *wait_slots,
-    const int *recv_counts, int *wait_status,
-    const dSymLDLNVPanelDesc *panels, const int_t *target_ilsum,
-    int maxrecvsz, C_Tree *reduce_trees, uint64_t *flag_rd_q,
-    double *dready_lsum, double *lsum, int *bmod)
-{
-#ifdef HAVE_NVSHMEM
-    int tid = (int) blockIdx.x * (int) blockDim.x + (int) threadIdx.x;
-    int nthreads = (int) gridDim.x * (int) blockDim.x;
-    int begin = wait_count * tid / nthreads;
-    int end = wait_count * (tid + 1) / nthreads;
-    if (begin >= end)
-        return;
-
-    int first_slot = wait_slots[begin];
-    int last_slot = wait_slots[end - 1];
-    size_t flag_begin = (size_t) 2 * first_slot;
-    size_t flag_count = (size_t) 2 * (last_slot - first_slot + 1);
-    int expected = 0;
-    for (int p = begin; p < end; ++p)
-        expected += recv_counts[wait_slots[p]];
-
-    for (int received = 0; received < expected; ++received) {
-        size_t relative = nvshmem_uint64_wait_until_any(
-            flag_rd_q + flag_begin, flag_count, wait_status + flag_begin,
-            NVSHMEM_CMP_EQ, 1);
-        size_t flag_index = flag_begin + relative;
-        wait_status[flag_index] = 1;
-        int target_slot = (int) (flag_index / 2);
-        int tree_slot = (int) (flag_index & 1);
-        int width = panels[target_slot].width;
-        int count = width * nrhs;
-        int receive_offset = target_slot * maxrecvsz * 2 +
-                             (tree_slot ? maxrecvsz : 0);
-        int_t target_sum = target_ilsum[target_slot] * nrhs +
-                           (target_slot + 1) * LSUM_H;
-        for (int i = 0; i < count; ++i)
-            d_atomicAdd(lsum + target_sum + i,
-                        dready_lsum[receive_offset + i]);
-        __threadfence();
-        int old = atomicSub(bmod + target_slot, 1);
-        if (old == 1) {
-            __threadfence();
-            symldl_nvshmem_backward_reduce_send(
-                target_slot, width, nrhs, target_sum, maxrecvsz,
-                reduce_trees, flag_rd_q, dready_lsum, lsum);
-        }
-    }
-#else
-    (void) nrhs; (void) wait_count; (void) wait_slots;
-    (void) recv_counts; (void) wait_status; (void) panels;
-    (void) target_ilsum; (void) maxrecvsz; (void) reduce_trees;
-    (void) flag_rd_q; (void) dready_lsum; (void) lsum; (void) bmod;
 #endif
 }
 
@@ -1533,7 +1480,7 @@ __global__ void symldl_nvshmem_backward_kernel(
 
 static int
 symldl_nvshmem_backward_wrap(
-    int source_count, int target_count, int wait_count,
+    int source_count, int target_count,
     double *lsum, double *x, int nrhs,
     int maxsup, int_t nsupers, int *next_source, int worker_blocks,
     int *bmod, C_Tree *bcast_trees,
@@ -1553,7 +1500,7 @@ symldl_nvshmem_backward_wrap(
     int *d_recv_cnt, int *d_msgnum, int *d_flag_mod)
 {
 #ifndef HAVE_NVSHMEM
-    (void) source_count; (void) target_count; (void) wait_count;
+    (void) source_count; (void) target_count;
     (void) lsum; (void) x;
     (void) nrhs; (void) maxsup; (void) nsupers; (void) next_source;
     (void) worker_blocks; (void) bmod;
@@ -4217,7 +4164,7 @@ symldl_nvshmem_backward_solve(
     double start = SuperLU_timer_();
     if (symldl_nvshmem_backward_wrap(
             (int) state->source_count, (int) state->target_count,
-            state->h_nfrecvmod[1], state->d_lsum, state->d_x,
+            state->d_lsum, state->d_x,
             state->nrhs, state->maxsup,
             state->nsupers, state->d_next_source, state->worker_blocks,
             state->d_bmod, state->d_bcast_trees,
