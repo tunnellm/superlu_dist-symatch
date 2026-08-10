@@ -148,6 +148,7 @@ uint64_t symV2CpuPr1IndexBytes = 0;
 uint64_t symV2CpuPr1ValueBytes = 0;
 uint64_t symV2CpuPr1DiagBytes = 0;
 uint64_t symV2CpuPr1ReconstructTasks = 0;
+uint64_t symV2CpuPr1BlockReconstructs = 0;
 bool symV2CpuFactorLoopActive = false;
 bool symV2CpuProfileEnabled = false;
 int symV2CpuWorkerCount = 1;

@@ -119,8 +119,11 @@ struct SymLDLV2CpuExchangeState
     int panel_value_chunks_remaining = 0;
     int diag_chunks_remaining = 0;
     int_t selected_column_count = 0;
+    int_t serial_update_cursor = 0;
+    int_t serial_parent_item = -1;
     unsigned char reconstruction_started = 0;
     unsigned char reconstruction_complete = 0;
+    unsigned char serial_block_reconstruction = 0;
     unsigned char updates_submitted = 0;
     unsigned char route = SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     unsigned char active = 0;

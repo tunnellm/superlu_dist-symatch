@@ -294,7 +294,7 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
     double max_specialized_timers[2] = {0.0, 0.0};
     MPI_Reduce(local_specialized_timers, max_specialized_timers, 2,
                MPI_DOUBLE, MPI_MAX, 0, lu->grid3d->comm);
-    unsigned long long local_specialized_counters[11] = {
+    unsigned long long local_specialized_counters[12] = {
         lu->symV2CpuRoutePanels[SYM_LDL_V2_CPU_ROUTE_COLLAPSED],
         lu->symV2CpuRoutePanels[SYM_LDL_V2_CPU_ROUTE_PR1_FULL_PANEL],
         lu->symV2CpuRoutePanels[SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY],
@@ -305,10 +305,11 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuPr1IndexBytes,
         lu->symV2CpuPr1ValueBytes,
         lu->symV2CpuPr1DiagBytes,
-        lu->symV2CpuPr1ReconstructTasks
+        lu->symV2CpuPr1ReconstructTasks,
+        lu->symV2CpuPr1BlockReconstructs
     };
-    unsigned long long sum_specialized_counters[11] = {0};
-    MPI_Reduce(local_specialized_counters, sum_specialized_counters, 11,
+    unsigned long long sum_specialized_counters[12] = {0};
+    MPI_Reduce(local_specialized_counters, sum_specialized_counters, 12,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, lu->grid3d->comm);
 
     if (lu->grid3d->iam != 0)
@@ -407,14 +408,14 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         blas_source, symldl_v2_cpu_padded_direct_enabled() ? 1 : 0,
         symldl_v2_cpu_async_exchange_enabled() ? 1 : 0);
     std::printf(
-        "SymFact V2 CPU grid specialization profile (sum): enabled=%d route_panels(collapsed/pr1/pc1/dual)=%llu/%llu/%llu/%llu release_events(local/partner/full_panel)=%llu/%llu/%llu pr1_bytes(index/value/diag)=%llu/%llu/%llu pr1_reconstruct_tasks=%llu\n",
+        "SymFact V2 CPU grid specialization profile (sum): enabled=%d route_panels(collapsed/pr1/pc1/dual)=%llu/%llu/%llu/%llu release_events(local/partner/full_panel)=%llu/%llu/%llu pr1_bytes(index/value/diag)=%llu/%llu/%llu pr1_reconstruct_tasks=%llu pr1_block_reconstructs=%llu\n",
         symldl_v2_cpu_grid_specializations_enabled() ? 1 : 0,
         sum_specialized_counters[0], sum_specialized_counters[1],
         sum_specialized_counters[2], sum_specialized_counters[3],
         sum_specialized_counters[4], sum_specialized_counters[5],
         sum_specialized_counters[6], sum_specialized_counters[7],
         sum_specialized_counters[8], sum_specialized_counters[9],
-        sum_specialized_counters[10]);
+        sum_specialized_counters[10], sum_specialized_counters[11]);
     std::printf(
         "SymFact V2 CPU grid specialization timing (max-rank): pr1_ibcast_post=%.6f pr1_reconstruct=%.6f\n",
         max_specialized_timers[0], max_specialized_timers[1]);

@@ -203,6 +203,8 @@ static bool symldl_v2_cpu_progress_pc1_exchange(
 
     xlpanel_t<Ftype> &row_panel = lu->lPanelVec[state.local_panel];
     size_t recv_base = static_cast<size_t>(state.k) * lu->Pr;
+    bool single_thread = lu->symV2CpuWorkerCount <= 1;
+    bool released_numerical_work = false;
     for (int pr = 0; pr < lu->Pr; ++pr)
     {
         size_t peer_slot = peer_base + pr;
@@ -237,28 +239,37 @@ static bool symldl_v2_cpu_progress_pc1_exchange(
                 column_panel.index, column_panel.val, 0,
                 column_panel.nblocks());
             ++lu->symV2CpuReleaseEventsPartner;
+            released_numerical_work = true;
         }
         if (!row_panel.isEmpty())
             symldl_v2_cpu_reserve_column_outputs(
                 lu, state.k, slot, pr, -1);
         lu->symV2CpuPartnerUpdateSubmitted[peer_slot] = 1;
         progressed = true;
+        if (single_thread && released_numerical_work)
+            break;
     }
 
     if (state.pending_receive_chunks == 0)
     {
+        bool all_updates_submitted = true;
         for (int pr = 0; pr < lu->Pr; ++pr)
             if (lu->symV2CpuPartnerRecvSizes[recv_base + pr] != 0 &&
                 !lu->symV2CpuPartnerUpdateSubmitted[peer_base + pr])
-                ABORT("SymFact V2 CPU Pc=1 update was not submitted.");
-        state = SymLDLV2CpuExchangeState();
-        symldl_v2_cpu_note_slot_pending(lu, slot, -1);
-        ++lu->symV2CpuExchangeCompletions;
-        ++lu->symV2CpuPanelsCompleted;
-        progressed = true;
-        if (lu->symV2CpuSlotRequestCounts[slot] ==
-            lu->symV2CpuSlotSendBegins[slot])
-            symldl_v2_cpu_drain_slot_sends(lu, slot);
+                all_updates_submitted = false;
+        if (!all_updates_submitted && !single_thread)
+            ABORT("SymFact V2 CPU Pc=1 update was not submitted.");
+        if (all_updates_submitted)
+        {
+            state = SymLDLV2CpuExchangeState();
+            symldl_v2_cpu_note_slot_pending(lu, slot, -1);
+            ++lu->symV2CpuExchangeCompletions;
+            ++lu->symV2CpuPanelsCompleted;
+            progressed = true;
+            if (lu->symV2CpuSlotRequestCounts[slot] ==
+                lu->symV2CpuSlotSendBegins[slot])
+                symldl_v2_cpu_drain_slot_sends(lu, slot);
+        }
     }
     return progressed;
 }
@@ -367,6 +378,54 @@ static void symldl_v2_cpu_pr1_reconstruct_raw(
 }
 
 template <typename Ftype>
+static void symldl_v2_cpu_pr1_reconstruct_raw_block(
+    xLUstruct_t<Ftype> *lu, xlpanel_t<Ftype> &panel, int_t source_block,
+    Ftype *diag, Ftype *raw)
+{
+    int_t first = panel.haveDiag() ? 1 : 0;
+    if (source_block < first || source_block >= panel.nblocks())
+        ABORT("SymFact V2 CPU Pr=1 reconstruction block is invalid.");
+    int_t rows = panel.nbrow(source_block);
+    int_t width = panel.ncols();
+    if (rows <= 0 || width <= 0)
+        return;
+    int_t row_begin = panel.stRow(source_block);
+    double start = lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
+    symldl_v2_cpu_gemm<Ftype>(
+        "N", "N", rows, width, width, one<Ftype>(),
+        panel.val + row_begin, panel.LDA(), diag, width, zeroT<Ftype>(),
+        raw + row_begin, panel.LDA());
+    if (lu->symV2CpuProfileEnabled)
+        lu->symV2CpuPr1ReconstructTime += SuperLU_timer_() - start;
+    ++lu->symV2CpuPr1BlockReconstructs;
+}
+
+template <typename Ftype>
+static int_t symldl_v2_cpu_pr1_parent_item(
+    xlpanel_t<Ftype> &panel, const int_t *selected, int_t selected_count,
+    int_t parent)
+{
+    for (int_t item = 0; item < selected_count; ++item)
+        if (panel.gid(selected[item]) == parent)
+            return item;
+    return -1;
+}
+
+static int_t symldl_v2_cpu_pr1_serial_item(
+    int_t cursor, int_t selected_count, int_t parent_item)
+{
+    if (cursor < 0 || cursor >= selected_count)
+        ABORT("SymFact V2 CPU Pr=1 serial cursor is invalid.");
+    if (parent_item < 0)
+        return cursor;
+    if (parent_item >= selected_count)
+        ABORT("SymFact V2 CPU Pr=1 parent item is invalid.");
+    if (cursor == 0)
+        return parent_item;
+    return cursor <= parent_item ? cursor - 1 : cursor;
+}
+
+template <typename Ftype>
 static void symldl_v2_cpu_issue_pr1_exchange(
     xLUstruct_t<Ftype> *lu, int_t k, int_t parent, int slot)
 {
@@ -463,6 +522,9 @@ static void symldl_v2_cpu_issue_pr1_exchange(
         xlpanel_t<Ftype> &panel = lu->lPanelVec[local_panel];
         state.selected_column_count =
             symldl_v2_cpu_pr1_select_columns(lu, k, slot, panel);
+        state.serial_parent_item = symldl_v2_cpu_pr1_parent_item(
+            panel, lu->symV2CpuPr1ColumnBlockBufs[slot],
+            state.selected_column_count, parent);
         state.reconstruction_complete = 1;
     }
 }
@@ -541,6 +603,9 @@ static bool symldl_v2_cpu_progress_pr1_exchange(
         xlpanel_t<Ftype> panel(index, values);
         state.selected_column_count =
             symldl_v2_cpu_pr1_select_columns(lu, state.k, slot, panel);
+        state.serial_parent_item = symldl_v2_cpu_pr1_parent_item(
+            panel, lu->symV2CpuPr1ColumnBlockBufs[slot],
+            state.selected_column_count, state.parent);
         state.reconstruction_started = 1;
         if (state.selected_column_count == 0)
             state.reconstruction_complete = 1;
@@ -572,12 +637,16 @@ static bool symldl_v2_cpu_progress_pr1_exchange(
             else
 #endif
             {
-                symldl_v2_cpu_pr1_reconstruct_raw(
-                    lu, slot, panel, lu->symV2CpuPr1DiagBufs[slot],
-                    lu->symV2CpuRawPanelBufs[slot]);
+                if (lu->symV2CpuWorkerCount <= 1)
+                    state.serial_block_reconstruction = 1;
+                else
+                    symldl_v2_cpu_pr1_reconstruct_raw(
+                        lu, slot, panel, lu->symV2CpuPr1DiagBufs[slot],
+                        lu->symV2CpuRawPanelBufs[slot]);
                 state.reconstruction_complete = 1;
             }
-            ++lu->symV2CpuPr1ReconstructTasks;
+            if (!state.serial_block_reconstruction)
+                ++lu->symV2CpuPr1ReconstructTasks;
         }
         progressed = true;
     }
@@ -595,15 +664,42 @@ static bool symldl_v2_cpu_progress_pr1_exchange(
         else
             panel = xlpanel_t<Ftype>(
                 lu->LidxRecvBufs[slot], lu->LvalRecvBufs[slot]);
-        symldl_v2_cpu_submit_selected_schur_tasks(
-            lu, state.k, state.parent, slot, panel,
-            lu->symV2CpuRawPanelBufs[slot],
-            lu->symV2CpuPr1ColumnBlockBufs[slot],
-            state.selected_column_count);
-        symldl_v2_cpu_reserve_column_outputs(
-            lu, state.k, slot, 0, -1);
-        state.updates_submitted = 1;
-        ++lu->symV2CpuReleaseEventsFullPanel;
+        int_t *selected = lu->symV2CpuPr1ColumnBlockBufs[slot];
+        if (lu->symV2CpuWorkerCount <= 1 &&
+            state.selected_column_count > 0)
+        {
+            int_t item = symldl_v2_cpu_pr1_serial_item(
+                state.serial_update_cursor, state.selected_column_count,
+                state.serial_parent_item);
+            int_t source_block = selected[item];
+            if (state.serial_block_reconstruction)
+                symldl_v2_cpu_pr1_reconstruct_raw_block(
+                    lu, panel, source_block,
+                    lu->symV2CpuPr1DiagBufs[slot],
+                    lu->symV2CpuRawPanelBufs[slot]);
+            bool lookahead = panel.gid(source_block) == state.parent;
+            symldl_v2_cpu_submit_selected_task_range(
+                lu, state.k, state.parent, slot, panel.index, panel.val,
+                panel.haveDiag() ? 1 : 0, panel.index,
+                lu->symV2CpuRawPanelBufs[slot], selected, item, item + 1,
+                lookahead, 0);
+            ++state.serial_update_cursor;
+        }
+        else
+        {
+            symldl_v2_cpu_submit_selected_schur_tasks(
+                lu, state.k, state.parent, slot, panel,
+                lu->symV2CpuRawPanelBufs[slot], selected,
+                state.selected_column_count);
+            state.serial_update_cursor = state.selected_column_count;
+        }
+        if (state.serial_update_cursor >= state.selected_column_count)
+        {
+            symldl_v2_cpu_reserve_column_outputs(
+                lu, state.k, slot, 0, -1);
+            state.updates_submitted = 1;
+            ++lu->symV2CpuReleaseEventsFullPanel;
+        }
         progressed = true;
     }
 
