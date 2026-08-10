@@ -34,12 +34,12 @@ inline int_t xLUstruct_t<double>::dSymV2LFragmentExchangeGPU(
         return 0;
     if (!superlu_acc_offload)
         ABORT("SymFact V2 requires GPU offload.");
-    if (Pr <= 1)
-        return 0;
     if (k < 0 || k >= nsupers)
         return 0;
     if (!symV2UsePcFragmentSchurPanel(k))
     {
+        if (Pr <= 1)
+            return 0;
         symV2RouteProfileNoteLFragmentExchange();
         return symldl_v2_l_fragment_exchange(this, k, stream_offset);
     }

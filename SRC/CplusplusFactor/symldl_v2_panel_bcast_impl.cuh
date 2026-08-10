@@ -19,7 +19,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
     symV2RouteProfileNotePanelBcast(pc_fragment_schur);
     xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
 
-    if (Pr > 1)
+    if (Pr > 1 || pc_fragment_schur)
         dSymV2LFragmentExchangeGPU(k, offset);
 
     bool local_singleton_panel =
@@ -27,7 +27,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
         grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1;
 
     const bool pcfrag_async_exchange_panel_ready =
-        pc_fragment_schur && Pr > 1 && Pc > 1 &&
+        pc_fragment_schur && Pc > 1 &&
         !superlu_cuda_aware_mpi() &&
         superlu_sym_v2_pc_fragment_ldl_native() &&
         superlu_sym_v2_row_l_plan_v2_exchange() &&
@@ -88,7 +88,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
         }
     }
 
-    if (symV2IsPr1Fastpath() && !symV2IsPc1Fastpath() &&
+    if (symV2UseGpuPr1Specialization() &&
         LidxSendCounts[k] > 0)
     {
         int_t ksupc = SuperSize(k);
@@ -123,6 +123,12 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
                               static_cast<int>(sym_panel_root),
                               grid3d->rscp.comm);
     }
+
+    if (symV2IsPr1Fastpath() && !symV2IsPc1Fastpath())
+        symV2RouteProfileNote(
+            pc_fragment_schur
+                ? SYM_V2_ROUTE_GPU_PR1_DUAL_FRAGMENT
+                : SYM_V2_ROUTE_GPU_PR1_FULL_PANEL);
 
     SCT->tPanelBcast += (SuperLU_timer_() - t0);
     return 0;

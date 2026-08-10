@@ -18,6 +18,7 @@ const char *symV2FactorBackendName() const;
 bool symV2IsCollapsedGrid() const;
 bool symV2IsPc1Fastpath() const;
 bool symV2IsPr1Fastpath() const;
+bool symV2UseGpuPr1Specialization() const;
 bool symV2ScheduleActive() const;
 int_t symV2ForestLevelCount() const;
 void symV2RouteProfileReset();

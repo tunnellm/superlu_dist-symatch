@@ -42,7 +42,9 @@ symldl_v2_make_stream_workspace_spec(xLUstruct_t<Ftype> *lu,
          symldl_v2_use_wpanel_cache(lu->grid3d))
             ? lu->maxLvalCount
             : 0;
-    spec.pc_fragment_schur = symldl_v2_use_pc_fragment_schur(lu->grid3d);
+    spec.pc_fragment_schur =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
     spec.need_partner_send_stage =
         (spec.pc_fragment_schur &&
          superlu_sym_v2_row_l_separate_send_staging()) ||

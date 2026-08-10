@@ -13,6 +13,12 @@ static inline bool superlu_sym_v2_async_factor()
     return superlu_sym_v2_env_bool_flag("GPU3DV2_ASYNC_FACTOR", 1);
 }
 
+static inline bool superlu_sym_v2_gpu_pr1_specialization()
+{
+    return superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_GPU_PR1_SPECIALIZATION", 1);
+}
+
 static inline int superlu_sym_v2_gpu3d_version()
 {
     const char *env = std::getenv("GPU3DVERSION");

@@ -18,7 +18,9 @@ static void symldl_v2_allocate_fragment_host_buffers(xLUstruct_t<Ftype> *lu)
     lu->symPartnerLidxRecvBufs.assign(static_cast<size_t>(nstreams), NULL);
 
 #ifdef HAVE_CUDA
-    bool pc_fragment = symldl_v2_use_pc_fragment_schur(lu->grid3d);
+    bool pc_fragment =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
     lu->symV2RowFragHostRecvBufs.assign(static_cast<size_t>(nstreams), NULL);
     lu->symV2RowFragHostSendBufs.assign(static_cast<size_t>(nstreams), NULL);
 

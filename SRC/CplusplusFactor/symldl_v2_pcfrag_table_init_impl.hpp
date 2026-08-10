@@ -13,7 +13,8 @@ static void symldl_v2_initialize_pcfrag_plan_tables(
         return;
 
     const bool pc_fragment =
-        symldl_v2_use_pc_fragment_schur(lu->grid3d) ||
+        (lu->symV2UsesGpuFactor() &&
+         symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d)) ||
         (lu->symV2UsesCpuFactor() && (lu->Pr > 1 || lu->Pc > 1));
     int_t local_cols = lu->symV2PanelCount();
     size_t l2l_slots = symldl_v2_checked_product(
@@ -68,7 +69,9 @@ static void symldl_v2_initialize_pcfrag_tables(xLUstruct_t<Ftype> *lu)
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload)
         return;
 
-    const bool pc_fragment = symldl_v2_use_pc_fragment_schur(lu->grid3d);
+    const bool pc_fragment =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
     int_t local_cols = lu->symV2PanelCount();
     size_t l2l_slots = symldl_v2_checked_product(
         static_cast<size_t>(local_cols), static_cast<size_t>(lu->Pc),

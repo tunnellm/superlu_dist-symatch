@@ -62,6 +62,13 @@ inline bool xLUstruct_t<Ftype>::symV2IsPr1Fastpath() const
 }
 
 template <typename Ftype>
+inline bool xLUstruct_t<Ftype>::symV2UseGpuPr1Specialization() const
+{
+    return symV2UsesGpuFactor() &&
+           symldl_v2_use_gpu_pr1_specialization(grid3d);
+}
+
+template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2PanelRoot(int_t k)
 {
     return kcol(k);
@@ -230,6 +237,9 @@ inline bool xLUstruct_t<double>::symV2UsePcFragmentSchurPanel(int_t k) const
             return false;
         return symV2UsePcFragmentSchur[static_cast<size_t>(k)] != 0;
     }
-    return Pr > 1 && Pc > 1 && superlu_sym_v2_pc_fragment_schur() &&
-           superlu_sym_v2_pc_fragment_ldl_native();
+    return symV2UsesGpuFactor()
+               ? symldl_v2_use_gpu_pc_fragment_schur(grid3d)
+               : (Pr > 1 && Pc > 1 &&
+                  superlu_sym_v2_pc_fragment_schur() &&
+                  superlu_sym_v2_pc_fragment_ldl_native());
 }

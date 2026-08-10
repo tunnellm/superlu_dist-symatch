@@ -19,9 +19,11 @@ static void symldl_v2_build_row_down_maps(
     const SymLDLV2PartnerMetaPayload &source_row_meta,
     const SymLDLV2PartnerMetaPayload &target_column_meta)
 {
+    const bool gpu_pc_fragment =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
     if (!lu->useSymV2Solve() || !lu->superlu_acc_offload ||
-        lu->Pr <= 1 || lu->Pc <= 1 ||
-        !superlu_sym_v2_pc_fragment_schur())
+        !gpu_pc_fragment)
         return;
 
     if (!superlu_sym_v2_pc_fragment_ldl_native() ||

@@ -27,7 +27,10 @@ static void symldl_v2_compute_pcfrag_scratch(
     lu->maxSymV2RowFragIdxRecvCount = 0;
     lu->maxSymV2RowFragValSendCount = 0;
 
-    if (lu->Pr <= 1)
+    const bool gpu_pc_fragment =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
+    if (lu->Pr <= 1 && !gpu_pc_fragment)
     {
         lu->maxSymPartnerLvalCount = lu->maxLvalCount;
         lu->maxSymPartnerLidxCount = lu->maxLidxCount;
