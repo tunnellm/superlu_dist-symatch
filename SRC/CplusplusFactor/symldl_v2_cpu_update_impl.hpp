@@ -1494,6 +1494,214 @@ static void symldl_v2_cpu_submit_dual_schur_tasks(
 }
 
 template <typename Ftype>
+static void symldl_v2_cpu_submit_selected_task_range(
+    xLUstruct_t<Ftype> *lu, int_t source_k, int_t parent, int slot,
+    int_t *row_index, Ftype *row_values, int_t first_row_block,
+    int_t *column_index, Ftype *column_values, const int_t *selected,
+    int_t selected_begin, int_t selected_end, bool lookahead,
+    uint64_t known_work = std::numeric_limits<uint64_t>::max())
+{
+    if (selected_begin >= selected_end)
+        return;
+    xlpanel_t<Ftype> column_panel(column_index, column_values);
+    for (int_t item = selected_begin; item < selected_end; ++item)
+    {
+        int_t source_j = selected[item];
+        if (source_j < 0 || source_j >= column_panel.nblocks())
+            ABORT("SymFact V2 CPU selected task is invalid.");
+        int_t output_gid = column_panel.gid(source_j);
+        if ((output_gid == parent) != lookahead)
+            ABORT("SymFact V2 CPU selected task batch mixes scheduling modes.");
+        symldl_v2_cpu_note_task_pending(lu, output_gid, slot, 1);
+        if (lu->symV2CpuProfileEnabled)
+        {
+            if (lookahead)
+                ++lu->symV2CpuLookaheadTasks;
+            else
+                ++lu->symV2CpuExcludeTasks;
+        }
+    }
+
+    bool defer = false;
+    uint64_t expected_generation =
+        symldl_v2_cpu_slot_generation(lu, slot, source_k);
+#ifdef _OPENMP
+    if (omp_in_parallel() && omp_get_num_threads() > 1)
+    {
+        uint64_t range_work = known_work;
+        if (range_work == std::numeric_limits<uint64_t>::max())
+        {
+            range_work = 0;
+            xlpanel_t<Ftype> row_panel(row_index, row_values);
+            for (int_t item = selected_begin; item < selected_end; ++item)
+                range_work = symldl_v2_cpu_saturating_add(
+                    range_work, symldl_v2_cpu_column_work(
+                        row_panel, first_row_block, column_panel,
+                        selected[item]));
+        }
+        defer = range_work >= symldl_v2_cpu_min_deferred_work();
+        if (lookahead && (lu->Pr > 1 || lu->Pc > 1))
+            defer = false;
+    }
+#endif
+    if (lu->symV2CpuProfileEnabled)
+    {
+        ++lu->symV2CpuTaskBatches;
+        if (defer)
+            ++lu->symV2CpuDeferredTaskBatches;
+        else
+            ++lu->symV2CpuInlineTaskBatches;
+    }
+#ifdef _OPENMP
+    if (defer)
+    {
+        int priority_value = lookahead ? 100 : 0;
+#pragma omp atomic update
+        ++lu->symV2CpuDeferredTasksActive;
+#pragma omp task firstprivate(source_k, slot, row_index, row_values,             \
+                              first_row_block, column_index, column_values,     \
+                              selected, selected_begin, selected_end, parent,   \
+                              lookahead, priority_value, expected_generation)   \
+                 shared(lu) priority(priority_value)
+        {
+            symldl_v2_cpu_assert_slot_generation(
+                lu, slot, source_k, expected_generation);
+            xlpanel_t<Ftype> task_row(row_index, row_values);
+            xlpanel_t<Ftype> task_column(column_index, column_values);
+            double task_start =
+                lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
+            long long completed = 0;
+            for (int_t item = selected_begin; item < selected_end; ++item)
+            {
+                int_t source_j = selected[item];
+                symldl_v2_cpu_assert_slot_generation(
+                    lu, slot, source_k, expected_generation);
+                completed += symldl_v2_cpu_grouped_update_column(
+                    lu, task_row, first_row_block, task_column, source_j,
+                    column_values, lookahead);
+                symldl_v2_cpu_note_task_pending(
+                    lu, task_column.gid(source_j), slot, -1);
+            }
+            if (lu->symV2CpuProfileEnabled)
+            {
+                double elapsed = SuperLU_timer_() - task_start;
+#pragma omp atomic update
+                lu->symV2CpuSchurTasks += static_cast<uint64_t>(completed);
+#pragma omp atomic update
+                lu->symV2CpuSchurTime += elapsed;
+            }
+#pragma omp atomic update
+            --lu->symV2CpuDeferredTasksActive;
+        }
+        return;
+    }
+#endif
+    xlpanel_t<Ftype> row_panel(row_index, row_values);
+    symldl_v2_cpu_assert_slot_generation(
+        lu, slot, source_k, expected_generation);
+    double task_start = lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
+    long long completed = 0;
+    for (int_t item = selected_begin; item < selected_end; ++item)
+    {
+        int_t source_j = selected[item];
+        completed += symldl_v2_cpu_grouped_update_column(
+            lu, row_panel, first_row_block, column_panel, source_j,
+            column_values, lookahead);
+        symldl_v2_cpu_note_task_pending(
+            lu, column_panel.gid(source_j), slot, -1);
+    }
+    if (lu->symV2CpuProfileEnabled)
+    {
+        lu->symV2CpuSchurTasks += static_cast<uint64_t>(completed);
+        lu->symV2CpuSchurTime += SuperLU_timer_() - task_start;
+    }
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_submit_selected_exclude_batches(
+    xLUstruct_t<Ftype> *lu, int_t source_k, int_t parent, int slot,
+    int_t *row_index, Ftype *row_values, int_t first_row_block,
+    int_t *column_index, Ftype *column_values, const int_t *selected,
+    int_t selected_begin, int_t selected_end)
+{
+    if (selected_begin >= selected_end)
+        return;
+    int workers = 1;
+#ifdef _OPENMP
+    workers = SUPERLU_MAX(1, omp_get_max_threads());
+#endif
+    if (workers == 1)
+    {
+        symldl_v2_cpu_submit_selected_task_range(
+            lu, source_k, parent, slot, row_index, row_values,
+            first_row_block, column_index, column_values, selected,
+            selected_begin, selected_end, false, 0);
+        return;
+    }
+    xlpanel_t<Ftype> row_panel(row_index, row_values);
+    xlpanel_t<Ftype> column_panel(column_index, column_values);
+    uint64_t total_work = 0;
+    for (int_t item = selected_begin; item < selected_end; ++item)
+        total_work = symldl_v2_cpu_saturating_add(
+            total_work, symldl_v2_cpu_column_work(
+                row_panel, first_row_block, column_panel, selected[item]));
+    uint64_t target_batches = static_cast<uint64_t>(workers) * 4;
+    uint64_t target_work = total_work == 0 ? 1 :
+        (total_work - 1) / target_batches + 1;
+    target_work = SUPERLU_MAX(target_work,
+                              symldl_v2_cpu_min_deferred_work());
+
+    int_t begin = selected_begin;
+    uint64_t batch_work = 0;
+    for (int_t item = selected_begin; item < selected_end; ++item)
+    {
+        batch_work = symldl_v2_cpu_saturating_add(
+            batch_work, symldl_v2_cpu_column_work(
+                row_panel, first_row_block, column_panel, selected[item]));
+        if (batch_work < target_work && item + 1 != selected_end)
+            continue;
+        symldl_v2_cpu_submit_selected_task_range(
+            lu, source_k, parent, slot, row_index, row_values,
+            first_row_block, column_index, column_values, selected,
+            begin, item + 1, false, batch_work);
+        begin = item + 1;
+        batch_work = 0;
+    }
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_submit_selected_schur_tasks(
+    xLUstruct_t<Ftype> *lu, int_t source_k, int_t parent, int slot,
+    xlpanel_t<Ftype> &panel, Ftype *raw_values, const int_t *selected,
+    int_t selected_count)
+{
+    if (panel.isEmpty() || selected_count <= 0)
+        return;
+    int_t parent_item = -1;
+    for (int_t item = 0; item < selected_count; ++item)
+        if (panel.gid(selected[item]) == parent)
+        {
+            parent_item = item;
+            break;
+        }
+    int_t first = panel.haveDiag() ? 1 : 0;
+    if (parent_item >= 0)
+        symldl_v2_cpu_submit_selected_task_range(
+            lu, source_k, parent, slot, panel.index, panel.val, first,
+            panel.index, raw_values, selected, parent_item,
+            parent_item + 1, true);
+    symldl_v2_cpu_submit_selected_exclude_batches(
+        lu, source_k, parent, slot, panel.index, panel.val, first,
+        panel.index, raw_values, selected, 0,
+        parent_item >= 0 ? parent_item : selected_count);
+    if (parent_item >= 0)
+        symldl_v2_cpu_submit_selected_exclude_batches(
+            lu, source_k, parent, slot, panel.index, panel.val, first,
+            panel.index, raw_values, selected, parent_item + 1,
+            selected_count);
+}
+
+template <typename Ftype>
 static void symldl_v2_cpu_schur_update(
     xLUstruct_t<Ftype> *lu, int_t, xlpanel_t<Ftype> &panel,
     const Ftype *raw_values)

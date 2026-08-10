@@ -30,7 +30,7 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     std::vector<Ftype *> *buffers[] = {
         &symV2CpuRawPanelBufs, &symV2CpuPartnerSendBufs,
         &symV2CpuPartnerRecvBufs, &symV2CpuRowSendBufs,
-        &symV2CpuRowRecvBufs
+        &symV2CpuRowRecvBufs, &symV2CpuPr1DiagBufs
     };
     for (size_t b = 0; b < sizeof(buffers) / sizeof(buffers[0]); ++b)
     {
@@ -44,6 +44,12 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuPartnerRecvCapacity = 0;
     symV2CpuRowSendCapacity = 0;
     symV2CpuRowRecvCapacity = 0;
+    symV2CpuPr1DiagCapacity = 0;
+    for (size_t slot = 0; slot < symV2CpuPr1ColumnBlockBufs.size(); ++slot)
+        if (symV2CpuPr1ColumnBlockBufs[slot] != NULL)
+            SUPERLU_FREE(symV2CpuPr1ColumnBlockBufs[slot]);
+    symV2CpuPr1ColumnBlockBufs.clear();
+    symV2CpuPr1ColumnBlockCapacity = 0;
     if (symV2CpuPanelPending != NULL)
         SUPERLU_FREE(symV2CpuPanelPending);
     if (symV2CpuSlotPending != NULL)
@@ -69,6 +75,7 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuSlotGeneration.clear();
     symV2CpuRequests.clear();
     symV2CpuRequestPeers.clear();
+    symV2CpuRequestKinds.clear();
     symV2CpuWaitIndices.clear();
     symV2CpuWaitStatuses.clear();
     symV2CpuPartnerRecvOffsets.clear();

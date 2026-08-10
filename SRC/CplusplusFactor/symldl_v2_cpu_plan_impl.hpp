@@ -814,6 +814,7 @@ static void symldl_v2_build_cpu_fragment_plan(xLUstruct_t<Ftype> *lu)
 {
     if (!lu->symV2UsesCpuFactor() || (lu->Pr <= 1 && lu->Pc <= 1))
         return;
+    SymLDLV2CpuExchangeRoute route = symldl_v2_cpu_exchange_route(lu);
     double plan_start = SuperLU_timer_();
     double phase_start = plan_start;
     symldl_v2_build_cpu_partner_send_plan(lu);
@@ -840,10 +841,13 @@ static void symldl_v2_build_cpu_fragment_plan(xLUstruct_t<Ftype> *lu)
     symldl_v2_build_cpu_partner_receive_plan(
         lu, *target_column_metadata);
     lu->symV2CpuPartnerRecvPlanTime += SuperLU_timer_() - phase_start;
-    phase_start = SuperLU_timer_();
-    symldl_v2_build_cpu_row_receive_plan(
-        lu, *source_row_metadata, *target_column_metadata);
-    lu->symV2CpuRowPlanTime += SuperLU_timer_() - phase_start;
+    if (route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT)
+    {
+        phase_start = SuperLU_timer_();
+        symldl_v2_build_cpu_row_receive_plan(
+            lu, *source_row_metadata, *target_column_metadata);
+        lu->symV2CpuRowPlanTime += SuperLU_timer_() - phase_start;
+    }
     phase_start = SuperLU_timer_();
     symldl_v2_resize_cpu_request_workspace(lu);
     lu->symV2CpuRequestPlanTime += SuperLU_timer_() - phase_start;
