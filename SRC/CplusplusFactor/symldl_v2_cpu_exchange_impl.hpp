@@ -38,6 +38,9 @@ static size_t symldl_v2_cpu_post_receive_chunks(
         int chunk_count = symldl_v2_cpu_mpi_chunk_size(count, offset);
         size_t request = request_base + request_count++;
         lu->symV2CpuRequestPeers[request] = peer;
+        lu->symV2CpuRequestKinds[request] = peer >= 0
+            ? SYM_LDL_V2_CPU_REQUEST_PARTNER_RECV
+            : SYM_LDL_V2_CPU_REQUEST_ROW_RECV;
         if (MPI_Irecv(buffer + offset, chunk_count, get_mpi_type<Ftype>(),
                       source, tag, comm,
                       &lu->symV2CpuRequests[request]) != MPI_SUCCESS)
@@ -66,6 +69,8 @@ static size_t symldl_v2_cpu_post_send_chunks(
         int chunk_count = symldl_v2_cpu_mpi_chunk_size(count, offset);
         size_t request = request_base + request_count++;
         lu->symV2CpuRequestPeers[request] = -3;
+        lu->symV2CpuRequestKinds[request] =
+            SYM_LDL_V2_CPU_REQUEST_SEND;
         if (MPI_Isend(buffer + offset, chunk_count, get_mpi_type<Ftype>(),
                       destination, tag, comm,
                       &lu->symV2CpuRequests[request]) != MPI_SUCCESS)
@@ -113,6 +118,8 @@ static void symldl_v2_cpu_drain_slot_sends(
     {
         lu->symV2CpuRequests[request_base + request] = MPI_REQUEST_NULL;
         lu->symV2CpuRequestPeers[request_base + request] = -1;
+        lu->symV2CpuRequestKinds[request_base + request] =
+            SYM_LDL_V2_CPU_REQUEST_NONE;
     }
     lu->symV2CpuSlotRequestCounts[static_cast<size_t>(slot)] = 0;
     lu->symV2CpuSlotSendBegins[static_cast<size_t>(slot)] = 0;
@@ -474,6 +481,7 @@ static void symldl_v2_cpu_issue_fragment_exchange(
     state.row_chunks_remaining = row_chunks_remaining;
     state.receive_request_count = receive_request_count;
     state.pending_receive_chunks = receive_request_count;
+    state.route = SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     state.active = 1;
     ++lu->symV2CpuExchangeIssues;
     uint64_t active_exchanges = 0;
@@ -675,36 +683,6 @@ static bool symldl_v2_cpu_progress_fragment_exchange(
 
     lu->symV2CpuFragmentExchangeTime +=
         SuperLU_timer_() - progress_wall_start;
-    return made_progress;
-}
-
-template <typename Ftype>
-static bool symldl_v2_cpu_progress_all_fragment_exchanges(
-    xLUstruct_t<Ftype> *lu, bool blocking)
-{
-    bool made_progress = false;
-    int blocking_slot = -1;
-    int_t blocking_k = std::numeric_limits<int_t>::max();
-    for (size_t slot = 0; slot < lu->symV2CpuExchangeStates.size(); ++slot)
-    {
-        const SymLDLV2CpuExchangeState &state =
-            lu->symV2CpuExchangeStates[slot];
-        if (!state.active)
-            continue;
-        if (state.k < blocking_k)
-        {
-            blocking_k = state.k;
-            blocking_slot = static_cast<int>(slot);
-        }
-        made_progress = symldl_v2_cpu_progress_fragment_exchange(
-                            lu, static_cast<int>(slot), false) ||
-                        made_progress;
-    }
-    if (blocking && !made_progress && blocking_slot >= 0 &&
-        lu->symV2CpuExchangeStates[
-            static_cast<size_t>(blocking_slot)].active)
-        made_progress = symldl_v2_cpu_progress_fragment_exchange(
-            lu, blocking_slot, true);
     return made_progress;
 }
 

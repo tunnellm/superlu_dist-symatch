@@ -65,7 +65,10 @@ static void symldl_v2_constructor_setup_fragment_metadata(
     symldl_v2_build_cpu_fragment_plan(lu);
 #ifdef HAVE_CUDA
     symldl_v2_build_partner_l_send_maps(lu);
-    if (lu->superlu_acc_offload && lu->Pr > 1)
+    const bool gpu_pc_fragment =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
+    if (lu->superlu_acc_offload && (lu->Pr > 1 || gpu_pc_fragment))
     {
         if (superlu_sym_v2_scoped_fragment_metadata())
         {

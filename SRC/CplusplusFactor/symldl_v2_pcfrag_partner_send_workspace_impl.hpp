@@ -13,7 +13,11 @@
 template <typename Ftype>
 static void symldl_v2_build_partner_l_send_maps(xLUstruct_t<Ftype> *lu)
 {
-    if (!lu->useSymV2Solve() || !lu->superlu_acc_offload || lu->Pr <= 1)
+    const bool gpu_pc_fragment =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
+    if (!lu->useSymV2Solve() || !lu->superlu_acc_offload ||
+        (lu->Pr <= 1 && !gpu_pc_fragment))
         return;
 
     int_t local_cols = lu->symV2PanelCount();

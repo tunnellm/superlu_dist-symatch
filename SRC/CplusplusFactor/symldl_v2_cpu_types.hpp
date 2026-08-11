@@ -22,6 +22,41 @@ static inline bool symldl_v2_cpu_async_exchange_enabled()
     return enabled;
 }
 
+static inline bool symldl_v2_cpu_grid_specializations_enabled()
+{
+    static const bool enabled = superlu_sym_v2_env_bool_flag(
+        "GPU3DV2_CPU_GRID_SPECIALIZATIONS", 1);
+    return enabled;
+}
+
+enum SymLDLV2CpuExchangeRoute
+{
+    SYM_LDL_V2_CPU_ROUTE_COLLAPSED = 0,
+    SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY = 1,
+    SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT = 2
+};
+
+template <typename Ftype>
+static inline SymLDLV2CpuExchangeRoute symldl_v2_cpu_exchange_route(
+    const Ftype *lu)
+{
+    if (lu->Pr <= 1 && lu->Pc <= 1)
+        return SYM_LDL_V2_CPU_ROUTE_COLLAPSED;
+    if (!symldl_v2_cpu_grid_specializations_enabled())
+        return SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
+    if (lu->Pc <= 1)
+        return SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY;
+    return SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
+}
+
+enum SymLDLV2CpuRequestKind
+{
+    SYM_LDL_V2_CPU_REQUEST_NONE = 0,
+    SYM_LDL_V2_CPU_REQUEST_PARTNER_RECV = 1,
+    SYM_LDL_V2_CPU_REQUEST_ROW_RECV = 2,
+    SYM_LDL_V2_CPU_REQUEST_SEND = 3
+};
+
 static inline bool symldl_v2_cpu_ownership_check_enabled()
 {
     static const bool enabled = []() {
@@ -74,6 +109,8 @@ struct SymLDLV2CpuExchangeState
     int row_chunks_remaining = 0;
     size_t receive_request_count = 0;
     size_t pending_receive_chunks = 0;
+    unsigned char updates_submitted = 0;
+    unsigned char route = SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     unsigned char active = 0;
 };
 

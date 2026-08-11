@@ -16,7 +16,11 @@ static void symldl_v2_build_partner_l_recv_maps(
     xLUstruct_t<Ftype> *lu,
     const SymLDLV2PartnerMetaPayload &meta)
 {
-    if (!lu->useSymV2Solve() || !lu->superlu_acc_offload || lu->Pr <= 1)
+    const bool gpu_pc_fragment =
+        lu->symV2UsesGpuFactor() &&
+        symldl_v2_use_gpu_pc_fragment_schur(lu->grid3d);
+    if (!lu->useSymV2Solve() || !lu->superlu_acc_offload ||
+        (lu->Pr <= 1 && !gpu_pc_fragment))
         return;
 
     const bool derive_recv_sizes =

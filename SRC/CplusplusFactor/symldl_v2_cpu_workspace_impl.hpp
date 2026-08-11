@@ -75,6 +75,8 @@ static void symldl_v2_resize_cpu_request_workspace(
     lu->symV2CpuRequestsPerSlot = requests_per_slot;
     lu->symV2CpuRequests.assign(total_requests, MPI_REQUEST_NULL);
     lu->symV2CpuRequestPeers.assign(total_requests, -1);
+    lu->symV2CpuRequestKinds.assign(
+        total_requests, SYM_LDL_V2_CPU_REQUEST_NONE);
     lu->symV2CpuWaitIndices.assign(total_requests, -1);
     lu->symV2CpuWaitStatuses.resize(total_requests);
     lu->symV2CpuSlotRequestCounts.assign(
@@ -210,41 +212,51 @@ static void symldl_v2_allocate_cpu_factor_workspace(
 
     int slots = lu->options != NULL ? lu->options->num_lookaheads : 1;
     slots = SUPERLU_MAX(1, slots);
+    SymLDLV2CpuExchangeRoute route = symldl_v2_cpu_exchange_route(lu);
     lu->symV2CpuRawPanelCapacity =
         static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount));
-    lu->symV2CpuPartnerSendCapacity =
-        static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount));
-    lu->symV2CpuPartnerRecvCapacity =
-        static_cast<size_t>(SUPERLU_MAX((int_t) 1,
-                                        lu->maxSymPartnerLvalCount));
-    lu->symV2CpuRowSendCapacity =
-        static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount));
-    lu->symV2CpuRowRecvCapacity =
-        static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount));
+    bool needs_partner = route == SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY ||
+                         route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
+    bool needs_row = route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
+    bool needs_partner_plan = route != SYM_LDL_V2_CPU_ROUTE_COLLAPSED;
+    lu->symV2CpuPartnerSendCapacity = needs_partner_plan
+        ? static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount)) : 0;
+    lu->symV2CpuPartnerRecvCapacity = needs_partner_plan
+        ? static_cast<size_t>(SUPERLU_MAX((int_t) 1,
+                                          lu->maxSymPartnerLvalCount)) : 0;
+    lu->symV2CpuRowSendCapacity = needs_row
+        ? static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount)) : 0;
+    lu->symV2CpuRowRecvCapacity = needs_row
+        ? static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount)) : 0;
 
     symldl_v2_allocate_cpu_slot_buffers(
         lu->symV2CpuRawPanelBufs, slots, lu->symV2CpuRawPanelCapacity,
         "SymFact V2 CPU raw-panel workspace overflows.",
         "Malloc fails for SymFact V2 CPU raw-panel workspace.");
-    symldl_v2_allocate_cpu_slot_buffers(
-        lu->symV2CpuPartnerSendBufs, slots,
-        lu->symV2CpuPartnerSendCapacity,
-        "SymFact V2 CPU partner-send workspace overflows.",
-        "Malloc fails for SymFact V2 CPU partner-send workspace.");
-    symldl_v2_allocate_cpu_slot_buffers(
-        lu->symV2CpuPartnerRecvBufs, slots,
-        lu->symV2CpuPartnerRecvCapacity,
-        "SymFact V2 CPU partner-receive workspace overflows.",
-        "Malloc fails for SymFact V2 CPU partner-receive workspace.");
-    symldl_v2_allocate_cpu_slot_buffers(
-        lu->symV2CpuRowSendBufs, slots, lu->symV2CpuRowSendCapacity,
-        "SymFact V2 CPU row-send workspace overflows.",
-        "Malloc fails for SymFact V2 CPU row-send workspace.");
-    symldl_v2_allocate_cpu_slot_buffers(
-        lu->symV2CpuRowRecvBufs, slots, lu->symV2CpuRowRecvCapacity,
-        "SymFact V2 CPU row-receive workspace overflows.",
-        "Malloc fails for SymFact V2 CPU row-receive workspace.");
-
+    if (needs_partner)
+    {
+        symldl_v2_allocate_cpu_slot_buffers(
+            lu->symV2CpuPartnerSendBufs, slots,
+            lu->symV2CpuPartnerSendCapacity,
+            "SymFact V2 CPU partner-send workspace overflows.",
+            "Malloc fails for SymFact V2 CPU partner-send workspace.");
+        symldl_v2_allocate_cpu_slot_buffers(
+            lu->symV2CpuPartnerRecvBufs, slots,
+            lu->symV2CpuPartnerRecvCapacity,
+            "SymFact V2 CPU partner-receive workspace overflows.",
+            "Malloc fails for SymFact V2 CPU partner-receive workspace.");
+    }
+    if (needs_row)
+    {
+        symldl_v2_allocate_cpu_slot_buffers(
+            lu->symV2CpuRowSendBufs, slots, lu->symV2CpuRowSendCapacity,
+            "SymFact V2 CPU row-send workspace overflows.",
+            "Malloc fails for SymFact V2 CPU row-send workspace.");
+        symldl_v2_allocate_cpu_slot_buffers(
+            lu->symV2CpuRowRecvBufs, slots, lu->symV2CpuRowRecvCapacity,
+            "SymFact V2 CPU row-receive workspace overflows.",
+            "Malloc fails for SymFact V2 CPU row-receive workspace.");
+    }
     symldl_v2_resize_cpu_request_workspace(lu);
     size_t exchange_peers = symldl_v2_checked_product(
         static_cast<size_t>(slots), static_cast<size_t>(lu->Pr),

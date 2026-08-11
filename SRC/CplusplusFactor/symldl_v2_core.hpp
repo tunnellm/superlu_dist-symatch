@@ -28,6 +28,15 @@ static inline bool symldl_v2_use_pc_fragment_schur(
            superlu_sym_v2_pc_fragment_ldl_native();
 }
 
+static inline bool symldl_v2_use_gpu_pc_fragment_schur(
+    const gridinfo3d_t *grid3d)
+{
+    return grid3d != NULL &&
+           grid3d->npcol > 1 &&
+           superlu_sym_v2_pc_fragment_schur() &&
+           superlu_sym_v2_pc_fragment_ldl_native();
+}
+
 static inline bool symldl_v2_use_wpanel_cache(const gridinfo3d_t *grid3d)
 {
     return superlu_sym_v2_wpanel_cache() &&
@@ -99,7 +108,7 @@ static inline bool symldl_v2_has_local_row(
 static inline void symldl_v2_validate_async_pcfrag_config(
     const gridinfo3d_t *grid3d, bool gpu_factor)
 {
-    if (!gpu_factor || !symldl_v2_use_pc_fragment_schur(grid3d)) return;
+    if (!gpu_factor || !symldl_v2_use_gpu_pc_fragment_schur(grid3d)) return;
     if (!superlu_sym_v2_pcfrag_async_requested()) return;
     if (!superlu_sym_v2_pcfrag_async_prereqs_enabled())
         ABORT("SymFact V2 Pc-fragment async exchange requires LDL-native lazy row-down exchange.");

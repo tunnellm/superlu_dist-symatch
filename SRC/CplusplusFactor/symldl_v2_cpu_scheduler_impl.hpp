@@ -4,6 +4,7 @@
 #include "symldl_v2_cpu_panel_impl.hpp"
 #include "symldl_v2_cpu_exchange_impl.hpp"
 #include "symldl_v2_cpu_update_impl.hpp"
+#include "symldl_v2_cpu_specialized_exchange_impl.hpp"
 #include "symldl_v2_factor_gpu_bridge.hpp"
 
 template <typename Ftype>
@@ -50,7 +51,7 @@ static bool symldl_v2_cpu_scheduler_progress(
     if (poll)
     {
         progressed =
-            symldl_v2_cpu_progress_all_fragment_exchanges(lu, false);
+            symldl_v2_cpu_progress_all_exchanges(lu, false);
         active_tasks = symldl_v2_cpu_deferred_tasks_active(lu);
     }
 
@@ -58,7 +59,7 @@ static bool symldl_v2_cpu_scheduler_progress(
         symldl_v2_cpu_has_active_exchange(lu))
     {
         progressed =
-            symldl_v2_cpu_progress_all_fragment_exchanges(lu, true);
+            symldl_v2_cpu_progress_all_exchanges(lu, true);
     }
     if (active_tasks > 0 &&
         active_tasks != progress_state->last_active_tasks)
@@ -175,14 +176,27 @@ static int_t symldl_v2_cpu_factor_forest(
                     k, slot, slot, diag_buffers);
 #endif
                 int_t parent = etree->setree[k];
+                SymLDLV2CpuExchangeRoute route =
+                    symldl_v2_cpu_exchange_route(lu);
+                ++lu->symV2CpuRoutePanels[static_cast<int>(route)];
 
-                if (lu->Pr == 1 && lu->Pc == 1)
+                if (route == SYM_LDL_V2_CPU_ROUTE_COLLAPSED)
                 {
                     Ftype *raw_values = NULL;
                     xlpanel_t<Ftype> panel = symldl_v2_cpu_exchange_panel(
                         lu, k, slot, &raw_values);
                     symldl_v2_cpu_submit_collapsed_schur_tasks(
                         lu, k, parent, slot, panel, raw_values);
+                    ++lu->symV2CpuReleaseEventsLocal;
+                }
+                else if (route == SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY)
+                {
+                    symldl_v2_cpu_issue_pc1_exchange(
+                        lu, k, parent, slot);
+                    if (symldl_v2_cpu_async_exchange_enabled())
+                        symldl_v2_cpu_progress_all_exchanges(lu, false);
+                    else
+                        symldl_v2_cpu_complete_exchange(lu, slot);
                 }
                 else
                 {
@@ -190,14 +204,14 @@ static int_t symldl_v2_cpu_factor_forest(
                     {
                         symldl_v2_cpu_issue_fragment_exchange(
                             lu, k, parent, slot, true);
-                        symldl_v2_cpu_progress_all_fragment_exchanges(
+                        symldl_v2_cpu_progress_all_exchanges(
                             lu, false);
                     }
                     else
                         symldl_v2_cpu_exchange_fragments_and_update(
                             lu, k, parent, slot, true);
                 }
-                if (lu->Pr == 1 && lu->Pc == 1)
+                if (route == SYM_LDL_V2_CPU_ROUTE_COLLAPSED)
                     ++lu->symV2CpuPanelsCompleted;
                 lu->symV2CpuPanelIssueTime +=
                     SuperLU_timer_() - panel_issue_start;

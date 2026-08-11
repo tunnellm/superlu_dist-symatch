@@ -19,7 +19,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
     symV2RouteProfileNotePanelBcast(pc_fragment_schur);
     xlpanel_t<Ftype> k_lpanel = getKLpanel(k, offset);
 
-    if (Pr > 1)
+    if (Pr > 1 || pc_fragment_schur)
         dSymV2LFragmentExchangeGPU(k, offset);
 
     bool local_singleton_panel =
@@ -27,7 +27,7 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
         grid3d->cscp.Np <= 1 && grid3d->rscp.Np <= 1;
 
     const bool pcfrag_async_exchange_panel_ready =
-        pc_fragment_schur && Pr > 1 && Pc > 1 &&
+        pc_fragment_schur && Pc > 1 &&
         !superlu_cuda_aware_mpi() &&
         superlu_sym_v2_pc_fragment_ldl_native() &&
         superlu_sym_v2_row_l_plan_v2_exchange() &&
@@ -86,42 +86,6 @@ int_t xLUstruct_t<Ftype>::dSymV2PanelBcastGPU(int_t k, int_t offset)
                                      static_cast<size_t>(lidx_count),
                                  cudaMemcpyDeviceToHost));
         }
-    }
-
-    if (symV2IsPr1Fastpath() && !symV2IsPc1Fastpath() &&
-        LidxSendCounts[k] > 0)
-    {
-        int_t ksupc = SuperSize(k);
-        if (symV2DiagBlocks.size() != static_cast<size_t>(nsupers) ||
-            symV2DiagBlocksGPU.size() != static_cast<size_t>(nsupers))
-            ABORT("SymFact V2 diagonal block vector has invalid size.");
-        if (mycol == sym_panel_root && symV2DiagBlocksGPU[k] == NULL)
-            ABORT("SymFact V2 device diagonal block is missing.");
-        if (symV2DiagBlocks[k] == NULL)
-        {
-            symV2DiagBlocks[k] = (Ftype *) SUPERLU_MALLOC(
-                symldl_v2_square_bytes(
-                    ksupc, sizeof(Ftype),
-                    "SymFact V2 diagonal block allocation overflows."));
-            if (symV2DiagBlocks[k] == NULL)
-                ABORT("Malloc fails for SymFact V2 diagonal block.");
-        }
-        if (symV2DiagBlocksGPU[k] == NULL)
-            gpuErrchk(cudaMalloc(
-                (void **) &symV2DiagBlocksGPU[k],
-                symldl_v2_square_bytes(
-                    ksupc, sizeof(Ftype),
-                    "SymFact V2 device diagonal block allocation overflows.")));
-
-        int diag_count = symldl_v2_mpi_count(
-            symldl_v2_square_count(ksupc,
-                                   "SymFact V2 diagonal block count overflows."),
-            "SymFact V2 diagonal block count exceeds MPI limit.");
-        superlu_gpu_mpi_bcast(symV2DiagBlocksGPU[k], symV2DiagBlocks[k],
-                              sizeof(Ftype), diag_count,
-                              get_mpi_type<Ftype>(),
-                              static_cast<int>(sym_panel_root),
-                              grid3d->rscp.comm);
     }
 
     SCT->tPanelBcast += (SuperLU_timer_() - t0);

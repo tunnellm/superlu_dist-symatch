@@ -69,6 +69,7 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuSlotGeneration.clear();
     symV2CpuRequests.clear();
     symV2CpuRequestPeers.clear();
+    symV2CpuRequestKinds.clear();
     symV2CpuWaitIndices.clear();
     symV2CpuWaitStatuses.clear();
     symV2CpuPartnerRecvOffsets.clear();

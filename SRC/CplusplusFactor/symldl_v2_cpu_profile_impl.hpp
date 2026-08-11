@@ -58,6 +58,7 @@ static SymLDLV2CpuCapacitySnapshot symldl_v2_cpu_capacity_snapshot(
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRequests);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerRecvOffsets);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRequestPeers);
+    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRequestKinds);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuWaitIndices);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuWaitStatuses);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerRecvChunksRemaining);
@@ -284,6 +285,17 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
     MPI_Reduce(&lu->symV2CpuWorkerCount, &max_workers, 1, MPI_INT,
                MPI_MAX, 0, lu->grid3d->comm);
 
+    unsigned long long local_specialized_counters[5] = {
+        lu->symV2CpuRoutePanels[SYM_LDL_V2_CPU_ROUTE_COLLAPSED],
+        lu->symV2CpuRoutePanels[SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY],
+        lu->symV2CpuRoutePanels[SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT],
+        lu->symV2CpuReleaseEventsLocal,
+        lu->symV2CpuReleaseEventsPartner
+    };
+    unsigned long long sum_specialized_counters[5] = {0};
+    MPI_Reduce(local_specialized_counters, sum_specialized_counters, 5,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, lu->grid3d->comm);
+
     if (lu->grid3d->iam != 0)
         return;
     std::printf(
@@ -379,6 +391,12 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         max_workers, symldl_v2_cpu_min_deferred_work(), blas_threads,
         blas_source, symldl_v2_cpu_padded_direct_enabled() ? 1 : 0,
         symldl_v2_cpu_async_exchange_enabled() ? 1 : 0);
+    std::printf(
+        "SymFact V2 CPU grid specialization profile (sum): enabled=%d route_panels(collapsed/pc1/dual)=%llu/%llu/%llu release_events(local/partner)=%llu/%llu\n",
+        symldl_v2_cpu_grid_specializations_enabled() ? 1 : 0,
+        sum_specialized_counters[0], sum_specialized_counters[1],
+        sum_specialized_counters[2], sum_specialized_counters[3],
+        sum_specialized_counters[4]);
     std::printf(
         "SymFact V2 CPU communication counters (sum): partner_bytes=%llu row_bytes=%llu invdiag_bytes=%llu reduction_bytes=%llu backpressure=%llu testsome=%llu waitsome=%llu mpi_completions=%llu send_drains=%llu oversized_chunks=%llu\n",
         sum_counters[11], sum_counters[12], sum_counters[13],
