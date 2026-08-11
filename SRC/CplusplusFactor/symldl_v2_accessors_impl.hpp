@@ -62,13 +62,6 @@ inline bool xLUstruct_t<Ftype>::symV2IsPr1Fastpath() const
 }
 
 template <typename Ftype>
-inline bool xLUstruct_t<Ftype>::symV2UseGpuPr1Specialization() const
-{
-    return symV2UsesGpuFactor() &&
-           symldl_v2_use_gpu_pr1_specialization(grid3d);
-}
-
-template <typename Ftype>
 inline int_t xLUstruct_t<Ftype>::symV2PanelRoot(int_t k)
 {
     return kcol(k);

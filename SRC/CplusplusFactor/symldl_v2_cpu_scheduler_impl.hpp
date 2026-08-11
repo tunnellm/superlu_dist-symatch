@@ -198,15 +198,6 @@ static int_t symldl_v2_cpu_factor_forest(
                     else
                         symldl_v2_cpu_complete_exchange(lu, slot);
                 }
-                else if (route == SYM_LDL_V2_CPU_ROUTE_PR1_FULL_PANEL)
-                {
-                    symldl_v2_cpu_issue_pr1_exchange(
-                        lu, k, parent, slot);
-                    if (symldl_v2_cpu_async_exchange_enabled())
-                        symldl_v2_cpu_progress_all_exchanges(lu, false);
-                    else
-                        symldl_v2_cpu_complete_exchange(lu, slot);
-                }
                 else
                 {
                     if (symldl_v2_cpu_async_exchange_enabled())

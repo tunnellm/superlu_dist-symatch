@@ -28,25 +28,11 @@ static inline bool symldl_v2_use_pc_fragment_schur(
            superlu_sym_v2_pc_fragment_ldl_native();
 }
 
-static inline bool symldl_v2_use_gpu_pr1_specialization(
-    const gridinfo3d_t *grid3d)
-{
-    return grid3d != NULL &&
-           grid3d->nprow == 1 &&
-           grid3d->npcol > 1 &&
-           superlu_sym_v2_gpu_pr1_specialization();
-}
-
 static inline bool symldl_v2_use_gpu_pc_fragment_schur(
     const gridinfo3d_t *grid3d)
 {
-    if (grid3d == NULL || grid3d->npcol <= 1)
-        return false;
-    const bool general_grid = grid3d->nprow > 1;
-    const bool pr1_ablation =
-        grid3d->nprow == 1 &&
-        !superlu_sym_v2_gpu_pr1_specialization();
-    return (general_grid || pr1_ablation) &&
+    return grid3d != NULL &&
+           grid3d->npcol > 1 &&
            superlu_sym_v2_pc_fragment_schur() &&
            superlu_sym_v2_pc_fragment_ldl_native();
 }

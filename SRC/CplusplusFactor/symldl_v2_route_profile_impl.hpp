@@ -25,10 +25,6 @@ static inline const char *symldl_v2_route_profile_label(
         return "dual_fragment_lookahead";
     case SYM_V2_ROUTE_DUAL_FRAGMENT_EXCLUDE:
         return "dual_fragment_exclude";
-    case SYM_V2_ROUTE_GPU_PR1_FULL_PANEL:
-        return "gpu_pr1_full_panel";
-    case SYM_V2_ROUTE_GPU_PR1_DUAL_FRAGMENT:
-        return "gpu_pr1_dual_fragment";
     default:
         return "unknown";
     }
