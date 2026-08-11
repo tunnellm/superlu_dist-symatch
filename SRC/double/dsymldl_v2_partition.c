@@ -1,6 +1,8 @@
 
 
 #include "superlu_ddefs.h"
+#include <errno.h>
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -17,18 +19,50 @@ typedef struct {
 
 typedef enum {
     DSYM_V2_MAPPING_CYCLIC = 0,
-    DSYM_V2_MAPPING_GREEDY = 1
+    DSYM_V2_MAPPING_ID = 1,
+    DSYM_V2_MAPPING_ID2D = 2,
+    DSYM_V2_MAPPING_GREEDY = 3
 } dSymV2Mapping_t;
+
+typedef struct {
+    double *row_work;
+    double *column_work;
+    int_t *order;
+} dSymV2IDWork_t;
+
+typedef struct {
+    int_t gid;
+    int_t depth;
+} dSymV2IDOrderEntry_t;
 
 static dSymV2Mapping_t dSymV2Mapping(void)
 {
     const char *env = getenv("GPU3DV2_MAPPING");
     if (env == NULL || env[0] == '\0' || strcmp(env, "CYCLIC") == 0)
         return DSYM_V2_MAPPING_CYCLIC;
+    if (strcmp(env, "ID") == 0)
+        return DSYM_V2_MAPPING_ID;
+    if (strcmp(env, "ID2D") == 0)
+        return DSYM_V2_MAPPING_ID2D;
     if (strcmp(env, "GREEDY") == 0)
         return DSYM_V2_MAPPING_GREEDY;
-    ABORT("GPU3DV2_MAPPING must be CYCLIC or GREEDY.");
+    ABORT("GPU3DV2_MAPPING must be CYCLIC, ID, ID2D, or GREEDY.");
     return DSYM_V2_MAPPING_CYCLIC;
+}
+
+static double dSymV2IDBlockOperationCost(void)
+{
+    const char *env = getenv("GPU3DV2_ID_BLOCK_OP_COST");
+    if (env == NULL || env[0] == '\0')
+        return 1000.0;
+
+    char *end = NULL;
+    errno = 0;
+    double value = strtod(env, &end);
+    if (end == env || *end != '\0' || errno == ERANGE ||
+        !isfinite(value) || value < 0.0)
+        ABORT("GPU3DV2_ID_BLOCK_OP_COST must be a finite nonnegative number.");
+    return value;
 }
 
 static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
@@ -59,6 +93,215 @@ static void dSymV2CostFromDims(double ksupc, double lrows, int nprow,
     cost->tree_weight =
         SUPERLU_MAX(1.0, diag_cost + panel_factor_cost + ll_schur_cost +
                          partner_comm_cost + solve_cost);
+}
+
+static int dSymV2IDOrderCompare(const void *left, const void *right)
+{
+    const dSymV2IDOrderEntry_t *a =
+        (const dSymV2IDOrderEntry_t *) left;
+    const dSymV2IDOrderEntry_t *b =
+        (const dSymV2IDOrderEntry_t *) right;
+    if (a->depth < b->depth)
+        return -1;
+    if (a->depth > b->depth)
+        return 1;
+    if (a->gid < b->gid)
+        return -1;
+    if (a->gid > b->gid)
+        return 1;
+    return 0;
+}
+
+static int dSymV2IntCompare(const void *left, const void *right)
+{
+    const int_t a = *(const int_t *) left;
+    const int_t b = *(const int_t *) right;
+    return (a > b) - (a < b);
+}
+
+static void dSymV2BuildIDOrder(int_t nsupers, treeList_t *treeList,
+                               int_t *order)
+{
+    dSymV2IDOrderEntry_t *entries =
+        (dSymV2IDOrderEntry_t *) SUPERLU_MALLOC(
+            (size_t) nsupers * sizeof(dSymV2IDOrderEntry_t));
+    int_t *stack = INT_T_ALLOC(nsupers);
+    int_t *depth = INT_T_ALLOC(nsupers);
+    if (entries == NULL || stack == NULL || depth == NULL)
+        ABORT("Malloc fails for SymFact V2 ID ordering.");
+
+    for (int_t k = 0; k < nsupers; ++k)
+        depth[k] = -1;
+
+    int_t stack_size = 0;
+    for (int_t r = 0; r < treeList[nsupers].numChild; ++r)
+    {
+        const int_t root = treeList[nsupers].childrenList[r];
+        if (root < 0 || root >= nsupers || depth[root] >= 0 ||
+            stack_size >= nsupers)
+            ABORT("SymFact V2 ID ordering found an invalid elimination tree.");
+        depth[root] = 0;
+        stack[stack_size++] = root;
+    }
+    while (stack_size > 0)
+    {
+        const int_t parent = stack[--stack_size];
+        for (int_t c = 0; c < treeList[parent].numChild; ++c)
+        {
+            const int_t child = treeList[parent].childrenList[c];
+            if (child < 0 || child >= nsupers || depth[child] >= 0 ||
+                stack_size >= nsupers)
+                ABORT("SymFact V2 ID ordering found an invalid elimination tree.");
+            depth[child] = depth[parent] + 1;
+            stack[stack_size++] = child;
+        }
+    }
+
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        if (depth[k] < 0)
+            ABORT("SymFact V2 ID ordering missed a supernode.");
+        entries[k].gid = k;
+        entries[k].depth = depth[k];
+    }
+    qsort(entries, (size_t) nsupers, sizeof(dSymV2IDOrderEntry_t),
+          dSymV2IDOrderCompare);
+    for (int_t k = 0; k < nsupers; ++k)
+        order[k] = entries[k].gid;
+
+    SUPERLU_FREE(depth);
+    SUPERLU_FREE(stack);
+    SUPERLU_FREE(entries);
+}
+
+static void dSymV2FreeIDWork(dSymV2IDWork_t *work)
+{
+    if (work->row_work != NULL)
+        SUPERLU_FREE(work->row_work);
+    if (work->column_work != NULL)
+        SUPERLU_FREE(work->column_work);
+    if (work->order != NULL)
+        SUPERLU_FREE(work->order);
+    memset(work, 0, sizeof(*work));
+}
+
+static void dSymV2BuildIDWork(int_t nsupers, int_t *xsup, int_t *supno,
+                              Glu_freeable_t *Glu_freeable,
+                              treeList_t *treeList,
+                              double block_operation_cost,
+                              int build_column_work,
+                              dSymV2IDWork_t *work)
+{
+    int_t *block_gids;
+    int_t *block_rows;
+
+    memset(work, 0, sizeof(*work));
+    if (xsup == NULL || supno == NULL || Glu_freeable == NULL ||
+        Glu_freeable->xlsub == NULL || Glu_freeable->lsub == NULL ||
+        treeList == NULL)
+        ABORT("SymFact V2 ID mapping requires replicated symbolic L structure.");
+
+    work->row_work =
+        (double *) SUPERLU_MALLOC((size_t) nsupers * sizeof(double));
+    if (build_column_work)
+        work->column_work =
+            (double *) SUPERLU_MALLOC((size_t) nsupers * sizeof(double));
+    work->order = INT_T_ALLOC(nsupers);
+    block_gids = INT_T_ALLOC(nsupers);
+    block_rows = INT_T_ALLOC(nsupers);
+    if (work->row_work == NULL ||
+        (build_column_work && work->column_work == NULL) ||
+        work->order == NULL || block_gids == NULL || block_rows == NULL)
+        ABORT("Malloc fails for SymFact V2 ID work metadata.");
+
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        work->row_work[k] = 0.0;
+        if (build_column_work)
+            work->column_work[k] = 0.0;
+        block_rows[k] = 0;
+    }
+
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        const double width = (double) (xsup[k + 1] - xsup[k]);
+        const int_t fsupc = xsup[k];
+        const int_t begin = Glu_freeable->xlsub[fsupc];
+        const int_t end = Glu_freeable->xlsub[fsupc + 1];
+        int_t block_count = 0;
+
+        if (width <= 0.0 || begin < 0 || end < begin ||
+            end > Glu_freeable->nzlmax)
+            ABORT("SymFact V2 ID work model found invalid symbolic L bounds.");
+
+        const double factor_work =
+            width * width * width / 3.0 + block_operation_cost;
+        work->row_work[k] += factor_work;
+        if (build_column_work)
+            work->column_work[k] += factor_work;
+
+        for (int_t p = begin; p < end; ++p)
+        {
+            const int_t row = Glu_freeable->lsub[p];
+            if (row < 0 || row >= xsup[nsupers])
+                ABORT("SymFact V2 ID work model found an invalid L row.");
+            const int_t gid = supno[row];
+            if (gid < k || gid >= nsupers)
+                ABORT("SymFact V2 ID work model found an invalid lower block.");
+            if (gid > k)
+            {
+                if (block_rows[gid] == 0)
+                {
+                    if (block_count >= nsupers)
+                        ABORT("SymFact V2 ID block count exceeds the matrix size.");
+                    block_gids[block_count++] = gid;
+                }
+                ++block_rows[gid];
+            }
+        }
+        qsort(block_gids, (size_t) block_count, sizeof(int_t),
+              dSymV2IntCompare);
+
+        for (int_t b = 0; b < block_count; ++b)
+        {
+            const int_t gid = block_gids[b];
+            const double rows = (double) block_rows[gid];
+            const double solve_work =
+                rows * width * width + block_operation_cost;
+            work->row_work[gid] += solve_work;
+            if (build_column_work)
+                work->column_work[k] += solve_work;
+        }
+
+        double prefix_rows = 0.0;
+        double total_rows = 0.0;
+        if (build_column_work)
+            for (int_t b = 0; b < block_count; ++b)
+                total_rows += (double) block_rows[block_gids[b]];
+        for (int_t b = 0; b < block_count; ++b)
+        {
+            const int_t gid = block_gids[b];
+            const double rows = (double) block_rows[gid];
+            const double suffix_rows = total_rows - prefix_rows - rows;
+            const double diagonal_update =
+                rows * (rows + 1.0) * width;
+            work->row_work[gid] +=
+                diagonal_update +
+                2.0 * rows * width * prefix_rows +
+                block_operation_cost * (double) (b + 1);
+            if (build_column_work)
+                work->column_work[gid] +=
+                    diagonal_update +
+                    2.0 * rows * width * suffix_rows +
+                    block_operation_cost * (double) (block_count - b);
+            prefix_rows += rows;
+            block_rows[gid] = 0;
+        }
+    }
+
+    dSymV2BuildIDOrder(nsupers, treeList, work->order);
+    SUPERLU_FREE(block_rows);
+    SUPERLU_FREE(block_gids);
 }
 
 static void dSymV2CalcLDLTreeWeight(int_t nsupers, int_t *setree,
@@ -237,7 +480,9 @@ static void dSymV2InitLDLOwners(int_t nsupers,
                                 dtrf3Dpartition_t *trf3Dpart,
                                 int_t *setree,
                                 int_t *xsup,
+                                int_t *supno,
                                 Glu_freeable_t *Glu_freeable,
+                                treeList_t *treeList,
                                 gridinfo3d_t *grid3d)
 {
     gridinfo_t *grid = &(grid3d->grid2d);
@@ -245,9 +490,22 @@ static void dSymV2InitLDLOwners(int_t nsupers,
     int *local_owner;
     size_t owner_bytes = (size_t) nsupers * sizeof(int);
     const dSymV2Mapping_t mapping = dSymV2Mapping();
+    const int uses_id_work =
+        mapping == DSYM_V2_MAPPING_ID || mapping == DSYM_V2_MAPPING_ID2D;
+    const double id_block_operation_cost =
+        uses_id_work
+            ? dSymV2IDBlockOperationCost()
+            : 1000.0;
+    dSymV2IDWork_t id_work;
     double *panel_load = NULL;
     double *row_load = NULL;
     double *rank_load = NULL;
+
+    memset(&id_work, 0, sizeof(id_work));
+    if (uses_id_work)
+        dSymV2BuildIDWork(nsupers, xsup, supno, Glu_freeable, treeList,
+                          id_block_operation_cost,
+                          mapping == DSYM_V2_MAPPING_ID2D, &id_work);
 
     if (mapping == DSYM_V2_MAPPING_GREEDY)
     {
@@ -267,6 +525,24 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         for (int p = 0; p < grid->nprow * grid->npcol; ++p)
             rank_load[p] = 0.0;
     }
+    else if (uses_id_work)
+    {
+        row_load =
+            (double *) SUPERLU_MALLOC(grid->nprow * sizeof(double));
+        if (row_load == NULL)
+            ABORT("Malloc fails for SymFact V2 ID row loads.");
+        for (int pr = 0; pr < grid->nprow; ++pr)
+            row_load[pr] = 0.0;
+        if (mapping == DSYM_V2_MAPPING_ID2D)
+        {
+            panel_load =
+                (double *) SUPERLU_MALLOC(grid->npcol * sizeof(double));
+            if (panel_load == NULL)
+                ABORT("Malloc fails for SymFact V2 ID2D column loads.");
+            for (int pc = 0; pc < grid->npcol; ++pc)
+                panel_load[pc] = 0.0;
+        }
+    }
 
     dSymV2ResetLDLMetadata(trf3Dpart);
 
@@ -283,6 +559,10 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         mapping == DSYM_V2_MAPPING_GREEDY
             ? dSymV2OwnerAffinityWeight()
             : 0.0;
+    if (uses_id_work && grid3d->iam == 0)
+        printf("SymFact V2 LDL owner mapping: %s; block-operation cost %.17g.\n",
+               mapping == DSYM_V2_MAPPING_ID ? "ID" : "ID2D",
+               id_block_operation_cost);
     for (int_t k = 0; k < nsupers; ++k)
     {
         trf3Dpart->symV2PanelRoot[k] = -1;
@@ -290,9 +570,11 @@ static void dSymV2InitLDLOwners(int_t nsupers,
     }
     for (int_t order = 0; order < nsupers; ++order)
     {
-        const int_t k = affinity_weight > 0.0
-                            ? nsupers - 1 - order
-                            : order;
+        const int_t k = uses_id_work
+                            ? id_work.order[order]
+                            : (affinity_weight > 0.0
+                                   ? nsupers - 1 - order
+                                   : order);
         int panel_root;
         int diag_root;
         int owner_rank;
@@ -302,6 +584,30 @@ static void dSymV2InitLDLOwners(int_t nsupers,
             diag_root = PROW(k, grid);
             panel_root = PCOL(k, grid);
             owner_rank = PNUM(diag_root, panel_root, grid);
+        }
+        else if (mapping == DSYM_V2_MAPPING_ID)
+        {
+            diag_root = 0;
+            for (int pr = 1; pr < grid->nprow; ++pr)
+                if (row_load[pr] < row_load[diag_root])
+                    diag_root = pr;
+            panel_root = PCOL(k, grid);
+            owner_rank = PNUM(diag_root, panel_root, grid);
+            row_load[diag_root] += id_work.row_work[k];
+        }
+        else if (mapping == DSYM_V2_MAPPING_ID2D)
+        {
+            diag_root = 0;
+            for (int pr = 1; pr < grid->nprow; ++pr)
+                if (row_load[pr] < row_load[diag_root])
+                    diag_root = pr;
+            panel_root = 0;
+            for (int pc = 1; pc < grid->npcol; ++pc)
+                if (panel_load[pc] < panel_load[panel_root])
+                    panel_root = pc;
+            owner_rank = PNUM(diag_root, panel_root, grid);
+            row_load[diag_root] += id_work.row_work[k];
+            panel_load[panel_root] += id_work.column_work[k];
         }
         else
         {
@@ -382,6 +688,7 @@ static void dSymV2InitLDLOwners(int_t nsupers,
         SUPERLU_FREE(row_load);
     if (rank_load != NULL)
         SUPERLU_FREE(rank_load);
+    dSymV2FreeIDWork(&id_work);
 }
 
 static void dSymV2BuildLocalLDLIndexes(int_t nsupers,
@@ -853,7 +1160,8 @@ void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
     trf3Dpart->gEtreeInfo = fillEtreeInfo(nsupers, setree, treeList);
     dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
                         LUstruct->Glu_persist->xsup,
-                        Glu_freeable, grid3d);
+                        LUstruct->Glu_persist->supno,
+                        Glu_freeable, treeList, grid3d);
     dSymV2BuildLDLSchedule(nsupers, setree, trf3Dpart,
                            LUstruct->Glu_persist->xsup, grid3d);
 
