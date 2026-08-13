@@ -86,7 +86,7 @@ static void symldl_v2_resize_cpu_request_workspace(
         static_cast<size_t>(slots), 0);
 }
 
-static size_t symldl_v2_cpu_window_memory_per_rank(MPI_Comm comm)
+static size_t symldl_v2_cpu_bounded_memory_per_rank(MPI_Comm comm)
 {
 #if defined(_SC_AVPHYS_PAGES) && defined(_SC_PAGESIZE)
     long available_pages = sysconf(_SC_AVPHYS_PAGES);
@@ -120,7 +120,7 @@ static size_t symldl_v2_cpu_window_memory_per_rank(MPI_Comm comm)
     unsigned long long global_available = 0;
     if (MPI_Allreduce(&available, &global_available, 1,
                       MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm) != MPI_SUCCESS)
-        ABORT("SymFact V2 CPU window memory exchange failed.");
+        ABORT("SymFact V2 CPU bounded memory exchange failed.");
     return global_available >
                    static_cast<unsigned long long>(
                        std::numeric_limits<size_t>::max())
@@ -133,15 +133,16 @@ static size_t symldl_v2_cpu_window_memory_per_rank(MPI_Comm comm)
 }
 
 template <typename Ftype>
-static int symldl_v2_cpu_window_slot_count(
+static int symldl_v2_cpu_bounded_slot_count(
     xLUstruct_t<Ftype> *lu, int requested, size_t values_per_slot)
 {
     if (requested <= 0 || values_per_slot == 0)
-        ABORT("SymFact V2 CPU window slot estimate is invalid.");
+        ABORT("SymFact V2 CPU bounded slot estimate is invalid.");
     size_t bytes_per_slot = symldl_v2_checked_product(
         values_per_slot, sizeof(Ftype),
-        "SymFact V2 CPU window slot size overflows.");
-    size_t available = symldl_v2_cpu_window_memory_per_rank(lu->grid3d->comm);
+        "SymFact V2 CPU bounded slot size overflows.");
+    size_t available = symldl_v2_cpu_bounded_memory_per_rank(
+        lu->grid3d->comm);
     size_t local_limit = available == std::numeric_limits<size_t>::max()
                              ? static_cast<size_t>(requested)
                              : available / bytes_per_slot;
@@ -152,12 +153,12 @@ static int symldl_v2_cpu_window_slot_count(
     int slots = 0;
     if (MPI_Allreduce(&local_slots, &slots, 1, MPI_INT, MPI_MIN,
                       lu->grid3d->comm) != MPI_SUCCESS)
-        ABORT("SymFact V2 CPU window slot-count exchange failed.");
+        ABORT("SymFact V2 CPU bounded slot-count exchange failed.");
     int required = SUPERLU_MIN(requested, 2);
     if (slots < required)
-        ABORT("Not enough host memory for SymFact V2 CPU window slots.");
+        ABORT("Not enough host memory for SymFact V2 CPU scheduler slots.");
     if (lu->grid3d->iam == 0)
-        printf("SymFact V2 CPU window slots: requested=%d selected=%d "
+        printf("SymFact V2 CPU bounded slots: requested=%d selected=%d "
                "bytes_per_slot=%zu available_per_rank=%zu\n",
                requested, slots, bytes_per_slot, available);
     return slots;
@@ -298,11 +299,16 @@ static void symldl_v2_allocate_cpu_factor_workspace(
                          route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     bool needs_row = route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     bool needs_partner_plan = route != SYM_LDL_V2_CPU_ROUTE_COLLAPSED;
-    bool needs_window = symldl_v2_cpu_scheduler_kind() ==
-                        SYM_LDL_V2_CPU_SCHEDULER_WINDOW;
+    SymLDLV2CpuSchedulerKind scheduler = symldl_v2_cpu_scheduler_kind();
+    bool needs_window = scheduler == SYM_LDL_V2_CPU_SCHEDULER_WINDOW;
+    bool needs_aggregate = needs_window ||
+                           scheduler == SYM_LDL_V2_CPU_SCHEDULER_HYBRID;
+    if (scheduler == SYM_LDL_V2_CPU_SCHEDULER_HYBRID &&
+        !symldl_v2_cpu_async_exchange_enabled())
+        ABORT("SymFact V2 CPU HYBRID scheduler requires GPU3DV2_CPU_ASYNC_EXCHANGE=1.");
     lu->symV2CpuRawPanelCapacity =
         static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount));
-    if (needs_window && needs_partner_plan)
+    if (needs_aggregate && needs_partner_plan)
         lu->symV2CpuRawPanelCapacity = SUPERLU_MAX(
             lu->symV2CpuRawPanelCapacity,
             static_cast<size_t>(SUPERLU_MAX(
@@ -317,7 +323,7 @@ static void symldl_v2_allocate_cpu_factor_workspace(
     lu->symV2CpuRowRecvCapacity = needs_row
         ? static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount)) : 0;
 
-    if (needs_window)
+    if (needs_aggregate)
     {
         size_t values_per_slot = lu->symV2CpuRawPanelCapacity;
         if (needs_partner)
@@ -330,7 +336,7 @@ static void symldl_v2_allocate_cpu_factor_workspace(
             values_per_slot += lu->symV2CpuRowSendCapacity;
             values_per_slot += lu->symV2CpuRowRecvCapacity;
         }
-        slots = symldl_v2_cpu_window_slot_count(
+        slots = symldl_v2_cpu_bounded_slot_count(
             lu, slots, values_per_slot);
     }
 
@@ -371,6 +377,8 @@ static void symldl_v2_allocate_cpu_factor_workspace(
         std::numeric_limits<size_t>::max());
     lu->symV2CpuPartnerRecvChunksRemaining.assign(exchange_peers, 0);
     lu->symV2CpuPartnerUpdateSubmitted.assign(exchange_peers, 0);
+    if (scheduler == SYM_LDL_V2_CPU_SCHEDULER_HYBRID)
+        lu->symV2CpuPartnerPeerAssembled.assign(exchange_peers, 0);
     lu->symV2CpuExchangeStates.assign(
         static_cast<size_t>(slots), SymLDLV2CpuExchangeState());
     if (needs_window)

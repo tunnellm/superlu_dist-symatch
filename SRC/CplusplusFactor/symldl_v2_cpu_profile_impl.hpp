@@ -57,6 +57,8 @@ static SymLDLV2CpuCapacitySnapshot symldl_v2_cpu_capacity_snapshot(
     for (size_t i = 0; i < lu->symV2CpuPartnerAssembleMaps.size(); ++i)
         symldl_v2_cpu_capacity_mix_vector(
             &snapshot, lu->symV2CpuPartnerAssembleMaps[i]);
+    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerPeerRangeOffsets);
+    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerPeerRanges);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerSegments);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerRowPermutations);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRowSegOffsets);
@@ -72,6 +74,7 @@ static SymLDLV2CpuCapacitySnapshot symldl_v2_cpu_capacity_snapshot(
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuWaitStatuses);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerRecvChunksRemaining);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerUpdateSubmitted);
+    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerPeerAssembled);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuExchangeStates);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuWindowStates);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuSlotRequestCounts);
@@ -113,7 +116,7 @@ static uint64_t symldl_v2_cpu_count_outstanding_requests(
 template <typename Ftype>
 static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 {
-    enum { timer_count = 47, counter_count = 44 };
+    enum { timer_count = 49, counter_count = 48 };
     double local_timers[timer_count] = {
         lu->symV2CpuPlanBuildTime,
         lu->symV2CpuWorkspaceInitTime,
@@ -161,7 +164,9 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuWindowLookaheadWaitTime,
         lu->symV2CpuWindowExcludeTime,
         lu->symV2CpuWindowExcludeWaitTime,
-        lu->symV2CpuWindowNextIssueTime
+        lu->symV2CpuWindowNextIssueTime,
+        lu->symV2CpuHybridAssemblyTime,
+        lu->symV2CpuHybridReleaseTime
     };
     double max_timers[timer_count] = {0.0};
     MPI_Reduce(local_timers, max_timers, timer_count, MPI_DOUBLE, MPI_MAX, 0,
@@ -211,7 +216,11 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuWindowInlineRectangles,
         lu->symV2CpuWindowDeferredRectangles,
         lu->symV2CpuWindowRowBlocks,
-        lu->symV2CpuWindowColumnBlocks
+        lu->symV2CpuWindowColumnBlocks,
+        lu->symV2CpuHybridRectangles,
+        lu->symV2CpuHybridInlineRectangles,
+        lu->symV2CpuHybridDeferredRectangles,
+        lu->symV2CpuHybridPeerReleases
     };
     unsigned long long sum_counters[counter_count] = {0};
     MPI_Reduce(local_counters, sum_counters, counter_count,
@@ -421,8 +430,8 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         "SymFact V2 CPU execution policy: outer_task_workers=%d min_deferred_work=%" PRIu64 " blas_threads=%s source=%s padded_direct=%d async_exchange=%d\n",
         max_workers, symldl_v2_cpu_min_deferred_work(), blas_threads,
         blas_source, symldl_v2_cpu_padded_direct_enabled() ? 1 : 0,
-        symldl_v2_cpu_scheduler_kind() ==
-                    SYM_LDL_V2_CPU_SCHEDULER_COMPLETION &&
+        symldl_v2_cpu_scheduler_kind() !=
+                    SYM_LDL_V2_CPU_SCHEDULER_WINDOW &&
                 symldl_v2_cpu_async_exchange_enabled()
             ? 1
             : 0);
@@ -439,6 +448,10 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         sum_counters[37], sum_counters[38], sum_counters[39],
         sum_counters[40], sum_counters[41], sum_counters[42],
         sum_counters[43]);
+    std::printf(
+        "SymFact V2 CPU hybrid profile (max-rank/sum): assembly=%.6f release=%.6f rectangles=%llu inline=%llu deferred=%llu peer_releases=%llu\n",
+        max_timers[47], max_timers[48], sum_counters[44],
+        sum_counters[45], sum_counters[46], sum_counters[47]);
     std::printf(
         "SymFact V2 CPU grid specialization profile (sum): enabled=%d route_panels(collapsed/pc1/dual)=%llu/%llu/%llu release_events(local/partner)=%llu/%llu\n",
         symldl_v2_cpu_grid_specializations_enabled() ? 1 : 0,

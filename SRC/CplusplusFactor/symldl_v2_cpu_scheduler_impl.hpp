@@ -4,6 +4,7 @@
 #include "symldl_v2_cpu_panel_impl.hpp"
 #include "symldl_v2_cpu_exchange_impl.hpp"
 #include "symldl_v2_cpu_update_impl.hpp"
+#include "symldl_v2_cpu_hybrid_exchange_impl.hpp"
 #include "symldl_v2_cpu_specialized_exchange_impl.hpp"
 #include "symldl_v2_factor_gpu_bridge.hpp"
 #include "symldl_v2_cpu_window_scheduler_impl.hpp"
@@ -168,7 +169,10 @@ static int_t symldl_v2_cpu_completion_factor_forest(
 
                 double panel_issue_start = SuperLU_timer_();
                 ++lu->symV2CpuPanelsIssued;
-                symldl_v2_cpu_capture_raw_panel(lu, k, slot);
+                bool hybrid = symldl_v2_cpu_scheduler_kind() ==
+                              SYM_LDL_V2_CPU_SCHEDULER_HYBRID;
+                if (!hybrid)
+                    symldl_v2_cpu_capture_raw_panel(lu, k, slot);
 #ifdef HAVE_CUDA
                 pdgstrf3d_symv2_diag_panel_cuda_bridge(
                     static_cast<void *>(lu), k, slot, slot, diag_buffers);
@@ -183,17 +187,37 @@ static int_t symldl_v2_cpu_completion_factor_forest(
 
                 if (route == SYM_LDL_V2_CPU_ROUTE_COLLAPSED)
                 {
-                    Ftype *raw_values = NULL;
-                    xlpanel_t<Ftype> panel = symldl_v2_cpu_exchange_panel(
-                        lu, k, slot, &raw_values);
-                    symldl_v2_cpu_submit_collapsed_schur_tasks(
-                        lu, k, parent, slot, panel, raw_values);
+                    if (hybrid)
+                    {
+                        symldl_v2_cpu_hybrid_reconstruct_collapsed_raw(
+                            lu, k, slot);
+                        int_t local_panel = lu->symV2PanelIndex(k);
+                        xlpanel_t<Ftype> &row_panel =
+                            lu->lPanelVec[local_panel];
+                        xlpanel_t<Ftype> column_panel(
+                            row_panel.index,
+                            lu->symV2CpuRawPanelBufs[slot]);
+                        symldl_v2_cpu_hybrid_submit_collapsed(
+                            lu, k, parent, slot, row_panel, column_panel);
+                    }
+                    else
+                    {
+                        Ftype *raw_values = NULL;
+                        xlpanel_t<Ftype> panel = symldl_v2_cpu_exchange_panel(
+                            lu, k, slot, &raw_values);
+                        symldl_v2_cpu_submit_collapsed_schur_tasks(
+                            lu, k, parent, slot, panel, raw_values);
+                    }
                     ++lu->symV2CpuReleaseEventsLocal;
                 }
                 else if (route == SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY)
                 {
-                    symldl_v2_cpu_issue_pc1_exchange(
-                        lu, k, parent, slot);
+                    if (hybrid)
+                        symldl_v2_cpu_issue_hybrid_exchange(
+                            lu, k, parent, slot, route);
+                    else
+                        symldl_v2_cpu_issue_pc1_exchange(
+                            lu, k, parent, slot);
                     if (symldl_v2_cpu_async_exchange_enabled())
                         symldl_v2_cpu_progress_all_exchanges(lu, false);
                     else
@@ -201,7 +225,14 @@ static int_t symldl_v2_cpu_completion_factor_forest(
                 }
                 else
                 {
-                    if (symldl_v2_cpu_async_exchange_enabled())
+                    if (hybrid)
+                    {
+                        symldl_v2_cpu_issue_hybrid_exchange(
+                            lu, k, parent, slot, route);
+                        symldl_v2_cpu_progress_all_exchanges(
+                            lu, false);
+                    }
+                    else if (symldl_v2_cpu_async_exchange_enabled())
                     {
                         symldl_v2_cpu_issue_fragment_exchange(
                             lu, k, parent, slot, true);

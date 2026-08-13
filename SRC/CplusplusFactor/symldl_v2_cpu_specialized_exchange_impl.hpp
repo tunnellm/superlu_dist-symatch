@@ -283,6 +283,10 @@ static bool symldl_v2_cpu_progress_exchange(
         lu->symV2CpuExchangeStates[slot];
     if (!state.active)
         return false;
+    if (symldl_v2_cpu_scheduler_kind() ==
+        SYM_LDL_V2_CPU_SCHEDULER_HYBRID)
+        return symldl_v2_cpu_progress_hybrid_exchange(
+            lu, slot, blocking);
     if (state.route == SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY)
         return symldl_v2_cpu_progress_pc1_exchange(lu, slot, blocking);
     return symldl_v2_cpu_progress_fragment_exchange(lu, slot, blocking);

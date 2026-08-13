@@ -390,6 +390,8 @@ static void symldl_v2_build_cpu_partner_aggregate_plan(
         static_cast<size_t>(lu->nsupers), std::vector<int_t>());
     lu->symV2CpuPartnerAssembleMaps.assign(
         compact_count, std::vector<int_t>());
+    std::vector<std::vector<SymLDLV2CpuBlockRange> > peer_ranges(
+        compact_count);
 
     std::vector<SymLDLV2CpuPartnerBlockRef> blocks;
     for (int_t k = 0; k < lu->nsupers; ++k)
@@ -479,6 +481,19 @@ static void symldl_v2_build_cpu_partner_aggregate_plan(
             map.push_back(destination_row);
             map.push_back(rows);
             map.push_back(panel.stRow(ref.source_block));
+
+            std::vector<SymLDLV2CpuBlockRange> &ranges =
+                peer_ranges[source_pos];
+            if (!ranges.empty() && ranges.back().end ==
+                                       static_cast<int_t>(block))
+                ranges.back().end = static_cast<int_t>(block + 1);
+            else
+            {
+                SymLDLV2CpuBlockRange range;
+                range.begin = static_cast<int_t>(block);
+                range.end = static_cast<int_t>(block + 1);
+                ranges.push_back(range);
+            }
         }
         size_t values = symldl_v2_checked_product(
             static_cast<size_t>(total_rows),
@@ -487,6 +502,21 @@ static void symldl_v2_build_cpu_partner_aggregate_plan(
         if (values > lu->symV2CpuRawPanelCapacity)
             ABORT("SymFact V2 CPU assembled partner workspace is undersized.");
     }
+
+    lu->symV2CpuPartnerPeerRangeOffsets.assign(compact_count + 1, 0);
+    size_t total_ranges = 0;
+    for (size_t peer = 0; peer < compact_count; ++peer)
+    {
+        lu->symV2CpuPartnerPeerRangeOffsets[peer] = total_ranges;
+        total_ranges += peer_ranges[peer].size();
+    }
+    lu->symV2CpuPartnerPeerRangeOffsets[compact_count] = total_ranges;
+    lu->symV2CpuPartnerPeerRanges.clear();
+    lu->symV2CpuPartnerPeerRanges.reserve(total_ranges);
+    for (size_t peer = 0; peer < compact_count; ++peer)
+        lu->symV2CpuPartnerPeerRanges.insert(
+            lu->symV2CpuPartnerPeerRanges.end(),
+            peer_ranges[peer].begin(), peer_ranges[peer].end());
 }
 
 template <typename Ftype>
@@ -966,7 +996,9 @@ static void symldl_v2_build_cpu_fragment_plan(xLUstruct_t<Ftype> *lu)
     symldl_v2_build_cpu_partner_receive_plan(
         lu, *target_column_metadata);
     if (symldl_v2_cpu_scheduler_kind() ==
-        SYM_LDL_V2_CPU_SCHEDULER_WINDOW)
+            SYM_LDL_V2_CPU_SCHEDULER_WINDOW ||
+        symldl_v2_cpu_scheduler_kind() ==
+            SYM_LDL_V2_CPU_SCHEDULER_HYBRID)
         symldl_v2_build_cpu_partner_aggregate_plan(lu);
     lu->symV2CpuPartnerRecvPlanTime += SuperLU_timer_() - phase_start;
     if (route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT)

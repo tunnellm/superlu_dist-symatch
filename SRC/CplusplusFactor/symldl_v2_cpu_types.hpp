@@ -33,7 +33,8 @@ static inline bool symldl_v2_cpu_grid_specializations_enabled()
 enum SymLDLV2CpuSchedulerKind
 {
     SYM_LDL_V2_CPU_SCHEDULER_COMPLETION = 0,
-    SYM_LDL_V2_CPU_SCHEDULER_WINDOW = 1
+    SYM_LDL_V2_CPU_SCHEDULER_WINDOW = 1,
+    SYM_LDL_V2_CPU_SCHEDULER_HYBRID = 2
 };
 
 static inline SymLDLV2CpuSchedulerKind symldl_v2_cpu_scheduler_kind()
@@ -45,7 +46,9 @@ static inline SymLDLV2CpuSchedulerKind symldl_v2_cpu_scheduler_kind()
             return SYM_LDL_V2_CPU_SCHEDULER_COMPLETION;
         if (std::strcmp(value, "WINDOW") == 0)
             return SYM_LDL_V2_CPU_SCHEDULER_WINDOW;
-        ABORT("GPU3DV2_CPU_SCHEDULER must be COMPLETION or WINDOW.");
+        if (std::strcmp(value, "HYBRID") == 0)
+            return SYM_LDL_V2_CPU_SCHEDULER_HYBRID;
+        ABORT("GPU3DV2_CPU_SCHEDULER must be COMPLETION, WINDOW, or HYBRID.");
         return SYM_LDL_V2_CPU_SCHEDULER_COMPLETION;
     }();
     return kind;
@@ -53,10 +56,15 @@ static inline SymLDLV2CpuSchedulerKind symldl_v2_cpu_scheduler_kind()
 
 static inline const char *symldl_v2_cpu_scheduler_name()
 {
-    return symldl_v2_cpu_scheduler_kind() ==
-                   SYM_LDL_V2_CPU_SCHEDULER_WINDOW
-               ? "window"
-               : "completion";
+    switch (symldl_v2_cpu_scheduler_kind())
+    {
+        case SYM_LDL_V2_CPU_SCHEDULER_WINDOW:
+            return "window";
+        case SYM_LDL_V2_CPU_SCHEDULER_HYBRID:
+            return "hybrid";
+        default:
+            return "completion";
+    }
 }
 
 enum SymLDLV2CpuExchangeRoute
@@ -121,6 +129,12 @@ struct SymLDLV2CpuPackSegment
     int_t row_count;
     int_t packed_row_offset;
     size_t row_permutation_offset;
+};
+
+struct SymLDLV2CpuBlockRange
+{
+    int_t begin = 0;
+    int_t end = 0;
 };
 
 struct SymLDLV2CpuRowLookup

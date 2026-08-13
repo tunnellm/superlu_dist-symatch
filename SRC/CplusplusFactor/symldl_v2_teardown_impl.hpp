@@ -77,8 +77,11 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuPartnerSendRowActive.clear();
     symV2CpuPartnerAssembledIndex.clear();
     symV2CpuPartnerAssembleMaps.clear();
+    symV2CpuPartnerPeerRangeOffsets.clear();
+    symV2CpuPartnerPeerRanges.clear();
     symV2CpuPartnerRecvChunksRemaining.clear();
     symV2CpuPartnerUpdateSubmitted.clear();
+    symV2CpuPartnerPeerAssembled.clear();
     symV2CpuExchangeStates.clear();
     symV2CpuWindowStates.clear();
     symV2CpuWindowDonePanelBcast.clear();
