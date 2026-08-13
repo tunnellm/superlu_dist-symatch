@@ -44,6 +44,10 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuPartnerRecvCapacity = 0;
     symV2CpuRowSendCapacity = 0;
     symV2CpuRowRecvCapacity = 0;
+    if (symV2CpuColumnPadWorkspace != NULL)
+        SUPERLU_FREE(symV2CpuColumnPadWorkspace);
+    symV2CpuColumnPadWorkspace = NULL;
+    symV2CpuColumnPadWorkspaceValues = 0;
     if (symV2CpuPanelPending != NULL)
         SUPERLU_FREE(symV2CpuPanelPending);
     if (symV2CpuSlotPending != NULL)

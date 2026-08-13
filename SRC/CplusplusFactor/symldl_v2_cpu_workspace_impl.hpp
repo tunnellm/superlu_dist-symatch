@@ -279,6 +279,21 @@ static void symldl_v2_allocate_cpu_factor_workspace(
     int profile_threads = SUPERLU_MAX(1, lu->nThreads);
     lu->symV2CpuThreadProfiles.assign(
         static_cast<size_t>(profile_threads), SymLDLV2CpuThreadProfile());
+    if (symldl_v2_cpu_2d_padded_direct_enabled())
+    {
+        size_t values_per_thread = symldl_v2_checked_product(
+            static_cast<size_t>(lu->ldt), static_cast<size_t>(lu->ldt),
+            "SymFact V2 CPU 2D padded-direct workspace overflows.");
+        lu->symV2CpuColumnPadWorkspaceValues = symldl_v2_checked_product(
+            static_cast<size_t>(profile_threads), values_per_thread,
+            "SymFact V2 CPU 2D padded-direct workspace overflows.");
+        lu->symV2CpuColumnPadWorkspace = static_cast<Ftype *>(
+            SUPERLU_MALLOC(symldl_v2_checked_product(
+                lu->symV2CpuColumnPadWorkspaceValues, sizeof(Ftype),
+                "SymFact V2 CPU 2D padded-direct workspace overflows.")));
+        if (lu->symV2CpuColumnPadWorkspace == NULL)
+            ABORT("Malloc fails for SymFact V2 CPU 2D padded-direct workspace.");
+    }
     lu->symV2CpuSlotPending = int32Calloc_dist(slots);
     lu->symV2CpuPanelPending = int32Calloc_dist(lu->symV2PanelCount());
     if (lu->symV2CpuSlotPending == NULL ||

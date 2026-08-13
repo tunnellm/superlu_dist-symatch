@@ -60,6 +60,20 @@ static size_t symldl_v2_cpu_output_lock_id(
 }
 
 template <typename Ftype>
+static SymLDLV2CpuThreadProfile &symldl_v2_cpu_thread_profile(
+    xLUstruct_t<Ftype> *lu)
+{
+    int thread = 0;
+#ifdef _OPENMP
+    thread = omp_get_thread_num();
+#endif
+    if (thread < 0 || static_cast<size_t>(thread) >=
+                          lu->symV2CpuThreadProfiles.size())
+        ABORT("SymFact V2 CPU profile does not cover the OpenMP team.");
+    return lu->symV2CpuThreadProfiles[static_cast<size_t>(thread)];
+}
+
+template <typename Ftype>
 static void symldl_v2_cpu_lock_output(
     xLUstruct_t<Ftype> *lu, size_t lock_id)
 {
@@ -73,18 +87,17 @@ static void symldl_v2_cpu_lock_output(
         omp_set_lock(&locks[lock_id]);
         return;
     }
-#pragma omp atomic update
-    ++lu->symV2CpuOutputLockAttempts;
+    SymLDLV2CpuThreadProfile &profile =
+        symldl_v2_cpu_thread_profile(lu);
+    ++profile.output_lock_attempts;
     double wait_start = SuperLU_timer_();
     if (!omp_test_lock(&locks[lock_id]))
     {
-#pragma omp atomic update
-        ++lu->symV2CpuOutputLockConflicts;
+        ++profile.output_lock_conflicts;
         omp_set_lock(&locks[lock_id]);
     }
     double wait = SuperLU_timer_() - wait_start;
-#pragma omp atomic update
-    lu->symV2CpuScatterLockWaitTime += wait;
+    profile.output_lock_wait_time += wait;
 #else
     (void) lu;
     (void) lock_id;
@@ -274,20 +287,26 @@ static inline uint64_t symldl_v2_cpu_min_deferred_work()
 template <typename Ftype>
 static void symldl_v2_cpu_note_gemm_shape(
     xLUstruct_t<Ftype> *lu, int_t m, int_t n, int_t k,
-    double elapsed)
+    double elapsed, bool lookahead, bool direct)
 {
     if (!lu->symV2CpuProfileEnabled)
         return;
-    int thread = 0;
-#ifdef _OPENMP
-    thread = omp_get_thread_num();
-#endif
-    if (thread < 0 ||
-        static_cast<size_t>(thread) >= lu->symV2CpuThreadProfiles.size())
-        ABORT("SymFact V2 CPU worker profile does not cover the OpenMP team.");
     SymLDLV2CpuThreadProfile &profile =
-        lu->symV2CpuThreadProfiles[static_cast<size_t>(thread)];
+        symldl_v2_cpu_thread_profile(lu);
     uint64_t flops = symldl_v2_cpu_gemm_flops(m, n, k);
+    ++profile.grouped_gemms;
+    profile.gemm_flops = symldl_v2_cpu_saturating_add(
+        profile.gemm_flops, flops);
+    profile.gemm_time += elapsed;
+    if (lookahead)
+        profile.lookahead_gemm_time += elapsed;
+    else
+        profile.exclude_gemm_time += elapsed;
+    if (direct)
+    {
+        ++profile.direct_scatters;
+        profile.direct_time += elapsed;
+    }
     ++profile.gemms;
     if (flops < symldl_v2_cpu_min_deferred_work())
     {
@@ -567,10 +586,7 @@ static void symldl_v2_cpu_scatter_dual_block(
     if (lu->symV2CpuProfileEnabled)
     {
         row_map_time = SuperLU_timer_() - row_map_start;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-        lu->symV2CpuRowMapTime += row_map_time;
+        symldl_v2_cpu_thread_profile(lu).row_map_time += row_map_time;
     }
 
     if (lu->symV2CpuProfileEnabled)
@@ -714,16 +730,10 @@ static void symldl_v2_cpu_scatter_dual_block(
     if (!lu->symV2CpuProfileEnabled)
         return;
     double scatter_time = SuperLU_timer_() - scatter_start;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-    lu->symV2CpuMappedScatterTime += scatter_time;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-    ++lu->symV2CpuMappedScatters;
     SymLDLV2CpuThreadProfile &profile =
         lu->symV2CpuThreadProfiles[static_cast<size_t>(thread_id)];
+    profile.mapped_time += scatter_time;
+    ++profile.mapped_scatters;
     if (row_contiguous)
         profile.contiguous_scatter_time += scatter_time;
     else
@@ -813,20 +823,47 @@ static bool symldl_v2_cpu_find_group_destination(
     xLUstruct_t<Ftype> *lu, xlpanel_t<Ftype> &row_panel,
     int_t first_row_block, int_t last_row_block,
     xlpanel_t<Ftype> &column_panel,
-    int_t source_j, bool allow_row_padding, int_t *local_panel_out,
-    int_t *first_block_out, int_t *last_block_out,
+    int_t source_j, bool require_full_columns, bool allow_row_padding,
+    int_t *local_panel_out, int_t *first_block_out, int_t *last_block_out,
     int_t *destination_rows_out)
 {
     int_t gj = column_panel.gid(source_j);
     if (lu->symV2PanelRoot(gj) != lu->mycol)
         return false;
     int_t n = column_panel.nbrow(source_j);
-    if (n != lu->supersize(gj))
+    int_t destination_columns = lu->supersize(gj);
+    if (n <= 0 || destination_columns <= 0 || n > destination_columns)
         return false;
     int_t *column_rows = column_panel.rowList(source_j);
-    for (int_t column = 0; column < n; ++column)
-        if (column_rows[column] != column)
+    if (require_full_columns)
+    {
+        if (n != destination_columns)
             return false;
+        for (int_t column = 0; column < n; ++column)
+            if (column_rows[column] != column)
+                return false;
+    }
+    else
+    {
+        if (destination_columns > lu->ldt)
+            return false;
+        int thread_id = 0;
+#ifdef _OPENMP
+        thread_id = omp_get_thread_num();
+#endif
+        int_t *column_map =
+            lu->indirectCol + static_cast<size_t>(thread_id) * lu->ldt;
+        std::fill(column_map, column_map + destination_columns, (int_t) -1);
+        for (int_t column = 0; column < n; ++column)
+        {
+            int_t destination_column = column_rows[column];
+            if (destination_column < 0 ||
+                destination_column >= destination_columns ||
+                column_map[destination_column] >= 0)
+                return false;
+            column_map[destination_column] = column;
+        }
+    }
 
     int_t local_panel = lu->symV2PanelIndex(gj);
     if (local_panel < 0 || local_panel >= lu->symV2PanelCount())
@@ -882,6 +919,55 @@ static bool symldl_v2_cpu_find_group_destination(
         destination.nbrow(previous_destination_block) -
         destination_row_begin;
     return true;
+}
+
+static inline uint64_t symldl_v2_cpu_scaled_value_limit(
+    uint64_t source_values, int percent)
+{
+    uint64_t quotient = static_cast<uint64_t>(percent / 100);
+    uint64_t remainder = static_cast<uint64_t>(percent % 100);
+    const uint64_t limit = std::numeric_limits<uint64_t>::max();
+    if (quotient != 0 && source_values > limit / quotient)
+        return limit;
+    uint64_t allowed = source_values * quotient;
+    uint64_t extra = (source_values / 100) * remainder +
+                     ((source_values % 100) * remainder) / 100;
+    return extra > limit - allowed ? limit : allowed + extra;
+}
+
+static inline void symldl_v2_cpu_note_padded_2d_limit(
+    uint64_t source_values, uint64_t destination_values, int percent,
+    uint64_t &source_counter, uint64_t &destination_counter)
+{
+    if (destination_values >
+        symldl_v2_cpu_scaled_value_limit(source_values, percent))
+        return;
+    source_counter += source_values;
+    destination_counter += destination_values;
+}
+
+template <typename Ftype>
+static void symldl_v2_cpu_pack_padded_columns(
+    xlpanel_t<Ftype> &column_panel, int_t source_j,
+    const Ftype *column_values, int_t destination_columns, int_t k,
+    Ftype *padded)
+{
+    int_t source_columns = column_panel.nbrow(source_j);
+    int_t *column_rows = column_panel.rowList(source_j);
+    std::fill(padded,
+              padded + static_cast<size_t>(destination_columns) * k,
+              zeroT<Ftype>());
+    const Ftype *source = column_values +
+                          column_panel.blkPtrOffset(source_j);
+    for (int_t inner = 0; inner < k; ++inner)
+    {
+        const Ftype *source_column =
+            source + static_cast<size_t>(inner) * column_panel.LDA();
+        Ftype *destination_column =
+            padded + static_cast<size_t>(inner) * destination_columns;
+        for (int_t column = 0; column < source_columns; ++column)
+            destination_column[column_rows[column]] = source_column[column];
+    }
 }
 
 template <typename Ftype>
@@ -986,7 +1072,7 @@ static long long symldl_v2_cpu_grouped_update_column(
         int_t direct_destination_rows = 0;
         if (symldl_v2_cpu_find_group_destination(
                 lu, row_panel, source_i, group_last, column_panel, source_j,
-                false, &direct_local_panel, &direct_first_block,
+                true, false, &direct_local_panel, &direct_first_block,
                 &direct_last_block, &direct_destination_rows))
         {
             symldl_v2_cpu_assert_panel_unfactored(
@@ -1012,55 +1098,17 @@ static long long symldl_v2_cpu_grouped_update_column(
             double direct_time = lu->symV2CpuProfileEnabled ?
                 SuperLU_timer_() - direct_start : 0.0;
             symldl_v2_cpu_note_gemm_shape(
-                lu, m, n, k, direct_time);
+                lu, m, n, k, direct_time, lookahead, true);
             for (int_t block = direct_last_block;
                  block >= direct_first_block; --block)
                 symldl_v2_cpu_unlock_output(
                     lu, symldl_v2_cpu_output_lock_id(
                             lu, direct_local_panel, block));
-            if (lu->symV2CpuProfileEnabled)
-            {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuGemmTime += direct_time;
-                if (lookahead)
-                {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                    lu->symV2CpuLookaheadGemmTime += direct_time;
-                }
-                else
-                {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                    lu->symV2CpuExcludeGemmTime += direct_time;
-                }
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuDirectScatterTime += direct_time;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                ++lu->symV2CpuGroupedGemms;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                ++lu->symV2CpuDirectScatters;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuGemmFlops +=
-                    symldl_v2_cpu_gemm_flops(m, n, k);
-            }
         }
         else if (symldl_v2_cpu_padded_direct_enabled() &&
                  symldl_v2_cpu_find_group_destination(
                      lu, row_panel, source_i, group_last, column_panel,
-                     source_j, true, &direct_local_panel,
+                     source_j, true, true, &direct_local_panel,
                      &direct_first_block, &direct_last_block,
                      &direct_destination_rows) &&
                  direct_destination_rows <= lu->ldt &&
@@ -1115,46 +1163,8 @@ static long long symldl_v2_cpu_grouped_update_column(
             if (lu->symV2CpuProfileEnabled)
             {
                 symldl_v2_cpu_note_gemm_shape(
-                    lu, direct_destination_rows, n, k, gemm_time);
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuGemmTime += gemm_time;
-                if (lookahead)
-                {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                    lu->symV2CpuLookaheadGemmTime += gemm_time;
-                }
-                else
-                {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                    lu->symV2CpuExcludeGemmTime += gemm_time;
-                }
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuDirectScatterTime += gemm_time;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuPaddedPackTime += pack_time;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                ++lu->symV2CpuGroupedGemms;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                ++lu->symV2CpuDirectScatters;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuGemmFlops += symldl_v2_cpu_gemm_flops(
-                    direct_destination_rows, n, k);
+                    lu, direct_destination_rows, n, k, gemm_time,
+                    lookahead, true);
                 if (thread_id < 0 ||
                     static_cast<size_t>(thread_id) >=
                         lu->symV2CpuThreadProfiles.size())
@@ -1163,6 +1173,7 @@ static long long symldl_v2_cpu_grouped_update_column(
                 SymLDLV2CpuThreadProfile &profile =
                     lu->symV2CpuThreadProfiles[
                         static_cast<size_t>(thread_id)];
+                profile.padded_pack_time += pack_time;
                 ++profile.padded_direct_groups;
                 profile.padded_direct_source_values +=
                     static_cast<uint64_t>(m) * n;
@@ -1176,57 +1187,211 @@ static long long symldl_v2_cpu_grouped_update_column(
 #ifdef _OPENMP
             thread_id = omp_get_thread_num();
 #endif
-            Ftype *update = lu->bigV +
-                static_cast<size_t>(thread_id) * lu->ldt * lu->ldt;
-            Ftype alpha = one<Ftype>();
-            Ftype beta = zeroT<Ftype>();
-            double gemm_start =
-                lu->symV2CpuProfileEnabled ? SuperLU_timer_() : 0.0;
-            symldl_v2_cpu_gemm<Ftype>(
-                "N", "T", m, n, k, alpha,
-                row_panel.val + row_begin, row_panel.LDA(),
-                const_cast<Ftype *>(column_values) +
-                    column_panel.blkPtrOffset(source_j),
-                column_panel.LDA(), beta, update, m);
-            double gemm_time = lu->symV2CpuProfileEnabled ?
-                SuperLU_timer_() - gemm_start : 0.0;
-            symldl_v2_cpu_note_gemm_shape(
-                lu, m, n, k, gemm_time);
-            if (lu->symV2CpuProfileEnabled)
+            bool executed_2d_direct = false;
+            bool padded_2d_enabled =
+                symldl_v2_cpu_2d_padded_direct_enabled();
+            bool inspect_2d_direct =
+                padded_2d_enabled || lu->symV2CpuProfileEnabled;
+            int_t destination_columns = 0;
+            bool column_needs_padding = false;
+            if (inspect_2d_direct)
             {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuGemmTime += gemm_time;
-                if (lookahead)
+                destination_columns = lu->supersize(gj);
+                int_t *column_rows = column_panel.rowList(source_j);
+                column_needs_padding = n != destination_columns;
+                for (int_t column = 0;
+                     column < n && !column_needs_padding; ++column)
+                    column_needs_padding = column_rows[column] != column;
+            }
+            if (column_needs_padding &&
+                inspect_2d_direct)
+            {
+                bool row_padded = false;
+                bool layout_ok = symldl_v2_cpu_find_group_destination(
+                    lu, row_panel, source_i, group_last, column_panel,
+                    source_j, false, false, &direct_local_panel,
+                    &direct_first_block, &direct_last_block,
+                    &direct_destination_rows);
+                if (!layout_ok)
                 {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                    lu->symV2CpuLookaheadGemmTime += gemm_time;
+                    layout_ok = symldl_v2_cpu_find_group_destination(
+                        lu, row_panel, source_i, group_last, column_panel,
+                        source_j, false, true, &direct_local_panel,
+                        &direct_first_block, &direct_last_block,
+                        &direct_destination_rows);
+                    row_padded = layout_ok;
                 }
-                else
+
+                uint64_t source_values = static_cast<uint64_t>(m) *
+                                         static_cast<uint64_t>(n);
+                uint64_t destination_values = layout_ok ?
+                    static_cast<uint64_t>(direct_destination_rows) *
+                        static_cast<uint64_t>(destination_columns) : 0;
+                SymLDLV2CpuThreadProfile *profile =
+                    lu->symV2CpuProfileEnabled ?
+                    &symldl_v2_cpu_thread_profile(lu) : NULL;
+                if (profile != NULL && layout_ok)
                 {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                    lu->symV2CpuExcludeGemmTime += gemm_time;
+                    ++profile->padded_2d_candidates;
+                    profile->padded_2d_source_values += source_values;
+                    profile->padded_2d_destination_values +=
+                        destination_values;
+                    symldl_v2_cpu_note_padded_2d_limit(
+                        source_values, destination_values, 110,
+                        profile->padded_2d_le_110_source_values,
+                        profile->padded_2d_le_110_destination_values);
+                    symldl_v2_cpu_note_padded_2d_limit(
+                        source_values, destination_values, 125,
+                        profile->padded_2d_le_125_source_values,
+                        profile->padded_2d_le_125_destination_values);
+                    symldl_v2_cpu_note_padded_2d_limit(
+                        source_values, destination_values, 150,
+                        profile->padded_2d_le_150_source_values,
+                        profile->padded_2d_le_150_destination_values);
+                    symldl_v2_cpu_note_padded_2d_limit(
+                        source_values, destination_values, 200,
+                        profile->padded_2d_le_200_source_values,
+                        profile->padded_2d_le_200_destination_values);
                 }
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                ++lu->symV2CpuGroupedGemms;
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-                lu->symV2CpuGemmFlops +=
-                    symldl_v2_cpu_gemm_flops(m, n, k);
+
+                bool workspace_ok = direct_destination_rows > 0 &&
+                    direct_destination_rows <= lu->ldt &&
+                    destination_columns > 0 && destination_columns <= lu->ldt &&
+                    lu->symV2CpuColumnPadWorkspace != NULL;
+                bool expansion_ok = !padded_2d_enabled ||
+                    (layout_ok && destination_values <=
+                        symldl_v2_cpu_scaled_value_limit(
+                            source_values,
+                            symldl_v2_cpu_2d_padded_direct_max_percent()));
+                if (padded_2d_enabled &&
+                    layout_ok && workspace_ok && expansion_ok)
+                {
+                    symldl_v2_cpu_assert_panel_unfactored(
+                        lu, direct_local_panel);
+                    size_t workspace_offset =
+                        static_cast<size_t>(thread_id) * lu->ldt * lu->ldt;
+                    size_t workspace_values =
+                        static_cast<size_t>(destination_columns) * k;
+                    if (workspace_offset >
+                            lu->symV2CpuColumnPadWorkspaceValues ||
+                        workspace_values >
+                            lu->symV2CpuColumnPadWorkspaceValues -
+                                workspace_offset)
+                        ABORT(
+                            "SymFact V2 CPU 2D padded-direct workspace is too small.");
+                    Ftype *padded_columns =
+                        lu->symV2CpuColumnPadWorkspace + workspace_offset;
+                    double column_pack_start = lu->symV2CpuProfileEnabled ?
+                        SuperLU_timer_() : 0.0;
+                    symldl_v2_cpu_pack_padded_columns(
+                        column_panel, source_j, column_values,
+                        destination_columns, k, padded_columns);
+                    double column_pack_time = lu->symV2CpuProfileEnabled ?
+                        SuperLU_timer_() - column_pack_start : 0.0;
+
+                    Ftype *row_values = row_panel.val + row_begin;
+                    int_t row_lda = row_panel.LDA();
+                    double row_pack_time = 0.0;
+                    if (row_padded)
+                    {
+                        Ftype *padded_rows = lu->bigV + workspace_offset;
+                        int_t *destination_index = lu->indirect +
+                            static_cast<size_t>(thread_id) * lu->ldt;
+                        int_t *row_map = lu->indirectRow +
+                            static_cast<size_t>(thread_id) * lu->ldt;
+                        xlpanel_t<Ftype> &destination =
+                            lu->lPanelVec[direct_local_panel];
+                        double row_pack_start = lu->symV2CpuProfileEnabled ?
+                            SuperLU_timer_() : 0.0;
+                        symldl_v2_cpu_pack_padded_group(
+                            lu, direct_local_panel, row_panel, source_i,
+                            group_last, destination, direct_first_block,
+                            direct_destination_rows, destination_index,
+                            row_map, lu->ldt, padded_rows);
+                        row_pack_time = lu->symV2CpuProfileEnabled ?
+                            SuperLU_timer_() - row_pack_start : 0.0;
+                        row_values = padded_rows;
+                        row_lda = direct_destination_rows;
+                    }
+
+                    xlpanel_t<Ftype> &destination =
+                        lu->lPanelVec[direct_local_panel];
+                    for (int_t block = direct_first_block;
+                         block <= direct_last_block; ++block)
+                        symldl_v2_cpu_lock_output(
+                            lu, symldl_v2_cpu_output_lock_id(
+                                    lu, direct_local_panel, block));
+                    Ftype alpha = -one<Ftype>();
+                    Ftype beta = one<Ftype>();
+                    double gemm_start = lu->symV2CpuProfileEnabled ?
+                        SuperLU_timer_() : 0.0;
+                    symldl_v2_cpu_gemm<Ftype>(
+                        "N", "T", direct_destination_rows,
+                        destination_columns, k, alpha, row_values, row_lda,
+                        padded_columns, destination_columns, beta,
+                        destination.blkPtr(direct_first_block),
+                        destination.LDA());
+                    double gemm_time = lu->symV2CpuProfileEnabled ?
+                        SuperLU_timer_() - gemm_start : 0.0;
+                    symldl_v2_cpu_note_gemm_shape(
+                        lu, direct_destination_rows, destination_columns, k,
+                        gemm_time, lookahead, true);
+                    for (int_t block = direct_last_block;
+                         block >= direct_first_block; --block)
+                        symldl_v2_cpu_unlock_output(
+                            lu, symldl_v2_cpu_output_lock_id(
+                                    lu, direct_local_panel, block));
+                    if (profile != NULL)
+                    {
+                        ++profile->padded_2d_executed;
+                        profile->padded_2d_row_and_column +=
+                            row_padded ? 1 : 0;
+                        profile->padded_2d_executed_source_values +=
+                            source_values;
+                        profile->padded_2d_executed_destination_values +=
+                            destination_values;
+                        profile->padded_2d_row_pack_time += row_pack_time;
+                        profile->padded_2d_column_pack_time +=
+                            column_pack_time;
+                        profile->padded_pack_time +=
+                            row_pack_time + column_pack_time;
+                    }
+                    executed_2d_direct = true;
+                }
+                else if (profile != NULL &&
+                         padded_2d_enabled)
+                {
+                    profile->padded_2d_layout_rejects += layout_ok ? 0 : 1;
+                    profile->padded_2d_workspace_rejects +=
+                        layout_ok && !workspace_ok ? 1 : 0;
+                    profile->padded_2d_expansion_rejects +=
+                        layout_ok && workspace_ok && !expansion_ok ? 1 : 0;
+                }
             }
 
-            for (int_t block = source_i; block <= group_last; ++block)
-                symldl_v2_cpu_scatter_dual_block(
-                    lu, row_panel, block, column_panel, source_j,
-                    update + row_panel.stRow(block) - row_begin, m);
+            if (!executed_2d_direct)
+            {
+                Ftype *update = lu->bigV +
+                    static_cast<size_t>(thread_id) * lu->ldt * lu->ldt;
+                Ftype alpha = one<Ftype>();
+                Ftype beta = zeroT<Ftype>();
+                double gemm_start = lu->symV2CpuProfileEnabled ?
+                    SuperLU_timer_() : 0.0;
+                symldl_v2_cpu_gemm<Ftype>(
+                    "N", "T", m, n, k, alpha,
+                    row_panel.val + row_begin, row_panel.LDA(),
+                    const_cast<Ftype *>(column_values) +
+                        column_panel.blkPtrOffset(source_j),
+                    column_panel.LDA(), beta, update, m);
+                double gemm_time = lu->symV2CpuProfileEnabled ?
+                    SuperLU_timer_() - gemm_start : 0.0;
+                symldl_v2_cpu_note_gemm_shape(
+                    lu, m, n, k, gemm_time, lookahead, false);
+                for (int_t block = source_i; block <= group_last; ++block)
+                    symldl_v2_cpu_scatter_dual_block(
+                        lu, row_panel, block, column_panel, source_j,
+                        update + row_panel.stRow(block) - row_begin, m);
+            }
         }
         completed += static_cast<long long>(group_last - source_i + 1);
         source_i = group_last + 1;

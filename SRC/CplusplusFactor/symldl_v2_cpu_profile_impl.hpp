@@ -96,6 +96,51 @@ static uint64_t symldl_v2_cpu_count_outstanding_requests(
 template <typename Ftype>
 static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
 {
+    unsigned long long local_hot_counters[6] = {0};
+    double local_hot_timers[8] = {0.0};
+    unsigned long long local_padded_2d[18] = {0};
+    double local_padded_2d_times[2] = {0.0};
+    for (size_t thread = 0; thread < lu->symV2CpuThreadProfiles.size();
+         ++thread)
+    {
+        const SymLDLV2CpuThreadProfile &profile =
+            lu->symV2CpuThreadProfiles[thread];
+        local_hot_counters[0] += profile.grouped_gemms;
+        local_hot_counters[1] += profile.gemm_flops;
+        local_hot_counters[2] += profile.direct_scatters;
+        local_hot_counters[3] += profile.mapped_scatters;
+        local_hot_counters[4] += profile.output_lock_attempts;
+        local_hot_counters[5] += profile.output_lock_conflicts;
+        local_hot_timers[0] += profile.gemm_time;
+        local_hot_timers[1] += profile.lookahead_gemm_time;
+        local_hot_timers[2] += profile.exclude_gemm_time;
+        local_hot_timers[3] += profile.direct_time;
+        local_hot_timers[4] += profile.mapped_time;
+        local_hot_timers[5] += profile.output_lock_wait_time;
+        local_hot_timers[6] += profile.padded_pack_time;
+        local_hot_timers[7] += profile.row_map_time;
+        local_padded_2d[0] += profile.padded_2d_candidates;
+        local_padded_2d[1] += profile.padded_2d_source_values;
+        local_padded_2d[2] += profile.padded_2d_destination_values;
+        local_padded_2d[3] += profile.padded_2d_le_110_source_values;
+        local_padded_2d[4] += profile.padded_2d_le_110_destination_values;
+        local_padded_2d[5] += profile.padded_2d_le_125_source_values;
+        local_padded_2d[6] += profile.padded_2d_le_125_destination_values;
+        local_padded_2d[7] += profile.padded_2d_le_150_source_values;
+        local_padded_2d[8] += profile.padded_2d_le_150_destination_values;
+        local_padded_2d[9] += profile.padded_2d_le_200_source_values;
+        local_padded_2d[10] += profile.padded_2d_le_200_destination_values;
+        local_padded_2d[11] += profile.padded_2d_executed;
+        local_padded_2d[12] += profile.padded_2d_row_and_column;
+        local_padded_2d[13] += profile.padded_2d_executed_source_values;
+        local_padded_2d[14] += profile.padded_2d_executed_destination_values;
+        local_padded_2d[15] += profile.padded_2d_layout_rejects;
+        local_padded_2d[16] += profile.padded_2d_workspace_rejects;
+        local_padded_2d[17] += profile.padded_2d_expansion_rejects;
+        local_padded_2d_times[0] += profile.padded_2d_row_pack_time;
+        local_padded_2d_times[1] += profile.padded_2d_column_pack_time;
+    }
+
     enum { timer_count = 40, counter_count = 37 };
     double local_timers[timer_count] = {
         lu->symV2CpuPlanBuildTime,
@@ -116,16 +161,16 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuInvDiagCommTime,
         lu->symV2CpuWTransformTime,
         lu->symV2CpuSchurTime,
-        lu->symV2CpuGemmTime,
-        lu->symV2CpuLookaheadGemmTime,
-        lu->symV2CpuExcludeGemmTime,
-        lu->symV2CpuDirectScatterTime,
-        lu->symV2CpuMappedScatterTime,
-        lu->symV2CpuScatterLockWaitTime,
+        local_hot_timers[0],
+        local_hot_timers[1],
+        local_hot_timers[2],
+        local_hot_timers[3],
+        local_hot_timers[4],
+        local_hot_timers[5],
         lu->symV2CpuSchedulerIdleTime,
         lu->symV2CpuSlotBackpressureTime,
         lu->symV2CpuReductionTime,
-        lu->symV2CpuPaddedPackTime,
+        local_hot_timers[6],
         lu->SCT->pdgstrfTimer,
         lu->symV2CpuPartnerSendPlanTime,
         lu->symV2CpuMetadataGatherTime,
@@ -137,7 +182,7 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuRowRecvLayoutTime,
         lu->symV2CpuRowDemandExchangeTime,
         lu->symV2CpuRowSendPlanTime,
-        lu->symV2CpuRowMapTime
+        local_hot_timers[7]
     };
     double max_timers[timer_count] = {0.0};
     MPI_Reduce(local_timers, max_timers, timer_count, MPI_DOUBLE, MPI_MAX, 0,
@@ -147,14 +192,14 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         lu->symV2CpuPanelsIssued,
         lu->symV2CpuPanelsCompleted,
         lu->symV2CpuSchurTasks,
-        lu->symV2CpuGroupedGemms,
-        lu->symV2CpuGemmFlops,
-        lu->symV2CpuDirectScatters,
-        lu->symV2CpuMappedScatters,
+        local_hot_counters[0],
+        local_hot_counters[1],
+        local_hot_counters[2],
+        local_hot_counters[3],
         lu->symV2CpuLookaheadTasks,
         lu->symV2CpuExcludeTasks,
-        lu->symV2CpuOutputLockAttempts,
-        lu->symV2CpuOutputLockConflicts,
+        local_hot_counters[4],
+        local_hot_counters[5],
         lu->symV2CpuPartnerBytes,
         lu->symV2CpuRowBytes,
         lu->symV2CpuInvDiagBytes,
@@ -262,6 +307,12 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
                MPI_MAX, 0, lu->grid3d->comm);
     MPI_Reduce(local_worker_times, max_worker_times, 8, MPI_DOUBLE,
                MPI_MAX, 0, lu->grid3d->comm);
+    unsigned long long sum_padded_2d[18] = {0};
+    double max_padded_2d_times[2] = {0.0};
+    MPI_Reduce(local_padded_2d, sum_padded_2d, 18,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, lu->grid3d->comm);
+    MPI_Reduce(local_padded_2d_times, max_padded_2d_times, 2,
+               MPI_DOUBLE, MPI_MAX, 0, lu->grid3d->comm);
     unsigned long long local_lookup[4] = {
         static_cast<unsigned long long>(lu->symV2CpuRowLookups.size()),
         0,
@@ -364,6 +415,18 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
     std::printf(
         "SymFact V2 CPU padded-direct execution (sum): groups=%llu source_values=%llu destination_values=%llu\n",
         sum_shapes[28], sum_shapes[29], sum_shapes[30]);
+    std::printf(
+        "SymFact V2 CPU 2D padded-direct candidates (sum): groups=%llu source_values=%llu destination_values=%llu le_1.10=%llu/%llu le_1.25=%llu/%llu le_1.50=%llu/%llu le_2.00=%llu/%llu\n",
+        sum_padded_2d[0], sum_padded_2d[1], sum_padded_2d[2],
+        sum_padded_2d[3], sum_padded_2d[4], sum_padded_2d[5],
+        sum_padded_2d[6], sum_padded_2d[7], sum_padded_2d[8],
+        sum_padded_2d[9], sum_padded_2d[10]);
+    std::printf(
+        "SymFact V2 CPU 2D padded-direct execution (sum/max-rank): groups=%llu row_and_column=%llu source_values=%llu destination_values=%llu rejects(layout/workspace/expansion)=%llu/%llu/%llu row_pack=%.6f column_pack=%.6f\n",
+        sum_padded_2d[11], sum_padded_2d[12], sum_padded_2d[13],
+        sum_padded_2d[14], sum_padded_2d[15], sum_padded_2d[16],
+        sum_padded_2d[17], max_padded_2d_times[0],
+        max_padded_2d_times[1]);
     const char *blas_threads = std::getenv("BLIS_NUM_THREADS");
     const char *blas_source = "BLIS_NUM_THREADS";
     if (blas_threads == NULL || blas_threads[0] == '\0')
@@ -386,10 +449,15 @@ static void symldl_v2_cpu_profile_print(xLUstruct_t<Ftype> *lu)
         blas_threads = "caller-controlled";
         blas_source = "generic-BLAS";
     }
+    bool padded_2d_enabled =
+        symldl_v2_cpu_2d_padded_direct_enabled();
+    int padded_2d_max_percent = padded_2d_enabled ?
+        symldl_v2_cpu_2d_padded_direct_max_percent() : 125;
     std::printf(
-        "SymFact V2 CPU execution policy: outer_task_workers=%d min_deferred_work=%" PRIu64 " blas_threads=%s source=%s padded_direct=%d async_exchange=%d\n",
+        "SymFact V2 CPU execution policy: outer_task_workers=%d min_deferred_work=%" PRIu64 " blas_threads=%s source=%s padded_direct=%d padded_2d_direct=%d padded_2d_max_percent=%d async_exchange=%d\n",
         max_workers, symldl_v2_cpu_min_deferred_work(), blas_threads,
         blas_source, symldl_v2_cpu_padded_direct_enabled() ? 1 : 0,
+        padded_2d_enabled ? 1 : 0, padded_2d_max_percent,
         symldl_v2_cpu_async_exchange_enabled() ? 1 : 0);
     std::printf(
         "SymFact V2 CPU grid specialization profile (sum): enabled=%d route_panels(collapsed/pc1/dual)=%llu/%llu/%llu release_events(local/partner)=%llu/%llu\n",
