@@ -29,7 +29,8 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
 
     std::vector<Ftype *> *buffers[] = {
         &symV2CpuRawPanelBufs, &symV2CpuPartnerSendBufs,
-        &symV2CpuPartnerRecvBufs, &symV2CpuRowSendBufs,
+        &symV2CpuPartnerRecvBufs, &symV2CpuPartnerAssembledBufs,
+        &symV2CpuRowSendBufs,
         &symV2CpuRowRecvBufs
     };
     for (size_t b = 0; b < sizeof(buffers) / sizeof(buffers[0]); ++b)
@@ -42,6 +43,7 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuRawPanelCapacity = 0;
     symV2CpuPartnerSendCapacity = 0;
     symV2CpuPartnerRecvCapacity = 0;
+    symV2CpuPartnerAssembledCapacity = 0;
     symV2CpuRowSendCapacity = 0;
     symV2CpuRowRecvCapacity = 0;
     if (symV2CpuPanelPending != NULL)
@@ -73,9 +75,16 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuWaitIndices.clear();
     symV2CpuWaitStatuses.clear();
     symV2CpuPartnerRecvOffsets.clear();
+    symV2CpuPartnerSendRowActive.clear();
+    symV2CpuPartnerAssembledIndex.clear();
+    symV2CpuPartnerAssembleMaps.clear();
     symV2CpuPartnerRecvChunksRemaining.clear();
     symV2CpuPartnerUpdateSubmitted.clear();
     symV2CpuExchangeStates.clear();
+    symV2CpuWindowStates.clear();
+    symV2CpuWindowDonePanelBcast.clear();
+    symV2CpuWindowDonePanelSolve.clear();
+    symV2CpuWindowChildrenLeft.clear();
     symV2CpuDeferredTasksActive = 0;
     symV2CpuSlotRequestCounts.clear();
     symV2CpuSlotSendBegins.clear();

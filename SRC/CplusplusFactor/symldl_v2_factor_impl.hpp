@@ -73,8 +73,13 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
             {
                 if (symV2UsesCpuFactor())
                 {
-                    symldl_v2_cpu_ancestor_reduction(
-                        this, ilvl, myNodeCount, treePerm);
+                    if (symldl_v2_cpu_scheduler_kind() ==
+                        SYM_LDL_V2_CPU_SCHEDULER_WINDOW)
+                        symldl_v2_cpu_window_ancestor_reduction(
+                            this, ilvl, myNodeCount, treePerm);
+                    else
+                        symldl_v2_cpu_ancestor_reduction(
+                            this, ilvl, myNodeCount, treePerm);
                 }
                 else
                 {

@@ -175,6 +175,10 @@ static void symldl_v2_build_cpu_partner_send_plan(
     if (lu->symL2LSendMeta.size() != slots ||
         lu->symV2PartnerLSendSizes.size() != slots)
         ABORT("SymFact V2 CPU partner plan tables are not initialized.");
+    size_t active_slots = symldl_v2_checked_product(
+        slots, static_cast<size_t>(lu->Pr),
+        "SymFact V2 CPU partner active mask overflows.");
+    lu->symV2CpuPartnerSendRowActive.assign(active_slots, 0);
 
     lu->symV2CpuPartnerSegOffsets.assign(slots + 1, 0);
     lu->symV2CpuPartnerSendOffsets.assign(slots, 0);
@@ -262,6 +266,10 @@ static void symldl_v2_build_cpu_partner_send_plan(
                 static_cast<size_t>(std::numeric_limits<int>::max()))
                 lu->symV2PartnerLSendSizes[slot] =
                     static_cast<int>(values);
+            if (values > 0)
+                for (int pr = 0; pr < lu->Pr; ++pr)
+                    lu->symV2CpuPartnerSendRowActive[
+                        slot * static_cast<size_t>(lu->Pr) + pr] = 1;
             panel_value_offset += values;
         }
     }
@@ -361,6 +369,123 @@ static void symldl_v2_build_cpu_partner_receive_plan(
             }
             position = record_end;
         }
+    }
+}
+
+struct SymLDLV2CpuPartnerBlockRef
+{
+    int_t gid;
+    int source_pr;
+    int_t source_block;
+};
+
+template <typename Ftype>
+static void symldl_v2_build_cpu_partner_aggregate_plan(
+    xLUstruct_t<Ftype> *lu)
+{
+    size_t compact_count = symldl_v2_checked_product(
+        static_cast<size_t>(lu->nsupers), static_cast<size_t>(lu->Pr),
+        "SymFact V2 CPU partner aggregate table overflows.");
+    lu->symV2CpuPartnerAssembledIndex.assign(
+        static_cast<size_t>(lu->nsupers), std::vector<int_t>());
+    lu->symV2CpuPartnerAssembleMaps.assign(
+        compact_count, std::vector<int_t>());
+
+    std::vector<SymLDLV2CpuPartnerBlockRef> blocks;
+    for (int_t k = 0; k < lu->nsupers; ++k)
+    {
+        blocks.clear();
+        for (int pr = 0; pr < lu->Pr; ++pr)
+        {
+            size_t source_pos = static_cast<size_t>(k) * lu->Pr + pr;
+            if (source_pos >= lu->symV2PartnerLRecvIndexBySrc.size())
+                ABORT("SymFact V2 CPU partner source index is missing.");
+            const std::vector<int_t> &source =
+                lu->symV2PartnerLRecvIndexBySrc[source_pos];
+            if (source.empty())
+                continue;
+            xlpanel_t<Ftype> panel(
+                const_cast<int_t *>(source.data()), (Ftype *) NULL);
+            for (int_t block = 0; block < panel.nblocks(); ++block)
+            {
+                SymLDLV2CpuPartnerBlockRef ref;
+                ref.gid = panel.gid(block);
+                ref.source_pr = pr;
+                ref.source_block = block;
+                blocks.push_back(ref);
+            }
+        }
+        if (blocks.empty())
+            continue;
+        std::stable_sort(
+            blocks.begin(), blocks.end(),
+            [](const SymLDLV2CpuPartnerBlockRef &left,
+               const SymLDLV2CpuPartnerBlockRef &right)
+            {
+                if (left.gid != right.gid)
+                    return left.gid < right.gid;
+                return left.source_pr < right.source_pr;
+            });
+
+        int_t total_rows = 0;
+        for (size_t block = 0; block < blocks.size(); ++block)
+        {
+            size_t source_pos = static_cast<size_t>(k) * lu->Pr +
+                                blocks[block].source_pr;
+            const std::vector<int_t> &source =
+                lu->symV2PartnerLRecvIndexBySrc[source_pos];
+            xlpanel_t<Ftype> panel(
+                const_cast<int_t *>(source.data()), (Ftype *) NULL);
+            int_t rows = panel.nbrow(blocks[block].source_block);
+            if (rows < 0 || total_rows > std::numeric_limits<int_t>::max() - rows)
+                ABORT("SymFact V2 CPU partner aggregate rows overflow.");
+            total_rows += rows;
+        }
+        size_t index_size = static_cast<size_t>(LPANEL_HEADER_SIZE) +
+                            2 * blocks.size() + 1 +
+                            static_cast<size_t>(total_rows);
+        std::vector<int_t> &aggregate =
+            lu->symV2CpuPartnerAssembledIndex[static_cast<size_t>(k)];
+        aggregate.assign(index_size, 0);
+        aggregate[0] = static_cast<int_t>(blocks.size());
+        aggregate[1] = total_rows;
+        aggregate[2] = 0;
+        aggregate[3] = lu->supersize(k);
+        int_t gid_pos = LPANEL_HEADER_SIZE;
+        int_t prefix_pos = LPANEL_HEADER_SIZE + aggregate[0];
+        int_t row_pos = LPANEL_HEADER_SIZE + 2 * aggregate[0] + 1;
+        aggregate[prefix_pos] = 0;
+
+        for (size_t block = 0; block < blocks.size(); ++block)
+        {
+            const SymLDLV2CpuPartnerBlockRef &ref = blocks[block];
+            size_t source_pos = static_cast<size_t>(k) * lu->Pr +
+                                ref.source_pr;
+            const std::vector<int_t> &source =
+                lu->symV2PartnerLRecvIndexBySrc[source_pos];
+            xlpanel_t<Ftype> panel(
+                const_cast<int_t *>(source.data()), (Ftype *) NULL);
+            int_t rows = panel.nbrow(ref.source_block);
+            int_t destination_row = aggregate[prefix_pos + block];
+            aggregate[gid_pos + block] = ref.gid;
+            aggregate[prefix_pos + block + 1] = destination_row + rows;
+            std::copy(panel.rowList(ref.source_block),
+                      panel.rowList(ref.source_block) + rows,
+                      aggregate.begin() + row_pos);
+            row_pos += rows;
+
+            std::vector<int_t> &map =
+                lu->symV2CpuPartnerAssembleMaps[source_pos];
+            map.push_back(destination_row);
+            map.push_back(rows);
+            map.push_back(panel.stRow(ref.source_block));
+        }
+        size_t values = symldl_v2_checked_product(
+            static_cast<size_t>(total_rows),
+            static_cast<size_t>(lu->supersize(k)),
+            "SymFact V2 CPU assembled partner values overflow.");
+        if (values > lu->symV2CpuPartnerAssembledCapacity)
+            ABORT("SymFact V2 CPU assembled partner workspace is undersized.");
     }
 }
 
@@ -840,6 +965,9 @@ static void symldl_v2_build_cpu_fragment_plan(xLUstruct_t<Ftype> *lu)
     phase_start = SuperLU_timer_();
     symldl_v2_build_cpu_partner_receive_plan(
         lu, *target_column_metadata);
+    if (symldl_v2_cpu_scheduler_kind() ==
+        SYM_LDL_V2_CPU_SCHEDULER_WINDOW)
+        symldl_v2_build_cpu_partner_aggregate_plan(lu);
     lu->symV2CpuPartnerRecvPlanTime += SuperLU_timer_() - phase_start;
     if (route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT)
     {

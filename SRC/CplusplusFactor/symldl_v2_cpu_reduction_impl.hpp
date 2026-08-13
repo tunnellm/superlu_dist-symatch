@@ -43,6 +43,103 @@ static size_t symldl_v2_cpu_post_reduction_chunks(
 }
 
 template <typename Ftype>
+static void symldl_v2_cpu_window_reduction_transfer(
+    xLUstruct_t<Ftype> *lu, Ftype *buffer, int_t count, int peer, int tag,
+    bool send)
+{
+    if (count < 0)
+        ABORT("SymFact V2 CPU window reduction count is invalid.");
+    size_t offset = 0;
+    const size_t limit =
+        static_cast<size_t>(std::numeric_limits<int>::max());
+    while (offset < static_cast<size_t>(count))
+    {
+        int chunk = static_cast<int>(SUPERLU_MIN(
+            limit, static_cast<size_t>(count) - offset));
+        int result = MPI_SUCCESS;
+        if (send)
+            result = MPI_Send(buffer + offset, chunk, get_mpi_type<Ftype>(),
+                              peer, tag, lu->grid3d->zscp.comm);
+        else
+            result = MPI_Recv(buffer + offset, chunk, get_mpi_type<Ftype>(),
+                              peer, tag, lu->grid3d->zscp.comm,
+                              MPI_STATUS_IGNORE);
+        if (result != MPI_SUCCESS)
+            ABORT("SymFact V2 CPU window ancestor transfer failed.");
+        offset += static_cast<size_t>(chunk);
+        if (static_cast<size_t>(count) > limit)
+            ++lu->symV2CpuOversizedMpiChunks;
+    }
+}
+
+template <typename Ftype>
+static int_t symldl_v2_cpu_window_ancestor_reduction(
+    xLUstruct_t<Ftype> *lu, int_t ilvl, int_t *my_node_count,
+    int_t **tree_perm)
+{
+    int_t level_count = log2i(lu->grid3d->zscp.Np) + 1;
+    int_t my_layer = lu->grid3d->zscp.Iam;
+    int_t stride = static_cast<int_t>(1) << ilvl;
+    int_t group = static_cast<int_t>(1) << (ilvl + 1);
+    int sender = 0;
+    int receiver = 0;
+    if ((my_layer % group) == 0)
+    {
+        sender = my_layer + stride;
+        receiver = my_layer;
+    }
+    else
+    {
+        sender = my_layer;
+        receiver = my_layer - stride;
+    }
+
+    double start = SuperLU_timer_();
+    for (int_t ancestor_level = ilvl + 1;
+         ancestor_level < level_count; ++ancestor_level)
+    {
+        int_t node_count = my_node_count[ancestor_level];
+        int_t *nodes = tree_perm[ancestor_level];
+        for (int_t position = 0; position < node_count; ++position)
+        {
+            int_t k = nodes[position];
+            if (lu->symV2PanelRoot(k) != lu->mycol)
+                continue;
+            int_t local_panel = lu->symV2PanelIndex(k);
+            if (local_panel < 0 || local_panel >= lu->symV2PanelCount() ||
+                lu->symV2PanelGid(local_panel) != k)
+                ABORT("SymFact V2 CPU window reduction panel is invalid.");
+            xlpanel_t<Ftype> &panel = lu->lPanelVec[local_panel];
+            if (panel.isEmpty())
+                continue;
+            int_t count = panel.nzvalSize();
+            if (my_layer == sender)
+            {
+                symldl_v2_cpu_window_reduction_transfer(
+                    lu, panel.blkPtr(0), count, receiver,
+                    static_cast<int>(k), true);
+                uint64_t bytes = static_cast<uint64_t>(count) * sizeof(Ftype);
+                lu->symV2CpuReductionBytes += bytes;
+                lu->SCT->commVolRed += bytes;
+            }
+            else
+            {
+                symldl_v2_cpu_window_reduction_transfer(
+                    lu, lu->LvalRecvBufs[0], count, sender,
+                    static_cast<int>(k), false);
+                symldl_v2_cpu_axpy<Ftype>(
+                    count, one<Ftype>(), lu->LvalRecvBufs[0], 1,
+                    panel.blkPtr(0), 1);
+            }
+        }
+    }
+    double elapsed = SuperLU_timer_() - start;
+    lu->symV2CpuReductionTime += elapsed;
+    lu->SCT->ancsReduce += elapsed;
+    return 0;
+}
+
+template <typename Ftype>
 static int_t symldl_v2_cpu_ancestor_reduction(
     xLUstruct_t<Ftype> *lu, int_t ilvl, int_t *my_node_count,
     int_t **tree_perm)

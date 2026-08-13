@@ -210,8 +210,11 @@ static void symldl_v2_allocate_cpu_factor_workspace(
         return;
     double workspace_start = SuperLU_timer_();
 
-    int slots = lu->options != NULL ? lu->options->num_lookaheads : 1;
-    slots = SUPERLU_MAX(1, slots);
+    int_t requested_slots =
+        lu->options != NULL ? getNumLookAhead(lu->options) : 1;
+    if (requested_slots > static_cast<int_t>(std::numeric_limits<int>::max()))
+        ABORT("SymFact V2 CPU lookahead count exceeds int range.");
+    int slots = static_cast<int>(SUPERLU_MAX((int_t) 1, requested_slots));
     SymLDLV2CpuExchangeRoute route = symldl_v2_cpu_exchange_route(lu);
     lu->symV2CpuRawPanelCapacity =
         static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount));
@@ -219,9 +222,15 @@ static void symldl_v2_allocate_cpu_factor_workspace(
                          route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     bool needs_row = route == SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     bool needs_partner_plan = route != SYM_LDL_V2_CPU_ROUTE_COLLAPSED;
+    bool needs_window = symldl_v2_cpu_scheduler_kind() ==
+                        SYM_LDL_V2_CPU_SCHEDULER_WINDOW;
     lu->symV2CpuPartnerSendCapacity = needs_partner_plan
         ? static_cast<size_t>(SUPERLU_MAX((int_t) 1, lu->maxLvalCount)) : 0;
     lu->symV2CpuPartnerRecvCapacity = needs_partner_plan
+        ? static_cast<size_t>(SUPERLU_MAX((int_t) 1,
+                                          lu->maxSymPartnerLvalCount)) : 0;
+    lu->symV2CpuPartnerAssembledCapacity =
+        needs_partner_plan && needs_window
         ? static_cast<size_t>(SUPERLU_MAX((int_t) 1,
                                           lu->maxSymPartnerLvalCount)) : 0;
     lu->symV2CpuRowSendCapacity = needs_row
@@ -245,6 +254,12 @@ static void symldl_v2_allocate_cpu_factor_workspace(
             lu->symV2CpuPartnerRecvCapacity,
             "SymFact V2 CPU partner-receive workspace overflows.",
             "Malloc fails for SymFact V2 CPU partner-receive workspace.");
+        if (needs_window)
+            symldl_v2_allocate_cpu_slot_buffers(
+                lu->symV2CpuPartnerAssembledBufs, slots,
+                lu->symV2CpuPartnerAssembledCapacity,
+                "SymFact V2 CPU assembled partner workspace overflows.",
+                "Malloc fails for SymFact V2 CPU assembled partner workspace.");
     }
     if (needs_row)
     {
@@ -268,10 +283,22 @@ static void symldl_v2_allocate_cpu_factor_workspace(
     lu->symV2CpuPartnerUpdateSubmitted.assign(exchange_peers, 0);
     lu->symV2CpuExchangeStates.assign(
         static_cast<size_t>(slots), SymLDLV2CpuExchangeState());
+    if (needs_window)
+        lu->symV2CpuWindowStates.assign(
+            static_cast<size_t>(slots), SymLDLV2CpuWindowState());
     lu->symV2CpuSlotOwner.assign(static_cast<size_t>(slots), -1);
     lu->symV2CpuSlotGeneration.assign(static_cast<size_t>(slots), 0);
     lu->symV2CpuPanelFactorStarted.assign(
         static_cast<size_t>(lu->symV2PanelCount()), 0);
+    if (needs_window)
+    {
+        lu->symV2CpuWindowDonePanelBcast.assign(
+            static_cast<size_t>(lu->nsupers), 0);
+        lu->symV2CpuWindowDonePanelSolve.assign(
+            static_cast<size_t>(lu->nsupers), 0);
+        lu->symV2CpuWindowChildrenLeft.assign(
+            static_cast<size_t>(lu->nsupers), 0);
+    }
     lu->symV2CpuDeferredTasksActive = 0;
     lu->symV2CpuReductionPanelSlots.assign(static_cast<size_t>(slots), -1);
     lu->symV2CpuReductionChunksRemaining.assign(

@@ -6,6 +6,7 @@
 #include "symldl_v2_cpu_update_impl.hpp"
 #include "symldl_v2_cpu_specialized_exchange_impl.hpp"
 #include "symldl_v2_factor_gpu_bridge.hpp"
+#include "symldl_v2_cpu_window_scheduler_impl.hpp"
 
 template <typename Ftype>
 static int symldl_v2_cpu_deferred_tasks_active(xLUstruct_t<Ftype> *lu)
@@ -112,7 +113,7 @@ static void symldl_v2_cpu_wait_for_counter(
 }
 
 template <typename Ftype>
-static int_t symldl_v2_cpu_factor_forest(
+static int_t symldl_v2_cpu_completion_factor_forest(
     xLUstruct_t<Ftype> *lu, sForest_t *forest,
     diagFactBufs_type<Ftype> **diag_buffers,
     gEtreeInfo_t *etree)
@@ -250,4 +251,17 @@ static int_t symldl_v2_cpu_factor_forest(
             ABORT("SymFact V2 CPU slot remains active after forest factorization.");
     }
     return 0;
+}
+
+template <typename Ftype>
+static int_t symldl_v2_cpu_factor_forest(
+    xLUstruct_t<Ftype> *lu, sForest_t *forest,
+    diagFactBufs_type<Ftype> **diag_buffers, gEtreeInfo_t *etree)
+{
+    if (symldl_v2_cpu_scheduler_kind() ==
+        SYM_LDL_V2_CPU_SCHEDULER_WINDOW)
+        return symldl_v2_cpu_window_factor_forest(
+            lu, forest, diag_buffers, etree);
+    return symldl_v2_cpu_completion_factor_forest(
+        lu, forest, diag_buffers, etree);
 }

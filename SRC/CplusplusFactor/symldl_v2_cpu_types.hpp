@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 #include "symldl_v2_env_config.hpp"
@@ -27,6 +28,35 @@ static inline bool symldl_v2_cpu_grid_specializations_enabled()
     static const bool enabled = superlu_sym_v2_env_bool_flag(
         "GPU3DV2_CPU_GRID_SPECIALIZATIONS", 1);
     return enabled;
+}
+
+enum SymLDLV2CpuSchedulerKind
+{
+    SYM_LDL_V2_CPU_SCHEDULER_COMPLETION = 0,
+    SYM_LDL_V2_CPU_SCHEDULER_WINDOW = 1
+};
+
+static inline SymLDLV2CpuSchedulerKind symldl_v2_cpu_scheduler_kind()
+{
+    static const SymLDLV2CpuSchedulerKind kind = []() {
+        const char *value = std::getenv("GPU3DV2_CPU_SCHEDULER");
+        if (value == NULL || value[0] == '\0' ||
+            std::strcmp(value, "COMPLETION") == 0)
+            return SYM_LDL_V2_CPU_SCHEDULER_COMPLETION;
+        if (std::strcmp(value, "WINDOW") == 0)
+            return SYM_LDL_V2_CPU_SCHEDULER_WINDOW;
+        ABORT("GPU3DV2_CPU_SCHEDULER must be COMPLETION or WINDOW.");
+        return SYM_LDL_V2_CPU_SCHEDULER_COMPLETION;
+    }();
+    return kind;
+}
+
+static inline const char *symldl_v2_cpu_scheduler_name()
+{
+    return symldl_v2_cpu_scheduler_kind() ==
+                   SYM_LDL_V2_CPU_SCHEDULER_WINDOW
+               ? "window"
+               : "completion";
 }
 
 enum SymLDLV2CpuExchangeRoute
@@ -112,6 +142,18 @@ struct SymLDLV2CpuExchangeState
     unsigned char updates_submitted = 0;
     unsigned char route = SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
     unsigned char active = 0;
+};
+
+struct SymLDLV2CpuWindowState
+{
+    int_t k = -1;
+    int_t parent = -1;
+    int_t local_panel = -1;
+    int source_pc = -1;
+    size_t receive_request_count = 0;
+    size_t request_count = 0;
+    unsigned char route = SYM_LDL_V2_CPU_ROUTE_DUAL_FRAGMENT;
+    unsigned char ready = 0;
 };
 
 struct SymLDLV2CpuThreadProfile
