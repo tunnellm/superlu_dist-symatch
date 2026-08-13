@@ -4,13 +4,11 @@
 std::vector<Ftype *> symV2CpuRawPanelBufs;
 std::vector<Ftype *> symV2CpuPartnerSendBufs;
 std::vector<Ftype *> symV2CpuPartnerRecvBufs;
-std::vector<Ftype *> symV2CpuPartnerAssembledBufs;
 std::vector<Ftype *> symV2CpuRowSendBufs;
 std::vector<Ftype *> symV2CpuRowRecvBufs;
 size_t symV2CpuRawPanelCapacity = 0;
 size_t symV2CpuPartnerSendCapacity = 0;
 size_t symV2CpuPartnerRecvCapacity = 0;
-size_t symV2CpuPartnerAssembledCapacity = 0;
 size_t symV2CpuRowSendCapacity = 0;
 size_t symV2CpuRowRecvCapacity = 0;
 

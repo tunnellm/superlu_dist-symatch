@@ -29,7 +29,7 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
 
     std::vector<Ftype *> *buffers[] = {
         &symV2CpuRawPanelBufs, &symV2CpuPartnerSendBufs,
-        &symV2CpuPartnerRecvBufs, &symV2CpuPartnerAssembledBufs,
+        &symV2CpuPartnerRecvBufs,
         &symV2CpuRowSendBufs,
         &symV2CpuRowRecvBufs
     };
@@ -43,7 +43,6 @@ void xLUstruct_t<Ftype>::symV2FreeCpuStorage()
     symV2CpuRawPanelCapacity = 0;
     symV2CpuPartnerSendCapacity = 0;
     symV2CpuPartnerRecvCapacity = 0;
-    symV2CpuPartnerAssembledCapacity = 0;
     symV2CpuRowSendCapacity = 0;
     symV2CpuRowRecvCapacity = 0;
     if (symV2CpuPanelPending != NULL)

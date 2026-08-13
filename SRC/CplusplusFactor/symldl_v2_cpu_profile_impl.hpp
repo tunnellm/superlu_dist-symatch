@@ -42,7 +42,6 @@ static SymLDLV2CpuCapacitySnapshot symldl_v2_cpu_capacity_snapshot(
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRawPanelBufs);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerSendBufs);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerRecvBufs);
-    SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerAssembledBufs);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRowSendBufs);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuRowRecvBufs);
     SYM_LDL_V2_CPU_MIX_CAPACITY(symV2CpuPartnerSegOffsets);

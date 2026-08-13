@@ -484,7 +484,7 @@ static void symldl_v2_build_cpu_partner_aggregate_plan(
             static_cast<size_t>(total_rows),
             static_cast<size_t>(lu->supersize(k)),
             "SymFact V2 CPU assembled partner values overflow.");
-        if (values > lu->symV2CpuPartnerAssembledCapacity)
+        if (values > lu->symV2CpuRawPanelCapacity)
             ABORT("SymFact V2 CPU assembled partner workspace is undersized.");
     }
 }

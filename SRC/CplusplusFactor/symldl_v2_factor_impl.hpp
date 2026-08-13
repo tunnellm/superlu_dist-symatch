@@ -42,6 +42,13 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
     sForest_t **sForests = trf3Dpartition->sForests;
 
     SCT->pdgstrfTimer = SuperLU_timer_();
+    const bool profile_cpu_window =
+        symV2UsesCpuFactor() && symV2CpuProfileEnabled &&
+        symldl_v2_cpu_scheduler_kind() ==
+            SYM_LDL_V2_CPU_SCHEDULER_WINDOW;
+    if (profile_cpu_window && grid3d->iam == 0)
+        printf("SymFact V2 CPU window numeric factor begin: levels=%d slots=%zu\n",
+               maxLvl, symV2CpuWindowStates.size());
     for (int ilvl = 0; ilvl < maxLvl; ++ilvl)
     {
         if (!myZeroTrIdxs[ilvl])
@@ -49,6 +56,9 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
             sForest_t *sforest = sForests[myTreeIdxs[ilvl]];
             if (sforest != NULL)
             {
+                if (profile_cpu_window && grid3d->iam == 0)
+                    printf("SymFact V2 CPU window forest begin: level=%d nodes=%lld\n",
+                           ilvl, static_cast<long long>(sforest->nNodes));
                 double t_factor = SuperLU_timer_();
                 if (symV2UsesCpuFactor())
                 {
@@ -67,6 +77,9 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
                 }
                 SCT->tFactor3D[ilvl] = SuperLU_timer_() - t_factor;
                 sforest->cost = SCT->tFactor3D[ilvl];
+                if (profile_cpu_window && grid3d->iam == 0)
+                    printf("SymFact V2 CPU window forest end: level=%d time=%.6f\n",
+                           ilvl, SCT->tFactor3D[ilvl]);
             }
 
             if (ilvl < maxLvl - 1)

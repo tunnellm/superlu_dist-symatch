@@ -273,7 +273,9 @@ static void symldl_v2_cpu_window_exchange(
         lu->symV2CpuPartnerAssembledIndex[static_cast<size_t>(k)];
     int_t partner_rows = partner_index.empty() ? 0 : partner_index[1];
     int_t width = lu->supersize(k);
-    Ftype *assembled = lu->symV2CpuPartnerAssembledBufs[slot];
+    // Raw-panel storage is unused by the non-collapsed routes after the
+    // diagonal operation, so it owns the assembled partner image here.
+    Ftype *assembled = lu->symV2CpuRawPanelBufs[slot];
     if (partner_rows > 0)
         std::fill(assembled,
                   assembled + static_cast<size_t>(partner_rows) * width,
@@ -487,7 +489,7 @@ static void symldl_v2_cpu_window_panels(
     if (!column_index.empty())
         *column_panel = xlpanel_t<Ftype>(
             const_cast<int_t *>(column_index.data()),
-            lu->symV2CpuPartnerAssembledBufs[slot]);
+            lu->symV2CpuRawPanelBufs[slot]);
     if (state.route == SYM_LDL_V2_CPU_ROUTE_PC1_PARTNER_ONLY)
     {
         if (state.local_panel < 0 || state.local_panel >= lu->symV2PanelCount())
