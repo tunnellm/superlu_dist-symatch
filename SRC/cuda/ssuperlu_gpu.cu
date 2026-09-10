@@ -708,7 +708,7 @@ static void print_occupancy()
     printf("Occupancy: MinGridSize %d blocksize %d \n", minGridSize, blockSize);
 }
 
-static void printDevProp(gpuDeviceProp devProp)
+static void printDevProp(gpuDeviceProp devProp, int device)
 {
 	size_t mfree, mtotal;
 	gpuMemGetInfo	(&mfree, &mtotal);
@@ -718,7 +718,10 @@ static void printDevProp(gpuDeviceProp devProp)
 	printf("GPU Name:                      %s\n",  devProp.name);
 	printf("Total global memory:           %zu\n",  devProp.totalGlobalMem);
 	printf("Total free memory:             %zu\n",  mfree);
-	printf("Clock rate:                    %d\n",  devProp.clockRate);
+	// CUDA 13 removed clockRate from the device properties structure.
+	int clockRate;
+	if (gpuDeviceGetAttribute(&clockRate, gpuDevAttrClockRate, device) == gpuSuccess)
+	    printf("Clock rate:                    %d\n", clockRate);
 
 	return;
 }
@@ -1180,7 +1183,7 @@ void sCopyLUToGPU3D (
     {
 	gpuDeviceProp devProp;
 	gpuGetDeviceProperties(&devProp, 0);
-	printDevProp(devProp);
+	printDevProp(devProp, 0);
     }
 #endif
     int_t *xsup ;

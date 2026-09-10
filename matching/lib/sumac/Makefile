@@ -16,13 +16,13 @@ bit=32
 
 
 ifeq ($(debug), 1)
-	CUFLAGS = -g -G -Ddebug --std=c++11 --gpu-architecture=compute_${SM} --gpu-code=sm_${SM},compute_${SM} \
+	CUFLAGS = -g -G -Ddebug --std=c++17 --gpu-architecture=compute_${SM} --gpu-code=sm_${SM},compute_${SM} \
                   -Xcompiler -fopenmp -DMULTIPHASE -DNGPU=${NGPU} -DPRINT
-	CFLAGS = -g -Ddebug -std=c++11 -Wextra -Wall -DMULTIPHASE -DNGPU=1 -DPRINT
+	CFLAGS = -g -Ddebug -std=c++17 -Wextra -Wall -DMULTIPHASE -DNGPU=1 -DPRINT
 else 
-	CUFLAGS = -O3 -Xptxas -O3 --std=c++11 --gpu-architecture=compute_${SM} --gpu-code=sm_${SM},compute_${SM} \
+	CUFLAGS = -O3 -Xptxas -O3 --std=c++17 --gpu-architecture=compute_${SM} --gpu-code=sm_${SM},compute_${SM} \
                   -Xcompiler -O3 -Xcompiler -fopenmp -DMULTIPHASE -DPRINT -DNGPU=${NGPU}
-	CFLAGS = -O3 -std=c++11 -Xcompiler -fopenmp -DMULTIPHASE -DPRINT -DNGPU=${NGPU}
+	CFLAGS = -O3 -std=c++17 -Xcompiler -fopenmp -DMULTIPHASE -DPRINT -DNGPU=${NGPU}
 	LDFLAGS = -I${NCCL_PATH}/include -I${CUDA_PATH}/include -L${NCCL_PATH}/lib -L${CUDA_PATH}/lib64 -lnccl -lcudart -lcuda
 #LDFLAGS = -L${NCCL_PATH} -L${CUDA_PATH} -lnccl -lcudart -lcuda
 endif

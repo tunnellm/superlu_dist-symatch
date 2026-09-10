@@ -195,7 +195,7 @@ void symldl_nvshmem_gemm_device(
             for (n = 0; n < THR_N; n++) {
 #pragma unroll
                 for (m = 0; m < THR_M; m++) {
-                    fma(rA[m], rB[n], rC[n][m]);
+                    SUPERLU_FMA_ACCUMULATE(rA[m], rB[n], rC[n][m]);
                 }
             }
         }
@@ -240,7 +240,7 @@ void symldl_nvshmem_gemm_device(
         for (n = 0; n < THR_N; n++) {
 #pragma unroll
             for (m = 0; m < THR_M; m++) {
-                fma(rA[m], rB[n], rC[n][m]);
+                SUPERLU_FMA_ACCUMULATE(rA[m], rB[n], rC[n][m]);
 
             }
         }
