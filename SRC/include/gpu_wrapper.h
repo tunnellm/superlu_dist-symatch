@@ -32,6 +32,8 @@ at the top-level directory.
 #define gpuDeviceProp cudaDeviceProp
 #define gpuGetDeviceCount cudaGetDeviceCount
 #define gpuGetDeviceProperties cudaGetDeviceProperties
+#define gpuDeviceGetAttribute cudaDeviceGetAttribute
+#define gpuDevAttrClockRate cudaDevAttrClockRate
 #define gpuSetDevice cudaSetDevice
 #define gpuGetDevice cudaGetDevice
 #define gpuError_t cudaError_t
@@ -120,6 +122,8 @@ at the top-level directory.
 #define gpuDeviceProp hipDeviceProp_t
 #define gpuGetDeviceCount hipGetDeviceCount
 #define gpuGetDeviceProperties hipGetDeviceProperties
+#define gpuDeviceGetAttribute hipDeviceGetAttribute
+#define gpuDevAttrClockRate hipDeviceAttributeClockRate
 #define gpuSetDevice hipSetDevice
 #define gpuGetDevice hipGetDevice
 #define gpuError_t hipError_t

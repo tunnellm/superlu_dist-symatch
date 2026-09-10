@@ -278,8 +278,10 @@ inline void generateOffsetPointers(T *base_mem, offT *offsets, T **ptrs, size_t 
 }
 
 template<class T>
-struct element_diff : public thrust::unary_function<T,T>
+struct element_diff
 {
+    using argument_type = T;
+    using result_type = T;
     T* st, *end;
     
     element_diff(T* st, T *end) 
