@@ -1759,7 +1759,7 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				       symb_mem_usage, &num_mem_usage);
 	}
 
-	if (!use_sym_v2_solve && grid3d->zscp.Iam == 0 ) { // only process layer 0 ... print Factor stats
+	if (!use_sym_v2_solve) { /* Print factor statistics over the full 3D grid. */
 		if (!factored)
 		{
 			if (options->PrintStat)
@@ -1768,21 +1768,17 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				float for_lu, total, avg, loc_max;
 				float mem_stage[3];
 				struct { float val; int rank; } local_struct, global_struct;
+				int nprocs3d = grid3d->nprow * grid3d->npcol * grid3d->npdep;
 
 				MPI_Reduce( &stat->TinyPivots, &TinyPivots, 1, mpi_int_t,
-						   MPI_SUM, 0, grid->comm );
-				stat->TinyPivots = TinyPivots;
+						   MPI_SUM, 0, grid3d->comm );
 
 				MPI_Reduce( &stat->sytrf_2x2, &sytrf_2x2, 1, mpi_int_t,
-						   MPI_SUM, 0, grid->comm );
-				stat->sytrf_2x2 = sytrf_2x2;
+						   MPI_SUM, 0, grid3d->comm );
 
 
 				MPI_Reduce( &stat->inertia, &inertia, 3, mpi_int_t,
-						   MPI_SUM, 0, grid->comm );
-				stat->inertia[0] = inertia[0];
-				stat->inertia[1] = inertia[1];
-				stat->inertia[2] = inertia[2];
+						   MPI_SUM, 0, grid3d->comm );
 
 				/*-- Compute high watermark of all stages --*/
 				if (parSymbFact == TRUE)
@@ -1810,35 +1806,52 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				loc_max = SUPERLU_MAX(loc_max, mem_stage[2] ); /* local max of 3 stages */
 
 				local_struct.val = loc_max;
-				local_struct.rank = grid->iam;
-				MPI_Reduce( &local_struct, &global_struct, 1, MPI_FLOAT_INT, MPI_MAXLOC, 0, grid->comm );
-				int all_highmark_rank = global_struct.rank;
-				float all_highmark_mem = global_struct.val * 1e-6;
+				local_struct.rank = grid3d->iam;
+				MPI_Reduce( &local_struct, &global_struct, 1, MPI_FLOAT_INT, MPI_MAXLOC, 0, grid3d->comm );
+				int all_highmark_rank = 0;
+				float all_highmark_mem = 0.;
+				if (grid3d->iam == 0) {
+					all_highmark_rank = global_struct.rank;
+					all_highmark_mem = global_struct.val * 1e-6;
+				}
 
 				MPI_Reduce( &loc_max, &avg,
-						   1, MPI_FLOAT, MPI_SUM, 0, grid->comm );
+						   1, MPI_FLOAT, MPI_SUM, 0, grid3d->comm );
 				MPI_Reduce( &num_mem_usage.for_lu, &for_lu,
-						   1, MPI_FLOAT, MPI_SUM, 0, grid->comm );
+						   1, MPI_FLOAT, MPI_SUM, 0, grid3d->comm );
 				MPI_Reduce( &num_mem_usage.total, &total,
-						   1, MPI_FLOAT, MPI_SUM, 0, grid->comm );
+						   1, MPI_FLOAT, MPI_SUM, 0, grid3d->comm );
 
 				/*-- Compute memory usage of numerical factorization --*/
 				local_struct.val = num_mem_usage.for_lu;
-				MPI_Reduce(&local_struct, &global_struct, 1, MPI_FLOAT_INT, MPI_MAXLOC, 0, grid->comm);
-				int lu_max_rank = global_struct.rank;
-				float lu_max_mem = global_struct.val * 1e-6;
+				MPI_Reduce(&local_struct, &global_struct, 1, MPI_FLOAT_INT, MPI_MAXLOC, 0, grid3d->comm);
+				int lu_max_rank = 0;
+				float lu_max_mem = 0.;
+				if (grid3d->iam == 0) {
+					lu_max_rank = global_struct.rank;
+					lu_max_mem = global_struct.val * 1e-6;
+				}
 
 				local_struct.val = stat->peak_buffer;
-				MPI_Reduce( &local_struct, &global_struct, 1, MPI_FLOAT_INT, MPI_MAXLOC, 0, grid->comm );
-	        	int buffer_peak_rank = global_struct.rank;
-	        	float buffer_peak = global_struct.val*1e-6;
-				if (iam == 0)
+				MPI_Reduce( &local_struct, &global_struct, 1, MPI_FLOAT_INT, MPI_MAXLOC, 0, grid3d->comm );
+				int buffer_peak_rank = 0;
+				float buffer_peak = 0.;
+				if (grid3d->iam == 0) {
+					buffer_peak_rank = global_struct.rank;
+					buffer_peak = global_struct.val * 1e-6;
+				}
+				if (grid3d->iam == 0)
 				{
+					stat->TinyPivots = TinyPivots;
+					stat->sytrf_2x2 = sytrf_2x2;
+					stat->inertia[0] = inertia[0];
+					stat->inertia[1] = inertia[1];
+					stat->inertia[2] = inertia[2];
 					printf("\n** Memory Usage **********************************\n");
 					printf("** Total highmark (MB):\n"
 						   "    Sum-of-all : %8.2f | Avg : %8.2f  | Max : %8.2f\n",
 						   avg * 1e-6,
-						   avg / grid->nprow / grid->npcol * 1e-6,
+						   avg / nprocs3d * 1e-6,
 						   all_highmark_mem);
 					printf("    Max at rank %d, different stages (MB):\n"
 						   "\t. symbfact        %8.2f\n"
@@ -1862,7 +1875,7 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 			} /* end printing stats */
 
 		} /* end if !factored */
-        } /* end if grid-0 ... print Factor stats */
+	} /* end if non-V2 factor statistics */
 
 		if(Solve3D){
 
