@@ -42,6 +42,7 @@ at the top-level directory.
 // int_t dgatherAllFactoredLU3d( dtrf3Dpartition_t*  trf3Dpartition,
 // 			   dLUstruct_t* LUstruct, gridinfo3d_t* grid3d, SCT_t* SCT );
 #include <stdbool.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 // #define DBG_MATCHING
@@ -102,6 +103,152 @@ static void dPrintFactorCommProfile(SCT_t *SCT, gridinfo3d_t *grid3d,
         message_max[3], message_max[4]);
     fflush(stdout);
 }
+
+#ifdef GPU_ACC
+enum {
+    GPU_MEMORY_BASELINE_USED = 0,
+    GPU_MEMORY_FACTOR_END_USED,
+    GPU_MEMORY_OBSERVED_PEAK_USED,
+    GPU_MEMORY_FACTOR_END_DELTA,
+    GPU_MEMORY_OBSERVED_PEAK_DELTA,
+    GPU_MEMORY_METRIC_COUNT
+};
+
+static int dGpuMemoryProfileSetting(void)
+{
+    const char *value = getenv("SUPERLU_GPU_MEMORY_PROFILE");
+    if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0)
+        return 0;
+    if (strcmp(value, "1") == 0)
+        return 1;
+    return -1;
+}
+
+static int dGpuMemoryProfileCollectiveEnabled(
+    superlu_dist_options_t *options, gridinfo3d_t *grid3d)
+{
+    enum {
+        GPU_MEMORY_SETTING_INVALID = 1,
+        GPU_MEMORY_SETTING_ENABLED = 2,
+        GPU_MEMORY_SETTING_DISABLED = 4
+    };
+    int setting = dGpuMemoryProfileSetting();
+    int requested = setting == 1 && sp_ienv_dist(10, options);
+    int local_state = requested ? GPU_MEMORY_SETTING_ENABLED
+                                : GPU_MEMORY_SETTING_DISABLED;
+    int global_state = 0;
+
+    if (setting < 0)
+        local_state |= GPU_MEMORY_SETTING_INVALID;
+    MPI_Allreduce(&local_state, &global_state, 1, MPI_INT, MPI_BOR,
+                  grid3d->comm);
+
+    if (global_state & GPU_MEMORY_SETTING_INVALID)
+        ABORT("SUPERLU_GPU_MEMORY_PROFILE must be 0 or 1 on every rank.");
+    if ((global_state & GPU_MEMORY_SETTING_ENABLED) &&
+        (global_state & GPU_MEMORY_SETTING_DISABLED))
+        ABORT("GPU memory profiling must be enabled consistently on every rank.");
+    return (global_state & GPU_MEMORY_SETTING_ENABLED) != 0;
+}
+
+static double dGpuMemoryNonnegativeDelta(uint64_t value,
+                                         uint64_t baseline)
+{
+    return value >= baseline ? (double) (value - baseline) : 0.0;
+}
+
+static void dPrintGpuFactorMemoryProfile(
+    const superlu_gpu_memory_stats_t *stats, gridinfo3d_t *grid3d,
+    const char *backend)
+{
+    struct { double value; int rank; } local_max[GPU_MEMORY_METRIC_COUNT];
+    struct { double value; int rank; } global_max[GPU_MEMORY_METRIC_COUNT];
+    double local[GPU_MEMORY_METRIC_COUNT] = {0.0};
+    int valid = stats->valid && stats->factor_end_recorded;
+    int valid_ranks = 0;
+    int query_failures = stats->query_failures;
+    int total_query_failures = 0;
+    int sample_min = valid ? stats->samples : INT_MAX;
+    int sample_max = valid ? stats->samples : 0;
+    int global_sample_min = 0;
+    int global_sample_max = 0;
+    int nranks = 0;
+
+    MPI_Comm_size(grid3d->comm, &nranks);
+    if (valid) {
+        local[GPU_MEMORY_BASELINE_USED] =
+            (double) stats->baseline_used_bytes;
+        local[GPU_MEMORY_FACTOR_END_USED] =
+            (double) stats->factor_end_used_bytes;
+        local[GPU_MEMORY_OBSERVED_PEAK_USED] =
+            (double) stats->peak_used_bytes;
+        local[GPU_MEMORY_FACTOR_END_DELTA] =
+            dGpuMemoryNonnegativeDelta(stats->factor_end_used_bytes,
+                                       stats->baseline_used_bytes);
+        local[GPU_MEMORY_OBSERVED_PEAK_DELTA] =
+            dGpuMemoryNonnegativeDelta(stats->peak_used_bytes,
+                                       stats->baseline_used_bytes);
+    }
+
+    for (int i = 0; i < GPU_MEMORY_METRIC_COUNT; ++i) {
+        local_max[i].value = valid ? local[i] : -1.0;
+        local_max[i].rank = grid3d->iam;
+    }
+
+    MPI_Reduce(&valid, &valid_ranks, 1, MPI_INT, MPI_SUM, 0,
+               grid3d->comm);
+    MPI_Reduce(&query_failures, &total_query_failures, 1, MPI_INT,
+               MPI_SUM, 0, grid3d->comm);
+    MPI_Reduce(&sample_min, &global_sample_min, 1, MPI_INT, MPI_MIN, 0,
+               grid3d->comm);
+    MPI_Reduce(&sample_max, &global_sample_max, 1, MPI_INT, MPI_MAX, 0,
+               grid3d->comm);
+    MPI_Reduce(local_max, global_max, GPU_MEMORY_METRIC_COUNT,
+               MPI_DOUBLE_INT, MPI_MAXLOC, 0, grid3d->comm);
+
+    if (grid3d->iam != 0)
+        return;
+
+    if (valid_ranks == 0) {
+        printf("GPU_FACTOR_MEMORY backend=%s status=unavailable "
+               "query_failures=%d\n",
+               backend, total_query_failures);
+        fflush(stdout);
+        return;
+    }
+
+    const double bytes_to_mb = 1.0e-6;
+    const char *status =
+        valid_ranks == nranks && total_query_failures == 0
+            ? "complete" : "partial";
+    printf(
+        "GPU_FACTOR_MEMORY backend=%s status=%s source=gpuMemGetInfo "
+        "scope=device-wide unit=MB valid_ranks=%d/%d samples_min=%d "
+        "samples_max=%d query_failures=%d "
+        "baseline_used_max=%.3f baseline_used_max_rank=%d "
+        "factor_end_used_max=%.3f factor_end_used_max_rank=%d "
+        "observed_peak_used_max=%.3f observed_peak_used_max_rank=%d "
+        "factor_end_delta_max=%.3f factor_end_delta_max_rank=%d "
+        "observed_peak_delta_max=%.3f observed_peak_delta_max_rank=%d\n",
+        backend, status, valid_ranks, nranks, global_sample_min,
+        global_sample_max, total_query_failures,
+        global_max[GPU_MEMORY_BASELINE_USED].value * bytes_to_mb,
+        global_max[GPU_MEMORY_BASELINE_USED].rank,
+        global_max[GPU_MEMORY_FACTOR_END_USED].value * bytes_to_mb,
+        global_max[GPU_MEMORY_FACTOR_END_USED].rank,
+        global_max[GPU_MEMORY_OBSERVED_PEAK_USED].value * bytes_to_mb,
+        global_max[GPU_MEMORY_OBSERVED_PEAK_USED].rank,
+        global_max[GPU_MEMORY_FACTOR_END_DELTA].value * bytes_to_mb,
+        global_max[GPU_MEMORY_FACTOR_END_DELTA].rank,
+        global_max[GPU_MEMORY_OBSERVED_PEAK_DELTA].value * bytes_to_mb,
+        global_max[GPU_MEMORY_OBSERVED_PEAK_DELTA].rank);
+    printf("GPU_FACTOR_MEMORY note: deltas include all resident allocations "
+           "above the pre-factor baseline, and the peak is checkpoint-observed; "
+           "values are device-wide, ranks sharing a GPU overlap, and pinned "
+           "host memory is excluded.\n");
+    fflush(stdout);
+}
+#endif
 
 /*! \brief
  *
@@ -640,6 +787,8 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 #ifdef GPU_ACC
     LUgpu_Handle LUgpu;
+    superlu_gpu_memory_stats_t gpu_memory_stats = {0};
+    int gpu_memory_profile_requested = 0;
 #endif
 
     LUstruct->dt = 'd';
@@ -1527,6 +1676,15 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
         if ( options->SolveOnly != YES ) { // Now we need factorization
 
+#ifdef GPU_ACC
+		gpu_memory_profile_requested =
+			dGpuMemoryProfileCollectiveEnabled(options, grid3d);
+		if (gpu_memory_profile_requested) {
+			MPI_Barrier(grid3d->comm);
+			superlu_gpu_memory_tracker_start();
+			MPI_Barrier(grid3d->comm);
+		}
+#endif
 		t = SuperLU_timer_();
 
 		/*factorize in grid 1*/
@@ -1553,12 +1711,18 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 #ifdef TEMPLATED_VERSION
 dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct, grid3d,
 						  SCT, options, stat, thresh, info);
+			if (gpu_memory_profile_requested)
+				superlu_gpu_memory_tracker_sample();
 
 			/* call pdgstrf3d() in C++ code */
 			if (use_sym_v2_solve)
 				pdgstrf3d_LUv2(dLUgpu);
 			else
 				pdgstrf3d_LUv1(dLUgpu);
+			if (gpu_memory_profile_requested) {
+				superlu_gpu_memory_tracker_mark_factor_end();
+				MPI_Barrier(grid3d->comm);
+			}
 
 			if (use_sym_v2_solve && nrhs > 0 && *info == 0) {
 				SOLVEstruct->symldl_v2_factor_handle = (void *) dLUgpu;
@@ -1587,6 +1751,8 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 			double tic = SuperLU_timer_();
 			dBatchFactorize_Handle batch_ws = dgetBatchFactorizeWorkspace(
 			    nsupers, ldt, trf3Dpartition, LUstruct, grid3d, options, stat, info);
+			if (gpu_memory_profile_requested)
+				superlu_gpu_memory_tracker_sample();
 
 			double setup_time = SuperLU_timer_() - tic;
 
@@ -1599,8 +1765,14 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 				if (sforest)
 					dsparseTreeFactorBatchGPU(batch_ws, sforest);
 			     }
+			    if (gpu_memory_profile_requested)
+				superlu_gpu_memory_tracker_sample();
 			}
 			double factor_time = SuperLU_timer_() - tic;
+			if (gpu_memory_profile_requested) {
+				superlu_gpu_memory_tracker_mark_factor_end();
+				MPI_Barrier(grid3d->comm);
+			}
 
 			tic = SuperLU_timer_();
 			dcopyGPULUDataToHost(batch_ws, LUstruct, grid3d, SCT, options, stat);
@@ -1659,6 +1831,10 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 			// dDumpLblocks3D(nsupers, grid3d, LUstruct->Glu_persist, LUstruct->Llu);
 		}
 			double numeric_factor_local = SuperLU_timer_() - t;
+#ifdef GPU_ACC
+			if (gpu_memory_profile_requested)
+				superlu_gpu_memory_tracker_stop(&gpu_memory_stats);
+#endif
 			double numeric_factor_max = 0.0;
 			MPI_Reduce(&numeric_factor_local, &numeric_factor_max, 1,
 				   MPI_DOUBLE, MPI_MAX, 0, grid3d->comm);
@@ -1672,6 +1848,17 @@ dLUgpu_Handle dLUgpu = dCreateLUgpuHandle(nsupers, ldt, trf3Dpartition, LUstruct
 					? "symldl-v2"
 					: (options->SymFact == YES ? "symmetric-u"
 						                           : "unsymmetric-lu"));
+#ifdef GPU_ACC
+			if (gpu_memory_profile_requested) {
+				const char *gpu_memory_backend =
+					use_sym_v2_solve
+						? "symldl-v2"
+						: (options->SymFact == YES ? "symmetric-lu"
+							                           : "unsymmetric-lu");
+				dPrintGpuFactorMemoryProfile(
+					&gpu_memory_stats, grid3d, gpu_memory_backend);
+			}
+#endif
 		} // matching if not SolveOnly ... end Factorization
 
 	/* Now proceed with the Solve setup */

@@ -92,6 +92,10 @@ int_t xLUstruct_t<Ftype>::pdgstrf3dSymV2()
         SCT->tSchCompUdt3d[ilvl] =
             ilvl == 0 ? SCT->NetSchurUpTimer
                       : SCT->NetSchurUpTimer - SCT->tSchCompUdt3d[ilvl - 1];
+#ifdef GPU_ACC
+        if (!symV2UsesCpuFactor())
+            superlu_gpu_memory_tracker_sample();
+#endif
     }
 
     if (symV2UsesCpuFactor())

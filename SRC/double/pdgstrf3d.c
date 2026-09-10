@@ -319,6 +319,7 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
 	/* Initialize GPU data structures */
         dinitSluGPU3D_t(sluGPU, LUstruct, grid3d, perm_c_supno,
                         n, buffer_size, bigu_size, ldt, stat);
+        superlu_gpu_memory_tracker_sample();
 
         HyP->first_u_block_acc = sluGPU->A_gpu->first_u_block_gpu;
         HyP->first_l_block_acc = sluGPU->A_gpu->first_l_block_gpu;
@@ -412,6 +413,10 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
 
         SCT->tSchCompUdt3d[ilvl] = ilvl == 0 ? SCT->NetSchurUpTimer
 	    : SCT->NetSchurUpTimer - SCT->tSchCompUdt3d[ilvl - 1];
+#ifdef GPU_ACC
+        if (superlu_acc_offload)
+            superlu_gpu_memory_tracker_sample();
+#endif
     } /* end for (int ilvl = 0; ilvl < maxLvl; ++ilvl) */
 
     /* Prepare error message - find the smallesr index i that U(i,i)==0 */
@@ -441,6 +446,10 @@ int_t pdgstrf3d(superlu_dist_options_t *options, int m, int n, double anorm,
 #ifdef GPU_ACC
     /* This frees the GPU storage allocateed in initSluGPU3D_t() */
     if (superlu_acc_offload) {
+        if (superlu_gpu_memory_tracker_enabled()) {
+            superlu_gpu_memory_tracker_mark_factor_end();
+            MPI_Barrier(grid3d->comm);
+        }
         if ( options->PrintStat ) {
 	    printGPUStats(nsupers, stat, grid3d);
 	}

@@ -43,6 +43,7 @@ void copyToGPU(Ftype *gpuValBasePtr, std::vector<Ftype> &valBufferPacked,
     int_t *dlidxPacked;
     gpuErrchk(cudaMalloc(&dlvalPacked, gpuLvalSizePacked));
     gpuErrchk(cudaMalloc(&dlidxPacked, gpuLidxSizePacked));
+    superlu_gpu_memory_tracker_sample();
     // copy the packed buffers from CPU to GPU
     gpuErrchk(cudaMemcpy(dlvalPacked, valBufferPacked.data(), gpuLvalSizePacked, cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(dlidxPacked, valIdx.data(), gpuLidxSizePacked, cudaMemcpyHostToDevice));

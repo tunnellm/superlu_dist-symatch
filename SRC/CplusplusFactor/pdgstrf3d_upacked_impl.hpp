@@ -341,6 +341,10 @@ int_t xLUstruct_t<Ftype>::pdgstrf3d()
 
             SCT->tSchCompUdt3d[ilvl] = ilvl == 0 ? SCT->NetSchurUpTimer
                                                  : SCT->NetSchurUpTimer - SCT->tSchCompUdt3d[ilvl - 1];
+#ifdef GPU_ACC
+            if (superlu_acc_offload)
+                superlu_gpu_memory_tracker_sample();
+#endif
         } /*for (int_t ilvl = 0; ilvl < maxLvl; ++ilvl)*/
 
         MPI_Barrier(grid3d->comm);

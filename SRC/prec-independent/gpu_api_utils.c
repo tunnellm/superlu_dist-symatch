@@ -13,7 +13,121 @@ at the top-level directory.
 #ifdef GPU_ACC  // enable CUDA
 
 #include <stdio.h>
+#include <string.h>
 #include "gpu_api_utils.h"
+
+typedef struct {
+    superlu_gpu_memory_stats_t stats;
+    uint64_t last_used_bytes;
+    int enabled;
+    int active;
+} superlu_gpu_memory_tracker_t;
+
+static superlu_gpu_memory_tracker_t superlu_gpu_memory_tracker;
+
+static int superlu_gpu_memory_query(uint64_t *used_bytes,
+                                    uint64_t *total_bytes)
+{
+    size_t free_size = 0;
+    size_t total_size = 0;
+    gpuError_t error = gpuMemGetInfo(&free_size, &total_size);
+    if (error != gpuSuccess)
+        return 0;
+
+    *total_bytes = (uint64_t) total_size;
+    *used_bytes = total_size >= free_size
+        ? (uint64_t) (total_size - free_size) : 0;
+    return 1;
+}
+
+static int superlu_gpu_memory_tracker_update(void)
+{
+    uint64_t used_bytes = 0;
+    uint64_t total_bytes = 0;
+    int device = -1;
+
+    if (!superlu_gpu_memory_tracker.active)
+        return 0;
+
+    if (gpuGetDevice(&device) != gpuSuccess ||
+        device != superlu_gpu_memory_tracker.stats.device) {
+        ++superlu_gpu_memory_tracker.stats.query_failures;
+        superlu_gpu_memory_tracker.stats.valid = 0;
+        return 0;
+    }
+
+    if (!superlu_gpu_memory_query(&used_bytes, &total_bytes)) {
+        ++superlu_gpu_memory_tracker.stats.query_failures;
+        return 0;
+    }
+
+    superlu_gpu_memory_tracker.last_used_bytes = used_bytes;
+    superlu_gpu_memory_tracker.stats.total_bytes = total_bytes;
+    if (used_bytes > superlu_gpu_memory_tracker.stats.peak_used_bytes)
+        superlu_gpu_memory_tracker.stats.peak_used_bytes = used_bytes;
+    ++superlu_gpu_memory_tracker.stats.samples;
+    return 1;
+}
+
+int superlu_gpu_memory_tracker_start(void)
+{
+    memset(&superlu_gpu_memory_tracker, 0,
+           sizeof(superlu_gpu_memory_tracker));
+    superlu_gpu_memory_tracker.stats.device = -1;
+    superlu_gpu_memory_tracker.enabled = 1;
+    superlu_gpu_memory_tracker.active = 1;
+
+    if (gpuGetDevice(&superlu_gpu_memory_tracker.stats.device) != gpuSuccess) {
+        ++superlu_gpu_memory_tracker.stats.query_failures;
+        superlu_gpu_memory_tracker.active = 0;
+        return 0;
+    }
+    if (!superlu_gpu_memory_tracker_update()) {
+        superlu_gpu_memory_tracker.active = 0;
+        return 0;
+    }
+
+    superlu_gpu_memory_tracker.stats.baseline_used_bytes =
+        superlu_gpu_memory_tracker.last_used_bytes;
+    superlu_gpu_memory_tracker.stats.valid = 1;
+    return 1;
+}
+
+int superlu_gpu_memory_tracker_enabled(void)
+{
+    return superlu_gpu_memory_tracker.enabled;
+}
+
+int superlu_gpu_memory_tracker_sample(void)
+{
+    return superlu_gpu_memory_tracker_update();
+}
+
+int superlu_gpu_memory_tracker_mark_factor_end(void)
+{
+    if (!superlu_gpu_memory_tracker_update()) {
+        superlu_gpu_memory_tracker.active = 0;
+        return 0;
+    }
+
+    superlu_gpu_memory_tracker.stats.factor_end_used_bytes =
+        superlu_gpu_memory_tracker.last_used_bytes;
+    superlu_gpu_memory_tracker.stats.factor_end_recorded = 1;
+    superlu_gpu_memory_tracker.active = 0;
+    return 1;
+}
+
+int superlu_gpu_memory_tracker_stop(superlu_gpu_memory_stats_t *stats)
+{
+    if (stats == NULL)
+        return 0;
+
+    superlu_gpu_memory_tracker.active = 0;
+    *stats = superlu_gpu_memory_tracker.stats;
+    superlu_gpu_memory_tracker.enabled = 0;
+    return stats->valid && stats->factor_end_recorded;
+}
+
  void DisplayHeader()
 {
     const int kb = 1024;
@@ -153,7 +267,7 @@ void printGPUStats(int nsupers, SuperLUStat_t *stat, gridinfo3d_t *grid3d )
     if (iam == 0) {
       printf("*-- GPU flops: \n\tFlops offloaded %.3e, Time %lf, Flop rate %lf GF/sec \n",
 	     flopcnt, tGemm, 1e-9 * flopcnt / tGemm  );
-      printf("*-- GPU memory: \n\tMop offloaded %.3e, Time %lf, Bandwidth %lf GByte/sec \n",
+      printf("*-- GPU scatter-memory throughput: \n\tMop offloaded %.3e, Time %lf, Bandwidth %lf GByte/sec \n",
 	     stat->ScatterMOPCounter, tScatter, 8e-9 * stat->ScatterMOPCounter / tScatter  );
       printf("*-- PCIe Data Transfer H2D:\n\tData Sent %.3e(GB)\n\tTime observed from CPU %lf\n\tActual time spent %lf\n\tBandwidth %lf GByte/sec \n",
 	     1e-9 * stat->cPCIeH2D, stat->tHost_PCIeH2D, tPCIeH2D, 1e-9 * stat->cPCIeH2D / tPCIeH2D  );
