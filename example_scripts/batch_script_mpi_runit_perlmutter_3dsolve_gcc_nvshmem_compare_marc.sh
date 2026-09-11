@@ -233,15 +233,15 @@ fi
 
 
 
-
+export SUPERLU_FACTOR_COMM_PROFILE=1
 if ((gpu)); then
   export SUPERLU_GPU_MEMORY_PROFILE=1
   factor_modes=(gpu_ldlt gpu_old_lu gpu_symmetric_lu)
 
-  mats=(symmetric/Geo_1438.bin symmetric/StocF-1465.bin symmetric/nlpkkt80.bin symmetric/dielFilterV3real.mtx symmetric/Si41Ge41H72.mtx symmetric/pwtk.mtx symmetric/offshore.mtx symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.mtx)  
-  nprows=(2 2 2 1 4 1 2 1 2)
-  npcols=(1 1 1 2 1 2 1 2 1)
-  npz=(8 8 8 8 4 8 8 8 8)  
+  mats=(symmetric/Cube_Coup_dt0.mtx)  
+  nprows=(2)
+  npcols=(1)
+  npz=(8)
   NTH=16
 else
   factor_modes=(cpu_ldlt cpu_old_lu cpu_symmetric_lu)
