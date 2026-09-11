@@ -727,102 +727,139 @@ void dperform_row_permutation(
             }
             else if ( options->RowPerm == MC80 )
             {
+                /* MC80 operates on the replicated global matrix. Run it once
+                   on process 0, then broadcast its permutation and contraction
+                   metadata across the layer-0 process grid. */
+                if ( !iam ) {
+                    *iinfo = 0;
 #ifdef HAVE_MC80
-				printf("options->RowPerm == MC80\n");
-				fflush(stdout);
+                    printf("options->RowPerm == MC80\n");
+                    fflush(stdout);
 
-				t = SuperLU_timer_();
+                    t = SuperLU_timer_();
 
-				struct mc80_control mc80_control;
-   				struct mc80_info mc80_info;
-				mc80_default_control_d(&mc80_control);
+                    struct mc80_control mc80_control;
+                    struct mc80_info mc80_info;
+                    mc80_default_control_d(&mc80_control);
+                    mc80_control.f_arrays = 0;
 
-				mc80_control.f_arrays = 0;
+                    int ord = 1; /* AMD */
+                    int_t *order_mc80 = (int_t *) intMalloc_dist(n);
+                    int_t *perm_mc80 = (int_t *) intMalloc_dist(n);
+                    double *scale_mc80 = (double *) doubleMalloc_dist(n);
 
-				int		 ord		= 1;	/* AMD */
-				int_t	*order_mc80 = (int_t *) intMalloc_dist(n);
-				int_t	*perm_mc80  = (int_t *) intMalloc_dist(n);
-				double	*scale_mc80 = (double *) doubleMalloc_dist(n);
+                    mc80_order_full_d(ord, n, colptr, rowind, a_GA,
+                                      order_mc80, &mc80_control, &mc80_info,
+                                      perm_mc80, scale_mc80);
 
-				mc80_order_full_d(ord, n, colptr, rowind, a_GA,
-								  order_mc80, &mc80_control, &mc80_info,
-								  perm_mc80, scale_mc80);
+                    printf("info:\n"
+                           "  compress_rank %d\n"
+                           "  flag %d\n"
+                           "  flag68 %d\n"
+                           "  max_cycle %d\n"
+                           "  struct_rank %d\n"
+                           "  stat %d\n",
+                           mc80_info.compress_rank, mc80_info.flag,
+                           mc80_info.flag68, mc80_info.max_cycle,
+                           mc80_info.struct_rank, mc80_info.stat);
 
-				printf("info:\n"
-					   "  compress_rank %d\n"
-					   "  flag %d\n"
-					   "  flag68 %d\n"
-					   "  max_cycle %d\n"
-					   "  struct_rank %d\n"
-					   "  stat %d\n",
-					   mc80_info.compress_rank, mc80_info.flag,
-					   mc80_info.flag68, mc80_info.max_cycle,
-					   mc80_info.struct_rank, mc80_info.stat);
+                    crs_info->n_crs = 0;
+                    crs_info->ftoc = (int_t *)
+                        malloc(sizeof(*(crs_info->ftoc)) * n);
+                    if (!crs_info->ftoc)
+                        ABORT("Malloc fails for ftoc[].");
 
+                    int_t curidx = 0;
+                    int_t n_1x1 = 0;
+                    int_t v;
+                    for (v = 0; v < n; ++v) {
+                        int_t u = perm_mc80[v];
 
-				crs_info->n_crs	= 0;				
-				crs_info->ftoc	= (int_t *) malloc(sizeof(*(crs_info->ftoc)) * n);
-				int_t curidx	= 0;
-				int_t n_1x1		= 0;
-				int_t v;
-				for (v = 0; v < n; ++v)
-				{
-					int_t u = perm_mc80[v];
-					
-					if (u == -1)
-					{
-						crs_info->ftoc[curidx] = crs_info->n_crs;
-						++(crs_info->n_crs);
-						perm_r[v] = curidx++;
-						++n_1x1;
-					}
-					else if (v < u)
-					{
-						assert(perm_mc80[u] == v);
-						crs_info->ftoc[curidx]	= crs_info->n_crs;
-						crs_info->ftoc[curidx+1] = crs_info->n_crs;
-						++(crs_info->n_crs);
-						perm_r[v] = curidx++;
-						perm_r[u] = curidx++;
-					}
-				}				
+                        if (u == -1) {
+                            crs_info->ftoc[curidx] = crs_info->n_crs;
+                            ++(crs_info->n_crs);
+                            perm_r[v] = curidx++;
+                            ++n_1x1;
+                        } else if (v < u) {
+                            assert(perm_mc80[u] == v);
+                            crs_info->ftoc[curidx] = crs_info->n_crs;
+                            crs_info->ftoc[curidx + 1] = crs_info->n_crs;
+                            ++(crs_info->n_crs);
+                            perm_r[v] = curidx++;
+                            perm_r[u] = curidx++;
+                        }
+                    }
 
-				if (crs_info->n_crs > 0)
-					crs_info->crs_vrts =
-						(int_t *)malloc(sizeof(*(crs_info->crs_vrts)) *
-										(crs_info->n_crs));
+                    if (crs_info->n_crs > 0) {
+                        crs_info->crs_vrts = (int_t *)
+                            malloc(sizeof(*(crs_info->crs_vrts)) *
+                                   crs_info->n_crs);
+                        if (!crs_info->crs_vrts)
+                            ABORT("Malloc fails for crs_vrts[].");
+                    }
 
-				int_t crs_idx = 0;
-				for (v = 0; v < n; ++v)
-				{
-					int_t u = perm_mc80[v];
+                    int_t crs_idx = 0;
+                    for (v = 0; v < n; ++v) {
+                        int_t u = perm_mc80[v];
 
-					if (u == -1)
-						(crs_info->crs_vrts)[crs_idx++] = 1;
-					else if (v < u)
-						(crs_info->crs_vrts)[crs_idx++] = 2;
-				}
+                        if (u == -1)
+                            crs_info->crs_vrts[crs_idx++] = 1;
+                        else if (v < u)
+                            crs_info->crs_vrts[crs_idx++] = 2;
+                    }
 
-				printf ("#1x1 %d #2x2 %d #crs %d\n",
-						n_1x1, n - n_1x1, crs_info->n_crs);
+                    printf("#1x1 %d #2x2 %d #crs %d\n",
+                           n_1x1, n - n_1x1, crs_info->n_crs);
 
-				t = SuperLU_timer_();
+                    t = SuperLU_timer_() - t;
 
-				apply_perm_sym(n, nnz, colptr, rowind, a_GA, perm_r);
-
-				t = SuperLU_timer_() - t;
-				printf("apply_perm_sym (B = PrAPr^T): %f \n", t);				
-
-				printf("MC80 over\n");
-
-
-				fflush(stdout);
-				// exit(0);
+                    SUPERLU_FREE(order_mc80);
+                    SUPERLU_FREE(perm_mc80);
+                    SUPERLU_FREE(scale_mc80);
 #else
-				fprintf(stderr,
-						"RowPerm=MC80 requires MC80 support; configure with -DTPL_ENABLE_MC80=ON\n");
-				*iinfo = -1;
+                    fprintf(stderr,
+                            "RowPerm=MC80 requires MC80 support; configure with -DTPL_ENABLE_MC80=ON\n");
+                    *iinfo = -1;
 #endif
+                }
+
+                MPI_Bcast(iinfo, 1, MPI_INT, 0, grid->comm);
+                if (*iinfo == 0) {
+                    MPI_Bcast(perm_r, m, mpi_int_t, 0, grid->comm);
+                    MPI_Bcast(&(crs_info->n_crs), 1, mpi_int_t, 0,
+                              grid->comm);
+
+                    if (iam && crs_info->n_crs > 0) {
+                        crs_info->crs_vrts = (int_t *)
+                            malloc(sizeof(*(crs_info->crs_vrts)) *
+                                   crs_info->n_crs);
+                        if (!crs_info->crs_vrts)
+                            ABORT("Malloc fails for crs_vrts[].");
+                    }
+                    if (crs_info->n_crs > 0)
+                        MPI_Bcast(crs_info->crs_vrts, crs_info->n_crs,
+                                  mpi_int_t, 0, grid->comm);
+
+                    if (iam) {
+                        crs_info->ftoc = (int_t *)
+                            malloc(sizeof(*(crs_info->ftoc)) * m);
+                        if (!crs_info->ftoc)
+                            ABORT("Malloc fails for ftoc[].");
+                    }
+                    MPI_Bcast(crs_info->ftoc, m, mpi_int_t, 0, grid->comm);
+
+                    t = SuperLU_timer_();
+                    apply_perm_sym(n, nnz, colptr, rowind, a_GA, perm_r);
+                    t = SuperLU_timer_() - t;
+#if ( PRNTlevel>=1 )
+                    if (!iam)
+                        printf("apply_perm_sym (B = PrAPr^T): %f \n", t);
+#endif
+                    if (!iam) {
+                        printf("MC80 over\n");
+                        fflush(stdout);
+                    }
+                }
             }
             else // LargeDiag_HWPM
             {
