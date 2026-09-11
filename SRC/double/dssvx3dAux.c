@@ -626,7 +626,7 @@ void dperform_row_permutation(
 
 				if (options->RowPerm == SUITOR) /* Suitor */
 				{
-					*iinfo = dldperm_dist_symatch_v2
+					*iinfo = dldperm_dist_symatch_v3
 						(job, m, nnz, colptr, rowind, a_GA,
 						 perm_r,
 						 crs_info);

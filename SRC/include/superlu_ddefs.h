@@ -666,6 +666,8 @@ extern int  dldperm_dist_symatch_v1(int, int, int_t, int_t [], int_t [],
 								    double [], int_t *, crs_info_t *);
 extern int  dldperm_dist_symatch_v2(int, int, int_t, int_t [], int_t [],
 								    double [], int_t *, crs_info_t *);
+extern int  dldperm_dist_symatch_v3(int, int, int_t, int_t [], int_t [],
+								    double [], int_t *, crs_info_t *);
 #ifdef HAVE_SUMAC
 extern int  dldperm_dist_symatch_g(int, int, int_t, int_t [], int_t [],
 								    double [], int_t *, crs_info_t *);

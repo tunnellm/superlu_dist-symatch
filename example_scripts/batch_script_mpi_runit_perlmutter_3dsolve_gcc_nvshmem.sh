@@ -70,8 +70,8 @@ else
   exit $EXIT_HOST
 fi
 
-nprows=(4)
-npcols=(4)
+nprows=(1)
+npcols=(1)
 npz=(1)
 nrhs=(1)
 NTH=1
@@ -121,7 +121,7 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # export NREL=256
 # for MAT in big.rua
 # for MAT in Geo_1438.bin
-# for MAT in g20.rua
+for MAT in g4.rua
 # for MAT in s1_mat_0_253872.bin s2D9pt2048.rua
 # for MAT in dielFilterV3real.bin
 # for MAT in rma10.mtx 
@@ -141,7 +141,9 @@ export MPICH_MAX_THREAD_SAFETY=multiple
 # for MAT in symmetric/StocF-1465.bin
 # for MAT in symmetric/Geo_1438.bin symmetric/StocF-1465.bin symmetric/nlpkkt80.bin symmetric/dielFilterV3real.mtx symmetric/Si41Ge41H72.mtx
 # for MAT in symmetric/662_bus.mtx
-for MAT in symmetric/Cube_Coup_dt0.mtx symmetric/kkt_power.mtx symmetric/Spielman_k200_A_10.mtx
+# for MAT in symmetric/Cube_Coup_dt0.mtx symmetric/kkt_power.mtx symmetric/Spielman_k200_A_10.mtx
+# for MAT in symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.mtx
+# for MAT in symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.mtx
 # for MAT in mathias/DG_GrapheneDisorder_8192.bin mathias/DNA_715_64cell.bin mathias/LU_C_BN_C_4by2.bin mathias/Li4244.bin 
 # for MAT in mathias/Li4244.bin 
 # for MAT in turon_m.mtx
@@ -157,8 +159,8 @@ do
 export SUPERLU_ACC_SOLVE=0
 
 rowperm=4 ### 1: LargeDiag_MC64  4: SymMatch
-tinyreplace=1 ## whether to use tiny pivot replacement
-it=1 # wether to use iterative refinement
+tinyreplace=0 ## whether to use tiny pivot replacement
+it=0 # wether to use iterative refinement
 
 # # srun -n $NCORE_VAL_TOT2D -N $NODE_VAL2D -c $TH_PER_RANK --cpu_bind=cores ./EXAMPLE/pddrive -c $NCOL -r $NROW -b $batch $CFS/m2957/liuyangz/my_research/matrix/$MAT | tee ./$MAT/SLU.o_mpi_${NROW}x${NCOL}_${NTH}_1rhs_2d_gpu_${SUPERLU_ACC_OFFLOAD}
 

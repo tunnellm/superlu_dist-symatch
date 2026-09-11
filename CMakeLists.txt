@@ -79,7 +79,7 @@ include(CheckLanguage)
 #
 ######################################################################
 set(CMAKE_CXX_STANDARD 11)
-#set(CMAKE_CXX_STANDARD 14)
+# set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 #message("!!!! top: cxx_implicit='${CMAKE_CXX_IMPLICIT_LINK_LIBRARIES}'")

@@ -34,6 +34,11 @@ dldperm_dist_symatch_v2(int job, int n, int_t nnz, int_t colptr[],
 						crs_info_t *crs_info);
 
 int
+dldperm_dist_symatch_v3(int job, int n, int_t nnz, int_t colptr[],
+						int_t adjncy[], double nzval[], int_t *perm,
+						crs_info_t *crs_info);
+
+int
 coarsen_graph(SuperMatrix *G, SuperMatrix *Gc, int_t n_crs, int_t *crs_vrts);
 
 int

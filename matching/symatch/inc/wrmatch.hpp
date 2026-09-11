@@ -54,6 +54,10 @@ void sweight(int n, int *ver, int *edges, int *s, double *ws, double *weight,
 void gpa(int n, int m, wed *we, int *ver, int *edges, double *weight,
 		 int *match);
 
+// file: weight2.c
+void weighted2(int n, int *ver, int *edges, int *s, double *ws,
+			   omp_lock_t *nlocks, double *weight);
+	
 // other util
 double cost_matching(int n, int *ver, int *edges, double *weight, int *match);
 
@@ -414,6 +418,77 @@ public:
 	wed			*we;			// struct in suitor library, tuple: (u,v,weight)
 	uint64_t	 nedges;
 };
+
+
+
+
+
+class
+WgtSuitorPar : public WrMatch
+{
+
+public:
+
+	WgtSuitorPar (Graph<WM_VIDX_T, WM_EW_T> *g) :
+		WrMatch(g)
+	{
+		ws	   = (WM_EW_T *) malloc(sizeof(*ws) * (max_n+1));
+		nlocks = (omp_lock_t *) malloc((n+1) * sizeof(*nlocks));
+	}
+
+
+
+
+	WgtSuitorPar (WM_VIDX_T nv, WM_VIDX_T *xadj, WM_VIDX_T *adj,
+				  WM_EW_T *ew) :
+		WrMatch(nv, xadj, adj, ew)
+	{
+		ws	   = (WM_EW_T *) malloc(sizeof(*ws) * (max_n+1));
+		nlocks = (omp_lock_t *) malloc((n+1)*sizeof(omp_lock_t));
+	}
+
+
+
+	
+	void
+	match ()
+	{
+		#pragma omp parallel
+		{
+			int threads = omp_get_num_threads();
+        	int my_id = omp_get_thread_num();
+			
+			#pragma omp master
+			{
+				cout << "#threads " << threads << endl;
+			}
+			
+			weighted2(n, ver, edges, p, ws, nlocks, weight);
+		}
+		// verify_matching(n, ver, edges, p);
+	}
+
+
+
+
+	virtual
+	~WgtSuitorPar ()
+	{
+		// cout << "WgtSuitorSeqFor destructor" << endl;		
+		free(ws);
+		free(nlocks);
+	}
+		
+
+
+
+
+public:
+
+	// needs init match and suitor weight	
+	WM_EW_T		*ws;
+	omp_lock_t	*nlocks;
+};	
 
 }
 

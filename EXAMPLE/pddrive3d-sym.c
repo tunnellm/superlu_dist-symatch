@@ -30,6 +30,8 @@ at the top-level directory.
  *
  * This example illustrates how to use PDGSSVX3D or PDGSSVX3D_CSC_BATCH
  * with the full (default) options to solve a linear system.
+ * To use the symmetric LDL' based solver, you need to use one of the following settings:
+ * 		options.RowPerm = SUITOR {or SUMAC, or MC80};
  *
  * Five basic steps are required:
  *   1. Initialize the MPI environment and the SuperLU process grid
@@ -266,7 +268,7 @@ int main (int argc, char *argv[])
     // options.RowPerm = LargeDiag_MC64;
 	/* options.Equil = NO; */
 	/* options.ColPerm = NATURAL; */
-    if (SLU_IS_SYMATCH_ROWPERM(options.RowPerm)) {
+    if (SLU_IS_SYMATCH_ROWPERM(options.RowPerm)) {	
 	options.SymFact = YES;       /* perform symmetric factorization */
     }
 
