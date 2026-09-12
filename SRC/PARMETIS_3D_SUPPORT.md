@@ -623,12 +623,15 @@ The compact parallel-symbolic interfaces `ddist_symbLU`,
 - a positive value means allocation failure and represents approximate bytes
   allocated before failure.
 
-The numerical adapters accumulate byte counts in `double` and cast operands
-before multiplying dimensions.  This is required even in a 32-bit `int_t`
-build: an individual factor panel can exceed 2 GiB although its element count
-still fits in `int_t`.  Performing `len * nsupc * sizeof(double)` as signed
+The numerical adapters and the LU path's temporary `ddist_A` redistribution
+accumulate byte counts in `double` and cast operands before multiplying
+dimensions.  This is required even in a 32-bit `int_t` build: an individual
+factor panel or redistributed portion of A can exceed 2 GiB although its
+element count still fits in `int_t`.  Performing byte products in signed
 32-bit accounting arithmetic can otherwise wrap negative and be mistaken for
-a positive, out-of-memory return after applying the convention above.
+a positive, out-of-memory return after applying the convention above.  This
+is especially easy to miss because V2 LDLT uses its own A-redistribution path,
+whereas ordinary and symmetric LU both pass through `ddist_A`.
 
 For the V2 distributed-symbolic route,
 `dSymV2Distribute3dFromSymb` returns the negative sum of the compact-symbolic

@@ -792,7 +792,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
  *
  * Return value
  * ============
- *   < 0, number of bytes allocated on return from the dist_symbLU
+ *   < 0, number of bytes retained on return from ddist_A
  *   > 0, number of bytes allocated when out of memory.
  *        (an approximation).
  * </pre>
@@ -826,9 +826,11 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
   MPI_Status  status;
   int_t *xsup = Glu_persist->xsup;    /* supernode and column mapping */
   int_t *supno = Glu_persist->supno;
-  float memAux; /* Memory used during this routine and free'd before return */
-  float memRet; /* Memory allocated and not free'd on return */
-  int_t iword, dword, szbuf;
+  double memAux; /* Memory used during this routine and free'd before return */
+  double memRet; /* Memory allocated and not free'd on return */
+  const double iword = (double)sizeof(int_t);
+  const double dword = (double)sizeof(double);
+  int_t szbuf;
 
   /* ------------------------------------------------------------
      INITIALIZATION.
@@ -837,9 +839,6 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
 #if ( DEBUGlevel>=1 )
   CHECK_MALLOC(iam, "Enter ddist_A()");
 #endif
-  iword = sizeof(int_t);
-  dword = sizeof(double);
-
   perm_r = ScalePermstruct->perm_r;
   perm_c = ScalePermstruct->perm_c;
   procs = grid->nprow * grid->npcol;
@@ -851,7 +850,7 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
     fprintf (stderr, "Malloc fails for nnzToRecv[].");
     return (ERROR_RET);
   }
-  memAux = (float) (2 * procs * iword);
+  memAux = 2.0 * (double)procs * iword;
   memRet = 0.;
   nnzToSend = nnzToRecv + procs;
   nsupers  = supno[n-1] + 1;
@@ -897,13 +896,13 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
     fprintf (stderr, "Malloc fails for ia[].");
     return (memAux);
   }
-  memAux += (float) (2*k*iword);
+  memAux += 2.0 * (double)k * iword;
   ja = ia + k;
   if ( !(aij = doubleMalloc_dist(k)) ) {
     fprintf (stderr, "Malloc fails for aij[].");
     return (memAux);
   }
-  memAux += (float) (k*dword);
+  memAux += (double)k * dword;
 
   /* Allocate temporary storage for sending/receiving the A triplets. */
   if ( procs > 1 ) {
@@ -912,42 +911,42 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
       fprintf (stderr, "Malloc fails for send_req[].");
       return (memAux);
     }
-    memAux += (float) (2*procs *sizeof(MPI_Request));
+    memAux += 2.0 * (double)procs * sizeof(MPI_Request);
     if ( !(ia_send = (int_t **) SUPERLU_MALLOC(procs*sizeof(int_t*))) ) {
       fprintf(stderr, "Malloc fails for ia_send[].");
       return (memAux);
     }
-    memAux += (float) (procs*sizeof(int_t*));
+    memAux += (double)procs * sizeof(int_t*);
     if ( !(aij_send = (double **)SUPERLU_MALLOC(procs*sizeof(double*))) ) {
       fprintf(stderr, "Malloc fails for aij_send[].");
       return (memAux);
     }
-    memAux += (float) (procs*sizeof(double*));
+    memAux += (double)procs * sizeof(double*);
     if ( !(index = intMalloc_dist(2*SendCnt)) ) {
       fprintf(stderr, "Malloc fails for index[].");
       return (memAux);
     }
-    memAux += (float) (2*SendCnt*iword);
+    memAux += 2.0 * (double)SendCnt * iword;
     if ( !(nzval = doubleMalloc_dist(SendCnt)) ) {
       fprintf(stderr, "Malloc fails for nzval[].");
       return (memAux);
     }
-    memAux += (float) (SendCnt * dword);
+    memAux += (double)SendCnt * dword;
     if ( !(ptr_to_send = intCalloc_dist(procs)) ) {
       fprintf(stderr, "Malloc fails for ptr_to_send[].");
       return (memAux);
     }
-    memAux += (float) (procs * iword);
+    memAux += (double)procs * iword;
     if ( !(itemp = intMalloc_dist(2*maxnnzToRecv)) ) {
       fprintf(stderr, "Malloc fails for itemp[].");
       return (memAux);
     }
-    memAux += (float) (2*maxnnzToRecv*iword);
+    memAux += 2.0 * (double)maxnnzToRecv * iword;
     if ( !(dtemp = doubleMalloc_dist(maxnnzToRecv)) ) {
       fprintf(stderr, "Malloc fails for dtemp[].");
       return (memAux);
     }
-    memAux += (float) (maxnnzToRecv * dword);
+    memAux += (double)maxnnzToRecv * dword;
 
     for (i = 0, j = 0, p = 0; p < procs; ++p) {
       if ( p != iam ) {
@@ -965,12 +964,12 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
     fprintf (stderr, "Malloc fails for *ainf_colptr[].");
     return (memAux);
   }
-  memRet += (float) (ilsum_j[nsupers_j] + 1) * iword;
+  memRet += ((double)ilsum_j[nsupers_j] + 1.0) * iword;
   if ( !(asup_rowptr = intCalloc_dist(ilsum_i[nsupers_i] + 1)) ) {
     fprintf (stderr, "Malloc fails for *asup_rowptr[].");
     return (memAux+memRet);
   }
-  memRet += (float) (ilsum_i[nsupers_i] + 1) * iword;
+  memRet += ((double)ilsum_i[nsupers_i] + 1.0) * iword;
 
   /* ------------------------------------------------------------
      LOAD THE ENTRIES OF A INTO THE (IA,JA,AIJ) STRUCTURES TO SEND.
@@ -1079,10 +1078,13 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
     SUPERLU_FREE(ptr_to_send);
     SUPERLU_FREE(itemp);
     SUPERLU_FREE(dtemp);
-    memAux -= 2*procs *sizeof(MPI_Request) + procs*sizeof(int_t*) +
-      procs*sizeof(double*) + 2*SendCnt * iword +
-      SendCnt* dword + procs*iword +
-      2*maxnnzToRecv*iword + maxnnzToRecv*dword;
+    memAux -= 2.0 * (double)procs * sizeof(MPI_Request) +
+      (double)procs * sizeof(int_t*) +
+      (double)procs * sizeof(double*) +
+      2.0 * (double)SendCnt * iword +
+      (double)SendCnt * dword + (double)procs * iword +
+      2.0 * (double)maxnnzToRecv * iword +
+      (double)maxnnzToRecv * dword;
   }
 
   /* ------------------------------------------------------------
@@ -1093,12 +1095,12 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
       fprintf (stderr, "Malloc fails for *ainf_rowind[].");
       return (memAux+memRet);
     }
-    memRet += (float) (nnz_loc_ainf * iword);
+    memRet += (double)nnz_loc_ainf * iword;
     if ( !(ainf_val = doubleMalloc_dist(nnz_loc_ainf)) ) {
       fprintf (stderr, "Malloc fails for *ainf_val[].");
       return (memAux+memRet);
     }
-    memRet += (float) (nnz_loc_ainf * dword);
+    memRet += (double)nnz_loc_ainf * dword;
   }
   else {
     ainf_rowind = NULL;
@@ -1109,12 +1111,12 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
       fprintf (stderr, "Malloc fails for *asup_colind[].");
       return (memAux + memRet);
     }
-    memRet += (float) (nnz_loc_asup * iword);
+    memRet += (double)nnz_loc_asup * iword;
     if ( !(asup_val = doubleMalloc_dist(nnz_loc_asup)) ) {
       fprintf (stderr, "Malloc fails for *asup_val[].");
       return (memAux  + memRet);
     }
-    memRet += (float) (nnz_loc_asup * dword);
+    memRet += (double)nnz_loc_asup * dword;
   }
   else {
     asup_colind = NULL;
@@ -1172,7 +1174,7 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
 
   SUPERLU_FREE(ia);
   SUPERLU_FREE(aij);
-  memAux -= 2*szbuf*iword + szbuf*dword;
+  memAux -= 2.0 * (double)szbuf * iword + (double)szbuf * dword;
 
   *p_ainf_colptr = ainf_colptr;
   *p_ainf_rowind = ainf_rowind;
@@ -1186,7 +1188,10 @@ ddist_A(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
   fprintf (stdout, "Size of allocated memory (MB) %.3f\n", memRet*1e-6);
 #endif
 
-  return (-memRet);
+  if (!isfinite(memRet) || memRet < 0.0 || memRet > (double)FLT_MAX)
+    ABORT("Invalid distributed-A memory accounting.");
+
+  return -(float)memRet;
 } /* ddist_A */
 
 /*! \brief
