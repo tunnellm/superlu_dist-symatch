@@ -1105,6 +1105,19 @@ extern int dtrs_compute_communication_structure(superlu_dist_options_t *options,
        int* supernodeMask, gridinfo_t *, SuperLUStat_t *);
 
 /* Distribute the data for numerical factorization */
+extern float ddist_symbLU(superlu_dist_options_t *, int_t,
+                          Pslu_freeable_t *, Glu_persist_t *,
+                          int_t **, int_t **, int_t **, int_t **,
+                          gridinfo_t *);
+extern int_t *ddist_build_supno_tree(int_t, int_t, const int_t *,
+                                     const int_t *, int, const int_t *,
+                                     const int_t *, const int_t *,
+                                     const int_t *, Glu_persist_t *,
+                                     gridinfo_t *);
+extern float ddist_psymbtonum3d(superlu_dist_options_t *, int_t,
+                                SuperMatrix *, dScalePermstruct_t *,
+                                int_t *, int_t *, int_t *, int_t *, float,
+                                dLUstruct_t *, gridinfo3d_t *);
 extern float ddist_psymbtonum(superlu_dist_options_t *, int_t, SuperMatrix *,
                                 dScalePermstruct_t *, Pslu_freeable_t *,
                                 dLUstruct_t *, gridinfo_t *);
@@ -1344,9 +1357,17 @@ extern void dbcastPermutedSparseA(SuperMatrix *A,
                           dScalePermstruct_t *ScalePermstruct,
                           Glu_freeable_t *Glu_freeable,
                           dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
+extern void dbcastDistSymbLU(SuperMatrix *, dScalePermstruct_t *,
+                             dLUstruct_t *, int_t **, int_t **,
+                             int_t **, int_t **, float *, int_t **,
+                             gridinfo3d_t *);
 
 extern void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
                                  gridinfo3d_t *grid3d);
+extern void dnewTrfPartitionInitFromSetree(int_t nsupers,
+                                           const int_t *setree,
+                                           dLUstruct_t *LUstruct,
+                                           gridinfo3d_t *grid3d);
 extern void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
                                    Glu_freeable_t *Glu_freeable,
                                    gridinfo3d_t *grid3d,

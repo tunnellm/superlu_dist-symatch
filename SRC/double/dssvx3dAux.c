@@ -560,12 +560,23 @@ void dperform_row_permutation(
     LOG_FUNC_ENTER();
     #endif
     int_t *perm_r = ScalePermstruct->perm_r;
-    /* Get NC format data from SuperMatrix GA */
-    NCformat* GAstore = (NCformat *)GA->Store;
-    int_t* colptr = GAstore->colptr;
-    int_t* rowind = GAstore->rowind;
-    int_t nnz = GAstore->nnz;
-    double* a_GA = (double *)GAstore->nzval;
+    /* GA is intentionally absent for ParSymbFact=YES with NOROWPERM: the
+       distributed symbolic factorization consumes A directly. */
+    NCformat *GAstore = NULL;
+    int_t *colptr = NULL;
+    int_t *rowind = NULL;
+    int_t nnz = 0;
+    double *a_GA = NULL;
+
+    if (options->RowPerm != NOROWPERM) {
+        if (GA == NULL || GA->Store == NULL)
+            ABORT("A replicated matrix is required by the selected row permutation.");
+        GAstore = (NCformat *) GA->Store;
+        colptr = GAstore->colptr;
+        rowind = GAstore->rowind;
+        nnz = GAstore->nnz;
+        a_GA = (double *) GAstore->nzval;
+    }
 
     int iam = grid->iam;
     /* ------------------------------------------------------------
@@ -573,7 +584,7 @@ void dperform_row_permutation(
     ------------------------------------------------------------ */
     double   t, t1, t2, t3;
 
-    if (options->RowPerm != NO)
+    if (options->RowPerm != NOROWPERM)
     {
         t1 = SuperLU_timer_();
 
@@ -904,7 +915,7 @@ void dperform_row_permutation(
 				ms.n1x1, ms.n2x2, ms.w1x1, ms.w2x2, ms.w1x1+ms.w2x2,
 				ms.t_match);
 	}
-	else						/* natural, MC64 */
+	else if (options->RowPerm != NOROWPERM) /* MC64 or another nonsymmetric permutation */
 	{
 		int32_t n1x1 = n, n2x2 = 0;
 		double w1x1 = 0.0, w2x2 = 0.0;		

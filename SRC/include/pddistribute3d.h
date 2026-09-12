@@ -10,6 +10,13 @@ float pddistribute3d(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
                      Glu_freeable_t *Glu_freeable, dLUstruct_t *LUstruct,
                      gridinfo3d_t *grid3d);
 
+float ddist_psymbtonum3d(superlu_dist_options_t *options, int_t n,
+                         SuperMatrix *A,
+                         dScalePermstruct_t *ScalePermstruct,
+                         int_t *xlsub, int_t *lsub,
+                         int_t *xusub, int_t *usub, float memStrLU,
+                         dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
+
 
 int_t dReDistribute_A3d(SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
                         Glu_freeable_t *Glu_freeable, int_t *xsup, int_t *supno,
@@ -39,8 +46,18 @@ void dbcastPermutedSparseA(SuperMatrix *A,
                           dScalePermstruct_t *ScalePermstruct,
                           Glu_freeable_t *Glu_freeable, 
                           dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
+void dbcastDistSymbLU(SuperMatrix *A,
+                      dScalePermstruct_t *ScalePermstruct,
+                      dLUstruct_t *LUstruct,
+                      int_t **xlsub, int_t **lsub,
+                      int_t **xusub, int_t **usub,
+                      float *memStrLU, int_t **setree,
+                      gridinfo3d_t *grid3d);
 
 void dnewTrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct, gridinfo3d_t *grid3d);
+void dnewTrfPartitionInitFromSetree(int_t nsupers, const int_t *setree,
+                                    dLUstruct_t *LUstruct,
+                                    gridinfo3d_t *grid3d);
 void dSymV2TrfPartitionInit(int_t nsupers, dLUstruct_t *LUstruct,
                             Glu_freeable_t *Glu_freeable,
                             gridinfo3d_t *grid3d,
