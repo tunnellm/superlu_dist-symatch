@@ -51,6 +51,33 @@ static void dSymV2MoveDiagBlockFirst(int_t *index, int_t *loc,
     }
 }
 
+static void dSymV2OrderDistributedDiagonalRows(int_t *lsub, int_t istart,
+                                                int_t iend, int_t fsupc,
+                                                int_t nsupc)
+{
+    /* ddist_psymbtonum performs the same normalization before constructing a
+       conventional L panel.  Parallel symbolic factorization does not
+       promise that the diagonal row subscripts are already first and in
+       scalar-column order, whereas V2's dense diagonal block requires it. */
+    for (int_t offset = 0; offset < nsupc; ++offset)
+    {
+        int_t target = istart + offset;
+        int_t wanted = fsupc + offset;
+        int_t found = target;
+
+        while (found < iend && lsub[found] != wanted)
+            ++found;
+        if (found == iend)
+            ABORT("SymFact V2 parallel-symbolic L panel is missing a diagonal row.");
+        if (found != target)
+        {
+            int_t tmp = lsub[target];
+            lsub[target] = lsub[found];
+            lsub[found] = tmp;
+        }
+    }
+}
+
 static int dSymV2PanelRoot(dtrf3Dpartition_t *trf3Dpart, int_t k)
 {
     return trf3Dpart->symV2PanelRoot[k];
@@ -350,7 +377,8 @@ static float
 dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
         SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
         Glu_freeable_t *Glu_freeable, dLUstruct_t *LUstruct,
-        gridinfo3d_t *grid3d)
+        gridinfo3d_t *grid3d, const int_t *dist_xlsub,
+        int_t *dist_lsub)
 {
     gridinfo_t *grid = &(grid3d->grid2d);
     dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
@@ -363,8 +391,10 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
     int_t *xsup = Glu_persist->xsup;
     int_t *supno = Glu_persist->supno;
     int_t nsupers = supno[n - 1] + 1;
-    int_t *lsub = Glu_freeable->lsub;
-    int_t *xlsub = Glu_freeable->xlsub;
+    const int distributed_symbolic = (dist_xlsub != NULL);
+    int_t *lsub = distributed_symbolic ? dist_lsub : Glu_freeable->lsub;
+    const int_t *xlsub = distributed_symbolic ? dist_xlsub
+                                               : Glu_freeable->xlsub;
     int_t *xa = NULL;
     int_t *asub = NULL;
     double *a = NULL;
@@ -378,6 +408,24 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
         ABORT("SymFact GPU3DVERSION=2 LDL distribution does not support SamePattern_SameRowPerm yet.");
     if (!dSymV2CheckPartition(trf3Dpart))
         ABORT("SymFact GPU3DVERSION=2 LDL distribution metadata is not initialized.");
+    if (distributed_symbolic)
+    {
+        int_t local_panels = CEILING(nsupers, grid->npcol);
+
+        if (dist_xlsub[local_panels] > 0 && dist_lsub == NULL)
+            ABORT("SymFact V2 parallel-symbolic distribution is missing L subscripts.");
+
+        /* ddist_symbLU distributes each process row's owned L rows, plus
+           representatives that describe communication to the other process
+           rows, within the panel's block-cyclic process column.  The V2
+           adapter deliberately supports only that ownership mapping. */
+        for (int_t k = 0; k < nsupers; ++k)
+        {
+            if (dSymV2PanelRoot(trf3Dpart, k) != PCOL(k, grid) ||
+                dSymV2DiagRoot(trf3Dpart, k) != PROW(k, grid))
+                ABORT("SymFact V2 parallel-symbolic distribution requires block-cyclic ownership.");
+        }
+    }
 
     for (int_t i = 0; i < NBUFFERS; ++i)
         mybufmax[i] = 0;
@@ -535,8 +583,13 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
         int_t nrbl = 0;
         len = 0;
         int kseen = 0;
-        int_t istart = xlsub[fsupc];
-        for (int_t p = istart; p < xlsub[fsupc + 1]; ++p)
+        int_t symbolic_panel = distributed_symbolic ? LBj(jb, grid) : fsupc;
+        int_t istart = xlsub[symbolic_panel];
+        int_t iend = xlsub[symbolic_panel + 1];
+        if (distributed_symbolic && myrow == jbrow)
+            dSymV2OrderDistributedDiagonalRows(lsub, istart, iend,
+                                                fsupc, nsupc);
+        for (int_t p = istart; p < iend; ++p)
         {
             int_t irow = lsub[p];
             int_t gb = BlockNum(irow);
@@ -627,7 +680,7 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
                 next_lval += block_len;
             }
 
-            for (int_t p = istart; p < xlsub[fsupc + 1]; ++p)
+            for (int_t p = istart; p < iend; ++p)
             {
                 int_t irow = lsub[p];
                 int_t gb = BlockNum(irow);
@@ -713,7 +766,7 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
         }
         else
         {
-            for (int_t p = istart; p < xlsub[fsupc + 1]; ++p)
+            for (int_t p = istart; p < iend; ++p)
             {
                 int_t irow = lsub[p];
                 int_t gb = BlockNum(irow);
@@ -806,5 +859,44 @@ dSymV2Distribute3d(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
         ABORT("dSymV2Distribute3d requires SymFact=YES.");
 
     return dSymV2Distribute3d_LDL_impl(options, n, A, ScalePermstruct,
-                                       Glu_freeable, LUstruct, grid3d);
+                                       Glu_freeable, LUstruct, grid3d,
+                                       NULL, NULL);
+}
+
+/* Assemble V2's L-only numerical representation from the compact block-column
+   symbolic data produced by ddist_symbLU().  The four symbolic arrays are
+   consumed here, matching ddist_psymbtonum3d() ownership semantics.  U is
+   intentionally discarded: symmetric LDL^T keeps no conventional U factor. */
+float
+dSymV2Distribute3dFromSymb(superlu_dist_options_t *options, int_t n,
+        SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
+        int_t *xlsub, int_t *lsub, int_t *xusub, int_t *usub,
+        float memStrLU, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d)
+{
+    float mem_use;
+
+    if (options == NULL || options->SymFact != YES)
+        ABORT("dSymV2Distribute3dFromSymb requires SymFact=YES.");
+    if (xlsub == NULL)
+        ABORT("dSymV2Distribute3dFromSymb requires compact symbolic L pointers.");
+    if (memStrLU > 0.0f)
+        ABORT("dSymV2Distribute3dFromSymb received failed symbolic-memory accounting.");
+
+    mem_use = dSymV2Distribute3d_LDL_impl(options, n, A, ScalePermstruct,
+                                           NULL, LUstruct, grid3d,
+                                           xlsub, lsub);
+
+    SUPERLU_FREE(xlsub);
+    if (lsub != NULL)
+        SUPERLU_FREE(lsub);
+    if (xusub != NULL)
+        SUPERLU_FREE(xusub);
+    if (usub != NULL)
+        SUPERLU_FREE(usub);
+
+    /* Parallel-symbolic callers use the ddist_psymbtonum3d convention:
+       negative means successful distribution-stage memory usage.  Include
+       the compact symbolic allocation because it coexists with the V2
+       numerical panels until the assembly above has completed. */
+    return -(mem_use - memStrLU);
 }

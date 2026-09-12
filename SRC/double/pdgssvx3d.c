@@ -972,15 +972,26 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
     validateInput_pdgssvx3d(options, A, ldb, nrhs, grid3d, info);
 
-    /* The symmetric parallel-symbolic path currently targets the standard
-       block-cyclic symmetric-LU backend only.  The V2 ID/ID2D/GREEDY
-       mappings require a separate distributed-symbolic adapter. */
-    if (Fact != FACTORED && parSymbFact == YES && options->SymFact == YES &&
-        (gpu3dVersion != 0 || options->ColPerm != PARMETIS ||
-         !SLU_IS_SYMATCH_ROWPERM(options->RowPerm))) {
-        ABORT("SymFact=YES with ParSymbFact=YES currently requires "
-              "GPU3DVERSION=0, ColPerm=PARMETIS, and symmetric matching "
-              "(block-cyclic symmetric LU only).");
+    /* The symmetric parallel-symbolic front end is shared by symmetric LU
+       and V2 LDLT.  Its V2 symbolic-to-numeric adapter currently implements
+       only the block-cyclic panel/diagonal mapping. */
+    if (Fact != FACTORED && parSymbFact == YES && options->SymFact == YES) {
+        const char *mapping = getenv("GPU3DV2_MAPPING");
+        const int cyclic_mapping =
+            mapping == NULL || mapping[0] == '\0' ||
+            strcmp(mapping, "CYCLIC") == 0;
+
+        if (options->ColPerm != PARMETIS ||
+            !SLU_IS_SYMATCH_ROWPERM(options->RowPerm))
+            ABORT("SymFact=YES with ParSymbFact=YES requires "
+                  "ColPerm=PARMETIS and symmetric matching.");
+        if (gpu3dVersion != 0 && gpu3dVersion != 2)
+            ABORT("SymFact=YES with ParSymbFact=YES supports only "
+                  "GPU3DVERSION=0 (symmetric LU) or GPU3DVERSION=2 (LDLT).");
+        if (gpu3dVersion == 2 && !cyclic_mapping)
+            ABORT("ParMETIS parallel-symbolic LDLT supports only the "
+                  "block-cyclic GPU3DV2_MAPPING=CYCLIC mapping; "
+                  "ID, ID2D, and GREEDY are not supported.");
     }
     if (parSymbFact == YES && Fact != DOFACT && Fact != FACTORED) {
         ABORT("The 3D ParSymbFact path does not yet support symbolic-pattern reuse.");
@@ -1827,10 +1838,16 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				ABORT("Malloc fails for the 3D factorization partition.");
 			// computes the new partition for 3D factorization here
 			trf3Dpartition=LUstruct->trf3Dpart;
-			if (parSymbFact == YES)
-				dnewTrfPartitionInitFromSetree(nsupers,
+			if (parSymbFact == YES) {
+				if (options->SymFact == YES && gpu3dVersion == 2)
+					dSymV2TrfPartitionInitFromDistSymb(
+						nsupers, dist_setree, dist_xlsub,
+						dist_lsub, LUstruct, grid3d, options);
+				else
+					dnewTrfPartitionInitFromSetree(nsupers,
 							 dist_setree,
 							 LUstruct, grid3d);
+			}
 			else if (options->SymFact == YES && gpu3dVersion == 2)
 				dSymV2TrfPartitionInit(nsupers, LUstruct, Glu_freeable,
 						       grid3d, options);
@@ -1878,10 +1895,18 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 				distribution routine. */
 
 			t = SuperLU_timer_();
-			dist_mem_use = ddist_psymbtonum3d(
-				options, n, A, ScalePermstruct,
-				dist_xlsub, dist_lsub, dist_xusub, dist_usub,
-				dist_symb_mem, LUstruct, grid3d);
+			if (options->SymFact == YES && gpu3dVersion == 2)
+				dist_mem_use = dSymV2Distribute3dFromSymb(
+					options, n, A, ScalePermstruct,
+					dist_xlsub, dist_lsub,
+					dist_xusub, dist_usub,
+					dist_symb_mem, LUstruct, grid3d);
+			else
+				dist_mem_use = ddist_psymbtonum3d(
+					options, n, A, ScalePermstruct,
+					dist_xlsub, dist_lsub,
+					dist_xusub, dist_usub,
+					dist_symb_mem, LUstruct, grid3d);
 			if (dist_mem_use > 0)
 				ABORT("Not enough memory available for dist_psymbtonum\n");
 			dist_xlsub = dist_lsub = NULL;

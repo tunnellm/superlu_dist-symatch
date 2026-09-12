@@ -1374,6 +1374,10 @@ extern void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
                                    Glu_freeable_t *Glu_freeable,
                                    gridinfo3d_t *grid3d,
                                    superlu_dist_options_t *options);
+extern void dSymV2TrfPartitionInitFromDistSymb(
+    int_t nsupers, const int_t *setree, const int_t *xlsub,
+    const int_t *lsub, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d,
+    superlu_dist_options_t *options);
 
 
     /* from xtrf3Dpartition.h */
@@ -1748,6 +1752,12 @@ dSymV2Distribute3d(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 	     dScalePermstruct_t *ScalePermstruct,
 	     Glu_freeable_t *Glu_freeable, dLUstruct_t *LUstruct,
 	     gridinfo3d_t *grid3d);
+extern float
+dSymV2Distribute3dFromSymb(superlu_dist_options_t *options, int_t n,
+             SuperMatrix *A, dScalePermstruct_t *ScalePermstruct,
+             int_t *xlsub, int_t *lsub, int_t *xusub, int_t *usub,
+             float memStrLU, dLUstruct_t *LUstruct,
+             gridinfo3d_t *grid3d);
 
 
 #if 0 // NOT CALLED

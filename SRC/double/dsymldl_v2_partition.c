@@ -304,6 +304,39 @@ static void dSymV2BuildIDWork(int_t nsupers, int_t *xsup, int_t *supno,
     SUPERLU_FREE(block_gids);
 }
 
+static void dSymV2SetLDLTreeWeightFromRows(int_t nsupers, int_t *setree,
+                                           treeList_t *treeList,
+                                           const int_t *xsup,
+                                           const int_t *mylsize,
+                                           gridinfo3d_t *grid3d)
+{
+    gridinfo_t *grid = &(grid3d->grid2d);
+
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        double ksupc = (double)SuperSize(k);
+        double depth = (double)SUPERLU_MAX((int_t)1, treeList[k].depth);
+        double lrows = (double)mylsize[k];
+        if (lrows <= 0.0)
+            lrows = ksupc + depth;
+        if (lrows < ksupc)
+            lrows = ksupc;
+
+        dSymV2LDLCost_t cost;
+        dSymV2CostFromDims(ksupc, lrows, grid->nprow, &cost);
+        treeList[k].weight = cost.tree_weight;
+        treeList[k].iWeight = treeList[k].weight;
+        treeList[k].scuWeight = treeList[k].weight;
+    }
+
+    treeList[nsupers].iWeight = 0.0;
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        int_t parent = setree[k];
+        treeList[parent].iWeight += treeList[k].iWeight;
+    }
+}
+
 static void dSymV2CalcLDLTreeWeight(int_t nsupers, int_t *setree,
                                     treeList_t *treeList, int_t *xsup,
                                     Glu_freeable_t *Glu_freeable,
@@ -346,30 +379,70 @@ static void dSymV2CalcLDLTreeWeight(int_t nsupers, int_t *setree,
     MPI_Allreduce(MPI_IN_PLACE, mylsize, nsupers, mpi_int_t, MPI_MAX,
                   grid->comm);
 
-    for (int_t k = 0; k < nsupers; ++k)
-    {
-        double ksupc = (double)SuperSize(k);
-        double depth = (double)SUPERLU_MAX((int_t)1, treeList[k].depth);
-        double lrows = (double)mylsize[k];
-        if (lrows <= 0.0)
-            lrows = ksupc + depth;
-        if (lrows < ksupc)
-            lrows = ksupc;
+    dSymV2SetLDLTreeWeightFromRows(nsupers, setree, treeList, xsup,
+                                   mylsize, grid3d);
+    SUPERLU_FREE(mylsize);
+}
 
-        dSymV2LDLCost_t cost;
-        dSymV2CostFromDims(ksupc, lrows, grid->nprow, &cost);
-        treeList[k].weight = cost.tree_weight;
-        treeList[k].iWeight = treeList[k].weight;
-        treeList[k].scuWeight = treeList[k].weight;
+/*
+ * Recover the global row count of each L panel from ddist_symbLU()'s
+ * compact block-column structure.  A compact local panel contains all rows
+ * owned by this process row plus representative rows for other nonempty
+ * process rows.  Counting only rows whose block maps to myrow removes those
+ * representatives; summing over the 2D layer then counts every structural
+ * row exactly once.
+ */
+static void dSymV2CalcLDLTreeWeightFromDistSymb(
+    int_t nsupers, int_t *setree, treeList_t *treeList,
+    const int_t *xsup, const int_t *supno, const int_t *xlsub,
+    const int_t *lsub, gridinfo3d_t *grid3d)
+{
+    gridinfo_t *grid = &(grid3d->grid2d);
+    const int myrow = MYROW(grid->iam, grid);
+    const int mycol = MYCOL(grid->iam, grid);
+    const int_t n = xsup[nsupers];
+    const int_t nlocal_panels = CEILING(nsupers, grid->npcol);
+    int_t *mylsize = INT_T_ALLOC(nsupers);
+
+    if (mylsize == NULL)
+        ABORT("Malloc fails for distributed SymFact V2 LDL tree weights.");
+    if (xlsub == NULL || (xlsub[nlocal_panels] > 0 && lsub == NULL))
+        ABORT("Distributed SymFact V2 LDL tree weights require compact L structure.");
+
+    for (int_t k = 0; k < nsupers; ++k)
+        mylsize[k] = 0;
+    for (int_t lk = 0; lk < nlocal_panels; ++lk)
+    {
+        if (xlsub[lk] < 0 || xlsub[lk + 1] < xlsub[lk])
+            ABORT("Distributed SymFact V2 LDL found invalid compact L bounds.");
     }
 
-    treeList[nsupers].iWeight = 0.0;
-    for (int_t k = 0; k < nsupers; ++k)
+    for (int_t k = mycol; k < nsupers; k += grid->npcol)
     {
-        int_t parent = setree[k];
-        treeList[parent].iWeight += treeList[k].iWeight;
+        const int_t lk = LBj(k, grid);
+        for (int_t p = xlsub[lk]; p < xlsub[lk + 1]; ++p)
+        {
+            const int_t row = lsub[p];
+            if (row < 0 || row >= n)
+                ABORT("Distributed SymFact V2 LDL found an invalid compact L row.");
+            const int_t gb = supno[row];
+            if (gb < k || gb >= nsupers)
+                ABORT("Distributed SymFact V2 LDL found an invalid lower block.");
+            if (PROW(gb, grid) == myrow)
+                ++mylsize[k];
+        }
     }
 
+    MPI_Allreduce(MPI_IN_PLACE, mylsize, nsupers, mpi_int_t, MPI_SUM,
+                  grid->comm);
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        if (mylsize[k] < xsup[k + 1] - xsup[k])
+            ABORT("Distributed SymFact V2 LDL compact L is missing diagonal rows.");
+    }
+
+    dSymV2SetLDLTreeWeightFromRows(nsupers, setree, treeList, xsup,
+                                   mylsize, grid3d);
     SUPERLU_FREE(mylsize);
 }
 
@@ -391,6 +464,22 @@ static void dSymV2ResetLDLMetadata(dtrf3Dpartition_t *trf3Dpart)
     trf3Dpart->symV2NodeLevel = NULL;
     trf3Dpart->symV2NodeOrder = NULL;
     trf3Dpart->symV2NodeIperm = NULL;
+}
+
+static void dSymV2PrepareTrfPartition(int_t nsupers,
+                                      dtrf3Dpartition_t *trf3Dpart)
+{
+    trf3Dpart->nsupers = nsupers;
+    trf3Dpart->iperm_c_supno = NULL;
+    trf3Dpart->myNodeCount = NULL;
+    trf3Dpart->myTreeIdxs = NULL;
+    trf3Dpart->myZeroTrIdxs = NULL;
+    trf3Dpart->treePerm = NULL;
+    trf3Dpart->sForests = NULL;
+    trf3Dpart->supernode2treeMap = NULL;
+    trf3Dpart->LUvsb = NULL;
+    trf3Dpart->gemmCsizes = NULL;
+    dSymV2ResetLDLMetadata(trf3Dpart);
 }
 
 static void dSymV2EstimateSupernodeWork(int_t k, int_t *xsup,
@@ -1122,6 +1211,49 @@ static void dSymV2InstallLDLForest(int_t nsupers,
     SUPERLU_FREE(gNodeLists);
 }
 
+static int_t *dSymV2CopySetree(int_t nsupers, const int_t *setree_in)
+{
+    int_t *setree;
+
+    if (setree_in == NULL)
+        ABORT("Distributed SymFact V2 LDL requires a supernodal tree.");
+    setree = INT_T_ALLOC(nsupers + 1);
+    if (setree == NULL)
+        ABORT("Malloc fails for the distributed SymFact V2 LDL tree.");
+
+    for (int_t k = 0; k < nsupers; ++k)
+    {
+        const int_t parent = setree_in[k];
+        if (parent != nsupers && (parent <= k || parent >= nsupers))
+        {
+            SUPERLU_FREE(setree);
+            ABORT("Distributed SymFact V2 LDL received an invalid supernodal tree.");
+        }
+        setree[k] = parent;
+    }
+    setree[nsupers] = nsupers;
+    return setree;
+}
+
+static void dSymV2FinishTrfPartitionInit(
+    int_t nsupers, int_t *setree, treeList_t *treeList,
+    dLUstruct_t *LUstruct, Glu_freeable_t *Glu_freeable,
+    gridinfo3d_t *grid3d)
+{
+    dtrf3Dpartition_t *trf3Dpart = LUstruct->trf3Dpart;
+
+    trf3Dpart->gEtreeInfo = fillEtreeInfo(nsupers, setree, treeList);
+    dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
+                        LUstruct->Glu_persist->xsup,
+                        LUstruct->Glu_persist->supno,
+                        Glu_freeable, treeList, grid3d);
+    dSymV2BuildLDLSchedule(nsupers, setree, trf3Dpart,
+                           LUstruct->Glu_persist->xsup, grid3d);
+    dSymV2InstallLDLForest(nsupers, trf3Dpart, setree, treeList,
+                           LUstruct->Glu_persist->xsup, grid3d);
+    free_treelist(nsupers, treeList);
+}
+
 void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
                             Glu_freeable_t *Glu_freeable,
                             gridinfo3d_t *grid3d,
@@ -1138,17 +1270,7 @@ void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
         ABORT("dSymV2TrfPartitionInit received invalid arguments.");
 
     trf3Dpart = LUstruct->trf3Dpart;
-    trf3Dpart->nsupers = nsupers;
-    trf3Dpart->iperm_c_supno = NULL;
-    trf3Dpart->myNodeCount = NULL;
-    trf3Dpart->myTreeIdxs = NULL;
-    trf3Dpart->myZeroTrIdxs = NULL;
-    trf3Dpart->treePerm = NULL;
-    trf3Dpart->sForests = NULL;
-    trf3Dpart->supernode2treeMap = NULL;
-    trf3Dpart->LUvsb = NULL;
-    trf3Dpart->gemmCsizes = NULL;
-    dSymV2ResetLDLMetadata(trf3Dpart);
+    dSymV2PrepareTrfPartition(nsupers, trf3Dpart);
 
     setree = supernodal_etree(nsupers, LUstruct->etree,
                               LUstruct->Glu_persist->supno,
@@ -1157,16 +1279,49 @@ void dSymV2TrfPartitionInit(int_t nsupers,  dLUstruct_t *LUstruct,
     dSymV2CalcLDLTreeWeight(nsupers, setree, treeList,
                             LUstruct->Glu_persist->xsup,
                             Glu_freeable, NULL, grid3d);
-    trf3Dpart->gEtreeInfo = fillEtreeInfo(nsupers, setree, treeList);
-    dSymV2InitLDLOwners(nsupers, trf3Dpart, setree,
-                        LUstruct->Glu_persist->xsup,
-                        LUstruct->Glu_persist->supno,
-                        Glu_freeable, treeList, grid3d);
-    dSymV2BuildLDLSchedule(nsupers, setree, trf3Dpart,
-                           LUstruct->Glu_persist->xsup, grid3d);
+    dSymV2FinishTrfPartitionInit(nsupers, setree, treeList, LUstruct,
+                                 Glu_freeable, grid3d);
+}
 
-    dSymV2InstallLDLForest(nsupers, trf3Dpart, setree, treeList,
-                           LUstruct->Glu_persist->xsup, grid3d);
+/*
+ * Initialize V2 LDL partition metadata from the compact block-cyclic
+ * symbolic L and supernodal dependency tree produced by parallel symbolic
+ * factorization.  Non-cyclic owner mappings rely on a replicated symbolic
+ * graph and are intentionally excluded from this path.
+ */
+void dSymV2TrfPartitionInitFromDistSymb(
+    int_t nsupers, const int_t *setree_in, const int_t *xlsub,
+    const int_t *lsub, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d,
+    superlu_dist_options_t *options)
+{
+    dtrf3Dpartition_t *trf3Dpart;
+    int_t *setree;
+    treeList_t *treeList;
 
-    free_treelist(nsupers, treeList);
+    if (options == NULL || options->SymFact != YES ||
+        options->ParSymbFact != YES || options->ColPerm != PARMETIS ||
+        !SLU_IS_SYMATCH_ROWPERM(options->RowPerm))
+        ABORT("Distributed SymFact V2 LDL requires ParSymbFact=YES, "
+              "ColPerm=PARMETIS, and symmetric matching.");
+    if (dSymV2Mapping() != DSYM_V2_MAPPING_CYCLIC)
+        ABORT("ParMETIS SymFact V2 LDL supports only "
+              "GPU3DV2_MAPPING=CYCLIC.");
+    if (nsupers < 1 || LUstruct == NULL || LUstruct->trf3Dpart == NULL ||
+        LUstruct->Glu_persist == NULL ||
+        LUstruct->Glu_persist->xsup == NULL ||
+        LUstruct->Glu_persist->supno == NULL || grid3d == NULL)
+        ABORT("dSymV2TrfPartitionInitFromDistSymb received invalid arguments.");
+
+    trf3Dpart = LUstruct->trf3Dpart;
+    dSymV2PrepareTrfPartition(nsupers, trf3Dpart);
+    setree = dSymV2CopySetree(nsupers, setree_in);
+    treeList = setree2list(nsupers, setree);
+    if (treeList == NULL)
+        ABORT("Failed to construct the distributed SymFact V2 LDL tree list.");
+
+    dSymV2CalcLDLTreeWeightFromDistSymb(
+        nsupers, setree, treeList, LUstruct->Glu_persist->xsup,
+        LUstruct->Glu_persist->supno, xlsub, lsub, grid3d);
+    dSymV2FinishTrfPartitionInit(nsupers, setree, treeList, LUstruct,
+                                 NULL, grid3d);
 }
