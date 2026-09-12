@@ -34,6 +34,7 @@ at the top-level directory.
 
 /* limits.h:  the largest positive integer (INT_MAX) (LONG_MAX) */
 #include <limits.h>
+#include <inttypes.h>
 #include <math.h>
 #include "superlu_ddefs.h"
 #include "psymbfact.h"
@@ -258,7 +259,8 @@ float symbfact_dist
   int_t n;
   int_t nextl, nextu, neltsZr, neltsTotal, nsuper_loc, szLGr, szUGr;
   int_t ind_blk, nsuper, vtx, szsn;
-  long long int nnzL, nnzU, nnzLU;
+  int64_t nnzL = 0, nnzU = 0;
+  int64_t nnz_loc[2], nnz_glob[2];
   float stat_loc[23], stat_glob[23], mem_glob[15];
   
   Llu_symbfact_t Llu_symbfact; /* local L and U and pruned L and U data structures */
@@ -531,10 +533,10 @@ float symbfact_dist
       szsn = 1;
       if (INT_T_MAX - nnzL <= Llu_symbfact.xlsub[fstVtx_lid + 1] - 
 	  Llu_symbfact.xlsub[fstVtx_lid])
-	printf ("PE[%d] ERR nnzL %lld\n", iam, nnzL); 
+	printf ("PE[%d] ERR nnzL %" PRId64 "\n", iam, nnzL);
       if (INT_T_MAX - nnzU <= Llu_symbfact.xusub[fstVtx_lid + 1] - 
 	  Llu_symbfact.xusub[fstVtx_lid])
-	printf ("PE[%d] ERR nnzU %lld\n", iam, nnzU);
+	printf ("PE[%d] ERR nnzU %" PRId64 "\n", iam, nnzU);
       
       j = Llu_symbfact.xlsub[fstVtx_lid + 1] - Llu_symbfact.xlsub[fstVtx_lid];
       k = Llu_symbfact.xusub[fstVtx_lid + 1] - Llu_symbfact.xusub[fstVtx_lid];
@@ -645,9 +647,7 @@ float symbfact_dist
     if (stat_msgs_g[6] == 0) stat_msgs_g[6] = 1;
     if (stat_msgs_g[7] == 0) stat_msgs_g[7] = 1;
     
-	Pslu_freeable->nnzLU=(long long) stat_glob[0]+(long long) stat_glob[1];					
     if (!iam) {
-      nnzL   = (long long) stat_glob[0]; nnzU  = (long long) stat_glob[1];
       nsuper = (int_t) stat_glob[2];
       szLGr  = (int_t) stat_glob[3]; szUGr = (int_t) stat_glob[4];
       printf("\tMax szBlk          %ld\n", (long) VInfo.maxSzBlk);
@@ -658,10 +658,6 @@ float symbfact_dist
       printf("INT_T_MAX %ld\n", (long) INT_T_MAX);
       printf("\tParameters: fill mem %ld fill pelt %ld\n",
 	     (long) sp_ienv_dist(6,options), (long) PS.fill_par);
-      printf("\tNonzeros in L       %lld\n", nnzL);
-      printf("\tNonzeros in U       %lld\n", nnzU);
-      nnzLU = nnzL + nnzU;
-      printf("\tnonzeros in L+U-I   %lld\n", nnzLU);
       printf("\tNo of supers   %ld\n", (long) nsuper);
       printf("\tSize of G(L)   %ld\n", (long) szLGr);
       printf("\tSize of G(U)   %ld\n", (long) szUGr);
@@ -774,6 +770,23 @@ float symbfact_dist
     
     SUPERLU_FREE( tempArray );
     PS.allocMem -= n * sizeof(int_t);
+  }
+
+  /*
+   * Only the first nprocs_symb ranks compute symbolic factors.  Reduce their
+   * exact integer counts over the full numerical communicator so that every
+   * rank receives a valid nnzLU value, including ranks outside symb_comm.
+   */
+  nnz_loc[0] = (int64_t) nnzL;
+  nnz_loc[1] = (int64_t) nnzU;
+  MPI_Allreduce(nnz_loc, nnz_glob, 2, MPI_INT64_T, MPI_SUM, *num_comm);
+  Pslu_freeable->nnzLU = nnz_glob[0] + nnz_glob[1];
+
+  if (iam == 0 && options->PrintStat == YES) {
+    printf("\tNonzeros in L       %" PRId64 "\n", nnz_glob[0]);
+    printf("\tNonzeros in U       %" PRId64 "\n", nnz_glob[1]);
+    printf("\tnonzeros in L+U     %" PRId64 "\n",
+           Pslu_freeable->nnzLU);
   }
 
   if (iam < nprocs_symb && nprocs_symb != 1) 

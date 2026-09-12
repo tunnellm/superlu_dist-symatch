@@ -1139,6 +1139,8 @@ extern int_t ilu_level_symbfact(superlu_dist_options_t *, SuperMatrix *, int_t *
 			      int_t *, Glu_persist_t *, Glu_freeable_t *);
 extern void    countnz_dist (const int_t, int_t *, int_t *, int_t *,
 			     Glu_persist_t *, Glu_freeable_t *);
+extern void    countnz_dist64 (const int_t, int_t *, int64_t *, int64_t *,
+			       Glu_persist_t *, Glu_freeable_t *);
 extern int64_t fixupL_dist (const int_t, const int_t *, Glu_persist_t *,
 				  Glu_freeable_t *);
 extern int_t   *TreePostorder_dist (int_t, int_t *);

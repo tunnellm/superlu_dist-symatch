@@ -22,6 +22,7 @@ at the top-level directory.
  */
 
 #include <math.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include "superlu_ddefs.h"
 
@@ -92,13 +93,14 @@ void Destroy_Dense_Matrix_dist(SuperMatrix *A)
  * symmetrically reduced L. 
  * </pre>
  */
-void countnz_dist(const int_t n, int_t *xprune,
-                  int_t *nnzL, int_t *nnzU,
-                  Glu_persist_t *Glu_persist, Glu_freeable_t *Glu_freeable)
+void countnz_dist64(const int_t n, int_t *xprune,
+                    int64_t *nnzL, int64_t *nnzU,
+                    Glu_persist_t *Glu_persist,
+                    Glu_freeable_t *Glu_freeable)
 {
     int_t fnz, fsupc, i, j, nsuper;
     int_t jlen, irep;
-    long long int nnzL0;
+    int64_t nnzL0;
     int_t *supno, *xsup, *xlsub, *xusub, *usub;
 
     supno = Glu_persist->supno;
@@ -145,10 +147,24 @@ void countnz_dist(const int_t n, int_t *xprune,
         }
     }
 #if ( PRNTlevel>=2 )
-    printf("\tNo of nonzeros in symm-reduced L = " IFMT ", nnzL " IFMT ", nnzU " IFMT "\n",
+    printf("\tNo of nonzeros in symm-reduced L = %" PRId64
+           ", nnzL %" PRId64 ", nnzU %" PRId64 "\n",
 	   nnzL0, *nnzL, *nnzU);
 #endif
     
+}
+
+/* Preserve the legacy int_t counting interface for external callers. */
+void countnz_dist(const int_t n, int_t *xprune,
+                  int_t *nnzL, int_t *nnzU,
+                  Glu_persist_t *Glu_persist, Glu_freeable_t *Glu_freeable)
+{
+    int64_t nnzL64, nnzU64;
+
+    countnz_dist64(n, xprune, &nnzL64, &nnzU64,
+                   Glu_persist, Glu_freeable);
+    *nnzL = (int_t) nnzL64;
+    *nnzU = (int_t) nnzU64;
 }
 
 /*! \brief
@@ -1531,4 +1547,3 @@ int get_mpi_process_per_gpu ()
 	return 1;
       }
 }
-

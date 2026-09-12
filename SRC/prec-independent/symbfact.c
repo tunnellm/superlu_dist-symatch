@@ -35,6 +35,7 @@ at the top-level directory.
  */
 
 #include <assert.h>
+#include <inttypes.h>
 #include "superlu_ddefs.h"
 
 /* What type of supernodes we want */
@@ -97,9 +98,7 @@ int_t symbfact
     int_t *iwork, *perm_r, *segrep, *repfnz;
     int_t *xprune, *marker, *parent, *xplore;
     int_t relax, *desc, *relax_end;
-    long long int nnzLU;
-    int_t nnzLSUB;
-    int_t nnzL, nnzU;
+    int64_t nnzL, nnzU, nnzLU, nnzLSUB;
 
 #if ( DEBUGlevel>=1 )
     CHECK_MALLOC(pnum, "Enter symbfact()");
@@ -235,20 +234,19 @@ int_t symbfact
 
     SUPERLU_FREE(desc);
     
-    countnz_dist(min_mn, xprune, &nnzL, &nnzU, Glu_persist, Glu_freeable);
-    Glu_freeable->nnzLU = (int64_t) nnzL + (int64_t) nnzU -
-        (int64_t) min_mn;
+    countnz_dist64(min_mn, xprune, &nnzL, &nnzU,
+                   Glu_persist, Glu_freeable);
+    Glu_freeable->nnzLU = nnzL + nnzU - (int64_t) min_mn;
     /* Apply perm_r to L; Compress LSUB array. */
     nnzLSUB = fixupL_dist(min_mn, perm_r, Glu_persist, Glu_freeable);
 
     if ( !pnum && (options->PrintStat == YES)) {
-		nnzLU = (long long int) nnzL + (long long int) nnzU
-		    - (long long int) min_mn;
+		nnzLU = nnzL + nnzU - (int64_t) min_mn;
 		printf("\tMatrix size min_mn  " IFMT "\n", min_mn);
-		printf("\tNonzeros in L       " IFMT "\n", nnzL);
-		printf("\tNonzeros in U       " IFMT "\n", nnzU);
-		printf("\tnonzeros in L+U     %lld\n", nnzLU);
-		printf("\tnonzeros in LSUB    " IFMT "\n", nnzLSUB);
+		printf("\tNonzeros in L       %" PRId64 "\n", nnzL);
+		printf("\tNonzeros in U       %" PRId64 "\n", nnzU);
+		printf("\tnonzeros in L+U     %" PRId64 "\n", nnzLU);
+		printf("\tnonzeros in LSUB    %" PRId64 "\n", nnzLSUB);
     }
     SUPERLU_FREE(iwork);
 
@@ -271,7 +269,7 @@ int_t symbfact
 #endif
 
     /* return (-i); */
-    return (-nnzLSUB);
+    return (int_t) (-nnzLSUB);
 
 } /* SYMBFACT */
 
