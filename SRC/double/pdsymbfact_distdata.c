@@ -27,6 +27,7 @@ at the top-level directory.
  */
 
 /* limits.h:  the largest positive integer (INT_MAX) */
+#include <float.h>
 #include <limits.h>
 
 #include "superlu_ddefs.h"
@@ -127,9 +128,9 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
     RecvCnt_l, RecvCnt_u, ind_loc;
   int_t i, k, j, gb, szsn, gb_n, gb_s, gb_l, fst_s, fst_s_l, lst_s, i_loc;
   int_t nelts, isize;
-  float memAux; /* Memory used during this routine and free'd before return */
-  float memRet; /* Memory allocated and not free'd on return */
-  int_t iword, dword;
+  double memAux; /* Memory used during this routine and free'd before return */
+  double memRet; /* Memory allocated and not free'd on return */
+  const double iword = (double)sizeof(int_t);
 
   /* ------------------------------------------------------------
      INITIALIZATION.
@@ -148,14 +149,12 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
   xsup_end_s    = Pslu_freeable->xsup_end_loc;
   supno_s       = Pslu_freeable->supno_loc;
   rcv_luind     = NULL;
-  iword = sizeof(int_t);
-  dword = sizeof(double);
   memAux = 0.; memRet = 0.;
 
   mem           = intCalloc_dist(12 * nprocs);
   if (!mem)
     return (ERROR_RET);
-  memAux     = (float) (12 * nprocs * sizeof(int_t));
+  memAux     = 12.0 * (double)nprocs * sizeof(int_t);
   nnzToRecv     = mem;
   nnzToSend     = nnzToRecv + 2*nprocs;
   nnzToSend_l   = nnzToSend + 2 * nprocs;
@@ -183,7 +182,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
     fprintf (stderr, "Malloc fails for supno_n[].");
     return (memAux);
   }
-  memRet += (float) ((n+1) * sizeof(int_t));
+  memRet += ((double)n + 1.0) * sizeof(int_t);
 
   /* ------------------------------------------------------------
      DETERMINE SUPERNODES FOR NUMERICAL FACTORIZATION
@@ -211,7 +210,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
 	fprintf (stderr, "Malloc fails for temp[].");
 	return (memAux + memRet);
       }
-      memAux += (float) (n+1) * iword;
+      memAux += ((double)n + 1.0) * iword;
     }
 #if defined (_LONGINT)
     for (p=0; p<nprocs; p++) {
@@ -267,7 +266,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
     nsupers++;
     if (nprocs > 1) {
       SUPERLU_FREE (temp);
-      memAux -= (float) (n+1) * iword;
+      memAux -= ((double)n + 1.0) * iword;
     }
     supno_n[n] = nsupers;
   }
@@ -289,7 +288,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
     fprintf (stderr, "Malloc fails for xsup_n[].");
     return (memAux + memRet);
   }
-  memRet += (float) (nsupers+1) * iword;
+  memRet += ((double)nsupers + 1.0) * iword;
 
   /* ------------------------------------------------------------
      COUNT THE NUMBER OF NONZEROS TO BE SENT TO EACH PROCESS,
@@ -397,13 +396,13 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
     fprintf (stderr, "Malloc fails for xlsub_n[].");
     return (memAux + memRet);
   }
-  memRet += (float) (nsupers_j+1) * iword;
+  memRet += ((double)nsupers_j + 1.0) * iword;
 
   if ( !(xusub_n = intCalloc_dist(nsupers_i+1)) ) {
     fprintf (stderr, "Malloc fails for xusub_n[].");
     return (memAux + memRet);
   }
-  memRet += (float) (nsupers_i+1) * iword;
+  memRet += ((double)nsupers_i + 1.0) * iword;
 
   /* Allocate temp storage for sending/receiving the L/U symbolic structure. */
   if ( (RecvCnt_l + nnz_loc_l) || (RecvCnt_u + nnz_loc_u) ) {
@@ -412,15 +411,15 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
       fprintf (stderr, "Malloc fails for rcv_luind[].");
       return (memAux + memRet);
     }
-    memAux += (float) SUPERLU_MAX(RecvCnt_l+nnz_loc_l, RecvCnt_u+nnz_loc_u)
-      * iword;
+    memAux += (double)SUPERLU_MAX(RecvCnt_l + nnz_loc_l,
+                                  RecvCnt_u + nnz_loc_u) * iword;
   }
   if ( nprocs > 1 && (SendCnt_l || SendCnt_u) ) {
     if (!(snd_luind = intMalloc_dist(SUPERLU_MAX(SendCnt_l, SendCnt_u))) ) {
       fprintf (stderr, "Malloc fails for index[].");
       return (memAux + memRet);
     }
-    memAux += (float) SUPERLU_MAX(SendCnt_l, SendCnt_u) * iword;
+    memAux += (double)SUPERLU_MAX(SendCnt_l, SendCnt_u) * iword;
   }
 
   /* ------------------------------------------------------------------
@@ -595,7 +594,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
     if (sendU)
       if ( nprocs > 1 && (SendCnt_l || SendCnt_u) ) {
 	SUPERLU_FREE (snd_luind);
-	memAux -= (float) SUPERLU_MAX(SendCnt_l, SendCnt_u) * iword;
+	memAux -= (double)SUPERLU_MAX(SendCnt_l, SendCnt_u) * iword;
       }
 
     /* ------------------------------------------------------------
@@ -638,7 +637,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
 	  fprintf (stderr, "Malloc fails for lsub_n[].");
 	  return (memAux + memRet);
 	}
-	memRet += (float) (nnz_loc * iword);
+	memRet += (double)nnz_loc * iword;
       }
       sub_n = lsub_n;
     }
@@ -649,7 +648,7 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
 	  fprintf (stderr, "Malloc fails for usub_n[].");
 	  return (memAux + memRet);
 	}
-	memRet += (float) (nnz_loc * iword);
+	memRet += (double)nnz_loc * iword;
       }
       sub_n = usub_n;
     }
@@ -691,12 +690,13 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
   /* deallocate memory allocated during symbolic factorization routine */
   if (rcv_luind != NULL) {
     SUPERLU_FREE (rcv_luind);
-    memAux -= (float) SUPERLU_MAX(RecvCnt_l+nnz_loc_l, RecvCnt_u+nnz_loc_u) * iword;
+    memAux -= (double)SUPERLU_MAX(RecvCnt_l + nnz_loc_l,
+                                  RecvCnt_u + nnz_loc_u) * iword;
   }
   SUPERLU_FREE (mem);
-  memAux -= (float) (12 * nprocs * iword);
+  memAux -= 12.0 * (double)nprocs * iword;
   SUPERLU_FREE(nvtcs);
-  memAux -= (float) (5 * nprocs * sizeof(int));
+  memAux -= 5.0 * (double)nprocs * sizeof(int);
 
   if (xlsub_s != NULL) {
     SUPERLU_FREE (xlsub_s); SUPERLU_FREE (lsub_s);
@@ -726,7 +726,10 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
   CHECK_MALLOC(iam, "Exit dist_symbLU()");
 #endif
 
-  return (-memRet);
+  if (!isfinite(memRet) || memRet < 0.0 || memRet > (double)FLT_MAX)
+    ABORT("Invalid compact symbolic memory accounting.");
+
+  return (float)(-memRet);
 }
 
 /*! \brief
@@ -1367,8 +1370,7 @@ ddist_psymbtonum_from_symb(superlu_dist_options_t *options, int_t n,
 double *dense, *dense_col; /* SPA */
   double zero = 0.0;
   int_t ldaspa;     /* LDA of SPA */
-  int_t iword, dword;
-  float mem_use = 0.0;
+  double iword, dword;
   int *mod_bit;
   int *frecv, *brecv;
   int_t *lloc;
@@ -1380,18 +1382,22 @@ double *dense, *dense_col; /* SPA */
   int_t	nub;
 
   /* counting memory */
-  float memA,         /* memory used by ddist_A: distributing A values. */
-        memDist = 0.; /* memory used for redistributing the data, which does
+  float memA;         /* memory used by ddist_A: distributing A values. */
+  double memDist = 0.; /* memory used for redistributing the data, which does
 		         not include the memory for the numerical values
                          of L and U (positive number).
 			 It includes memA and memStrLU.
 		      */
-  float  memNLU = 0.; /* memory allocated for storing the numerical values of
+  double memNLU = 0.; /* memory allocated for storing the numerical values of
 		         L and U, that will be used in the numeric
                          factorization (positive number).
 			 It also contains dense-SPA[] array */
-  float  memTRS = 0.; /* memory allocated for storing the meta-data for
+  double memTRS = 0.; /* memory allocated for storing the meta-data for
 			 triangular solve (positive number)*/
+  const uint64_t int_t_max_u64 = sizeof(int_t) == sizeof(int64_t)
+    ? (uint64_t)INT64_MAX
+    : (sizeof(int_t) == sizeof(int) ? (uint64_t)INT_MAX
+                                    : (uint64_t)SHRT_MAX);
 
 #if ( PRNTlevel>=1 )
   int_t nLblocks = 0, nUblocks = 0;
@@ -1412,8 +1418,8 @@ double *dense, *dense_col; /* SPA */
   for (i = 0; i < NBUFFERS; ++i) mybufmax[i] = 0;
   Astore   = (NRformat_loc *) A->Store;
 
-  iword = sizeof(int_t);
-  dword = sizeof(double);
+  iword = (double)sizeof(int_t);
+  dword = (double)sizeof(double);
 
   if (options->Fact == SamePattern_SameRowPerm) {
     ABORT ("ERROR: call of dist_psymbtonum with fact equals SamePattern_SameRowPerm.");
@@ -1577,8 +1583,14 @@ double *dense, *dense_col; /* SPA */
   /* Auxiliary arrays used to set up L, U block data structures.
      They are free'd on return.
      k is the number of local row blocks.   */
-  if ( !(dense = doubleCalloc_dist(SUPERLU_MAX(ldaspa, ldaspa_j)
-				   * sp_ienv_dist(3, options))) ) {
+  int_t dense_ld = SUPERLU_MAX(ldaspa, ldaspa_j);
+  int_t maxsuper = sp_ienv_dist(3, options);
+  uint64_t dense_count64 =
+    (uint64_t)dense_ld * (uint64_t)maxsuper;
+  if (dense_count64 > int_t_max_u64)
+    ABORT("Parallel-symbolic dense scratch exceeds the int_t element limit.");
+  int_t dense_count = (int_t)dense_count64;
+  if ( !(dense = doubleCalloc_dist(dense_count)) ) {
     fprintf(stderr, "Calloc fails for SPA dense[].");
     return (memDist + memNLU + memTRS);
   }
@@ -1592,8 +1604,9 @@ double *dense, *dense_col; /* SPA */
     return (memDist + memNLU + memTRS);
   }
   /* ------------------------------------------------ */
-  memNLU += 2*nsupers_i*iword +
-    SUPERLU_MAX(ldaspa, ldaspa_j)*sp_ienv_dist(3, options)*dword;
+  memNLU += 2.0 * (double)nsupers_i * iword +
+    (double)SUPERLU_MAX(ldaspa, ldaspa_j) *
+    (double)sp_ienv_dist(3, options) * dword;
 #if ( PRNTlevel>=1 )
   if (iam==0) {
       printf("\t.ddist_psymbtonum [[2]] memDist %.2f, memNLU %.2f [+ dense SPA]\n", memDist*1e-6, memNLU*1e-6);
@@ -2022,8 +2035,17 @@ double *dense, *dense_col; /* SPA */
 		len1 = len + BC_HEADER + nrbl * LB_DESCRIPTOR;
 		/* A retained ancestor panel may arrive from another depth.  Size
 		   receive workspaces from the complete symbolic panel. */
+		uint64_t lpanel_count64 =
+		  (uint64_t)len * (uint64_t)nsupc;
+		uint64_t diag_count64 =
+		  (uint64_t)nsupc * (uint64_t)nsupc;
+		if (lpanel_count64 > int_t_max_u64 ||
+		    diag_count64 > int_t_max_u64)
+		  ABORT("Parallel-symbolic L panel exceeds the int_t element limit.");
+		int_t lpanel_count = (int_t)lpanel_count64;
+		int_t diag_count = (int_t)diag_count64;
 		mybufmax[0] = SUPERLU_MAX( mybufmax[0], len1 );
-		mybufmax[1] = SUPERLU_MAX( mybufmax[1], len*nsupc );
+		mybufmax[1] = SUPERLU_MAX( mybufmax[1], lpanel_count );
 		mybufmax[4] = SUPERLU_MAX( mybufmax[4], len );
 
 		if (superGridMap == NULL ||
@@ -2037,8 +2059,8 @@ double *dense, *dense_col; /* SPA */
         // Lrowind_bc_cnt += Lrowind_bc_offset[ljb_j];
 	Lrowind_bc_ptr[ljb_j] = index;
 
-	if (!(Lnzval_bc_ptr[ljb_j] =
-	      doubleMalloc_dist(len*nsupc))) {
+		if (!(Lnzval_bc_ptr[ljb_j] =
+		      doubleMalloc_dist(lpanel_count))) {
 	  fprintf(stderr, "Malloc fails for Lnzval_bc_ptr[*][] col block %d\n", (int) jb);
 	  return (memDist + memNLU + memTRS);
 	}
@@ -2048,11 +2070,11 @@ double *dense, *dense_col; /* SPA */
 	myrow = MYROW( iam, grid );
 	krow = PROW( jb, grid );
 	if(myrow==krow){   /* diagonal block */
-		if (!(Linv_bc_ptr[ljb_j] = (double*)doubleMalloc_dist(nsupc*nsupc)) )
+			if (!(Linv_bc_ptr[ljb_j] = (double*)doubleMalloc_dist(diag_count)) )
 			ABORT("Malloc fails for Linv_bc_ptr[ljb_j][]");
 		// Linv_bc_offset[ljb_j]=nsupc*nsupc;
 		// Linv_bc_cnt += Linv_bc_offset[ljb_j];
-		if (!(Uinv_bc_ptr[ljb_j] = (double*)doubleMalloc_dist(nsupc*nsupc)) )
+			if (!(Uinv_bc_ptr[ljb_j] = (double*)doubleMalloc_dist(diag_count)) )
 				ABORT("Malloc fails for Uinv_bc_ptr[ljb_j][]");
 		// Uinv_bc_offset[ljb_j]=nsupc*nsupc;
 		// Uinv_bc_cnt += Uinv_bc_offset[ljb_j];
@@ -2063,7 +2085,8 @@ double *dense, *dense_col; /* SPA */
 		// Uinv_bc_offset[ljb_j] = -1;
 	}
 
-	memNLU += len1*iword + len*nsupc*dword;
+	memNLU += (double)len1 * iword +
+	          (double)lpanel_count64 * dword;
 
 	if ( !(Lindval_loc_bc_ptr[ljb_j] = intCalloc_dist(nrbl*3)))
 		ABORT("Malloc fails for Lindval_loc_bc_ptr[ljb_j][]");
@@ -2132,7 +2155,8 @@ double *dense, *dense_col; /* SPA */
 
 		if ( !(index_srt = intMalloc_dist(len1)) )
 			ABORT("Malloc fails for index_srt[]");
-		if (!(lusup_srt = (double*)SUPERLU_MALLOC(len*nsupc * sizeof(double))))
+		if (!(lusup_srt = (double*)SUPERLU_MALLOC(
+		      (size_t)lpanel_count * sizeof(double))))
 			ABORT("Malloc fails for lusup_srt[]");
 
 		idx_indx = BC_HEADER;
@@ -2238,7 +2262,8 @@ double *dense, *dense_col; /* SPA */
 
   /* exchange information about bsendx_plist in between column of processors */
   k = SUPERLU_MAX( grid->nprow, grid->npcol);
-  if ( !(recvBuf = (int *) SUPERLU_MALLOC(nsupers*k* sizeof(int))) ) {
+  if ( !(recvBuf = (int *) SUPERLU_MALLOC(
+         (size_t)nsupers * (size_t)k * sizeof(int))) ) {
     fprintf (stderr, "Malloc fails for recvBuf[].");
     return (memDist + memNLU + memTRS);
   }
@@ -2259,8 +2284,10 @@ double *dense, *dense_col; /* SPA */
     return (memDist + memNLU + memTRS);
   }
 
-  if (memDist < (nsupers*k*iword +4*nprocs * sizeof(int)))
-    memDist = nsupers*k*iword +4*nprocs * sizeof(int);
+  if (memDist < ((double)nsupers * (double)k * iword +
+                 4.0 * (double)nprocs * sizeof(int)))
+    memDist = (double)nsupers * (double)k * iword +
+              4.0 * (double)nprocs * sizeof(int);
 
   for (p = 0; p < nprocs; p++)
     nnzToRecv[p] = 0;
@@ -3406,13 +3433,20 @@ double *dense, *dense_col; /* SPA */
       printf("\t. end ddist_psymbtonum: memDist %.4f, memNLU %.4f, memTRS %.2f\n",
       		  memDist*1e-6, memNLU*1e-6, memTRS*1e-6);
       printf("\t\t. dense[] SPA %.4f (MB), ldaspa %d, ldaspa_j %d\n",
-	     SUPERLU_MAX(ldaspa, ldaspa_j) * sp_ienv_dist(3, options) * dword * 1e-6,
+	     (double)SUPERLU_MAX(ldaspa, ldaspa_j) *
+	     (double)sp_ienv_dist(3, options) * dword * 1e-6,
 	     (int) ldaspa, (int) ldaspa_j);
       fflush(stdout);
   }
 #endif
 
-  return (- (memDist+memNLU));
+  double total_mem = memDist + memNLU;
+  if (!isfinite(memDist) || !isfinite(memNLU) ||
+      !isfinite(total_mem) || memDist < 0.0 || memNLU < 0.0 ||
+      total_mem > (double)FLT_MAX)
+    ABORT("Invalid distributed symbolic-to-numeric memory accounting.");
+
+  return -(float)total_mem;
 } /* end ddist_psymbtonum_from_symb */
 
 

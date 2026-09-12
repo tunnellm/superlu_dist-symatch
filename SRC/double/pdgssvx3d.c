@@ -1907,8 +1907,21 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 					dist_xlsub, dist_lsub,
 					dist_xusub, dist_usub,
 					dist_symb_mem, LUstruct, grid3d);
-			if (dist_mem_use > 0)
-				ABORT("Not enough memory available for dist_psymbtonum\n");
+			if (!isfinite(dist_mem_use))
+				ABORT("Invalid nonfinite parallel-symbolic numerical-assembly memory result\n");
+			if (dist_mem_use > 0) {
+				const char *dist_path =
+					(options->SymFact == YES && gpu3dVersion == 2)
+						? "symmetric LDLT"
+						: (options->SymFact == YES ? "symmetric LU"
+						                           : "ordinary LU");
+				fprintf(stderr,
+					"Rank %d: %s parallel-symbolic numerical assembly "
+					"failed after accounting for %.3f MB.\n",
+					grid3d->iam, dist_path,
+					(double)dist_mem_use * 1.0e-6);
+				ABORT("Not enough host memory available for parallel-symbolic numerical assembly\n");
+			}
 			dist_xlsub = dist_lsub = NULL;
 			dist_xusub = dist_usub = NULL;
 

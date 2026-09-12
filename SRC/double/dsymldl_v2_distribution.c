@@ -1,4 +1,5 @@
 #include "superlu_ddefs.h"
+#include <float.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -399,10 +400,10 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
     int_t *asub = NULL;
     double *a = NULL;
     int_t mybufmax[NBUFFERS];
-    int_t iword = sizeof(int_t);
-    int_t dword = sizeof(double);
-    float mem_use = 0.0;
-    float memTRS = 0.0;
+    const double iword = (double)sizeof(int_t);
+    const double dword = (double)sizeof(double);
+    double mem_use = 0.0;
+    double memTRS = 0.0;
 
     if (options->Fact == SamePattern_SameRowPerm)
         ABORT("SymFact GPU3DVERSION=2 LDL distribution does not support SamePattern_SameRowPerm yet.");
@@ -488,7 +489,17 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
     int_t *Lrb_number = intMalloc_dist(sym_row_alloc);
     int_t *Lrb_indptr = intMalloc_dist(sym_row_alloc);
     int_t *Lrb_valptr = intMalloc_dist(sym_row_alloc);
-    double *dense = doubleCalloc_dist(ldaspa * sp_ienv_dist(3, options));
+    int_t maxsuper = sp_ienv_dist(3, options);
+    uint64_t dense_count64 =
+        (uint64_t)ldaspa * (uint64_t)maxsuper;
+    uint64_t int_t_max = sizeof(int_t) == sizeof(int64_t)
+        ? (uint64_t)INT64_MAX
+        : (sizeof(int_t) == sizeof(int) ? (uint64_t)INT_MAX
+                                        : (uint64_t)SHRT_MAX);
+    if (dense_count64 > int_t_max)
+        ABORT("SymFact V2 dense scratch exceeds the int_t allocation limit.");
+    int_t dense_count = (int_t)dense_count64;
+    double *dense = doubleCalloc_dist(dense_count);
     if (!rb_marker || !Lrb_length || !Lrb_number || !Lrb_indptr ||
         !Lrb_valptr || !dense)
         ABORT("Malloc fails for SymFact V2 L scratch.");
@@ -534,16 +545,19 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
 
     int nfrecvx = 0;
     int nfsendx = 0;
-    mem_use += sym_panel_alloc * sizeof(int_t *) +
-               (sym_panel_alloc * grid->npcol + nsupers) * iword;
-    mem_use += sym_row_alloc * iword;
-    mem_use += 5.0 * sym_row_alloc * iword +
-               ldaspa * sp_ienv_dist(3, options) * dword;
-    mem_use += sym_panel_alloc * sizeof(double *) * 3.0 +
-               sym_panel_alloc * sizeof(int_t *) * 2.0 +
-               len * iword;
-    memTRS += sym_panel_alloc * sizeof(int_t *) +
-              2.0 * sym_panel_alloc * sizeof(double *);
+    const double scratch_bytes =
+        5.0 * (double)sym_row_alloc * iword +
+        (double)ldaspa * (double)maxsuper * dword;
+    mem_use += (double)sym_panel_alloc * sizeof(int_t *) +
+               ((double)sym_panel_alloc * (double)grid->npcol +
+                (double)nsupers) * iword;
+    mem_use += (double)sym_row_alloc * iword;
+    mem_use += scratch_bytes;
+    mem_use += (double)sym_panel_alloc * sizeof(double *) * 3.0 +
+               (double)sym_panel_alloc * sizeof(int_t *) * 2.0 +
+               (double)len * iword;
+    memTRS += (double)sym_panel_alloc * sizeof(int_t *) +
+              2.0 * (double)sym_panel_alloc * sizeof(double *);
 
     dSymV2DistributeTrace(grid3d, "V2 LDL before L/D structure propagation");
 
@@ -629,9 +643,14 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
         if (nrbl > 0 && superGridMap[jb] != NOT_IN_GRID)
         {
             int_t len1 = len + BC_HEADER + nrbl * LB_DESCRIPTOR;
+            uint64_t panel_count64 =
+                (uint64_t)len * (uint64_t)nsupc;
+            if (panel_count64 > int_t_max)
+                ABORT("SymFact V2 L panel exceeds the int_t element limit.");
+            int_t panel_count = (int_t)panel_count64;
             int_t *index = intMalloc_dist(len1);
-            double *lusup =
-                (double *)SUPERLU_MALLOC(len * nsupc * sizeof(double));
+            double *lusup = (double *)SUPERLU_MALLOC(
+                (size_t)panel_count * sizeof(double));
             if (!index || !lusup)
                 ABORT("Malloc fails for SymFact V2 L panel.");
             Lindval_loc_bc_ptr[ljb] = intCalloc_dist(nrbl * 3);
@@ -650,12 +669,13 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
             }
 
             mybufmax[0] = SUPERLU_MAX(mybufmax[0], len1);
-            mybufmax[1] = SUPERLU_MAX(mybufmax[1], len * nsupc);
+            mybufmax[1] = SUPERLU_MAX(mybufmax[1], panel_count);
             mybufmax[4] = SUPERLU_MAX(mybufmax[4], len);
-            mem_use += len * nsupc * dword + len1 * iword;
-            memTRS += nrbl * 3.0 * iword;
+            mem_use += (double)panel_count64 * dword +
+                       (double)len1 * iword;
+            memTRS += (double)nrbl * 3.0 * iword;
             if (myrow == krow)
-                memTRS += 2.0 * nsupc * nsupc * dword;
+                memTRS += 2.0 * (double)nsupc * (double)nsupc * dword;
 
             index[0] = nrbl;
             index[1] = len;
@@ -722,8 +742,8 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
             }
 
             int_t *index_srt = intMalloc_dist(len1);
-            double *lusup_srt =
-                (double *)SUPERLU_MALLOC(len * nsupc * sizeof(double));
+            double *lusup_srt = (double *)SUPERLU_MALLOC(
+                (size_t)panel_count * sizeof(double));
             if (!index_srt || !lusup_srt)
                 ABORT("Malloc fails for SymFact V2 sorted L panel.");
 
@@ -760,7 +780,8 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
             SUPERLU_FREE(lusup);
             SUPERLU_FREE(index);
             if (superGridMap[jb] == IN_GRID_ZERO)
-                memset(lusup_srt, 0, len * nsupc * sizeof(double));
+                memset(lusup_srt, 0,
+                       (size_t)panel_count * sizeof(double));
             Lrowind_bc_ptr[ljb] = index_srt;
             Lnzval_bc_ptr[ljb] = lusup_srt;
         }
@@ -822,8 +843,7 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
     SUPERLU_FREE(Lrb_indptr);
     SUPERLU_FREE(Lrb_valptr);
     SUPERLU_FREE(dense);
-    mem_use -= 5.0 * sym_row_alloc * iword +
-               ldaspa * sp_ienv_dist(3, options) * dword;
+    mem_use -= scratch_bytes;
 
     dSymV2DistributeTrace(grid3d, "V2 LDL before bufmax allreduce");
     MPI_Allreduce(mybufmax, Llu->bufmax, NBUFFERS, mpi_int_t,
@@ -846,7 +866,13 @@ dSymV2Distribute3d_LDL_impl(superlu_dist_options_t *options, int_t n,
     CHECK_MALLOC(iam, "Exit dSymV2Distribute3d_LDL_impl()");
 #endif
 
-    return mem_use + memTRS;
+    double retained_mem = mem_use + memTRS;
+    if (!isfinite(mem_use) || !isfinite(memTRS) ||
+        !isfinite(retained_mem) || mem_use < 0.0 || memTRS < 0.0 ||
+        retained_mem > (double)FLT_MAX)
+        ABORT("Invalid SymFact V2 distribution memory accounting.");
+
+    return (float)retained_mem;
 }
 
 float
@@ -874,6 +900,7 @@ dSymV2Distribute3dFromSymb(superlu_dist_options_t *options, int_t n,
         float memStrLU, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d)
 {
     float mem_use;
+    double total_mem;
 
     if (options == NULL || options->SymFact != YES)
         ABORT("dSymV2Distribute3dFromSymb requires SymFact=YES.");
@@ -885,6 +912,13 @@ dSymV2Distribute3dFromSymb(superlu_dist_options_t *options, int_t n,
     mem_use = dSymV2Distribute3d_LDL_impl(options, n, A, ScalePermstruct,
                                            NULL, LUstruct, grid3d,
                                            xlsub, lsub);
+
+    if (!isfinite(mem_use) || mem_use < 0.0f) {
+        fprintf(stderr,
+                "Rank %d: invalid V2 distribution memory value %.9g bytes.\n",
+                grid3d->iam, (double)mem_use);
+        ABORT("Invalid SymFact V2 distribution memory accounting.");
+    }
 
     SUPERLU_FREE(xlsub);
     if (lsub != NULL)
@@ -898,5 +932,15 @@ dSymV2Distribute3dFromSymb(superlu_dist_options_t *options, int_t n,
        negative means successful distribution-stage memory usage.  Include
        the compact symbolic allocation because it coexists with the V2
        numerical panels until the assembly above has completed. */
-    return -(mem_use - memStrLU);
+    total_mem = (double)mem_use - (double)memStrLU;
+    if (!isfinite(total_mem) || total_mem < 0.0 ||
+        total_mem > (double)FLT_MAX) {
+        fprintf(stderr,
+                "Rank %d: invalid V2 total memory value %.17g bytes "
+                "(numeric %.9g, symbolic %.9g).\n",
+                grid3d->iam, total_mem, (double)mem_use,
+                (double)memStrLU);
+        ABORT("Invalid SymFact V2 total memory accounting.");
+    }
+    return -(float)total_mem;
 }
