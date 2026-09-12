@@ -113,7 +113,7 @@ int main (int argc, char *argv[])
     double *b, *xtrue;
     int_t m, n;
     int nprow, npcol, npdep;
-    int equil, colperm, rowperm, ir, lookahead, tinyp;
+    int equil, colperm, symbfact, rowperm, ir, lookahead, tinyp;
     int iam, info, ldb, ldx, nrhs;
     char **cpp, c, *suffix;
     FILE *fp, *fopen ();
@@ -135,6 +135,8 @@ int main (int argc, char *argv[])
     nrhs = 1;             /* Number of right-hand side. */
     equil = -1;
     colperm = -1;
+    symbfact = -1;
+    
     rowperm = -1;
     ir = -1;
     lookahead = -1;
@@ -189,6 +191,8 @@ int main (int argc, char *argv[])
             case 'p': rowperm = atoi(*cpp);
                       break;
             case 'q': colperm = atoi(*cpp);
+                      break;           
+            case 'f': symbfact = atoi(*cpp);
                       break;
             case 'i': ir = atoi(*cpp);
                       break;
@@ -250,6 +254,7 @@ int main (int argc, char *argv[])
     if (equil != -1) options.Equil = equil;
     if (rowperm != -1) options.RowPerm = rowperm;
     if (colperm != -1) options.ColPerm = colperm;
+    if (symbfact != -1) options.ParSymbFact = symbfact;
     if (ir != -1) options.IterRefine = ir;
     if (lookahead != -1) options.num_lookaheads = lookahead;
     if (tinyp != -1) options.ReplaceTinyPivot = tinyp;

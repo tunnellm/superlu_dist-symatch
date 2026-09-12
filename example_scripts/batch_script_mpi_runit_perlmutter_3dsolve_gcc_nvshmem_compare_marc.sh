@@ -17,7 +17,7 @@ ulimit -s unlimited
 # Set gpu=1 for GPU nodes/factorizations or gpu=0 for CPU
 # nodes/factorizations. An exported value overrides the default.
 
-gpu=1
+gpu=0
 gpu=${gpu:-1}
 if [[ $gpu != 0 && $gpu != 1 ]]; then
   echo "gpu must be either 0 or 1" >&2
@@ -76,6 +76,7 @@ configure_factorization() {
       export GPU3DV2_LOWER_ENVELOPE=1
       export GPU3DV2_PANEL_ARENA=1
       export GPU3DV2_WORKSPACE_ARENA=1
+      export SYM_ALG=1 # threaded suitor 
       rowperm=6 # MC80; enables symmetric factorization
       ;;
     gpu_old_lu)
@@ -88,6 +89,7 @@ configure_factorization() {
       export SUPERLU_ACC_OFFLOAD=1
       export GPU3DVERSION=0
       export SUPERLU_CUDA_AWARE_MPI=0
+      export SYM_ALG=1 # threaded suitor 
       rowperm=6 # MC80; enables symmetric LU
       ;;
     cpu_ldlt)
@@ -95,6 +97,7 @@ configure_factorization() {
       export GPU3DVERSION=2
       export GPU3DV2_CPU_SCHEDULER=COMPLETION
       export GPU3DV2_CPU_ASYNC_EXCHANGE=1
+      export SYM_ALG=1 # threaded suitor 
       rowperm=6 # MC80; enables symmetric factorization
       ;;
     cpu_old_lu)
@@ -105,6 +108,7 @@ configure_factorization() {
     cpu_symmetric_lu)
       export SUPERLU_ACC_OFFLOAD=0
       export GPU3DVERSION=0
+      export SYM_ALG=1 # threaded suitor 
       rowperm=6 # MC80; enables symmetric LU
       ;;
     *)
@@ -232,8 +236,15 @@ else
 fi
 
 
-
 export SUPERLU_FACTOR_COMM_PROFILE=1
+
+# symbfact=-1
+# colperm=4
+
+symbfact=1
+colperm=5
+
+
 if ((gpu)); then
   export SUPERLU_GPU_MEMORY_PROFILE=1
   factor_modes=(gpu_ldlt gpu_old_lu gpu_symmetric_lu)
@@ -302,14 +313,14 @@ for ((mat_idx = 0; mat_idx < matrix_count; mat_idx++)); do
       for factor_mode in "${factor_modes[@]}"; do
         configure_factorization "$factor_mode" || exit 1
 
-        output_file="./${MAT}/SLU.o_mpi_${NROW}x${NCOL}x${NPZ}_${OMP_NUM_THREADS}_3d_${factor_mode}_gsolve_${SUPERLU_ACC_SOLVE}_rowperm${rowperm}_tinyreplace${tinyreplace}_it${it}_V${GPU3DVERSION}_nrhs${NRHS}_rep${ii}"
+        output_file="./${MAT}/SLU.o_mpi_${NROW}x${NCOL}x${NPZ}_${OMP_NUM_THREADS}_3d_${factor_mode}_gsolve_${SUPERLU_ACC_SOLVE}_rowperm${rowperm}_colperm${colperm}_symbfact${symbfact}_tinyreplace${tinyreplace}_it${it}_V${GPU3DVERSION}_nrhs${NRHS}_rep${ii}"
 
         echo "Running ${factor_mode}: MAT=${MAT}, grid=${NROW}x${NCOL}x${NPZ}, ranks=${NCORE_VAL_TOT}, nodes=${NODE_VAL}, NRHS=${NRHS}, repetition=${ii}"
         srun -n "$NCORE_VAL_TOT" -N "$NODE_VAL" -c "$TH_PER_RANK" \
           --cpu_bind=cores \
           ./EXAMPLE/pddrive3d-sym \
           -c "$NCOL" -r "$NROW" -d "$NPZ" -b "$batch" \
-          -t "$tinyreplace" -i "$it" -p "$rowperm" -s "$NRHS" \
+          -t "$tinyreplace" -i "$it" -p "$rowperm" -s "$NRHS" -q "$colperm" -f "$symbfact" \
           "${CFS}/m2957/liuyangz/my_research/matrix/${MAT}" \
           | tee "$output_file"
       done
