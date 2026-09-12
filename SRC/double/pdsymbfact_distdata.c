@@ -236,10 +236,26 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
     ptrToRecv[p] ++;
     szsn = 1;
     for (j = 1; j < n; j ++) {
-      if (p != (int) OWNER( globToLoc[j] ) || szsn >= maxszsn || gb != temp[ptrToRecv[p]]) {
+      int owner_j = (int) OWNER(globToLoc[j]);
+      int_t gb_j = temp[ptrToRecv[owner_j]];
+      int starts_pair = options->SymFact == YES &&
+          options->indicator_2x2 != NULL &&
+          options->indicator_2x2[j] == 2;
+      int ends_pair = options->SymFact == YES &&
+          options->indicator_2x2 != NULL &&
+          options->indicator_2x2[j] == 0;
+      int split = p != owner_j || szsn >= maxszsn || gb != gb_j ||
+          (starts_pair && szsn >= maxszsn - 1);
+
+      if (ends_pair) {
+        if (p != owner_j || gb != gb_j || szsn >= maxszsn)
+          ABORT("Parallel symbolic output cannot keep a matched 2x2 pivot in one numerical supernode.");
+        split = FALSE;
+      }
+      if (split) {
 	nsupers ++;
-	p  = (int) OWNER( globToLoc[j] );
-	gb = temp[ptrToRecv[p]];
+	p  = owner_j;
+	gb = gb_j;
 	szsn = 1;
       }
       else {
@@ -262,6 +278,12 @@ ddist_symbLU (superlu_dist_options_t *options, int_t n,
 
   MPI_Bcast (supno_n, n+1, mpi_int_t, 0, grid->comm);
   nsupers = supno_n[n];
+  if (options->SymFact == YES && options->indicator_2x2 != NULL) {
+    for (j = 1; j < n; ++j)
+      if (options->indicator_2x2[j] == 0 &&
+          supno_n[j] != supno_n[j - 1])
+        ABORT("Numerical supernode reconstruction split a matched 2x2 pivot.");
+  }
   /* Allocate space for storing Glu_persist_n. */
   if ( !(xsup_n = intMalloc_dist(nsupers+1)) ) {
     fprintf (stderr, "Malloc fails for xsup_n[].");
@@ -3401,17 +3423,23 @@ ddist_psymbtonum3d(superlu_dist_options_t *options, int_t n,
 		int_t *xlsub, int_t *lsub, int_t *xusub, int_t *usub,
 		float memStrLU, dLUstruct_t *LUstruct, gridinfo3d_t *grid3d)
 {
-  dtrf3Dpartition_t *trf3Dpart;
+  dtrf3Dpartition_t *trf3Dpart = NULL;
+  float mem_use;
 
   if (LUstruct == NULL || grid3d == NULL ||
       (trf3Dpart = LUstruct->trf3Dpart) == NULL ||
       trf3Dpart->superGridMap == NULL)
     ABORT("The 3D symbolic-to-numeric assembly requires an initialized partition.");
 
-  return ddist_psymbtonum_from_symb(options, n, A, ScalePermstruct,
-				     xlsub, lsub, xusub, usub, memStrLU,
-				     LUstruct, &grid3d->grid2d,
-				     trf3Dpart->superGridMap);
+  mem_use = ddist_psymbtonum_from_symb(options, n, A, ScalePermstruct,
+					xlsub, lsub, xusub, usub, memStrLU,
+					LUstruct, &grid3d->grid2d,
+					trf3Dpart->superGridMap);
+  if (mem_use <= 0 && options->SymFact == YES && options->CommL == YES)
+    dSetupCommL(getNsupers(n, LUstruct->Glu_persist), LUstruct,
+		&grid3d->grid2d);
+
+  return mem_use;
 }
 
 

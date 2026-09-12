@@ -8,15 +8,209 @@ All rights reserved.
 The source code is distributed under BSD license, see the file License.txt
 at the top-level directory.
 */
-
-
-
+#include <limits.h>
 
 #include "superlu_ddefs.h"
 #ifdef GPU_ACC
 #include "gpu_api_utils.h"
 #endif
 //#include "pddistribute3d.h"
+
+void dDestroyCommL(int_t nsupers, dLocalLU_t *Llu, gridinfo_t *grid)
+{
+    int_t lk;
+    int p;
+
+    if (Llu->Send_CommL != NULL) {
+        int_t nlb = CEILING(nsupers, grid->npcol);
+        for (lk = 0; lk < nlb; ++lk) {
+            if (Llu->Send_CommL[lk].ComQuant != NULL) {
+                for (p = 0; p < grid->npcol; ++p)
+                    if (Llu->Send_CommL[lk].ComQuant[p].dat != NULL)
+                        SUPERLU_FREE(Llu->Send_CommL[lk].ComQuant[p].dat);
+                SUPERLU_FREE(Llu->Send_CommL[lk].ComQuant);
+            }
+            if (Llu->Send_CommL[lk].req != NULL)
+                SUPERLU_FREE(Llu->Send_CommL[lk].req);
+            if (Llu->Send_CommL[lk].status != NULL)
+                SUPERLU_FREE(Llu->Send_CommL[lk].status);
+        }
+        SUPERLU_FREE(Llu->Send_CommL);
+        Llu->Send_CommL = NULL;
+    }
+
+    if (Llu->Recv_CommL != NULL) {
+        int_t nlb = CEILING(nsupers, grid->nprow);
+        for (lk = 0; lk < nlb; ++lk) {
+            if (Llu->Recv_CommL[lk].ComQuant != NULL) {
+                for (p = 0; p < grid->nprow; ++p)
+                    if (Llu->Recv_CommL[lk].ComQuant[p].dat != NULL)
+                        SUPERLU_FREE(Llu->Recv_CommL[lk].ComQuant[p].dat);
+                SUPERLU_FREE(Llu->Recv_CommL[lk].ComQuant);
+            }
+            if (Llu->Recv_CommL[lk].req != NULL)
+                SUPERLU_FREE(Llu->Recv_CommL[lk].req);
+            if (Llu->Recv_CommL[lk].status != NULL)
+                SUPERLU_FREE(Llu->Recv_CommL[lk].status);
+        }
+        SUPERLU_FREE(Llu->Recv_CommL);
+        Llu->Recv_CommL = NULL;
+    }
+}
+
+/* Set up the local L-to-U redistribution used by standard symmetric LU.
+ * The schedule is derived from the retained block-cyclic L and U storage,
+ * so it is valid independently on every depth layer. */
+void dSetupCommL(int_t nsupers, dLUstruct_t *LUstruct, gridinfo_t *grid)
+{
+    Glu_persist_t *Glu_persist = LUstruct->Glu_persist;
+    dLocalLU_t *Llu = LUstruct->Llu;
+    int_t *xsup = Glu_persist->xsup;
+    int_t lk, jb, ik, gik, nb, lb, lptr, len, knsupc, knsupr;
+    int_t nub, ub, iukp, nsupc, klst, nzc, j;
+    int mycol = MYCOL(grid->iam, grid);
+    int myrow = MYROW(grid->iam, grid);
+    int p, krow, ikcol, srcrow;
+
+    if (Llu->Send_CommL != NULL || Llu->Recv_CommL != NULL)
+        ABORT("CommL must be destroyed before rebuilding the LU distribution.");
+
+    nb = CEILING(nsupers, grid->npcol);
+    Llu->Send_CommL = (dCommL_t *)
+        SUPERLU_MALLOC(nb * sizeof(dCommL_t));
+    if (nb && Llu->Send_CommL == NULL)
+        ABORT("Malloc fails for Send_CommL[].");
+    for (lk = 0; lk < nb; ++lk) {
+        int_t *lsub = Llu->Lrowind_bc_ptr[lk];
+        int_t *lloc = Llu->Lindval_loc_bc_ptr[lk];
+        int_t nrbl, idx_i;
+
+        Llu->Send_CommL[lk].req = NULL;
+        Llu->Send_CommL[lk].status = NULL;
+        Llu->Send_CommL[lk].ComQuant = NULL;
+        jb = mycol + lk * grid->npcol;
+        if (jb >= nsupers || lsub == NULL || lsub[0] <= 0)
+            continue;
+
+        krow = PROW(jb, grid);
+        if (myrow == krow) {
+            nrbl = lsub[0] - 1;
+            idx_i = nrbl + 2;
+        } else {
+            nrbl = lsub[0];
+            idx_i = nrbl;
+        }
+        if (nrbl <= 0)
+            continue;
+
+        knsupc = SuperSize(jb);
+        Llu->Send_CommL[lk].req = (MPI_Request *)
+            SUPERLU_MALLOC(grid->npcol * sizeof(MPI_Request));
+        Llu->Send_CommL[lk].status = (MPI_Status *)
+            SUPERLU_MALLOC(grid->npcol * sizeof(MPI_Status));
+        Llu->Send_CommL[lk].ComQuant = (ComQuant_t *)
+            SUPERLU_MALLOC(grid->npcol * sizeof(ComQuant_t));
+        if (Llu->Send_CommL[lk].req == NULL ||
+            Llu->Send_CommL[lk].status == NULL ||
+            Llu->Send_CommL[lk].ComQuant == NULL)
+            ABORT("Malloc fails for Send_CommL[lk].");
+        for (p = 0; p < grid->npcol; ++p) {
+            Llu->Send_CommL[lk].req[p] = MPI_REQUEST_NULL;
+            Llu->Send_CommL[lk].ComQuant[p].size = 0;
+            Llu->Send_CommL[lk].ComQuant[p].idx = 0;
+            Llu->Send_CommL[lk].ComQuant[p].dat = NULL;
+        }
+
+        for (lb = 0; lb < nrbl; ++lb) {
+            int_t contribution;
+            lptr = lloc[lb + idx_i];
+            ik = lsub[lptr];
+            ikcol = PCOL(ik, grid);
+            len = lsub[lptr + 1];
+            if (knsupc > 0 && len > (INT_MAX - 1) / knsupc)
+                ABORT("Send_CommL payload exceeds the MPI int count range.");
+            contribution = len * knsupc + 1;
+            if (contribution > INT_MAX -
+                    Llu->Send_CommL[lk].ComQuant[ikcol].size)
+                ABORT("Send_CommL message exceeds the MPI int count range.");
+            Llu->Send_CommL[lk].ComQuant[ikcol].size += contribution;
+        }
+        for (p = 0; p < grid->npcol; ++p) {
+            int size = Llu->Send_CommL[lk].ComQuant[p].size;
+            if (size > 0) {
+                Llu->Send_CommL[lk].ComQuant[p].dat = (double *)
+                    SUPERLU_MALLOC((size_t) size * sizeof(double));
+                if (Llu->Send_CommL[lk].ComQuant[p].dat == NULL)
+                    ABORT("Malloc fails for Send_CommL payload.");
+            }
+        }
+    }
+
+    nb = CEILING(nsupers, grid->nprow);
+    Llu->Recv_CommL = (dCommL_t *)
+        SUPERLU_MALLOC(nb * sizeof(dCommL_t));
+    if (nb && Llu->Recv_CommL == NULL)
+        ABORT("Malloc fails for Recv_CommL[].");
+    for (lk = 0; lk < nb; ++lk) {
+        int_t *usub = Llu->Ufstnz_br_ptr[lk];
+
+        Llu->Recv_CommL[lk].req = NULL;
+        Llu->Recv_CommL[lk].status = NULL;
+        Llu->Recv_CommL[lk].ComQuant = NULL;
+        gik = myrow + lk * grid->nprow;
+        if (gik >= nsupers || usub == NULL || usub[0] <= 0)
+            continue;
+
+        knsupr = SuperSize(gik);
+        Llu->Recv_CommL[lk].req = (MPI_Request *)
+            SUPERLU_MALLOC(grid->nprow * sizeof(MPI_Request));
+        Llu->Recv_CommL[lk].status = (MPI_Status *)
+            SUPERLU_MALLOC(grid->nprow * sizeof(MPI_Status));
+        Llu->Recv_CommL[lk].ComQuant = (ComQuant_t *)
+            SUPERLU_MALLOC(grid->nprow * sizeof(ComQuant_t));
+        if (Llu->Recv_CommL[lk].req == NULL ||
+            Llu->Recv_CommL[lk].status == NULL ||
+            Llu->Recv_CommL[lk].ComQuant == NULL)
+            ABORT("Malloc fails for Recv_CommL[lk].");
+        for (p = 0; p < grid->nprow; ++p) {
+            Llu->Recv_CommL[lk].req[p] = MPI_REQUEST_NULL;
+            Llu->Recv_CommL[lk].ComQuant[p].size = 0;
+            Llu->Recv_CommL[lk].ComQuant[p].idx = 0;
+            Llu->Recv_CommL[lk].ComQuant[p].dat = NULL;
+        }
+
+        nub = usub[0];
+        iukp = BR_HEADER;
+        klst = FstBlockC(gik + 1);
+        for (ub = 0; ub < nub; ++ub) {
+            int_t contribution;
+            jb = usub[iukp];
+            nsupc = SuperSize(jb);
+            srcrow = PROW(jb, grid);
+            iukp += UB_DESCRIPTOR;
+            nzc = 0;
+            for (j = 0; j < nsupc; ++j)
+                if (klst - usub[iukp++] > 0)
+                    ++nzc;
+            if (knsupr > 0 && nzc > (INT_MAX - 1) / knsupr)
+                ABORT("Recv_CommL payload exceeds the MPI int count range.");
+            contribution = knsupr * nzc + 1;
+            if (contribution > INT_MAX -
+                    Llu->Recv_CommL[lk].ComQuant[srcrow].size)
+                ABORT("Recv_CommL message exceeds the MPI int count range.");
+            Llu->Recv_CommL[lk].ComQuant[srcrow].size += contribution;
+        }
+        for (p = 0; p < grid->nprow; ++p) {
+            int size = Llu->Recv_CommL[lk].ComQuant[p].size;
+            if (size > 0) {
+                Llu->Recv_CommL[lk].ComQuant[p].dat = (double *)
+                    SUPERLU_MALLOC((size_t) size * sizeof(double));
+                if (Llu->Recv_CommL[lk].ComQuant[p].dat == NULL)
+                    ABORT("Malloc fails for Recv_CommL payload.");
+            }
+        }
+    }
+}
 
 
 #if 0
@@ -2386,129 +2580,6 @@ pddistribute3d_Yang(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 	// }
 
 
-    if(options->SymFact == YES){
-            
-        k = CEILING( nsupers, grid->npcol );/* Number of local block columns */
-        if ( !(Llu->Send_CommL =
-                (dCommL_t*)SUPERLU_MALLOC(k * sizeof(dCommL_t))) )
-            ABORT("Malloc fails for Send_CommL[].");        
-
-        for (lk=0;lk<k;++lk){
-            Llu->Send_CommL[lk].req = NULL;
-            Llu->Send_CommL[lk].status = NULL;
-            Llu->Send_CommL[lk].ComQuant = NULL;
-
-            lsub = Lrowind_bc_ptr[lk];
-            lusup = Lnzval_bc_ptr[lk];
-            lloc = Lindval_loc_bc_ptr[lk];
-            jb = mycol+lk*grid->npcol;  
-            krow = PROW( jb, grid );
-            if(lsub){
-                if(lsub[0]>0){
-                    if(myrow==krow){
-                        nb = lsub[0] - 1;
-                        idx_i = nb+2;
-                        idx_v = 2*nb+3;
-                    }else{
-                        nb = lsub[0];
-                        idx_i = nb;
-                        idx_v = 2*nb;
-                    }
-                    if(nb>0){
-                        knsupc = SuperSize( jb );
-                        Llu->Send_CommL[lk].req = (MPI_Request*)SUPERLU_MALLOC(grid->npcol * sizeof(MPI_Request));
-                        Llu->Send_CommL[lk].status = (MPI_Status*)SUPERLU_MALLOC(grid->npcol * sizeof(MPI_Status));
-                        Llu->Send_CommL[lk].ComQuant = (ComQuant_t*)SUPERLU_MALLOC(grid->npcol * sizeof(ComQuant_t));
-                        for (int i=0; i<grid->npcol; i++){
-                            Llu->Send_CommL[lk].ComQuant[i].size=0;
-                            Llu->Send_CommL[lk].req[i]=MPI_REQUEST_NULL;
-                        }
-
-                        for (int lb=0; lb<nb; lb++){
-                            luptr_tmp = lloc[lb+idx_v];
-                            lptr_tmp = lloc[lb+idx_i];
-                            ik = lsub[lptr_tmp]; /* Global block number, row-wise. */    
-                            ikcol = PCOL( ik, grid );
-                            len = lsub[lptr_tmp+1]; // number of rows in this supernode
-                            Llu->Send_CommL[lk].ComQuant[ikcol].size += len*knsupc + 1; 
-                        }
-
-                        for (int i=0; i<grid->npcol; i++){
-                            if(Llu->Send_CommL[lk].ComQuant[i].size>0){
-                                Llu->Send_CommL[lk].ComQuant[i].dat = (double*)SUPERLU_MALLOC(Llu->Send_CommL[lk].ComQuant[i].size* sizeof(double));
-                            }
-                        }
-
-                    }
-                }
-            }
-        }
-
-
-
-        k = CEILING(nsupers, grid->nprow);   /* number of local block rows */
-        Llu->Recv_CommL = (dCommL_t*) SUPERLU_MALLOC(k * sizeof(dCommL_t));
-        if (!Llu->Recv_CommL) ABORT("Malloc fails for Recv_CommL[].");
-
-        for (lk = 0; lk < k; ++lk) {
-            Llu->Recv_CommL[lk].req = NULL;
-            Llu->Recv_CommL[lk].status = NULL;
-            Llu->Recv_CommL[lk].ComQuant = NULL;
-
-            usub = Ufstnz_br_ptr[lk];
-            if (usub){
-
-                gik = myrow + lk * grid->nprow;      /* global U row */
-                knsupr = SuperSize(gik);     
-
-                nub = usub[0];                       /* number of U blocks in this row */
-                if (nub > 0){
-
-                    Llu->Recv_CommL[lk].req =
-                        (MPI_Request*) SUPERLU_MALLOC(grid->nprow * sizeof(MPI_Request));
-                    Llu->Recv_CommL[lk].status =
-                        (MPI_Status*) SUPERLU_MALLOC(grid->nprow * sizeof(MPI_Status));
-                    Llu->Recv_CommL[lk].ComQuant =
-                        (ComQuant_t*) SUPERLU_MALLOC(grid->nprow * sizeof(ComQuant_t));
-
-                    if (!Llu->Recv_CommL[lk].req ||
-                        !Llu->Recv_CommL[lk].status ||
-                        !Llu->Recv_CommL[lk].ComQuant)
-                        ABORT("Malloc fails for Recv_CommL[lk].");
-
-                    for (int p = 0; p < grid->nprow; ++p) {
-                        Llu->Recv_CommL[lk].ComQuant[p].size = 0;
-                        Llu->Recv_CommL[lk].req[p]=MPI_REQUEST_NULL;
-                    }
-
-                    iukp = BR_HEADER;
-                    klst = FstBlockC (gik + 1);
-                    for (ub = 0; ub < nub; ++ub) {
-                        jb = usub[iukp];  
-                        nsupc = SuperSize (jb);              
-                        srcrow = PROW(jb, grid);         /* source process row from L */
-                        iukp += UB_DESCRIPTOR;
-                        nzc = 0;
-                        for (int_t j = 0; j < nsupc; ++j)
-                        {
-                            int_t segsize = klst - usub[iukp++];
-                            if(segsize>0)nzc++;
-                        }
-                        Llu->Recv_CommL[lk].ComQuant[srcrow].size += knsupr * nzc + 1;
-                    }
-
-                    for (int p=0; p<grid->nprow; p++){
-                        if(Llu->Recv_CommL[lk].ComQuant[p].size>0){
-                            Llu->Recv_CommL[lk].ComQuant[p].dat = (double*)SUPERLU_MALLOC(Llu->Recv_CommL[lk].ComQuant[p].size* sizeof(double));
-                        }
-                    }                    
-                }
-            }
-        }
-    }
-
-
-
 	Llu->Lrowind_bc_ptr = Lrowind_bc_ptr;
 	Llu->Lindval_loc_bc_ptr = Lindval_loc_bc_ptr;
 	Llu->Lnzval_bc_ptr = Lnzval_bc_ptr;
@@ -2533,6 +2604,9 @@ pddistribute3d_Yang(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
 	Llu->Urbs = Urbs;
 	Llu->Ucb_indptr = Ucb_indptr;
 	Llu->Ucb_valptr = Ucb_valptr;
+
+	if (options->SymFact == YES && options->CommL == YES)
+		dSetupCommL(nsupers, LUstruct, grid);
 
 #if ( PRNTlevel>=1 )
 	if ( !iam ) printf(".. # L blocks " IFMT "\t# U blocks " IFMT "\n",
@@ -2584,4 +2658,3 @@ pddistribute3d_Yang(superlu_dist_options_t *options, int_t n, SuperMatrix *A,
     return (mem_use+memTRS);
 
 } /* PDDISTRIBUTE3D_Yang */
-

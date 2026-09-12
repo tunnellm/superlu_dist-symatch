@@ -466,6 +466,7 @@ dDestroy_LU(int_t n, gridinfo_t *grid, dLUstruct_t *LUstruct)
     dDestroy_Tree(n, grid, LUstruct);
 
     nsupers = Glu_persist->supno[n-1] + 1;
+    dDestroyCommL(nsupers, Llu, grid);
     int sym_v2_l_only = trf3Dpart != NULL &&
         trf3Dpart->symV2ScheduleEnabled &&
         trf3Dpart->symV2PanelLocalIndex != NULL &&

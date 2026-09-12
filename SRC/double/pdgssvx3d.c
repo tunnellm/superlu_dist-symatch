@@ -250,6 +250,166 @@ static void dPrintGpuFactorMemoryProfile(
 }
 #endif
 
+/* Build a block-row distributed structural copy of a replicated NC matrix.
+ * This is used only to pass the matched quotient graph to ParMETIS. */
+static void dDistributeGlobalNCByRows(const SuperMatrix *G, gridinfo_t *grid,
+                                     SuperMatrix *G_loc)
+{
+    const NCformat *Gstore = (const NCformat *) G->Store;
+    const int_t n = G->nrow;
+    const int nprocs = grid->nprow * grid->npcol;
+    const int iam = grid->iam;
+    const int_t base = n / nprocs;
+    const int_t remainder = n % nprocs;
+    const int_t m_loc = base + (iam < remainder);
+    const int_t fst_row = iam * base + SUPERLU_MIN((int_t) iam, remainder);
+    int_t *rowptr = intCalloc_dist(m_loc + 1);
+    int_t *colind;
+    int_t *next;
+    double *nzval;
+    int_t col, pos, row, nnz_loc;
+
+    if (G->nrow != G->ncol || G->Stype != SLU_NC || Gstore == NULL)
+        ABORT("The symmetric ParMETIS quotient graph must be square NC storage.");
+    if (rowptr == NULL)
+        ABORT("Malloc fails for quotient-graph row pointers.");
+
+    for (col = 0; col < n; ++col) {
+        for (pos = Gstore->colptr[col]; pos < Gstore->colptr[col + 1]; ++pos) {
+            row = Gstore->rowind[pos];
+            if (fst_row <= row && row < fst_row + m_loc)
+                ++rowptr[row - fst_row + 1];
+        }
+    }
+    for (row = 0; row < m_loc; ++row)
+        rowptr[row + 1] += rowptr[row];
+    nnz_loc = rowptr[m_loc];
+
+    colind = nnz_loc ? intMalloc_dist(nnz_loc) : NULL;
+    nzval = nnz_loc ? doubleMalloc_dist(nnz_loc) : NULL;
+    next = m_loc ? intMalloc_dist(m_loc) : NULL;
+    if ((nnz_loc && (colind == NULL || nzval == NULL)) ||
+        (m_loc && next == NULL))
+        ABORT("Malloc fails for the distributed quotient graph.");
+    if (m_loc)
+        memcpy(next, rowptr, m_loc * sizeof(int_t));
+
+    for (col = 0; col < n; ++col) {
+        for (pos = Gstore->colptr[col]; pos < Gstore->colptr[col + 1]; ++pos) {
+            row = Gstore->rowind[pos];
+            if (fst_row <= row && row < fst_row + m_loc) {
+                int_t dst = next[row - fst_row]++;
+                colind[dst] = col;
+                nzval[dst] = 1.0;
+            }
+        }
+    }
+    if (next != NULL)
+        SUPERLU_FREE(next);
+
+    dCreate_CompRowLoc_Matrix_dist(G_loc, n, n, nnz_loc, m_loc, fst_row,
+                                   nzval, colind, rowptr, SLU_NR_loc,
+                                   SLU_D, SLU_GE);
+}
+
+/* Expand a ParMETIS ordering of matched 1x1/2x2 quotient vertices to the
+ * fine-column ordering consumed by the symmetric LU factorization. */
+static void dExpandMatchedParmetisOrder(
+    int_t n, const crs_info_t *crs_info, const int_t *crs_perm_c,
+    int noDomains, int_t **p_sizes, int_t **p_fstVtxSep,
+    int_t *perm_c, superlu_dist_options_t *options)
+{
+    const int_t n_crs = crs_info->n_crs;
+    const int nseps = 2 * noDomains - 1;
+    int_t *crs_sizes = *p_sizes;
+    int_t *crs_fst = *p_fstVtxSep;
+    int_t *old_prefix = intMalloc_dist(n_crs + 1);
+    int_t *new_prefix = intMalloc_dist(n_crs + 1);
+    int_t *rev = intMalloc_dist(n_crs);
+    int_t *seen = intCalloc_dist(n_crs);
+    int_t *sep_owner = intMalloc_dist(n_crs);
+    int_t *sizes = intMalloc_dist(2 * noDomains);
+    int_t *fstVtxSep = intMalloc_dist(2 * noDomains);
+    int_t c, q, t, sep;
+
+    if (n_crs <= 0 || crs_info->crs_vrts == NULL || crs_perm_c == NULL ||
+        crs_sizes == NULL || crs_fst == NULL || old_prefix == NULL ||
+        new_prefix == NULL || rev == NULL || seen == NULL ||
+        sep_owner == NULL || sizes == NULL || fstVtxSep == NULL)
+        ABORT("Invalid or incomplete matched quotient ordering.");
+
+    old_prefix[0] = 0;
+    for (c = 0; c < n_crs; ++c) {
+        int_t width = crs_info->crs_vrts[c];
+        if (width != 1 && width != 2)
+            ABORT("Matched quotient vertices must have width one or two.");
+        old_prefix[c + 1] = old_prefix[c] + width;
+        q = crs_perm_c[c];
+        if (q < 0 || q >= n_crs || seen[q] != 0)
+            ABORT("ParMETIS returned an invalid quotient permutation.");
+        seen[q] = 1;
+        rev[q] = c;
+    }
+    if (old_prefix[n_crs] != n)
+        ABORT("Matched quotient widths do not cover all fine columns.");
+
+    new_prefix[0] = 0;
+    for (q = 0; q < n_crs; ++q)
+        new_prefix[q + 1] = new_prefix[q] + crs_info->crs_vrts[rev[q]];
+
+    if (options->indicator_2x2 != NULL)
+        SUPERLU_FREE(options->indicator_2x2);
+    options->indicator_2x2 = int32Malloc_dist(n);
+    if (options->indicator_2x2 == NULL)
+        ABORT("Malloc fails for indicator_2x2[].");
+
+    for (c = 0; c < n_crs; ++c) {
+        q = crs_perm_c[c];
+        for (t = 0; t < crs_info->crs_vrts[c]; ++t)
+            perm_c[old_prefix[c] + t] = new_prefix[q] + t;
+    }
+    for (q = 0; q < n_crs; ++q) {
+        int_t first = new_prefix[q];
+        if (crs_info->crs_vrts[rev[q]] == 1) {
+            options->indicator_2x2[first] = 1;
+        } else {
+            options->indicator_2x2[first] = 2;
+            options->indicator_2x2[first + 1] = 0;
+        }
+    }
+
+    for (q = 0; q < n_crs; ++q)
+        sep_owner[q] = SLU_EMPTY;
+    for (sep = 0; sep < nseps; ++sep) {
+        int_t first = crs_fst[sep];
+        int_t last = first + crs_sizes[sep];
+        if (first < 0 || last < first || last > n_crs)
+            ABORT("ParMETIS returned an invalid quotient separator interval.");
+        fstVtxSep[sep] = new_prefix[first];
+        sizes[sep] = new_prefix[last] - new_prefix[first];
+        for (q = first; q < last; ++q) {
+            if (sep_owner[q] != SLU_EMPTY)
+                ABORT("ParMETIS quotient separator intervals overlap.");
+            sep_owner[q] = sep;
+        }
+    }
+    for (q = 0; q < n_crs; ++q)
+        if (sep_owner[q] == SLU_EMPTY)
+            ABORT("ParMETIS quotient separators do not cover the graph.");
+    sizes[nseps] = 0;
+    fstVtxSep[nseps] = n;
+
+    SUPERLU_FREE(crs_sizes);
+    SUPERLU_FREE(crs_fst);
+    SUPERLU_FREE(old_prefix);
+    SUPERLU_FREE(new_prefix);
+    SUPERLU_FREE(rev);
+    SUPERLU_FREE(seen);
+    SUPERLU_FREE(sep_owner);
+    *p_sizes = sizes;
+    *p_fstVtxSep = fstVtxSep;
+}
+
 /*! \brief
  *
  * <pre>
@@ -775,8 +935,7 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
     double dmin, dsum, dprod;
 #endif
 
-    crs_info_t crs_info;
-    crs_info.crs_vrts  = NULL;    // Sherry: not free'd ?
+    crs_info_t crs_info = {0};
 
 
     dtrf3Dpartition_t *trf3Dpartition=LUstruct->trf3Dpart;
@@ -813,11 +972,15 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
     validateInput_pdgssvx3d(options, A, ldb, nrhs, grid3d, info);
 
-    /* This first 3D-aware parallel-symbolic implementation covers the
-       ordinary (unsymmetric) symbolic path.  Reject the symmetric path on
-       every rank before entering layer-specific collectives. */
-    if (Fact != FACTORED && parSymbFact == YES && options->SymFact == YES) {
-        ABORT("ParSymbFact=YES with SymFact=YES is not yet supported by the 3D driver.");
+    /* The symmetric parallel-symbolic path currently targets the standard
+       block-cyclic symmetric-LU backend only.  The V2 ID/ID2D/GREEDY
+       mappings require a separate distributed-symbolic adapter. */
+    if (Fact != FACTORED && parSymbFact == YES && options->SymFact == YES &&
+        (gpu3dVersion != 0 || options->ColPerm != PARMETIS ||
+         !SLU_IS_SYMATCH_ROWPERM(options->RowPerm))) {
+        ABORT("SymFact=YES with ParSymbFact=YES currently requires "
+              "GPU3DVERSION=0, ColPerm=PARMETIS, and symmetric matching "
+              "(block-cyclic symmetric LU only).");
     }
     if (parSymbFact == YES && Fact != DOFACT && Fact != FACTORED) {
         ABORT("The 3D ParSymbFact path does not yet support symbolic-pattern reuse.");
@@ -981,6 +1144,13 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 	    dperform_row_permutation(options, Fact, ScalePermstruct, LUstruct,
 				m, n, grid, A, &GA, stat, job, Equil,
 				&rowequ, &colequ, &crs_info, &iinfo);
+	    if (parSymbFact == YES && options->ColPerm == PARMETIS &&
+		options->SymFact == YES &&
+		(iinfo != 0 || crs_info.n_crs <= 0 ||
+		 crs_info.crs_vrts == NULL || crs_info.ftoc == NULL ||
+		 GA.Store == NULL))
+		ABORT("Symmetric ParMETIS ordering requires successful matching "
+		      "and complete contraction metadata.");
 
 	} /* end if (!factored) */
 
@@ -1007,7 +1177,21 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 	    if (parSymbFact == YES || permc_spec == PARMETIS) {
 		nprocs_num = grid->nprow * grid->npcol;
-		noDomains = (int)(pow(2, ((int)LOG2(nprocs_num))));
+		if (parSymbFact == YES && permc_spec == PARMETIS &&
+		    options->SymFact == YES) {
+		    int_t nd_vertices = crs_info.n_crs;
+		    int max_domains = (int) SUPERLU_MIN((int_t) nprocs_num,
+						      nd_vertices);
+		    if (max_domains < 1)
+			ABORT("The ParMETIS graph has no vertices.");
+		    noDomains = 1;
+		    while (noDomains <= max_domains / 2)
+			noDomains *= 2;
+		} else {
+		    /* Preserve the established domain count for every existing
+		       nonsymmetric and non-ParMETIS path. */
+		    noDomains = (int)(pow(2, ((int)LOG2(nprocs_num))));
+		}
 
 		/* create a new communicator for the first noDomains
 		   processes in grid->comm */
@@ -1041,7 +1225,46 @@ void pdgssvx3d(superlu_dist_options_t *options, SuperMatrix *A,
 
 	    if (permc_spec != MY_PERMC && Fact == DOFACT) {
 		t3 = SuperLU_timer_();
-		if (permc_spec == PARMETIS) {
+		if (parSymbFact == YES && permc_spec == PARMETIS &&
+		    options->SymFact == YES) {
+		    SuperMatrix GA_c = {0};
+		    SuperMatrix GA_c_loc = {0};
+		    int_t *crs_perm_c;
+		    int_t *identity;
+		    int_t n_c;
+
+		    if (!SLU_IS_SYMATCH_ROWPERM(options->RowPerm) ||
+			GA.Store == NULL)
+			ABORT("Symmetric ParMETIS ordering requires a matched global graph.");
+		    coarsen_graph_v3(&GA, &GA_c, &crs_info);
+		    n_c = GA_c.nrow;
+		    crs_perm_c = intMalloc_dist(n_c);
+		    identity = intMalloc_dist(n_c);
+		    if (crs_perm_c == NULL || identity == NULL)
+			ABORT("Malloc fails for the quotient-graph permutation.");
+		    for (i = 0; i < n_c; ++i)
+			identity[i] = i;
+
+		    dDistributeGlobalNCByRows(&GA_c, grid, &GA_c_loc);
+		    flinfo = get_perm_c_parmetis(&GA_c_loc, identity, crs_perm_c,
+					 nprocs_num, noDomains, &sizes,
+					 &fstVtxSep, grid, &symb_comm);
+		    if (flinfo > 0)
+			ABORT("ERROR in matched quotient-graph ParMETIS ordering.");
+		    dExpandMatchedParmetisOrder(n, &crs_info, crs_perm_c,
+					 noDomains, &sizes, &fstVtxSep,
+					 perm_c, options);
+		    check_perm_dist("matched_parmetis_perm_c", n, perm_c);
+
+		    Destroy_CompRowLoc_Matrix_dist(&GA_c_loc);
+		    Destroy_CompCol_Matrix_dist(&GA_c);
+		    SUPERLU_FREE(crs_perm_c);
+		    SUPERLU_FREE(identity);
+		    SUPERLU_FREE(crs_info.crs_vrts);
+		    SUPERLU_FREE(crs_info.ftoc);
+		    crs_info.crs_vrts = NULL;
+		    crs_info.ftoc = NULL;
+		} else if (permc_spec == PARMETIS) {
 		/* Get column permutation vector in perm_c.                   *
 		 * This routine takes as input the distributed input matrix A *
 		 * and does not modify it.  It also allocates memory for      *
@@ -2795,6 +3018,7 @@ if (grid3d->zscp.Iam == 0)  /* on 2D grid-0 */
 	}
     if (SLU_IS_SYMATCH_ROWPERM(options->RowPerm)) {
 	SUPERLU_FREE(options->indicator_2x2);
+	options->indicator_2x2 = NULL;
     }
 #if 0
 	if (!factored && Fact != SamePattern_SameRowPerm && !parSymbFact)

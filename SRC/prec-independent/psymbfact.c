@@ -35,6 +35,7 @@ at the top-level directory.
 /* limits.h:  the largest positive integer (INT_MAX) (LONG_MAX) */
 #include <limits.h>
 #include <inttypes.h>
+#include <float.h>
 #include <math.h>
 #include "superlu_ddefs.h"
 #include "psymbfact.h"
@@ -91,7 +92,7 @@ intraLvl_symbfact
 (SuperMatrix *, int, int, int, int, int, int_t *, int_t *, int, 
  int, int_t, int_t,  Pslu_freeable_t *, Llu_symbfact_t *, vtcsInfo_symbfact_t *, 
  comm_symbfact_t *, psymbfact_stat_t *, int_t *, int_t *, int_t *, int_t *, 
- int_t *, int_t *, int_t *, MPI_Comm, MPI_Comm *);
+ int_t *, int_t *, int_t *, const int *, MPI_Comm, MPI_Comm *);
 
 static void
 initLvl_symbfact
@@ -110,7 +111,7 @@ domain_symbfact
 (SuperMatrix *, int, int, int,  int, int, int_t *, int_t *,
  int_t, int_t, Pslu_freeable_t *, Llu_symbfact_t *, vtcsInfo_symbfact_t *,
  comm_symbfact_t *, psymbfact_stat_t *, int_t *, int_t *, int_t *, int_t *, 
- int_t *, int_t *, int_t *);
+ int_t *, int_t *, int_t *, const int *);
 
 static float
 allocPrune_domain
@@ -129,11 +130,13 @@ symbfact_alloc
 static float 
 symbfact_mapVtcs
 (int, int, int, SuperMatrix *, int_t *, int_t *, 
- Pslu_freeable_t *, vtcsInfo_symbfact_t *, int_t *, int_t, psymbfact_stat_t *);
+ Pslu_freeable_t *, vtcsInfo_symbfact_t *, int_t *, int_t, const int *,
+ psymbfact_stat_t *);
 
 static void 
 symbfact_distributeMatrix 
-(int, int, int, SuperMatrix *, int_t *, int_t *, matrix_symbfact_t *, 
+(int, int, int, SuperMatrix *, int_t *, int_t *, yes_no_t,
+ matrix_symbfact_t *,
  Pslu_freeable_t *, vtcsInfo_symbfact_t *, int_t *, MPI_Comm *);
 
 static int_t
@@ -275,6 +278,7 @@ float symbfact_dist
 			  What's the relation with symb_mem_usage? */
   /* temp array of size n, used as a marker by the subroutines */
   int_t *tempArray; 
+  const int *pair_indicator;
   int_t i, j, k;
   int_t fstVtx, lstVtx, mark, fstVtx_lid, vtx_lid, maxNvtcsPProc;
   int_t nnz_asup_loc, nnz_ainf_loc;
@@ -325,14 +329,43 @@ float symbfact_dist
   VInfo.xusub_nextLvl  = 0;
   VInfo.maxSzBlk = sp_ienv_dist(3, options);
   maxSzBlk = VInfo.maxSzBlk;
+  n = A->ncol;
+  pair_indicator = (options->SymFact == YES && options->Algo3d == YES)
+      ? options->indicator_2x2 : NULL;
+  if (options->SymFact == YES && options->Algo3d == YES &&
+      pair_indicator == NULL)
+    ABORT("Symmetric parallel symbolic factorization requires indicator_2x2[].");
+
+  if (pair_indicator != NULL) {
+    int_t v;
+    int nseps = 2 * nprocs_symb - 1;
+
+    if (maxSzBlk < 2)
+      ABORT("Symmetric parallel symbolic factorization requires maxsuper >= 2.");
+    for (v = 0; v < n; ) {
+      if (pair_indicator[v] == 1) {
+        ++v;
+      } else if (pair_indicator[v] == 2 && v + 1 < n &&
+                 pair_indicator[v + 1] == 0) {
+        v += 2;
+      } else {
+        ABORT("Invalid indicator_2x2 grammar in parallel symbolic factorization.");
+      }
+    }
+    for (i = 0; i < nseps; ++i) {
+      int_t first = fstVtxSep[i];
+      int_t last = first + sizes[i];
+      if (first < 0 || last < first || last > n ||
+          (first < last && pair_indicator[first] == 0) ||
+          (first < last && last < n && pair_indicator[last - 1] == 2))
+        ABORT("A ParMETIS separator boundary splits a matched 2x2 pivot.");
+    }
+  }
   
   mark = SLU_EMPTY;
   nsuper_loc = 0;
   nextl   = 0; nextu      = 0;
   neltsZr = 0; neltsTotal = 0;
-  
-  //m = A->nrow;
-  n = A->ncol;
   
   if (!(tempArray = intMalloc_symbfact(n))) {
     fprintf (stderr, "Malloc fails for tempArray[].\n");  
@@ -347,7 +380,8 @@ float symbfact_dist
   /* Distribute vertices on processors */
   if ((flinfo = 
        symbfact_mapVtcs (iam, nprocs_num, nprocs_symb, A, fstVtxSep, sizes, 
-			 Pslu_freeable, &VInfo, tempArray, maxSzBlk, &PS)) > 0) 
+		 Pslu_freeable, &VInfo, tempArray, maxSzBlk,
+		 pair_indicator, &PS)) > 0)
       return (flinfo); /* Number of bytes alllocated so far when run out of memory */
 
   maxNvtcsPProc = Pslu_freeable->maxNvtcsPProc;
@@ -356,7 +390,8 @@ float symbfact_dist
      in symbfact_mapVtcs.  Store the redistributed A temporarily into AS */
   /* Sherry: should add argument PS.allocMem ?? */
   symbfact_distributeMatrix (iam, nprocs_num, nprocs_symb,  A, 
-			     perm_c, perm_r, &AS, 
+			     perm_c, perm_r,
+			     pair_indicator != NULL ? YES : NO, &AS,
 			     Pslu_freeable, &VInfo, tempArray, num_comm);
   
   /* THE REST OF THE SYMBOLIC FACTORIZATION IS EXECUTED ONLY BY NPROCS_SYMB
@@ -444,7 +479,8 @@ float symbfact_dist
 	    domain_symbfact 
 	      (A, iam, lvl, szSep, iSep, jSep, sizes, fstVtxSep, fstVtx, lstVtx, 
 	       Pslu_freeable, &Llu_symbfact, &VInfo, &CS, &PS, tempArray, 
-	       &mark, &nextl, &nextu, &neltsZr, &neltsTotal, &nsuper_loc);
+	       &mark, &nextl, &nextu, &neltsZr, &neltsTotal, &nsuper_loc,
+	       pair_indicator);
 
 	    PS.estimLSz = nextl;
 	    PS.estimUSz = nextu;
@@ -486,7 +522,7 @@ float symbfact_dist
 		(A, iam, lvl, szSep, iSep, jSep, sizes, fstVtxSep, fstP, lstP, 
 		 fstVtx, lstVtx, Pslu_freeable, &Llu_symbfact, &VInfo, &CS, &PS,
 		 tempArray, &mark, &nextl, &nextu, &neltsZr, &neltsTotal, 
-		 &nsuper_loc, commLvls[jSep], symb_comm);
+		 &nsuper_loc, pair_indicator, commLvls[jSep], symb_comm);
 #if ( PROFlevel>=1 )
 	    t2 = SuperLU_timer_();
 	    time_lvls[3*lvl+2] = t2 - t1;		 
@@ -527,6 +563,10 @@ float symbfact_dist
     for (ind_blk = 0; ind_blk < VInfo.nblks_loc; ind_blk ++) {
       fstVtx = VInfo.begEndBlks_loc[2 * ind_blk];
       lstVtx = VInfo.begEndBlks_loc[2 * ind_blk + 1];
+      if (pair_indicator != NULL && fstVtx < lstVtx &&
+          (pair_indicator[fstVtx] == 0 ||
+           (lstVtx < n && pair_indicator[lstVtx - 1] == 2)))
+        ABORT("A symbolic ownership block splits a matched 2x2 pivot.");
       fstVtx_lid = LOCAL_IND( Pslu_freeable->globToLoc[fstVtx] );
       nsuper = Pslu_freeable->supno_loc[fstVtx_lid];
       Pslu_freeable->xsup_beg_loc[nsuper] = fstVtx;
@@ -545,6 +585,10 @@ float symbfact_dist
 
       for (vtx = fstVtx + 1, vtx_lid = fstVtx_lid + 1; 
 	   vtx < lstVtx; vtx++, vtx_lid ++) {
+	if (pair_indicator != NULL && pair_indicator[vtx] == 0 &&
+	    Pslu_freeable->supno_loc[vtx_lid] !=
+	        Pslu_freeable->supno_loc[vtx_lid - 1])
+	  ABORT("Parallel symbolic factorization split a matched 2x2 pivot.");
 	if (Pslu_freeable->supno_loc[vtx_lid] != nsuper) {
 	  nsuper = Pslu_freeable->supno_loc[vtx_lid];
 	  Pslu_freeable->xsup_end_loc[nsuper-1] = vtx;
@@ -829,8 +873,14 @@ initParmsAndStats
   PS->nDnsUpSeps = 0;
   
   PS->relax_gen = 1.0;
-  PS->relax_curSep = 1.0;
-  PS->relax_seps = 1.0;
+  /* The dense-separator shortcuts form supernodes through separate code
+     paths that do not preserve forced 2x2 pivot structure.  Keep the
+     general path for symmetric factorization, where pair columns are
+     explicitly unioned below. */
+  PS->relax_curSep = (options->SymFact == YES && options->Algo3d == YES)
+      ? FLT_MAX : 1.0;
+  PS->relax_seps = (options->SymFact == YES && options->Algo3d == YES)
+      ? FLT_MAX : 1.0;
   PS->fill_par = sp_ienv_dist(6, options);
   PS->nops = 0.;
   PS->no_shmSnd = 0.;
@@ -1028,6 +1078,7 @@ symbfact_mapVtcs
  vtcsInfo_symbfact_t *VInfo, /* Output -local info on vertices distribution */
  int_t *tempArray,    /* Input -temp array of size n = order of the matrix */
  int_t  maxSzBlk,     /* Input -maximum number of vertices in a block */
+ const int *pair_indicator, /* Input -matched 1x1/2x2 structure, or NULL */
  psymbfact_stat_t *PS /* Input/Output -statistics */
  ) 
 {
@@ -1148,8 +1199,14 @@ symbfact_mapVtcs
 	  if (p != SLU_EMPTY && k < lstVtx) {
 	    /* for each column in the separator */	  
 	    avail_pes[ind_ap_s] = SLU_EMPTY;
+	    int_t block_end = SUPERLU_MIN(k + noVtcsProc, lstVtx);
+	    if (pair_indicator != NULL && block_end < lstVtx &&
+		pair_indicator[block_end] == 0)
+	      --block_end;
+	    if (block_end <= k)
+	      ABORT("Unable to create a pair-aligned symbolic ownership block.");
 	    kk = 0;
-	    while (kk < noVtcsProc && k < lstVtx) {
+	    while (k < block_end) {
 	      globToLoc[k] = p;
 	      vtcs_pe[p] ++;
 	      k ++;
@@ -1172,9 +1229,15 @@ symbfact_mapVtcs
 	p = firstP + npNode;
 	while (k < lstVtx) {
 	  /* for each column in the separator */
+	  int_t block_end = SUPERLU_MIN(k + noVtcsProc, lstVtx);
+	  if (pair_indicator != NULL && block_end < lstVtx &&
+	      pair_indicator[block_end] == 0)
+	    --block_end;
+	  if (block_end <= k)
+	    ABORT("Unable to create a pair-aligned symbolic ownership block.");
 	  kk = 0;
 	  p = (int) (noBlk % (int_t) npNode) + firstP;
-	  while (kk < noVtcsProc && k < lstVtx) {
+	  while (k < block_end) {
 	    globToLoc[k] = p;
 	    vtcs_pe[p] ++;
 	    k ++;
@@ -1240,6 +1303,14 @@ symbfact_mapVtcs
   }
   if (iam < nprocs_symb)
     begEndBlks_loc[2 * nblks_loc] = n;
+
+  if (pair_indicator != NULL) {
+    for (k = 1; k < n; ++k) {
+      if (pair_indicator[k] == 0 &&
+          OWNER(globToLoc[k - 1]) != OWNER(globToLoc[k]))
+        ABORT("Symbolic vertex mapping split a matched 2x2 pivot.");
+    }
+  }
  
   SUPERLU_FREE (avail_pes);
   SUPERLU_FREE (vtcs_pe);
@@ -1276,6 +1347,7 @@ symbfact_distributeMatrix
  SuperMatrix *A,        /* Input - input matrix A */
  int_t *perm_c,         /* Input - column permutation */
  int_t *perm_r,         /* Input - row permutation */
+ yes_no_t congruentCols, /* Input - apply the row permutation to columns too */
  matrix_symbfact_t *AS, /* Output - temporary storage for the
 			   redistributed matrix */
  Pslu_freeable_t *Pslu_freeable, /* Input - global to local information */
@@ -1352,7 +1424,8 @@ symbfact_distributeMatrix
     neltsRow = 0;
 
     for (j = Astore->rowptr[i]; j < Astore->rowptr[i+1]; j++) {
-      jcol = perm_c[Astore->colind[j]];
+      jcol = perm_c[congruentCols == YES ? perm_r[Astore->colind[j]]
+						 : Astore->colind[j]];
       if (jcol <= irow) {
 	p = OWNER(globToLoc[jcol]);
 	if (tempArray[jcol] == 0) {
@@ -1472,7 +1545,8 @@ symbfact_distributeMatrix
     ptr_toSnd[p_irow] +=2;
     neltsRow = 0;
     for (j = Astore->rowptr[i]; j < Astore->rowptr[i+1]; j++) {
-      jcol = perm_c[Astore->colind[j]];
+      jcol = perm_c[congruentCols == YES ? perm_r[Astore->colind[j]]
+						 : Astore->colind[j]];
       if (jcol <= irow) {
 	p = OWNER( globToLoc[jcol] );
 	k = tempArray[jcol];
@@ -2528,7 +2602,8 @@ blk_symbfact
  int_t *p_neltsZr, /* no of artificial zeros introduced so far */
  int_t *p_neltsTotal, /* no of nonzeros (including artificials) 
 			 computed so far */
- int_t *p_nsuper_loc
+ int_t *p_nsuper_loc,
+ const int *pair_indicator
  )
 {
   int szSep_tmp, lvl_tmp, ii, jj;
@@ -2554,6 +2629,7 @@ blk_symbfact
   /* variables for comms info */
   int_t neltSn_L, neltSn_U, lstVtx_tmp, stat;
   float relax_param, relax_seps;
+  int force_next_split = FALSE;
 
   if (fstVtx_blk >= lstVtx_blk)
     return 0;
@@ -2617,6 +2693,9 @@ blk_symbfact
   }
   
   for (vtx = fstVtx_blk; vtx < lstVtx_blk; vtx++, vtx_lid ++, vtx_prid ++) {
+    int merge_current = TRUE;
+    int split_this_vertex = force_next_split;
+    force_next_split = FALSE;
     vtxp1 = vtx + 1;
     if (marku2_vtx +4 >= n) {
       /* reset to SLU_EMPTY marker array */
@@ -2710,6 +2789,23 @@ blk_symbfact
       neltsTotal += neltsVtx_L + neltsVtx_U;
     }
     else {
+      int natural_merge = relax_param >= PS->relax_gen;
+
+      /* Leave room for both columns when a pair begins near the block-size
+         limit.  The second column is always merged; if that overrides the
+         ordinary structural test, the following column starts a new snode,
+         matching the serial symmetric symbolic factorization. */
+      if (pair_indicator != NULL && pair_indicator[vtx] == 2 &&
+          szsn >= VInfo->maxSzBlk - 1)
+        natural_merge = FALSE;
+      if (pair_indicator != NULL && pair_indicator[vtx] == 0) {
+        merge_current = TRUE;
+        if (!natural_merge)
+          force_next_split = TRUE;
+      } else {
+        merge_current = natural_merge && !split_this_vertex;
+      }
+
       if (maxNeltsVtx > 0) {
 	relax_seps = (float) neltsVtx_L / (float) maxNeltsVtx;
 	relax_seps *= (float) (neltsVtx_U+1) / (float) maxNeltsVtx;
@@ -2718,7 +2814,7 @@ blk_symbfact
 	relax_seps = 0.0;
 
       /* check if all upper separators are dense */
-      if (relax_seps >= PS->relax_seps ) {
+	if (pair_indicator == NULL && relax_seps >= PS->relax_seps ) {
 	VInfo->filledSep = FILLED_SEPS; 
 	*p_nextl      = xlsub[vtx_lid];
 	*p_nextu      = xusub[vtx_lid];
@@ -2735,7 +2831,7 @@ blk_symbfact
 	return 0;
       } /* if all upper separators are dense */
       else {
-	if (relax_param >= PS->relax_gen) {
+	if (merge_current) {
 	  /* vertex belongs to the same supernode */
 	  if (prval_cursn > prval_curvtx || prval_cursn <= vtx)
 	    prval_cursn = prval_curvtx;
@@ -2793,11 +2889,11 @@ blk_symbfact
 	  xusub[vtx_lid] = newnext;
 	  nextu = newnext;
 	  neltsVtx_U += neltsZrVtx_U;
-	}  /* if ( relax_param >= PS->relax_param) */
+	}  /* if current vertex merges into the current supernode */
       }  /* if (VInfo->filledSep != FILLED_SEPS) */
     } /* if (vtx != fstVtx_blk) */
 
-    if ((relax_param < PS->relax_gen || vtx == lstVtx_blk-1) 
+    if (((vtx != fstVtx_blk && !merge_current) || vtx == lstVtx_blk-1)
 	&& VInfo->filledSep != FILLED_SEPS) {
       /* if a new supernode starts or is the last vertex */
       /* vtx starts a new supernode. Note we only store the
@@ -2806,7 +2902,7 @@ blk_symbfact
       if (marker[vtxp1] == marku1_vtx)
 	vtx_bel_snU = vtxp1;
       /* build the pruned structure */
-      if (relax_param < PS->relax_gen
+      if (!merge_current
 	  && vtx == lstVtx_blk - 1 && vtx != fstVtx_blk) 
 	szLp = 2;
       else
@@ -2880,7 +2976,7 @@ blk_symbfact
 	xlsub_snp1  = nextl;
 	xusub_snp1  = nextu;
       }
-      if (relax_param < PS->relax_gen) {
+      if (vtx != fstVtx_blk && !merge_current) {
 	neltsTotal += neltsVtx_L + neltsVtx_U;
 	nsuper_loc ++;	
 	supno[vtx_lid] = nsuper_loc;
@@ -2897,8 +2993,8 @@ blk_symbfact
     if (!VInfo->filledSep) {
       relax_seps = (float) neltsVtx_CSep_L / (float) (lstVtx - vtx);
       relax_seps *= (float) (neltsVtx_CSep_U+1) / (float) (lstVtx - vtx);
-      if (relax_seps >= PS->relax_curSep ) 
-	VInfo->filledSep = FILLED_SEP;
+	if (pair_indicator == NULL && relax_seps >= PS->relax_curSep)
+	  VInfo->filledSep = FILLED_SEP;
     }
     maxNeltsVtx --;
   }
@@ -2937,7 +3033,8 @@ domain_symbfact
  int_t *p_neltsZr, /* no of artificial zeros introduced so far */
  int_t *p_neltsTotal, /* no of nonzeros (including artificials) 
 			 computed so far */
- int_t *p_nsuper_loc
+ int_t *p_nsuper_loc,
+ const int *pair_indicator
  )
 {
   int_t lstVtx_lid, maxNvtcsPProc; 
@@ -2952,9 +3049,9 @@ domain_symbfact
 		SLU_EMPTY, fstVtx, lstVtx, 
 		NULL, SLU_EMPTY, NULL, SLU_EMPTY,
 		Pslu_freeable, Llu_symbfact, VInfo, CS, PS,
-		marker, p_mark,
-		p_nextl, p_nextu, p_neltsZr, p_neltsTotal, 
-		p_nsuper_loc);
+	marker, p_mark,
+	p_nextl, p_nextu, p_neltsZr, p_neltsTotal,
+	p_nsuper_loc, pair_indicator);
 
   if (VInfo->filledSep != FILLED_SEPS) {
     maxNvtcsPProc = Pslu_freeable->maxNvtcsPProc;
@@ -4811,6 +4908,7 @@ intraLvl_symbfact
  int_t *p_neltsTotal, /* no of nonzeros (including artificials) 
 			 computed so far */
  int_t *p_nsuper_loc,
+ const int *pair_indicator,
  MPI_Comm ndComm,
  MPI_Comm    *symb_comm /* Input - communicator for symbolic factorization */
  )
@@ -4846,7 +4944,12 @@ intraLvl_symbfact
   
   /* max number of msgs this processor can receive during 
      intraLvl_symbfact routine */
-  maxNmsgsToRcv  = (lstVtx - fstVtx) / VInfo->maxSzBlk + 1;
+  /* Pair-aligned ownership blocks can be one column shorter than maxSzBlk. */
+  if (pair_indicator != NULL)
+    maxNmsgsToRcv = CEILING(lstVtx - fstVtx,
+                            SUPERLU_MAX(VInfo->maxSzBlk - 1, 1)) + 1;
+  else
+    maxNmsgsToRcv = (lstVtx - fstVtx) / VInfo->maxSzBlk + 1;
   maxNeltsVtx_in = VInfo->maxNeltsVtx;
   globToLoc      = Pslu_freeable->globToLoc;
   maxNvtcsPProc  = Pslu_freeable->maxNvtcsPProc;
@@ -4869,7 +4972,7 @@ intraLvl_symbfact
     p = OWNER( globToLoc[k] );
     if (p == fstP)
       fstVtx_blkCyc = k;
-    k += VInfo->maxSzBlk;
+    k += pair_indicator != NULL ? 1 : VInfo->maxSzBlk;
   }
 
   for (p = fstP; p < lstP; p++)
@@ -5022,9 +5125,9 @@ intraLvl_symbfact
 		    fstVtx_loc, fstVtx_blk, lstVtx_blk, 
 		    lsub_rcvd, lsub_rcvd_sz, usub_rcvd, usub_rcvd_sz,
 		    Pslu_freeable, Llu_symbfact, VInfo, CS, PS,
-		    marker, p_mark,
-		    p_nextl, p_nextu, p_neltsZr, p_neltsTotal, 
-		    p_nsuper_loc);
+	    marker, p_mark,
+	    p_nextl, p_nextu, p_neltsZr, p_neltsTotal,
+	    p_nsuper_loc, pair_indicator);
       lsub = Llu_symbfact->lsub;
       usub = Llu_symbfact->usub; 	 
       

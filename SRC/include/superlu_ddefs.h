@@ -1118,6 +1118,8 @@ extern float ddist_psymbtonum3d(superlu_dist_options_t *, int_t,
                                 SuperMatrix *, dScalePermstruct_t *,
                                 int_t *, int_t *, int_t *, int_t *, float,
                                 dLUstruct_t *, gridinfo3d_t *);
+extern void dSetupCommL(int_t, dLUstruct_t *, gridinfo_t *);
+extern void dDestroyCommL(int_t, dLocalLU_t *, gridinfo_t *);
 extern float ddist_psymbtonum(superlu_dist_options_t *, int_t, SuperMatrix *,
                                 dScalePermstruct_t *, Pslu_freeable_t *,
                                 dLUstruct_t *, gridinfo_t *);
