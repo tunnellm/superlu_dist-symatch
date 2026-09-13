@@ -76,8 +76,8 @@ configure_factorization() {
       export GPU3DV2_LOWER_ENVELOPE=1
       export GPU3DV2_PANEL_ARENA=1
       export GPU3DV2_WORKSPACE_ARENA=1
-      export SYM_ALG=1 # threaded suitor 
-      rowperm=6 # MC80; enables symmetric factorization
+      export SYM_ALG=1 # threaded suitor when rowperm=4 
+      rowperm=6 # 4: SymMatch 6: MC80
       ;;
     gpu_old_lu)
       export SUPERLU_ACC_OFFLOAD=1
@@ -89,16 +89,16 @@ configure_factorization() {
       export SUPERLU_ACC_OFFLOAD=1
       export GPU3DVERSION=0
       export SUPERLU_CUDA_AWARE_MPI=0
-      export SYM_ALG=1 # threaded suitor 
-      rowperm=6 # MC80; enables symmetric LU
+      export SYM_ALG=1 # threaded suitor when rowperm=4 
+      rowperm=6 # 4: SymMatch 6: MC80
       ;;
     cpu_ldlt)
       export SUPERLU_ACC_OFFLOAD=0
       export GPU3DVERSION=2
       export GPU3DV2_CPU_SCHEDULER=COMPLETION
       export GPU3DV2_CPU_ASYNC_EXCHANGE=1
-      export SYM_ALG=1 # threaded suitor 
-      rowperm=6 # MC80; enables symmetric factorization
+      export SYM_ALG=1 # threaded suitor when rowperm=4 
+      rowperm=6 # 4: SymMatch 6: MC80
       ;;
     cpu_old_lu)
       export SUPERLU_ACC_OFFLOAD=0
@@ -108,8 +108,8 @@ configure_factorization() {
     cpu_symmetric_lu)
       export SUPERLU_ACC_OFFLOAD=0
       export GPU3DVERSION=0
-      export SYM_ALG=1 # threaded suitor 
-      rowperm=6 # MC80; enables symmetric LU
+      export SYM_ALG=1 # threaded suitor when rowperm=4 
+      rowperm=6 # 4: SymMatch 6: MC80
       ;;
     *)
       echo "Unknown factorization mode: $factor_mode" >&2
@@ -249,10 +249,10 @@ if ((gpu)); then
   export SUPERLU_GPU_MEMORY_PROFILE=1
   factor_modes=(gpu_ldlt gpu_old_lu gpu_symmetric_lu)
 
-  mats=(symmetric/Cube_Coup_dt0.mtx)  
-  nprows=(2)
-  npcols=(1)
-  npz=(8)
+  mats=(symmetric/Geo_1438.bin symmetric/StocF-1465.bin symmetric/nlpkkt80.bin symmetric/dielFilterV3real.mtx symmetric/Si41Ge41H72.mtx symmetric/pwtk.mtx symmetric/offshore.mtx symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.mtx)  
+  nprows=(2 2 2 1 4 1 2 1 2)
+  npcols=(1 1 1 2 1 2 1 2 1)
+  npz=(8 8 8 8 4 8 8 8 8)  
   NTH=16
 else
   factor_modes=(cpu_ldlt cpu_old_lu cpu_symmetric_lu)

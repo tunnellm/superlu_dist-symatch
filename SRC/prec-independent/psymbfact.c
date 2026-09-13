@@ -2917,6 +2917,18 @@ blk_symbfact
       }
       while (szLp > 0) {
 	szLp --;
+	/* Only the representative stores subscripts.  Relaxed merges (in
+	   particular forced 2x2 merges) can grow its structure after pointers
+	   for earlier interior columns were set.  Make those columns empty
+	   again before communication scans xlsub/xusub for representatives.
+	   Otherwise stale differences create extra records that were never
+	   included in snd_interSz/snd_LinterSz.  When vtx starts a new
+	   supernode, its pointers still describe that new structure. */
+	for (k = snrep_lid + 2;
+	     k <= vtx_lid - (merge_current ? 0 : 1); ++k) {
+	  xlsub[k] = xlsub_snp1;
+	  xusub[k] = xusub_snp1;
+	}
 #ifdef TEST_SYMB
 	printf ("End sn %d szsn %d\n", nsuper_loc, szsn);
 	printf ("BLD pr vtx %d snrep %d prval %d szLp %d\n",
