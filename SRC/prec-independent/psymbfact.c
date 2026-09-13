@@ -2882,7 +2882,7 @@ blk_symbfact
 		marker[vtx_elt] = marku2_vtx;
 	      }
 	    }
-	    if (marker[vtxp1] == marku2_vtx)
+	    if (vtxp1 < n && marker[vtxp1] == marku2_vtx)
 	      vtx_bel_snU = vtxp1;
 	    xusub[snrep_lid+1] = newnext;
 	  }
@@ -2899,7 +2899,7 @@ blk_symbfact
       /* vtx starts a new supernode. Note we only store the
        * subscript set of the first column of a supernode.  */
       
-      if (marker[vtxp1] == marku1_vtx)
+      if (vtxp1 < n && marker[vtxp1] == marku1_vtx)
 	vtx_bel_snU = vtxp1;
       /* build the pruned structure */
       if (!merge_current
@@ -2992,7 +2992,7 @@ blk_symbfact
 	neltsTotal += neltsVtx_L + neltsVtx_U;
 	nsuper_loc ++;	
 	supno[vtx_lid] = nsuper_loc;
-	if (marker[vtxp1] == marku1_vtx)
+	if (vtxp1 < n && marker[vtxp1] == marku1_vtx)
 	  vtx_bel_snU = vtxp1;
 	else
 	  vtx_bel_snU = SLU_EMPTY;
@@ -3195,17 +3195,23 @@ initLvl_symbfact
   use_fillcnts = TRUE; 
   
   if (use_fillcnts) {
-    if (nextl + nelts_fill_l >= Llu_symbfact->szLsub - nelts_ainf)
+    /* The tail holds input for this separator AND all later separators.
+       Keep the entire padded destination before that tail: otherwise the
+       forward copy below can overwrite input that has not been read yet.
+       When growing, reserve both the destination and the complete tail. */
+    if (nextl + nelts_fill_l >= VInfo->xlsub_nextLvl)
       mem_error = 
 	psymbfact_LUXpandMem (iam, n, fstVtx, nextl,
-			      nextl + nelts_fill_l, LSUB,
+			      nextl + nelts_fill_l +
+			      (Llu_symbfact->szLsub - VInfo->xlsub_nextLvl), LSUB,
 			      RL_SYMB, 1, 
 			      Pslu_freeable, Llu_symbfact, VInfo, PS);
     lsub = Llu_symbfact->lsub;
-    if (nextu + nelts_fill_u >= Llu_symbfact->szUsub - nelts_asup) 
+    if (nextu + nelts_fill_u >= VInfo->xusub_nextLvl)
       mem_error = 
 	psymbfact_LUXpandMem (iam, n, fstVtx, nextu,
-			      nextu + nelts_fill_u, USUB,
+			      nextu + nelts_fill_u +
+			      (Llu_symbfact->szUsub - VInfo->xusub_nextLvl), USUB,
 			      RL_SYMB, 1, 
 			      Pslu_freeable, Llu_symbfact, VInfo, PS);      
     usub = Llu_symbfact->usub;
