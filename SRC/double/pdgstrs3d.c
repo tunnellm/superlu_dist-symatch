@@ -3844,8 +3844,13 @@ thread_id=0;
 						recvbuf0 = &recvbuf_BC_fwd[nfrecvx_buf*maxrecvsz];
                         double tx = SuperLU_timer_();
 						/* Receive a message. */
-						MPI_Recv( recvbuf0, maxrecvsz, MPI_DOUBLE,
-								MPI_ANY_SOURCE, MPI_ANY_TAG, grid->comm, &status );
+						/* Resolve the wildcard before posting the receive. Work around the
+						 * Cray MPICH 9.1 OFI crash observed with wildcard receives mixing
+						 * local and remote tree messages. Only the master thread
+						 * receives on this communicator during this solve phase. */
+						MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, grid->comm, &status);
+						MPI_Recv(recvbuf0, maxrecvsz, MPI_DOUBLE,
+						         status.MPI_SOURCE, status.MPI_TAG, grid->comm, &status);
                         xtrsTimer->tfs_comm += SuperLU_timer_() - tx;
 
 						// MPI_Irecv(recvbuf0,maxrecvsz,MPI_DOUBLE,MPI_ANY_SOURCE,MPI_ANY_TAG,grid->comm,&req);
@@ -5884,8 +5889,13 @@ xtrsTimer->tbs_compute += SuperLU_timer_() - tx;
 			recvbuf0 = &recvbuf_BC_fwd[nbrecvx_buf*maxrecvsz];
             double tx = SuperLU_timer_();
 			/* Receive a message. */
-			MPI_Recv( recvbuf0, maxrecvsz, MPI_DOUBLE,
-					MPI_ANY_SOURCE, MPI_ANY_TAG, grid->comm, &status );
+			/* Resolve the wildcard before posting the receive. Work around the
+			 * Cray MPICH 9.1 OFI crash observed with wildcard receives mixing
+			 * local and remote tree messages. Only the master thread
+			 * receives on this communicator during this solve phase. */
+			MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, grid->comm, &status);
+			MPI_Recv(recvbuf0, maxrecvsz, MPI_DOUBLE,
+			         status.MPI_SOURCE, status.MPI_TAG, grid->comm, &status);
             xtrsTimer->tbs_comm += SuperLU_timer_() - tx;
 
 #if ( PROFlevel>=1 )
