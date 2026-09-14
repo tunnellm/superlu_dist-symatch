@@ -11,6 +11,14 @@
 #include "dsymldl_v2_solve_graph.h"
 #include "dsymldl_v2_nvshmem_solve.h"
 
+static int
+pdgstrs3d_symldl_global_rank(gridinfo3d_t *grid3d, int rank2d, int z)
+{
+    return (grid3d->rankorder == 1)
+               ? rank2d * grid3d->npdep + z
+               : z * (grid3d->nprow * grid3d->npcol) + rank2d;
+}
+
 static size_t
 pdgstrs3d_checked_product(size_t a, size_t b, const char *what)
 {
@@ -248,7 +256,8 @@ pdgstrs3d_symldl_redistribution_create(
             x_offset = X_BLK(row_slot);
             irow = FstBlockC(k);
             for (int_t i = 0; i < width; ++i, ++irow) {
-                int peer = (int) row_to_proc[irow];
+                int peer = pdgstrs3d_symldl_global_rank(
+                    grid3d, (int) row_to_proc[irow], 0);
                 int pos = cursor[peer]++;
                 if (pos < 0 || pos >= plan->x_send_count)
                     ABORT("SymLDL X-to-B redistribution plan overflows.");
@@ -1315,14 +1324,6 @@ pdgstrs3d_symldl_init_meta(superlu_dist_options_t *options, int_t n, int nrhs,
         sp_ienv_dist(7, options));
 }
 
-static int
-pdgstrs3d_symldl_global_rank(gridinfo3d_t *grid3d, int rank2d, int z)
-{
-    return (grid3d->rankorder == 1)
-               ? rank2d * grid3d->npdep + z
-               : z * (grid3d->nprow * grid3d->npcol) + rank2d;
-}
-
 static int_t
 pdgstrs3d_symldl_init_comm(int_t n, int_t m_loc, int_t nrhs,
                            int_t fst_row, int_t perm_r[], int_t perm_c[],
@@ -1407,7 +1408,8 @@ pdgstrs3d_symldl_init_comm(int_t n, int_t m_loc, int_t nrhs,
         knsupc = SuperSize(k);
         irow = FstBlockC(k);
         for (i = 0; i < knsupc; ++i) {
-            q = row_to_proc[irow++];
+            q = pdgstrs3d_symldl_global_rank(
+                grid3d, (int) row_to_proc[irow++], 0);
             ++SendCnt[q];
         }
     }
@@ -1471,11 +1473,12 @@ dSymV2SolveInit(superlu_dist_options_t *options, SuperMatrix *A,
     MPI_Allgather(&fst_row, 1, mpi_int_t, itemp, 1, mpi_int_t,
                   grid->comm);
     itemp[procs2d] = A->nrow;
+    /* Shared with the 2D dense permutation and refinement routines.
+       Keep owners in grid->comm rank numbering; the 3D redistribution
+       converts them to layer-zero ranks in grid3d->comm at its call sites. */
     for (p = 0; p < procs2d; ++p) {
-        int global_layer0_rank =
-            pdgstrs3d_symldl_global_rank(grid3d, (int) p, 0);
         for (i = itemp[p]; i < itemp[p + 1]; ++i)
-            row_to_proc[i] = global_layer0_rank;
+            row_to_proc[i] = p;
     }
     SUPERLU_FREE(itemp);
 
