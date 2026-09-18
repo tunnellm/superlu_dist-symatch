@@ -197,13 +197,13 @@ for MAT in Geo_1438.bin nlpkkt80.bin dielFilterV3real.bin Ga19As19H42.bin
 # for MAT in temp_13k.mtx
 # for MAT in matrix_ACTIVSg10k_AC_00.mtx
 # for MAT in symmetric/offshore.mtx  symmetric/pwtk.mtx  symmetric/Si41Ge41H72.mtx  symmetric/TEM181302.mtx symmetric/dielFilterV3real.mtx symmetric/nlpkkt80.bin symmetric/StocF-1465.bin symmetric/Geo_1438.bin
-# for MAT in symmetric/Cube_Coup_dt0.mtx
+# for MAT in symmetric/Cube_Coup_dt0.bin
 # for MAT in symmetric/Spielman_k200_A_10.mtx
 # for MAT in symmetric/nlpkkt80.bin
-# for MAT in symmetric/TEM181302.mtx symmetric/Spielman_k200_A_10.mtx  symmetric/Cube_Coup_dt0.mtx
+# for MAT in symmetric/TEM181302.mtx symmetric/Spielman_k200_A_10.mtx  symmetric/Cube_Coup_dt0.bin
 # for MAT in symmetric/Geo_1438.bin symmetric/StocF-1465.bin symmetric/nlpkkt80.bin symmetric/dielFilterV3real.mtx symmetric/Si41Ge41H72.mtx symmetric/offshore.mtx symmetric/TEM181302.mtx
 # for MAT in symmetric/662_bus.mtx
-# for MAT in symmetric/Cube_Coup_dt0.mtx symmetric/kkt_power.mtx symmetric/Spielman_k200_A_10.mtx
+# for MAT in symmetric/Cube_Coup_dt0.bin symmetric/kkt_power.mtx symmetric/Spielman_k200_A_10.mtx
 # for MAT in mathias/DG_GrapheneDisorder_8192.bin mathias/DNA_715_64cell.bin mathias/LU_C_BN_C_4by2.bin mathias/Li4244.bin 
 # for MAT in mathias/Li4244.bin 
 # for MAT in turon_m.mtx

@@ -141,9 +141,9 @@ for MAT in g4.rua
 # for MAT in symmetric/StocF-1465.bin
 # for MAT in symmetric/Geo_1438.bin symmetric/StocF-1465.bin symmetric/nlpkkt80.bin symmetric/dielFilterV3real.mtx symmetric/Si41Ge41H72.mtx
 # for MAT in symmetric/662_bus.mtx
-# for MAT in symmetric/Cube_Coup_dt0.mtx symmetric/kkt_power.mtx symmetric/Spielman_k200_A_10.mtx
-# for MAT in symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.mtx
-# for MAT in symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.mtx
+# for MAT in symmetric/Cube_Coup_dt0.bin symmetric/kkt_power.mtx symmetric/Spielman_k200_A_10.mtx
+# for MAT in symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.bin
+# for MAT in symmetric/Spielman_k200_A_10.mtx symmetric/Cube_Coup_dt0.bin
 # for MAT in mathias/DG_GrapheneDisorder_8192.bin mathias/DNA_715_64cell.bin mathias/LU_C_BN_C_4by2.bin mathias/Li4244.bin 
 # for MAT in mathias/Li4244.bin 
 # for MAT in turon_m.mtx
